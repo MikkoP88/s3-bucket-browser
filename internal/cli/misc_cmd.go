@@ -147,15 +147,3 @@ func versionCmd() *cobra.Command {
 		},
 	}
 }
-
-func guiCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "gui",
-		Short: "Launch the desktop GUI",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("The desktop GUI ships in milestone M2.")
-			fmt.Println("Until then the CLI face is fully usable — start with `s3b --help`.")
-			return nil
-		},
-	}
-}

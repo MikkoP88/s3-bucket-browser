@@ -2,7 +2,27 @@
 
 **A Windows-Explorer-style desktop app + CLI for managing Amazon S3 and S3-compatible storage — buckets, objects, versions, and everything in between.**
 
-> **Status: M1 — CLI complete.** The full CLI (`s3b`) is implemented and integration-tested against MinIO on every push. The desktop GUI (M2), admin panels (M3) and versioning UI (M4) follow per the [roadmap](PLAN.md#12-milestones).
+> **Status: M2 — GUI + CLI in one binary.** Run `s3b` with no arguments for the desktop GUI (Wails/WebView2), or with arguments for the full CLI. Admin panels (M3) and versioning management (M4) follow per the [roadmap](PLAN.md#12-milestones).
+
+## Quickstart (GUI)
+
+```bash
+go build -o s3b ./cmd/s3b && ./s3b        # no arguments -> desktop app
+```
+
+- **Explorer layout**: toolbar, back/forward/up history, breadcrumb, folder tree sidebar, sortable details grid, status bar.
+- **Multi-select everything**: click / Ctrl+click / Shift+click / Ctrl+A, marquee drag-select, type-to-jump, full keyboard map (F1 in-app).
+- **Drag & drop**: drop files or folders from the OS onto the window to upload into the open folder; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket).
+- **Transfer manager**: per-file and byte-level progress, speed, cancel — powered by multipart upload/download.
+- **Safety ladder**: deletes count first and act second; large selections demand typed confirmation, bucket removal demands typing the bucket name.
+- **Profiles**: color-coded connections, `~/.aws/credentials` import, built-in connectivity test, connection doctor.
+- **Light/dark theme**, conflict policies (overwrite / skip / rename) on upload and download, pre-signed URLs, server-side copy/move, rename, new folder.
+
+Headless Linux servers can build a pure-Go CLI without GTK dependencies:
+
+```bash
+go build -tags s3b_headless -o s3b ./cmd/s3b
+```
 
 ## Quickstart (CLI)
 
@@ -45,7 +65,7 @@ Because none of the existing ones do it all:
 
 | | S3 Bucket Browser | S3 Browser (CS) | Cyberduck | MSP360 | AWS Console |
 |---|---|---|---|---|---|
-| Windows / macOS / Linux | planned | / – | / – | / – | browser |
+| Windows / macOS / Linux | yes (M2) | / – | / – | / – | browser |
 | Open source (MIT) | yes | no | GPL | no | – |
 | Explorer-style multi-select, drag & drop | yes (core goal) | partial | partial | partial | no |
 | Versioning management (restore, purge, force-empty versioned buckets) | first-class | partial | partial | partial | clunky |

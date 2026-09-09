@@ -26,7 +26,8 @@ type Profile struct {
 	SecretKey    string    `json:"secretKey,omitempty"`
 	SessionToken string    `json:"sessionToken,omitempty"`
 	PathStyle    bool      `json:"pathStyle"`
-	Insecure     bool      `json:"insecure"` // skip TLS verification (labs)
+	Insecure     bool      `json:"insecure"`        // skip TLS verification (labs)
+	Color        string    `json:"color,omitempty"` // GUI accent color (M2)
 	Default      bool      `json:"default,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>S3 Bucket Browser</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app" class="app">
+
+    <!-- ============ Toolbar ============ -->
+    <header class="toolbar" id="toolbar">
+      <button class="tb-btn" id="btn-back" title="Back (Alt+Left)" disabled>&#9664;</button>
+      <button class="tb-btn" id="btn-forward" title="Forward (Alt+Right)" disabled>&#9654;</button>
+      <button class="tb-btn" id="btn-up" title="Up (Alt+Up)" disabled>&#9650;</button>
+      <button class="tb-btn" id="btn-refresh" title="Refresh (F5)">&#8635;</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" id="btn-upload" title="Upload files (Ctrl+U)">&#8682; Upload</button>
+      <button class="tb-btn" id="btn-upload-dir" title="Upload a folder (drag &amp; drop works too)">&#128193; Upload folder</button>
+      <button class="tb-btn" id="btn-download" title="Download selection (Ctrl+D)">&#8681; Download</button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn" id="btn-newfolder" title="New folder (Ctrl+Shift+N)">&#128193;+</button>
+      <button class="tb-btn" id="btn-doctor" title="Connection doctor">&#129658; Doctor</button>
+      <span class="tb-spacer"></span>
+      <button class="tb-btn" id="btn-transfers" title="Transfer manager">&#8646; Transfers <span id="transfer-badge" class="badge hidden">0</span></button>
+      <select id="profile-select" title="Connection profile"></select>
+      <button class="tb-btn" id="btn-profiles" title="Manage profiles">&#9881; Profiles</button>
+      <button class="tb-btn" id="btn-theme" title="Light / dark theme">&#9681;</button>
+      <button class="tb-btn" id="btn-help" title="Keyboard shortcuts (F1)">?</button>
+    </header>
+
+    <!-- ============ Nav bar: breadcrumb + filter ============ -->
+    <nav class="navbar">
+      <div id="breadcrumb" class="breadcrumb"></div>
+      <input id="filter" class="filter" type="text" placeholder="Filter (Ctrl+F)" spellcheck="false">
+    </nav>
+
+    <!-- ============ Main split: tree | grid ============ -->
+    <main class="main">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-head" id="sidebar-head">Buckets</div>
+        <div class="tree" id="tree" role="tree"></div>
+      </aside>
+      <div class="grid-wrap" id="grid-wrap">
+        <div class="grid-head" id="grid-head"></div>
+        <div class="grid-body" id="grid-body" tabindex="0">
+          <div class="grid-canvas" id="grid-canvas"></div>
+        </div>
+        <div class="empty-state hidden" id="empty-state">
+          <div class="empty-icon" id="empty-icon">&#128193;</div>
+          <div class="empty-title" id="empty-title"></div>
+          <div class="empty-sub" id="empty-sub"></div>
+          <div class="empty-actions" id="empty-actions"></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============ Status bar ============ -->
+    <footer class="statusbar">
+      <span id="status-selection">0 items</span>
+      <span class="sb-spacer"></span>
+      <span id="status-jobs" class="sb-jobs hidden"></span>
+      <span id="status-profile"></span>
+      <span class="sb-sep"></span>
+      <span id="status-version"></span>
+    </footer>
+  </div>
+
+  <!-- Context menu -->
+  <div class="ctxmenu hidden" id="ctxmenu"></div>
+
+  <!-- Modal root -->
+  <div class="modal-root hidden" id="modal-root"></div>
+
+  <!-- Toasts -->
+  <div class="toasts" id="toasts"></div>
+
+  <!-- Marquee selection rectangle -->
+  <div class="marquee hidden" id="marquee"></div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

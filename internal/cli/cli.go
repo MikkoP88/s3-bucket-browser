@@ -128,7 +128,6 @@ func NewRoot() *cobra.Command {
 		presignCmd(),
 		doctorCmd(),
 		versionCmd(),
-		guiCmd(),
 	)
 	root.CompletionOptions.HiddenDefaultCmd = false
 	return root
