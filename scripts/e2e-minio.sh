@@ -58,7 +58,10 @@ pass "301 items uploaded"
 step "listing: ls / tree / du / stat"
 count=$("$BIN" ls "s3://$BUCKET/data/" --recursive --json | grep -c '"key"')
 [ "$count" = "301" ] || fail "recursive ls count = $count, want 301"
-"$BIN" tree "s3://$BUCKET" | grep -q 'docs/' || fail "tree missing docs/"
+# Capture-then-grep: piping straight into `grep -q` would SIGPIPE the
+# producer under `set -o pipefail` (grep exits on first match).
+tree_out="$("$BIN" tree "s3://$BUCKET")"
+printf '%s\n' "$tree_out" | grep -q 'docs/' || fail "tree missing docs/: $tree_out"
 "$BIN" du "s3://$BUCKET" | grep -Eq '30[12] object' || fail "du object count"
 "$BIN" stat "s3://$BUCKET" --json | grep -q '"region"' || fail "stat bucket"
 "$BIN" stat "s3://$BUCKET/data/readme.md" | grep -q 'size:' || fail "stat object"
@@ -92,7 +95,8 @@ pass "presigned URL serves the object"
 
 step "safety gates"
 expect_fail "$BIN" rm "s3://$BUCKET/data/" -r            # 301 objects, no --force
-"$BIN" rm "s3://$BUCKET/data/" -r --dry-run | grep -q 'total: 301' || fail "rm dry-run count"
+dry_out="$("$BIN" rm "s3://$BUCKET/data/" -r --dry-run)"
+printf '%s\n' "$dry_out" | grep -q 'total: 301' || fail "rm dry-run count: $dry_out"
 "$BIN" rm "s3://$BUCKET/data/readme.md" >/dev/null
 "$BIN" rm "s3://$BUCKET/data/" -r --force | grep -q 'deleted 300 object' || fail "rm -r --force"
 expect_fail "$BIN" rb "s3://$BUCKET"                      # still has docs/ + copy/
