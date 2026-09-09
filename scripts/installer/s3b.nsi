@@ -1,9 +1,11 @@
 ; s3b.nsi — NSIS installer for S3 Bucket Browser (M5, PLAN.md §12).
 ;
-; Run makensis from the repo root (relative paths resolve against the
-; invocation directory); VERSION is passed in via -DVERSION:
-;
 ;   makensis -DVERSION=1.2.3 scripts/installer/s3b.nsi
+;
+; makensis resolves relative paths against the SCRIPT's directory (it
+; chdirs there while compiling), not the invocation directory — so every
+; path is anchored at the repo root via ${__FILEDIR__} (NSIS >= 3.02)
+; and the script works from any working directory.
 ;
 ; Expects the freshly built binary at dist/s3b.exe and writes the installer
 ; to dist/s3b-setup-<VERSION>.exe.
@@ -14,12 +16,14 @@
 
 Unicode true
 
+!define ROOT "${__FILEDIR__}\..\.."
+
 !ifndef VERSION
   !define VERSION "dev"
 !endif
 
 Name "S3 Bucket Browser"
-OutFile "dist/s3b-setup-${VERSION}.exe"
+OutFile "${ROOT}\dist\s3b-setup-${VERSION}.exe"
 InstallDir "$PROGRAMFILES64\S3 Bucket Browser"
 ; Upgrade in place: remember the previous install dir.
 InstallDirRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "InstallLocation"
@@ -39,7 +43,7 @@ UninstPage instfiles
 Section "S3 Bucket Browser (required)"
   SectionIn RO
   SetOutPath "$INSTDIR"
-  File dist/s3b.exe
+  File "${ROOT}\dist\s3b.exe"
 
   ; App Paths: find s3b.exe without modifying PATH.
   WriteRegStr HKLM "Software\Microsoft\Windows\App Paths\s3b.exe" "" "$INSTDIR\s3b.exe"
