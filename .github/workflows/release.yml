@@ -87,7 +87,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends nsis
-          makensis -DVERSION="${GITHUB_REF_NAME#v}" scripts/installer/s3b.nsi
+          VER="${GITHUB_REF_NAME#v}"
+          makensis -DVERSION="$VER" \
+            -DPAYLOAD="$PWD/dist/s3b.exe" \
+            -DOUT="$PWD/dist/s3b-setup-$VER.exe" \
+            scripts/installer/s3b.nsi
 
       - uses: actions/upload-artifact@v4
         with:

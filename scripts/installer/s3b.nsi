@@ -2,10 +2,11 @@
 ;
 ;   makensis -DVERSION=1.2.3 scripts/installer/s3b.nsi
 ;
-; makensis resolves relative paths against the SCRIPT's directory (it
-; chdirs there while compiling), not the invocation directory — so every
-; path is anchored at the repo root via ${__FILEDIR__} (NSIS >= 3.02)
-; and the script works from any working directory.
+; makensis resolves File/OutFile paths against the script's own directory,
+; not the invocation directory — so anchor everything at the repo root
+; with ../.. (from scripts/installer/) and the script works from any
+; working directory. CI/release pass -DPAYLOAD/-DOUT with absolute paths
+; (base-directory-independent) for the same reason.
 ;
 ; Expects the freshly built binary at dist/s3b.exe and writes the installer
 ; to dist/s3b-setup-<VERSION>.exe.
@@ -16,14 +17,20 @@
 
 Unicode true
 
-!define ROOT "${__FILEDIR__}\..\.."
+!define ROOT "../.."
 
 !ifndef VERSION
   !define VERSION "dev"
 !endif
+!ifndef PAYLOAD
+  !define PAYLOAD "${ROOT}/dist/s3b.exe"
+!endif
+!ifndef OUT
+  !define OUT "${ROOT}/dist/s3b-setup-${VERSION}.exe"
+!endif
 
 Name "S3 Bucket Browser"
-OutFile "${ROOT}\dist\s3b-setup-${VERSION}.exe"
+OutFile "${OUT}"
 InstallDir "$PROGRAMFILES64\S3 Bucket Browser"
 ; Upgrade in place: remember the previous install dir.
 InstallDirRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "InstallLocation"
@@ -43,7 +50,7 @@ UninstPage instfiles
 Section "S3 Bucket Browser (required)"
   SectionIn RO
   SetOutPath "$INSTDIR"
-  File "${ROOT}\dist\s3b.exe"
+  File "${PAYLOAD}"
 
   ; App Paths: find s3b.exe without modifying PATH.
   WriteRegStr HKLM "Software\Microsoft\Windows\App Paths\s3b.exe" "" "$INSTDIR\s3b.exe"

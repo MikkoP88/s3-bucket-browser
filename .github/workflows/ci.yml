@@ -129,5 +129,8 @@ jobs:
         run: |
           mkdir -p dist
           GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags "-s -w" -o dist/s3b.exe ./cmd/s3b
-          makensis -DVERSION=0.0.0-ci scripts/installer/s3b.nsi
+          makensis -DVERSION=0.0.0-ci \
+            -DPAYLOAD="$PWD/dist/s3b.exe" \
+            -DOUT="$PWD/dist/s3b-setup-0.0.0-ci.exe" \
+            scripts/installer/s3b.nsi
           test -f dist/s3b-setup-0.0.0-ci.exe
