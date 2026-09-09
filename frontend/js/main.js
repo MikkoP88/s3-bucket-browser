@@ -7,10 +7,10 @@ import { Tree } from './tree.js';
 import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
   profileEditor, helpSheet, conflictPolicy, presignDialog, toast, openModal,
-  versionsDialog, adminDialog, editingDialog,
+  versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
-import { t } from './i18n.js';
+import { t, detectLang, setLang } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -21,8 +21,14 @@ const tree = new Tree({ onNavigate: (loc) => nav.to(loc), onDropTo: dropToTarget
 let profiles = [];
 let currentEntries = []; // unfiltered rows of the active view
 
+// Streaming listing state (M5): generation counter + active stream token.
+let listSeq = 0;
+let listStream = { token: null, off: null };
+let pendingSelect = null; // {bucket, prefix, key} — row to select after load
+
 // ============================ boot ============================
 async function boot() {
+  setLang(detectLang());
   initTheme();
   $('status-version').textContent = `s3b v${await api.GetVersion()}`;
   wireToolbar();
@@ -105,6 +111,32 @@ function afterProfileSaved() {
 // ============================ navigation ============================
 nav.onNavigate((loc) => loadView(loc));
 
+// ============================ favorites (M5) ============================
+function favorites() {
+  try { return JSON.parse(localStorage.getItem('s3b-favs') || '[]'); } catch { return []; }
+}
+function isFavorite(bucket) { return favorites().includes(bucket); }
+function toggleFavorite(bucket) {
+  const favs = favorites();
+  const i = favs.indexOf(bucket);
+  if (i >= 0) favs.splice(i, 1); else favs.push(bucket);
+  localStorage.setItem('s3b-favs', JSON.stringify(favs));
+  renderFavorites();
+}
+function renderFavorites() {
+  const favs = favorites();
+  $('fav-section').classList.toggle('hidden', favs.length === 0);
+  $('favorites').replaceChildren(...favs.map((b) => el('div', {
+    class: 'fav-row',
+    role: 'listitem',
+    title: `s3://${b}`,
+    onclick: () => nav.to({ kind: 'objects', bucket: b, prefix: '' }),
+  },
+    el('span', { class: 'fav-star', text: '\u2605' }),
+    el('span', { class: 'fav-label', text: b }),
+  )));
+}
+
 async function loadView(loc) {
   grid.clearSelection();
   updateNavButtons();
@@ -121,6 +153,7 @@ async function loadView(loc) {
         lastModified: b.createdAt, bucketCreated: true,
       }));
       grid.setRows(currentEntries);
+      renderFavorites();
       if (!currentEntries.length) showEmpty(t('noBuckets'), t('noBucketsSub'), [
         el('button', { class: 'btn primary', text: t('createBucket'), onclick: createBucket }),
       ]);
@@ -128,15 +161,7 @@ async function loadView(loc) {
       $('btn-up').disabled = true;
     } else if (loc.kind === 'objects') {
       $('sidebar-head').textContent = loc.bucket;
-      const entries = await api.ListObjects(loc.bucket, loc.prefix);
-      currentEntries = entries;
-      grid.setRows(currentEntries);
-      grid.setFilter(view.filter);
-      if (!entries.length && !view.filter) {
-        showEmpty(t('emptyFolder'), t('dropToUpload'), [
-          el('button', { class: 'btn primary', text: '\u8682 Upload files', onclick: uploadFiles }),
-        ]);
-      }
+      await loadObjectsStream(loc);
       tree.reveal(loc).catch(() => {});
       localPane.syncTo(loc.prefix || '');
       $('btn-up').disabled = false;
@@ -147,6 +172,82 @@ async function loadView(loc) {
     showEmpty('Could not list', String(err), []);
   }
   updateStatus();
+}
+
+// loadObjectsStream fills the grid incrementally from the streaming
+// listing API: the first page renders immediately, Go-side memory stays
+// at one page for million-object folders, and stale streams are
+// canceled on navigation (PLAN.md §13, M5).
+async function loadObjectsStream(loc) {
+  const seq = ++listSeq;
+  cancelListStream();
+  if (pendingSelect && (pendingSelect.bucket !== loc.bucket || pendingSelect.prefix !== (loc.prefix || ''))) {
+    pendingSelect = null; // user navigated elsewhere
+  }
+  currentEntries = [];
+  grid.setRows([]);
+  grid.setFilter(view.filter);
+  let token;
+  try {
+    token = await api.ListObjectsStream(loc.bucket, loc.prefix || '');
+  } catch (err) {
+    if (seq !== listSeq) return;
+    showEmpty('Could not list', String(err), []);
+    return;
+  }
+  if (seq !== listSeq) { api.CancelList(token).catch(() => {}); return; }
+  listStream.token = token;
+  listStream.off = onEvent('list:page', (p) => {
+    if (seq !== listSeq || p.token !== token) return;
+    if (p.error) {
+      showEmpty('Could not list', p.error, []);
+      return;
+    }
+    currentEntries.push(...p.entries);
+    grid.appendRows(p.entries);
+    updateStatus();
+    if (p.done) {
+      listStream.token = null;
+      listStream.off?.();
+      listStream.off = null;
+      grid.apply(); // canonical folders-first ordering + active sort/filter
+      if (!currentEntries.length && !view.filter) {
+        showEmpty(t('emptyFolder'), t('dropToUpload'), [
+          el('button', { class: 'btn primary', text: '\u2191 Upload files', onclick: uploadFiles }),
+        ]);
+      }
+      consumePendingSelect();
+      updateStatus();
+    }
+  });
+}
+
+function cancelListStream() {
+  if (listStream.token) { api.CancelList(listStream.token).catch(() => {}); listStream.token = null; }
+  listStream.off?.();
+  listStream.off = null;
+}
+
+// consumePendingSelect focuses a row requested by an earlier action
+// (deep-search "open location") once its listing finished.
+function consumePendingSelect() {
+  if (!pendingSelect) return;
+  const key = pendingSelect.key;
+  pendingSelect = null;
+  const idx = grid.rows.findIndex((r) => r.key === key);
+  if (idx < 0) return;
+  grid.sel = new Set([key]);
+  grid.focusKey = key;
+  grid.anchorKey = key;
+  grid.scrollTo(idx);
+  grid.render(true);
+}
+
+// openSearchResult navigates to a deep-search result's folder and marks
+// the object row for selection.
+function openSearchResult(loc) {
+  pendingSelect = loc;
+  nav.to({ kind: 'objects', bucket: loc.bucket, prefix: loc.prefix });
 }
 
 function refreshCurrent() {
@@ -240,6 +341,8 @@ function showContextMenu(e, rows) {
   if (loc.kind === 'buckets') {
     const b = rows[0];
     items.push(['Open', 'Enter', () => nav.to({ kind: 'objects', bucket: b.key, prefix: '' })]);
+    items.push([isFavorite(b.key) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(b.key)]);
+    items.push(['Find in bucket\u2026', '', () => findDialog(b.key, '', openSearchResult)]);
     items.push(['Admin panel\u2026', '', () => adminDialog(b.key, refreshCurrent)]);
     items.push(['Doctor\u2026', '', async () => runDoctor(b.key)]);
     items.push(['Properties', '', () => bucketProperties(b.key)]);
@@ -262,6 +365,9 @@ function showContextMenu(e, rows) {
       items.push(['Pre-sign URL\u2026', '', () => presign(rows[0])]);
     }
     if (sel === 1) items.push(['Previous versions\u2026', '', () => versionsDialog(loc.bucket, rows[0].key, refreshCurrent)]);
+    if (sel) items.push(['Storage class\u2026', '', () => classDialog(loc.bucket, rows, refreshCurrent)]);
+    if (sel === 1 && !rows[0].isDir) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows[0].key, refreshCurrent)]);
+    items.push(['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, loc.prefix || '', openSearchResult)]);
     items.push(['Delete permanently\u2026', 'Shift+Del', () => deletePermanentSelection(), !sel]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties()]);
   }
@@ -664,6 +770,7 @@ function wireToolbar() {
   $('btn-upload-dir').onclick = uploadFolder;
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = togglePanes;
+  $('btn-find').onclick = findFromHere;
   $('btn-newfolder').onclick = newFolder;
   $('btn-doctor').onclick = () => runDoctor(nav.current?.kind === 'objects' ? nav.current.bucket : '');
   $('btn-transfers').onclick = () => transferManager();
@@ -680,6 +787,20 @@ function wireToolbar() {
     view.filter = $('filter').value;
     grid.setFilter(view.filter);
   }, 120));
+}
+
+// findFromHere opens the deep-search dialog for the current folder, the
+// selected bucket (buckets view), or the current bucket.
+function findFromHere() {
+  const loc = nav.current;
+  if (!loc) return;
+  if (loc.kind === 'objects') {
+    findDialog(loc.bucket, loc.prefix || '', openSearchResult);
+    return;
+  }
+  const row = grid.selectedRows()[0];
+  if (row) findDialog(row.key, '', openSearchResult);
+  else toast('Open a bucket first — or select one');
 }
 
 function profilesDialog() {
@@ -738,6 +859,7 @@ function wireKeys() {
     if (ctrl && e.key.toLowerCase() === 'c') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'copy'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Copied ${r.length} item(s)`); } return; }
     if (ctrl && e.key.toLowerCase() === 'x') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'cut'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Cut ${r.length} item(s)`); } return; }
     if (ctrl && e.key.toLowerCase() === 'v') { e.preventDefault(); paste(); return; }
+    if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); findFromHere(); return; }
     if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); $('filter').focus(); $('filter').select(); return; }
     if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); uploadFiles(); return; }
     if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); downloadSelection(); return; }

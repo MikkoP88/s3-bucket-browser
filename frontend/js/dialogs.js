@@ -1,22 +1,38 @@
 // Modal framework + every dialog: confirmations (L1/L2 ladder), prompts,
 // properties, doctor, profile editor, transfer manager, help sheet.
-import { api } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate } from './util.js';
+import { api, onEvent } from './api.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, parentPrefix } from './util.js';
+import { t } from './i18n.js';
 
 const root = () => document.getElementById('modal-root');
 
 export function openModal({ title, body, buttons = [], wide = false, onClose }) {
   const r = root();
+  const prevFocus = document.activeElement;
   r.classList.remove('hidden');
 
   const close = (result) => {
     r.classList.add('hidden');
     r.replaceChildren();
     document.removeEventListener('keydown', esc, true);
+    document.removeEventListener('keydown', trap, true);
+    prevFocus?.focus?.();
     onClose?.(result);
   };
   const esc = (e) => { if (e.key === 'Escape') close(null); };
+  // Focus trap: Tab (and Shift+Tab) cycle inside the modal (a11y).
+  const trap = (e) => {
+    if (e.key !== 'Tab') return;
+    const focusables = box.querySelectorAll('button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    else if (!r.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+  };
   document.addEventListener('keydown', esc, true);
+  document.addEventListener('keydown', trap, true);
 
   const foot = el('div', { class: 'modal-foot' },
     buttons.map((b) => el('button', {
@@ -26,16 +42,24 @@ export function openModal({ title, body, buttons = [], wide = false, onClose }) 
     })),
   );
 
-  const box = el('div', { class: `modal${wide ? ' wide' : ''}` },
+  const box = el('div', {
+    class: `modal${wide ? ' wide' : ''}`,
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': title,
+  },
     el('div', { class: 'modal-head' },
       el('span', { text: title }),
-      el('span', { class: 'x', text: '\u00D7', onclick: () => close(null) }),
+      el('span', { class: 'x', text: '\u00D7', role: 'button', 'aria-label': 'Close', onclick: () => close(null) }),
     ),
     el('div', { class: 'modal-body' }, body),
     foot,
   );
   box.addEventListener('mousedown', (e) => { if (e.target === r) close(null); });
   r.replaceChildren(box);
+  // initial focus: first form control, else first button
+  const firstCtl = box.querySelector('input, select, textarea') || box.querySelector('.modal-foot .btn');
+  firstCtl?.focus?.();
   return { close, body: box.querySelector('.modal-body') };
 }
 
@@ -449,7 +473,7 @@ export function versionsDialog(bucket, key, onChanged) {
 
 // ---------- bucket admin panel (M3) ----------
 export function adminDialog(bucket, onChanged) {
-  const TABS = ['Overview', 'Security', 'Policy', 'ACL', 'CORS', 'Lifecycle', 'Encryption', 'Website', 'Tags', 'Versions'];
+  const TABS = ['Overview', 'Security', 'Policy', 'ACL', 'CORS', 'Lifecycle', 'Encryption', 'Website', 'Tags', 'Versions', 'Lock'];
   const strip = el('div', { class: 'tabstrip' });
   const content = el('div', { class: 'tabbody' });
   let panel = null;
@@ -797,6 +821,56 @@ export function adminDialog(bucket, onChanged) {
         }).catch((e) => content.replaceChildren(errBox(e)));
         break;
       }
+      case 'Lock': {
+        if (panel.lockErr) { content.replaceChildren(errBox(panel.lockErr)); break; }
+        const lock = panel.lock || {};
+        const mode = el('select', { class: 'input', style: 'width:auto' },
+          ['', 'GOVERNANCE', 'COMPLIANCE'].map((m) => el('option', { value: m }, m || '— no default retention —')));
+        mode.value = lock.mode || '';
+        const days = el('input', { class: 'input', type: 'number', min: '1', value: String(lock.days || '') , placeholder: 'days'});
+        if (lock.enabled) {
+          content.replaceChildren(
+            el('div', { class: 'banner warn', text: 'Object lock is ENABLED — permanent: it cannot be disabled, only tightened.' }),
+            el('div', { class: 'kv', style: 'margin-top:8px' },
+              el('div', { class: 'k', text: 'Status' }), el('div', { class: 'v', text: 'enabled (permanent)' }),
+              el('div', { class: 'k', text: 'Default mode' }), el('div', { class: 'v', text: lock.mode || '— none —' }),
+              el('div', { class: 'k', text: 'Default days' }), el('div', { class: 'v', text: lock.days ? String(lock.days) : '—' }),
+            ),
+            el('div', { class: 'field', style: 'margin-top:12px', text: 'Adjust the default retention rule' }),
+            el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+              mode, days,
+              el('button', {
+                class: 'btn primary', text: 'Save rule',
+                onclick: () => save(() => api.PutBucketLockConfig(bucket, true, mode.value, parseInt(days.value, 10) || 0), 'Default retention updated'),
+              }),
+            ),
+            el('div', { class: 'field', style: 'margin-top:10px;color:var(--text-dim)', text: 'Per-object retention and legal holds: right-click an object \u2192 Object lock\u2026' }),
+          );
+        } else {
+          content.replaceChildren(
+            el('div', { class: 'field', text: 'Object lock (WORM): once enabled it is permanent and versioning turns on automatically.' }),
+            el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'Most providers (AWS, MinIO) only allow enabling object lock at bucket creation — use "s3b mb --object-lock" and create a new bucket if this one rejects it. Optionally set a default retention applied to every new object.' }),
+            el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px' },
+              mode, days,
+              el('button', {
+                class: 'btn danger', text: 'Enable object lock',
+                onclick: async () => {
+                  const ok = await typedConfirm({
+                    title: `Enable object lock on ${bucket}`,
+                    message: 'Object lock is permanent: it can never be disabled, only tightened.\nRetention-protected versions cannot be deleted until they expire.',
+                    typeWord: bucket,
+                    okLabel: 'Enable',
+                    danger: false,
+                  });
+                  if (!ok) return;
+                  save(() => api.PutBucketLockConfig(bucket, true, mode.value, parseInt(days.value, 10) || 0), 'Object lock enabled');
+                },
+              }),
+            ),
+          );
+        }
+        break;
+      }
       default:
         content.replaceChildren(el('div', { text: name }));
     }
@@ -847,6 +921,233 @@ export function editingDialog(onChanged) {
       ),
     )) : [el('div', { text: 'No files are being edited.', style: 'color:var(--text-dim)' })]));
   }
+  draw();
+}
+
+// ---------- deep search (M5) ----------
+// findDialog streams matches of a cancelable deep search under
+// bucket/prefix. onOpen({bucket, prefix, key}) navigates to a result.
+export function findDialog(bucket, prefix = '', onOpen) {
+  const f = {
+    name: el('input', { class: 'input mono', placeholder: 'report*', spellcheck: 'false' }),
+    larger: el('input', { class: 'input mono', placeholder: '10MB', spellcheck: 'false' }),
+    smaller: el('input', { class: 'input mono', placeholder: '500KB', spellcheck: 'false' }),
+    older: el('input', { class: 'input mono', placeholder: '30d', spellcheck: 'false' }),
+    newer: el('input', { class: 'input mono', placeholder: '24h', spellcheck: 'false' }),
+    class: el('select', { class: 'input' },
+      ['', 'STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE']
+        .map((c) => el('option', { value: c }, c || '— any —'))),
+    limit: el('input', { class: 'input', type: 'number', min: '0', value: '0' }),
+  };
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const list = el('div', { class: 'ver-list', role: 'list' });
+  let token = null;
+  let running = false;
+  let offPage = null;
+  let offDone = null;
+
+  const fmtRes = (r) => el('div', {
+    class: 'ver-row',
+    role: 'listitem',
+    onclick: () => onOpen?.({ bucket: r.bucket || bucket, prefix: parentPrefix(r.key), key: r.key }),
+  },
+    el('span', { class: 'ver-icon', text: '\u{1F50D}' }),
+    el('span', { class: 'ver-main' },
+      el('div', { class: 'mono', text: r.key }),
+      el('div', { class: 'ver-sub', text: `${fmtBytes(r.size || 0)} — ${r.storageClass || 'STANDARD'}${r.lastModified ? ` — ${fmtDate(r.lastModified)}` : ''}` }),
+    ),
+  );
+
+  function stop() {
+    if (token) { api.CancelSearch(token); token = null; }
+    running = false;
+    offPage?.();
+    offDone?.();
+    offPage = offDone = null;
+  }
+
+  openModal({
+    title: `${t('findTitle')} — s3://${bucket}/${prefix || ''}`,
+    body: el('div', {},
+      el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px' },
+        el('div', { style: 'grid-column:1/-1' }, el('label', { class: 'field', text: t('findName') }), f.name),
+        el('div', {}, el('label', { class: 'field', text: t('findLarger') }), f.larger),
+        el('div', {}, el('label', { class: 'field', text: t('findSmaller') }), f.smaller),
+        el('div', {}, el('label', { class: 'field', text: t('findOlder') }), f.older),
+        el('div', {}, el('label', { class: 'field', text: t('findNewer') }), f.newer),
+        el('div', {}, el('label', { class: 'field', text: t('class') }), f.class),
+        el('div', {}, el('label', { class: 'field', text: t('findLimit') }), f.limit),
+      ),
+      status,
+      list,
+    ),
+    wide: true,
+    buttons: [
+      {
+        label: t('findCancel'),
+        onclick: (c) => { stop(); },
+      },
+      {
+        label: t('findStart'),
+        class: 'primary',
+        onclick: async () => {
+          let opts;
+          try {
+            opts = {
+              pattern: f.name.value.trim(),
+              largerThan: parseSizeStr(f.larger.value) || 0,
+              smallerThan: parseSizeStr(f.smaller.value) || 0,
+              olderThanSec: parseDurStr(f.older.value) || 0,
+              newerThanSec: parseDurStr(f.newer.value) || 0,
+              class: f.class.value,
+              limit: parseInt(f.limit.value, 10) || 0,
+            };
+          } catch (err) {
+            status.textContent = String(err);
+            status.style.color = 'var(--danger)';
+            return;
+          }
+          status.style.color = 'var(--text-dim)';
+          status.textContent = t('findRunning', { matched: 0 });
+          list.replaceChildren();
+          stop(); // cancel any previous run
+          running = true;
+          const myToken = await api.DeepSearch(bucket, prefix, opts);
+          if (!running) { api.CancelSearch(myToken); return; } // closed meanwhile
+          token = myToken;
+          offPage = onEvent('search:page', (p) => {
+            if (p.token !== token) return;
+            for (const r of p.entries || []) list.appendChild(fmtRes(r));
+            status.textContent = t('findRunning', { matched: p.matched });
+            list.scrollTop = list.scrollHeight;
+          });
+          offDone = onEvent('search:done', (d) => {
+            if (d.token !== token) return;
+            token = null;
+            running = false;
+            status.textContent = d.error
+              ? d.error
+              : t('findDone', { matched: d.matched, scanned: d.scanned, bucket, prefix: prefix || '' });
+            if (d.error) status.style.color = 'var(--danger)';
+          });
+        },
+      },
+      { label: 'Close', onclick: (c) => { stop(); c(); } },
+    ],
+    onClose: () => stop(),
+  });
+  f.name.focus();
+}
+
+// ---------- storage-class conversion (M5) ----------
+export function classDialog(bucket, rows, onChanged) {
+  if (!rows?.length) return;
+  const targets = ['STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE'];
+  const sel = el('select', { class: 'input', style: 'width:auto' }, targets.map((c) => el('option', { value: c }, c)));
+  sel.value = 'GLACIER';
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const folders = rows.filter((r) => r.isDir).length;
+
+  const run = async (force) => {
+    status.style.color = 'var(--text-dim)';
+    status.textContent = 'Converting…';
+    try {
+      const n = await api.ConvertStorageClass(bucket, rows.map((r) => r.key), sel.value, force);
+      status.textContent = `Converted ${n} object(s) to ${sel.value}`;
+      toast(`Converted ${n} object(s) to ${sel.value}`, 'ok');
+      onChanged?.();
+    } catch (err) {
+      const msg = String(err);
+      if (!force && msg.includes('would convert')) {
+        const m = msg.match(/would convert (\d+)/);
+        const ok = await typedConfirm({
+          title: 'Convert storage class',
+          message: `${m ? m[0] : 'This batch'} — server-side copies every object. Continue?`,
+          typeWord: 'convert',
+          okLabel: 'Convert',
+        });
+        if (ok) run(true);
+        else { status.textContent = 'Canceled'; }
+      } else {
+        status.textContent = msg;
+        status.style.color = 'var(--danger)';
+      }
+    }
+  };
+
+  openModal({
+    title: `Storage class — ${rows.length} item(s) in ${bucket}`,
+    body: el('div', {},
+      el('div', { class: 'field', text: `Converts via a server-side self-copy. ${folders ? `${folders} folder(s) expand${folders === 1 ? 's' : ''} recursively. ` : ''}Objects already in GLACIER/DEEP_ARCHIVE stay frozen — restoring needs an explicit restore.` }),
+      el('label', { class: 'field', text: 'Target class' }), sel,
+      status,
+    ),
+    buttons: [
+      { label: 'Convert', class: 'primary', onclick: () => run(false) },
+      { label: 'Close' },
+    ],
+  });
+  sel.focus();
+}
+
+// ---------- object lock per object (M5) ----------
+export function lockDialog(bucket, key, onChanged) {
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const mode = el('select', { class: 'input', style: 'width:auto' },
+    ['GOVERNANCE', 'COMPLIANCE'].map((m) => el('option', { value: m }, m)));
+  const until = el('input', { class: 'input mono', value: '+30d', spellcheck: 'false' });
+  const holdState = el('div', { class: 'v', text: '…' });
+
+  const act = async (fn, msg) => {
+    status.style.color = 'var(--text-dim)';
+    status.textContent = msg ? `${msg}…` : 'Working…';
+    try {
+      await fn();
+      status.textContent = msg || 'Done';
+      if (msg) toast(msg, 'ok');
+      onChanged?.();
+      draw();
+    } catch (err) {
+      status.textContent = String(err);
+      status.style.color = 'var(--danger)';
+    }
+  };
+
+  async function draw() {
+    let lock;
+    try {
+      lock = await api.GetObjectLock(bucket, key, '');
+    } catch (err) {
+      status.textContent = String(err);
+      status.style.color = 'var(--danger)';
+      return;
+    }
+    holdState.textContent = lock.legalHold || 'off (never configured)';
+    status.textContent = lock.mode
+      ? `Retention: ${lock.mode} until ${lock.retainUntil ? fmtDate(lock.retainUntil) : '?'}`
+      : 'No retention configured.';
+  }
+
+  openModal({
+    title: `Object lock — s3://${bucket}/${key}`,
+    body: el('div', {},
+      status,
+      el('div', { class: 'field', style: 'margin-top:10px', text: 'Retention (applies to the current version)' }),
+      el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+        mode, until,
+        el('button', { class: 'btn primary', text: 'Set', onclick: () => act(() => api.PutObjectRetention(bucket, key, '', mode.value, until.value.trim()), 'Retention set') }),
+        el('button', { class: 'btn', text: 'Clear', title: 'Removes GOVERNANCE retention (COMPLIANCE cannot be removed)', onclick: () => act(() => api.ClearObjectRetention(bucket, key, ''), 'Retention cleared') }),
+      ),
+      el('div', { class: 'field', style: 'margin-top:14px', text: 'Legal hold' }),
+      el('div', { style: 'display:flex;gap:8px;align-items:center' },
+        el('span', { class: 'kv' }, el('div', { class: 'k', text: 'State' }), holdState),
+        el('button', { class: 'btn', text: 'On', onclick: () => act(() => api.SetObjectLegalHold(bucket, key, '', true), 'Legal hold ON') }),
+        el('button', { class: 'btn', text: 'Off', onclick: () => act(() => api.SetObjectLegalHold(bucket, key, '', false), 'Legal hold OFF') }),
+      ),
+      el('div', { class: 'field', style: 'margin-top:14px;color:var(--text-dim)', text: 'COMPLIANCE retention cannot be shortened or removed. GOVERNANCE can. Legal hold keeps every version until turned off.' }),
+    ),
+    buttons: [{ label: 'Close' }],
+  });
   draw();
 }
 

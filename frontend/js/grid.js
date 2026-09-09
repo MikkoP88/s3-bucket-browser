@@ -77,6 +77,20 @@ export class Grid {
     this.apply();
   }
 
+  // appendRows extends the model with rows that arrive already in display
+  // order (streaming listing, M5). Avoids re-sorting the whole array per
+  // page; call apply() once when the stream ends if the sort must change.
+  appendRows(rows) {
+    if (!rows.length) return;
+    this.all.push(...rows);
+    if (!this.filter && this.sortKey === 'name' && this.sortDir === 1) {
+      this.rows.push(...rows);
+      this.render();
+    } else {
+      this.apply(); // filter or non-default sort: full recompute
+    }
+  }
+
   setFilter(f) {
     this.filter = f;
     this.apply();
@@ -144,7 +158,7 @@ export class Grid {
     // recycle pool
     const need = Math.max(0, last - first + 1);
     while (this.pool.length < need) {
-      const row = el('div', { class: 'grid-row', draggable: 'true' });
+      const row = el('div', { class: 'grid-row', draggable: 'true', role: 'option' });
       const nameCell = el('div', { class: 'gc name' }, el('span', { class: 'icon' }), el('span', { class: 'tname' }));
       row.appendChild(nameCell);
       row.appendChild(el('div', { class: 'gc num size' }));
@@ -163,6 +177,7 @@ export class Grid {
       row._model = m;
       row.classList.toggle('sel', this.sel.has(m.key));
       row.classList.toggle('focus', m.key === this.focusKey);
+      row.setAttribute('aria-selected', this.sel.has(m.key) ? 'true' : 'false');
       row.dataset.cmp = m.cmp || '';
       const cells = row.children;
       cells[0].children[0].textContent = fileIcon(m.name, m.isDir);

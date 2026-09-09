@@ -181,6 +181,88 @@ case "$enc_out" in
 esac
 pass "tags/cors/policy/encryption manageable"
 
+step "deep search (M5)"
+# At this point the bucket holds exactly three current objects:
+# docs/ (marker), copy/readme-v2.md and vp.txt.
+n="$("$BIN" find "s3://$BUCKET" --name 'readme*' --json | grep -c '"key"')"
+[ "$n" = "1" ] || fail "find --name glob count = $n, want 1"
+n="$("$BIN" find "s3://$BUCKET" --name 'vp' --json | grep -c '"key"')"
+[ "$n" = "1" ] || fail "find --name substring count = $n, want 1"
+n="$("$BIN" find "s3://$BUCKET" --smaller 1B --json | grep -c '"key"')"
+[ "$n" = "1" ] || fail "find --smaller 1B count = $n, want 1 (the docs/ marker)"
+n="$("$BIN" find "s3://$BUCKET" --limit 1 --json | grep -c '"key"')"
+[ "$n" = "1" ] || fail "find --limit count = $n, want 1"
+find_out="$("$BIN" find "s3://$BUCKET" --name 'vp' 2>&1)"
+printf '%s\n' "$find_out" | grep -q '1 match(es) among 3 scanned' \
+  || fail "find summary: $find_out"
+pass "name/size/limit filters + summary correct"
+
+step "storage-class conversion (M5)"
+# REDUCED_REDUNDANCY is the one alternative class every S3-compatible
+# store understands; MinIO validates storage classes on copy.
+sc_out="$("$BIN" sc "s3://$BUCKET/copy/readme-v2.md" REDUCED_REDUNDANCY 2>&1 || true)"
+case "$sc_out" in
+  *"converted"*)
+    "$BIN" ls "s3://$BUCKET/copy/" --json | grep -q '"storageClass": "REDUCED_REDUNDANCY"' \
+      || fail "storage class not visible after conversion"
+    n="$("$BIN" find "s3://$BUCKET" --class REDUCED_REDUNDANCY --json | grep -c '"key"')"
+    [ "$n" = "1" ] || fail "find --class count = $n, want 1"
+    printf 'sc-a\n' > "$WORK/sc-a.txt"
+    printf 'sc-b\n' > "$WORK/sc-b.txt"
+    "$BIN" cp "$WORK/sc-a.txt" "s3://$BUCKET/sczone/a.txt" >/dev/null
+    "$BIN" cp "$WORK/sc-b.txt" "s3://$BUCKET/sczone/b.txt" >/dev/null
+    "$BIN" sc "s3://$BUCKET/sczone/" STANDARD -r --dry-run | grep -q 'would convert 2 object(s)' \
+      || fail "sc dry-run"
+    expect_fail "$BIN" sc "s3://$BUCKET/sczone/" STANDARD  # prefix needs -r
+    "$BIN" sc "s3://$BUCKET/sczone/" STANDARD -r | grep -q 'converted 2 object(s)' \
+      || fail "sc recursive"
+    pass "self-copy conversion, dry-run, gate, find --class"
+    ;;
+  *"not supported"*|*"Invalid storage class"*)
+    printf 'SKIP  storage-class conversion not supported by this MinIO\n' ;;
+  *)
+    fail "sc single object: $sc_out" ;;
+esac
+
+step "object lock (M5)"
+# Dedicated bucket: object lock is permanent and can only be enabled at
+# creation (mb --object-lock; versioning comes with it). GOVERNANCE only —
+# it can be cleared, so cleanup can actually delete the object again.
+LOCKED="s3b-e2e-lock-$RANDOM$RANDOM"
+"$BIN" mb "s3://$LOCKED" --object-lock >/dev/null
+lock_out="$("$BIN" bucket lock "s3://$LOCKED" --enable 2>&1 || true)"
+case "$lock_out" in
+  *"object lock enabled"*)
+    "$BIN" bucket lock "s3://$LOCKED" | grep -q 'object lock: enabled' || fail "lock config show"
+    printf 'locked\n' > "$WORK/locked.txt"
+    "$BIN" cp "$WORK/locked.txt" "s3://$LOCKED/important.txt" >/dev/null
+    "$BIN" lock retention "s3://$LOCKED/important.txt" --mode GOVERNANCE --until +1h \
+      | grep -q 'retention GOVERNANCE' || fail "retention set"
+    "$BIN" lock retention "s3://$LOCKED/important.txt" | grep -q 'GOVERNANCE' || fail "retention show"
+    # Note: with minioadmin root creds MinIO exempts us from governance/hold
+    # delete-blocking (root bypasses silently), so enforcement is not
+    # assertable here — set/show/clear state round-trips are.
+    "$BIN" lock retention "s3://$LOCKED/important.txt" --clear --bypass-governance \
+      | grep -q 'retention cleared' || fail "retention clear"
+    "$BIN" lock retention "s3://$LOCKED/important.txt" | grep -q 'no retention configured' \
+      || fail "retention show after clear"
+    "$BIN" lock legalhold "s3://$LOCKED/important.txt" --on | grep -q 'legal hold ON' \
+      || fail "legalhold on"
+    "$BIN" lock legalhold "s3://$LOCKED/important.txt" | grep -q 'legal hold: ON' \
+      || fail "legalhold show"
+    "$BIN" lock legalhold "s3://$LOCKED/important.txt" --off | grep -q 'legal hold OFF' \
+      || fail "legalhold off"
+    "$BIN" versions rm "s3://$LOCKED/important.txt" --all >/dev/null
+    "$BIN" rb "s3://$LOCKED" --force | grep -q 'removed bucket' || fail "rb lock bucket"
+    pass "retention + legal hold round-trips + cleanup OK"
+    ;;
+  *"not supported"*)
+    printf 'SKIP  object lock not supported by this MinIO\n'
+    "$BIN" rb "s3://$LOCKED" --force >/dev/null 2>&1 || true ;;
+  *)
+    fail "bucket lock enable: $lock_out" ;;
+esac
+
 step "bucket removal + cleanup"
 # Versioned bucket with markers: rb --force must purge version history too (M4).
 "$BIN" rb "s3://$BUCKET" --force | grep -q 'removed bucket' || fail "rb --force (versioned)"

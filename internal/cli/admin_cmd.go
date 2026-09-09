@@ -22,7 +22,7 @@ import (
 func bucketCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bucket",
-		Short: "Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags)",
+		Short: "Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags, lock)",
 	}
 	cmd.AddCommand(
 		bucketInfoCmd(),
@@ -34,7 +34,74 @@ func bucketCmd() *cobra.Command {
 		bucketPABCmd(),
 		bucketWebsiteCmd(),
 		bucketTagsCmd(),
+		bucketLockCmd(),
 	)
+	return cmd
+}
+
+// bucketLockCmd: `s3b bucket lock s3://b [--enable --mode M --days N]`.
+// Object lock is a one-way door on AWS: once enabled it cannot be undone.
+func bucketLockCmd() *cobra.Command {
+	var enable bool
+	var mode string
+	var days int32
+	cmd := &cobra.Command{
+		Use:   "lock s3://bucket [--enable] [--mode GOVERNANCE|COMPLIANCE] [--days N]",
+		Short: "Show (or enable) the object-lock configuration",
+		Long: "Without flags prints the object-lock configuration.\n" +
+			"Object lock can only be ENABLED at bucket creation (`s3b mb --object-lock`) — AWS/MinIO\n" +
+			"refuse enabling it on existing buckets; it is permanent and cannot be disabled later.\n" +
+			"--enable with --mode/--days sets/updates the default retention rule of a lock-enabled bucket.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := resolveClient(cmd.Context())
+			if err != nil {
+				return err
+			}
+			bucket, err := bucketArg(args[0])
+			if err != nil {
+				return err
+			}
+			if !enable {
+				cfg, err := adminops.GetLockConfig(cmd.Context(), c.S3, bucket)
+				if err != nil {
+					return opErr(err)
+				}
+				if flagJSON {
+					return printJSON(cfg)
+				}
+				state := "disabled"
+				if cfg.Enabled {
+					state = "enabled"
+				}
+				fmt.Printf("object lock: %s\n", state)
+				if cfg.Mode != "" || cfg.Days > 0 {
+					fmt.Printf("default retention: %s, %d day(s)\n", orDash(cfg.Mode), cfg.Days)
+				}
+				return nil
+			}
+			if mode != "" && mode != "GOVERNANCE" && mode != "COMPLIANCE" {
+				return usageErr("--mode must be GOVERNANCE or COMPLIANCE")
+			}
+			if days > 0 && mode == "" {
+				return usageErr("--days needs --mode GOVERNANCE or COMPLIANCE")
+			}
+			if err := adminops.PutLockConfig(cmd.Context(), c.S3, bucket, adminops.LockConfig{
+				Enabled: true, Mode: mode, Days: days,
+			}); err != nil {
+				return opErr(err)
+			}
+			if flagJSON {
+				return printJSON(map[string]any{"objectLock": "enabled", "mode": mode, "days": days})
+			}
+			col.ok.Printf("object lock enabled on s3://%s (permanent — cannot be disabled)\n", bucket)
+			return nil
+		},
+	}
+	f := cmd.Flags()
+	f.BoolVar(&enable, "enable", false, "enable object lock (irreversible)")
+	f.StringVar(&mode, "mode", "", "default retention mode (GOVERNANCE or COMPLIANCE)")
+	f.Int32Var(&days, "days", 0, "default retention days")
 	return cmd
 }
 

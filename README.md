@@ -2,7 +2,7 @@
 
 **A Windows-Explorer-style desktop app + CLI for managing Amazon S3 and S3-compatible storage — buckets, objects, versions, and everything in between.**
 
-> **Status: M4 — dual-pane transfers, bucket administration and versioning, in GUI and CLI.** Run `s3b` with no arguments for the desktop GUI (Wails/WebView2), or with arguments for the full CLI. Remaining roadmap: scale hardening, packaging and v1.0 polish (see the [roadmap](PLAN.md#12-milestones)).
+> **Status: M5 — hardening & packaging.** Deep search, storage-class conversion and object lock join the GUI and CLI; secrets live in the OS keyring; listings stream for huge buckets. Remaining roadmap: v1.0 launch polish (see the [roadmap](PLAN.md#12-milestones)).
 
 ## Quickstart (GUI)
 
@@ -10,6 +10,11 @@
 go build -o s3b ./cmd/s3b && ./s3b        # no arguments -> desktop app
 ```
 
+- **Deep search** (Ctrl+Shift+F): filter every object under a bucket/folder by name glob, size, age or storage class — results stream in and are cancelable; click a result to jump straight to the object.
+- **Storage class & object lock**: convert objects between classes (server-side self-copy) from the context menu; per-object retention (GOVERNANCE/COMPLIANCE) and legal hold, plus the bucket-level Lock tab — with the same confirm gates as the CLI.
+- **Streaming listing**: huge folders stream page-by-page into the grid (Go side holds one page at a time), so million-object buckets stay responsive.
+- **Favorites**: star buckets and folders for one-click jumps from the sidebar.
+- **Secrets in the OS keyring** (Windows Credential Manager / macOS Keychain / Linux SecretService), with automatic fallback to the `0600` config file on headless hosts.
 - **Explorer layout**: toolbar, back/forward/up history, breadcrumb, folder tree sidebar, sortable details grid, status bar.
 - **Dual-pane local browser** (F9): a full local-filesystem pane beside the S3 pane, WinSCP-style — cross-pane drag & drop uploads/downloads, synchronized browsing, and one-click **directory compare** (color-coded newer/older/size-diff/only-here).
 - **Open in external editor**: edit remote files in your editor of choice; s3b watches for saves and re-uploads automatically (✎ indicator in the status bar).
@@ -21,6 +26,7 @@ go build -o s3b ./cmd/s3b && ./s3b        # no arguments -> desktop app
 - **Safety ladder**: deletes count first and act second; large selections demand typed confirmation, bucket removal demands typing the bucket name; removing a versioned bucket with `--force` purges the whole version history, markers included.
 - **Profiles**: color-coded connections, `~/.aws/credentials` import, built-in connectivity test, connection doctor.
 - **Light/dark theme**, conflict policies (overwrite / skip / rename) on upload and download, pre-signed URLs, server-side copy/move, rename, new folder.
+- **i18n ready** (English + Finnish built in), accessibility pass on the grid and dialogs (ARIA roles, focus trap), portable mode (drop a `s3b-portable` marker file next to the binary to keep config beside it).
 
 Headless Linux servers can build a pure-Go CLI without GTK dependencies:
 
@@ -74,11 +80,31 @@ s3b bucket info s3://b                    # region, versioning, encryption, PAB
 s3b bucket versioning s3://b off
 s3b bucket policy put s3://b policy.json  # also: cors | lifecycle |
 s3b bucket tags put s3://b team=infra     #      encryption | pab | website
+
+# Deep search (M5): streams matches, cancelable
+s3b find s3://b --name 'backup*'          # glob over the full key
+s3b find s3://b/photos/ --larger 10MB --older 90d
+s3b find s3://b --class GLACIER --limit 100
+
+# Storage-class conversion (M5): server-side self-copy
+s3b sc s3://b/photos/a.jpg GLACIER        # single object
+s3b sc s3://b/photos/ GLACIER -r --dry-run  # whole prefix; >50 needs --force
+
+# Object lock (M5): enable at bucket creation — permanent from then on
+s3b mb s3://b --object-lock                   # the only moment lock can be enabled
+s3b bucket lock s3://b --enable --mode GOVERNANCE --days 30   # default retention rule
+s3b lock retention s3://b/report.pdf --mode GOVERNANCE --until +7d
+s3b lock retention s3://b/report.pdf --clear --bypass-governance
+s3b lock legalhold s3://b/report.pdf --on
 ```
 
-Every command takes `--json` for machine-readable output, `--profile` to pick a connection, and `--verbose` for per-item detail. Exit codes: `0` OK, `1` operation failure, `2` usage/config error, `3` unexpected.
+Every command takes `--json` for machine-readable output, `--profile` to pick a connection, and `--verbose` for per-item detail. Shell completions: `s3b completion bash|zsh|fish|powershell`. Exit codes: `0` OK, `1` operation failure, `2` usage/config error, `3` unexpected.
 
-**Safety ladder** (PLAN.md §9): destructive operations count first and act second. Prefix deletes over 50 objects require `--force`, removing non-empty buckets requires `--force`, and the GUI will additionally require typed confirmation.
+**Safety ladder** (PLAN.md §9): destructive operations count first and act second. Prefix deletes over 50 objects require `--force`, removing non-empty buckets requires `--force`, and the GUI will additionally require typed confirmation. Enabling object lock is permanent; COMPLIANCE retention cannot be shortened or removed.
+
+## Install
+
+Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), standalone zips/tarballs for Windows/Linux, and macOS dmg images — all checksummed in `SHA256SUMS`. Or build from source as shown above; releases stamp the version into `s3b version`.
 
 ## Why another S3 browser?
 

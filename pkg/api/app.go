@@ -37,15 +37,23 @@ type App struct {
 
 	editorsMu sync.Mutex
 	editors   map[string]*editSession // open-in-editor sessions (editor.go)
+
+	searchMu sync.Mutex
+	searches map[string]context.CancelFunc // running deep searches
+
+	streamMu sync.Mutex
+	streams  map[string]context.CancelFunc // running listing streams
 }
 
 // New creates the service. version is shown in the About dialog / status bar.
 func New(version string) *App {
 	return &App{
-		version: version,
-		clients: map[string]*s3client.Client{},
-		jobs:    newJobManager(),
-		editors: map[string]*editSession{},
+		version:  version,
+		clients:  map[string]*s3client.Client{},
+		jobs:     newJobManager(),
+		editors:  map[string]*editSession{},
+		searches: map[string]context.CancelFunc{},
+		streams:  map[string]context.CancelFunc{},
 	}
 }
 
@@ -55,9 +63,20 @@ func (a *App) Startup(ctx context.Context) {
 	a.jobs.setContext(ctx)
 }
 
-// Shutdown cancels any transfers still running when the window closes.
+// Shutdown cancels any transfers, searches or listing streams still
+// running when the window closes.
 func (a *App) Shutdown(ctx context.Context) {
 	a.jobs.cancelAll()
+	a.searchMu.Lock()
+	for _, cancel := range a.searches {
+		cancel()
+	}
+	a.searchMu.Unlock()
+	a.streamMu.Lock()
+	for _, cancel := range a.streams {
+		cancel()
+	}
+	a.streamMu.Unlock()
 }
 
 // GetVersion returns the application version string.

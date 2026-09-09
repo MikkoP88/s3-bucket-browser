@@ -1,5 +1,5 @@
 // Lazy sidebar tree: bucket roots expand into folder levels on demand.
-import { api } from './api.js';
+import { api, onEvent } from './api.js';
 import { el } from './util.js';
 
 export class Tree {
@@ -42,8 +42,7 @@ export class Tree {
     n.expanded = true;
     if (!n.loaded) {
       try {
-        const entries = await api.ListObjects(n.bucket, n.prefix);
-        const dirs = entries.filter((e) => e.isDir);
+        const dirs = await this.listDirs(n.bucket, n.prefix);
         for (const d of dirs) {
           const cid = this.nodeKey(n.bucket, d.key);
           const prev = this.nodes.get(cid);
@@ -64,6 +63,31 @@ export class Tree {
       }
     }
     this.render();
+  }
+
+  // listDirs streams one directory view and keeps only the folders. The
+  // streaming API keeps Go-side memory at one page even for
+  // million-object buckets (M5 performance pass, PLAN.md §13).
+  listDirs(bucket, prefix) {
+    return new Promise((resolve, reject) => {
+      const dirs = [];
+      let settled = false;
+      let offPage = null;
+      const finish = (fn, val) => {
+        if (settled) return;
+        settled = true;
+        offPage?.();
+        fn(val);
+      };
+      api.ListObjectsStream(bucket, prefix).then((token) => {
+        offPage = onEvent('list:page', (p) => {
+          if (p.token !== token) return;
+          if (p.error) { finish(reject, new Error(p.error)); return; }
+          for (const e of p.entries || []) if (e.isDir) dirs.push(e);
+          if (p.done) finish(resolve, dirs);
+        });
+      }).catch((e) => finish(reject, e));
+    });
   }
 
   collapse(id) {

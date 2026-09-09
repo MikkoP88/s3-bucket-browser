@@ -42,55 +42,85 @@ func ListBuckets(ctx context.Context, client s3.ListBucketsAPIClient) ([]s3types
 	return out, nil
 }
 
-// List returns one "directory view" of a prefix: sub-folders (common
-// prefixes) plus the objects directly inside it. With Recursive set, it
-// streams every object under the prefix instead (folders are synthesized
-// only where the walk encounters them — callers that need a flat stream
-// should use Walk).
-func List(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, prefix string, opts Options) ([]Entry, error) {
-	var entries []Entry
-	seenDirs := map[string]bool{}
-
-	input := &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)}
+// WalkDir streams one "directory view" of a prefix through fn: sub-folders
+// (common prefixes, folder markers) and objects as the paginator yields
+// them. Returning an error from fn stops the walk. Unlike List it never
+// accumulates entries, so million-object folders cost O(page) memory on
+// the Go side (PLAN.md §13).
+func WalkDir(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, prefix string, opts Options, fn func(Entry) error) error {
+	input := &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket), Prefix: aws.String(prefix), Delimiter: aws.String("/"),
+	}
 	if opts.MaxKeys > 0 {
 		input.MaxKeys = aws.Int32(opts.MaxKeys)
 	}
-	if !opts.Recursive {
-		input.Delimiter = aws.String("/")
-	}
-
 	paginator := s3.NewListObjectsV2Paginator(client, input)
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, cp := range page.CommonPrefixes {
 			key := aws.ToString(cp.Prefix)
 			if key == prefix {
 				continue
 			}
-			if !seenDirs[key] {
-				seenDirs[key] = true
-				entries = append(entries, DirEntry(key, prefix))
+			if err := fn(DirEntry(key, prefix)); err != nil {
+				return err
 			}
 		}
 		for _, obj := range page.Contents {
 			key := aws.ToString(obj.Key)
-			// S3 folder markers ("dir/") appear as zero-byte objects; show
-			// them as folders in directory mode, skip in recursive mode.
+			// Zero-byte "dir/" markers appear as objects; show as folders.
 			if strings.HasSuffix(key, "/") && key != prefix {
-				if !seenDirs[key] {
-					seenDirs[key] = true
-					entries = append(entries, DirEntry(key, prefix))
+				if err := fn(DirEntry(key, prefix)); err != nil {
+					return err
 				}
 				continue
 			}
 			if key == prefix {
 				continue // the prefix marker itself
 			}
-			entries = append(entries, FromObject(obj, prefix))
+			if err := fn(FromObject(obj, prefix)); err != nil {
+				return err
+			}
 		}
+	}
+	return nil
+}
+
+// List returns one "directory view" of a prefix: sub-folders (common
+// prefixes) plus the objects directly inside it. With Recursive set, it
+// streams every object under the prefix instead (folders are synthesized
+// only where the walk encounters them — callers that need a flat stream
+// should use Walk).
+func List(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, prefix string, opts Options) ([]Entry, error) {
+	if opts.Recursive {
+		var entries []Entry
+		err := Walk(ctx, client, bucket, prefix, func(o s3types.Object) error {
+			key := aws.ToString(o.Key)
+			if key == prefix || strings.HasSuffix(key, "/") {
+				return nil
+			}
+			entries = append(entries, FromObject(o, prefix))
+			return nil
+		})
+		return entries, err
+	}
+	var entries []Entry
+	seenDirs := map[string]bool{}
+	err := WalkDir(ctx, client, bucket, prefix, opts, func(e Entry) error {
+		if e.IsDir {
+			if seenDirs[e.Key] {
+				return nil
+			}
+			seenDirs[e.Key] = true
+		}
+		entries = append(entries, e)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	SortEntries(entries)
 	return entries, nil

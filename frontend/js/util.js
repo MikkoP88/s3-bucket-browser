@@ -44,6 +44,35 @@ export function debounce(fn, ms) {
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
+// parseSizeStr turns "500", "10KB", "1.5MB" into bytes; null when empty.
+// Throws on malformed input (caller shows the message).
+export function parseSizeStr(s) {
+  s = String(s || '').trim();
+  if (!s) return null;
+  const m = s.toUpperCase().match(/^([\d.]+)\s*(B|KB|MB|GB|TB)?$/);
+  if (!m || isNaN(parseFloat(m[1]))) throw new Error(`invalid size "${s}" (use e.g. 10MB)`);
+  const mult = { undefined: 1, B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 }[m[2]];
+  return Math.round(parseFloat(m[1]) * mult);
+}
+
+// parseDurStr turns "30d", "24h", "90m", "10s" into seconds; null when
+// empty. A unit is required (mirrors the CLI). Throws on bad input.
+export function parseDurStr(s) {
+  s = String(s || '').trim();
+  if (!s) return null;
+  const m = s.toLowerCase().match(/^(\d+)\s*(s|m|h|d)$/);
+  if (!m) throw new Error(`invalid duration "${s}" (use e.g. 30d, 24h)`);
+  const mult = { s: 1, m: 60, h: 3600, d: 86400 }[m[2]];
+  return parseInt(m[1], 10) * mult;
+}
+
+// parentPrefix returns the folder prefix containing a key ("a/b/c.txt" ->
+// "a/b/"; "x.txt" -> "").
+export function parentPrefix(key) {
+  const i = key.lastIndexOf('/');
+  return i >= 0 ? key.slice(0, i + 1) : '';
+}
+
 export function basename(key) {
   const k = key.replace(/\/+$/, '');
   const i = k.lastIndexOf('/');

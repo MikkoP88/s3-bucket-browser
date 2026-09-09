@@ -29,6 +29,8 @@ type AdminPanel struct {
 	WebsiteErr    string                   `json:"websiteErr,omitempty"`
 	Tags          []adminops.Tag           `json:"tags,omitempty"`
 	TagsErr       string                   `json:"tagsErr,omitempty"`
+	Lock          *adminops.LockConfig     `json:"lock,omitempty"`
+	LockErr       string                   `json:"lockErr,omitempty"`
 
 	// PublicWarning is non-empty when the configuration allows public
 	// access (policy analyzer + public-access-block cross-check).
@@ -92,6 +94,11 @@ func (a *App) GetBucketAdmin(bucket string) (AdminPanel, error) {
 		p.Tags = tags
 	} else {
 		p.TagsErr = err.Error()
+	}
+	if lock, err := adminops.GetLockConfig(ctx, c.S3, bucket); err == nil {
+		p.Lock = &lock
+	} else {
+		p.LockErr = err.Error()
 	}
 
 	// Public-access banner: public policy/ACL without the block settings.

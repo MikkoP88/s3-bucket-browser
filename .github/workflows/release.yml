@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # amd64 ships the full GUI: needs the webkit/GTK headers (same as CI).
+      - name: Install GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Build linux-amd64 (GUI) tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/pkg
+          go build -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b ./cmd/s3b
+          cp LICENSE README.md dist/pkg/
+          tar -C dist/pkg -czf "dist/s3b-${VERSION}-linux-amd64.tar.gz" s3b LICENSE README.md
+        env:
+          GOOS: linux
+          GOARCH: amd64
+
+      # arm64 ships as the headless CLI (-tags s3b_headless), like CI.
+      - name: Build linux-arm64 (headless CLI) tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/pkg-arm
+          go build -ldflags "-s -w -X main.version=${VERSION}" -tags s3b_headless -o dist/pkg-arm/s3b ./cmd/s3b
+          cp LICENSE README.md dist/pkg-arm/
+          tar -C dist/pkg-arm -czf "dist/s3b-${VERSION}-linux-arm64-cli.tar.gz" s3b LICENSE README.md
+        env:
+          GOOS: linux
+          GOARCH: arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/*.tar.gz
+
+  windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Build windows-amd64
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/pkg dist/pkg-arm
+          go build -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
+          cp LICENSE README.md dist/pkg/
+          (cd dist/pkg && zip -q "../s3b-${VERSION}-windows-amd64.zip" *)
+          cp dist/pkg/s3b.exe dist/  # staging for the NSIS installer
+        env:
+          GOOS: windows
+          GOARCH: amd64
+
+      - name: Build windows-arm64 zip
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          go build -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
+          cp LICENSE README.md dist/pkg-arm/
+          (cd dist/pkg-arm && zip -q "../s3b-${VERSION}-windows-arm64.zip" *)
+        env:
+          GOOS: windows
+          GOARCH: arm64
+
+      - name: Build NSIS installer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nsis
+          makensis -DVERSION="${GITHUB_REF_NAME#v}" scripts/installer/s3b.nsi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            dist/*.zip
+            dist/s3b-setup-*.exe
+
+  darwin:
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # The frontend is embedded (plain go build, no wails toolchain needed);
+      # we hand-roll a minimal .app bundle and wrap it in a dmg.
+      - name: Build app bundle and dmg
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP="dist/S3 Bucket Browser.app"
+          mkdir -p "$APP/Contents/MacOS"
+          go build -ldflags "-s -w -X main.version=${VERSION}" -o "$APP/Contents/MacOS/s3b" ./cmd/s3b
+          sed "s/__VERSION__/${VERSION}/g" scripts/installer/Info.plist > "$APP/Contents/Info.plist"
+          hdiutil create -volname "S3 Bucket Browser" -srcfolder "$APP" -ov -format UDZO "dist/s3b-${VERSION}-darwin-${{ matrix.goarch }}.dmg"
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-${{ matrix.goarch }}
+          path: dist/*.dmg
+
+  release:
+    needs: [linux, windows, darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" dist/* --title "s3b $TAG" --generate-notes

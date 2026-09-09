@@ -130,6 +130,20 @@ body {
 }
 .tree { flex: 1; overflow: auto; padding: 2px 0 20px; }
 
+/* Favorites section (M5): pinned buckets above the tree */
+.fav-section { border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.fav-head {
+  padding: 6px 10px 2px; font-weight: 600; font-size: 12px;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em;
+}
+.fav-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 8px; cursor: pointer; white-space: nowrap; color: var(--text);
+}
+.fav-row:hover { background: var(--hover); }
+.fav-star { color: #e8a812; flex: none; font-size: 11px; }
+.fav-label { overflow: hidden; text-overflow: ellipsis; }
+
 .tnode {
   display: flex; align-items: center; gap: 4px;
   padding: 3px 8px; cursor: pointer; white-space: nowrap;

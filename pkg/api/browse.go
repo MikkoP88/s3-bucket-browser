@@ -181,7 +181,7 @@ func (a *App) CreateBucket(name, region string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	if err := bucketops.Create(ctx, c.S3, name, firstNonEmpty(region, c.Region)); err != nil {
+	if err := bucketops.Create(ctx, c.S3, name, firstNonEmpty(region, c.Region), false); err != nil {
 		return err
 	}
 	a.emit(EventS3Changed, map[string]string{"bucket": name})

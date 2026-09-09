@@ -16,12 +16,17 @@ import (
 )
 
 // Create makes a bucket. An empty region means the client default.
-func Create(ctx context.Context, client *s3.Client, bucket, region string) error {
+// objectLock must be set at creation (AWS/MinIO refuse enabling it on an
+// existing bucket; versioning comes with it automatically).
+func Create(ctx context.Context, client *s3.Client, bucket, region string, objectLock bool) error {
 	input := &s3.CreateBucketInput{Bucket: aws.String(bucket)}
 	if region != "" && region != "us-east-1" {
 		input.CreateBucketConfiguration = &s3types.CreateBucketConfiguration{
 			LocationConstraint: s3types.BucketLocationConstraint(region),
 		}
+	}
+	if objectLock {
+		input.ObjectLockEnabledForBucket = aws.Bool(true)
 	}
 	_, err := client.CreateBucket(ctx, input)
 	return err

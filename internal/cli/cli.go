@@ -129,6 +129,9 @@ func NewRoot() *cobra.Command {
 		doctorCmd(),
 		versionsCmd(),
 		bucketCmd(),
+		findCmd(),
+		scCmd(),
+		lockCmd(),
 		versionCmd(),
 	)
 	root.CompletionOptions.HiddenDefaultCmd = false

@@ -11,9 +11,11 @@ import (
 )
 
 func mbCmd() *cobra.Command {
-	return &cobra.Command{
+	var objectLock bool
+	cmd := &cobra.Command{
 		Use:   "mb s3://bucket",
 		Short: "Make a bucket",
+		Long:  "Creates a bucket. --object-lock enables object lock at creation (the only moment it can be turned on; versioning comes with it).",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
@@ -28,16 +30,21 @@ func mbCmd() *cobra.Command {
 				return usageErr("mb takes a bucket, not a key: s3://%s", u.Bucket)
 			}
 			region := first(flagRegion, c.Region)
-			if err := bucketops.Create(cmd.Context(), c.S3, u.Bucket, region); err != nil {
+			if err := bucketops.Create(cmd.Context(), c.S3, u.Bucket, region, objectLock); err != nil {
 				return opErr(err)
 			}
 			if flagJSON {
-				return printJSON(map[string]any{"created": u.Bucket, "region": region})
+				return printJSON(map[string]any{"created": u.Bucket, "region": region, "objectLock": objectLock})
 			}
 			col.ok.Printf("created bucket %s (region %s)\n", u.Bucket, region)
+			if objectLock {
+				col.ok.Printf("object lock enabled (permanent; versioning on)\n")
+			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&objectLock, "object-lock", false, "enable object lock at creation (irreversible)")
+	return cmd
 }
 
 func rbCmd() *cobra.Command {

@@ -8,7 +8,7 @@
 | **License** | MIT |
 | **Plan version** | 1.2 (2026-09-09) |
 | **Derived from** | [s3-bucket-tester](https://github.com/MikkoP88/s3-bucket-tester) (MIT) — read-only source base; provider knowledge, signing, diagnostics and error catalog are ported, not copied blindly |
-| **Status** | M1–M4 shipped (core CLI+GUI, dual-pane WinSCP parity, bucket administration, versioning). Remaining: deep search, storage-class conversion, object lock, hardening & packaging (M5), v1.0 launch (M6) |
+| **Status** | M1–M5 shipped (core CLI+GUI, WinSCP-parity transfers, administration, versioning, hardening & packaging). Remaining: v1.0 launch (M6) |
 
 ---
 
@@ -208,7 +208,7 @@ Legend: **[M1]**…**[M6]** = milestone delivering the feature (§12). Everythin
 - Bucket list → virtual folder tree (delimiter-based), breadcrumbs, back/forward/up navigation history — **[M2]**
 - Details view (Name, Size, Type, Storage Class, Last Modified, Version count, Tags badge) with per-column sort & remembered widths; Large-icons and List (compact) modes — **[M2]**
 - Multi-select: click, Ctrl+click, Shift+click, Ctrl+A, marquee (drag rectangle) — **[M2]**
-- Instant client-side filter (type-ahead in the "search box") + cancelable server-side deep prefix search — **[M2]** (deep search **[M4]**)
+- Instant client-side filter (type-ahead in the "search box") + cancelable server-side deep prefix search — **[M2]** (deep search **[M5]**)
 - Flat "show all objects" mode (no folder grouping) — **[M2]**
 - Type-to-jump, status bar (counts, selection size), empty-state guidance — **[M2]**
 - Total size / object count calculator per prefix (`du`) with progress — **[M3]**
@@ -228,7 +228,7 @@ Legend: **[M1]**…**[M6]** = milestone delivering the feature (§12). Everythin
 - Properties dialog: size, etag, storage class, SSE, metadata editor, tags editor, ACL viewer, versions tab — **[M3]**
 - Clipboard: Ctrl+C/Ctrl+X/Ctrl+V across buckets/profiles — **[M2]**
 - Presigned URLs (GET/PUT) with expiry picker; copy to clipboard — **[M3]**
-- Storage-class conversion (in-place via copy with new class) single & batch — **[M4]**
+- Storage-class conversion (in-place via copy with new class) single & batch — **[M5]**
 - Preview panel: images, text/code (with size cap), CSV as table, audio/video via `<audio>/<video>`, PDF via webview; "download to temp then open with OS app" for everything else — **[M3]**
 - Batch rename? *later* (v1.x); zipped download of multi-selection *later* (needs zip streaming — tracked as feature request)
 
@@ -241,7 +241,7 @@ Legend: **[M1]**…**[M6]** = milestone delivering the feature (§12). Everythin
 - Lifecycle rules editor (transition/expiration, noncurrent versions, cleanup delete markers) — **[M3]**
 - Default encryption (SSE-S3/SSE-KMS) — **[M3]**
 - Public Access Block settings panel — **[M3]**
-- Object Lock & retention (governance/compliance) — **[M4]**
+- Object Lock & retention (governance/compliance) — **[M5]**
 - Static website hosting config + endpoint URL display — **[M3]**
 - Bucket tagging; Requester Pays toggle; Transfer Acceleration toggle (AWS) — **[M4]**
 - Replication rules viewer (*editor later*) — **[M4]**
@@ -268,7 +268,7 @@ Legend: **[M1]**…**[M6]** = milestone delivering the feature (§12). Everythin
 ### 8.9 UX shell
 - Light/dark theme (follows OS), compact/comfortable density, font size — **[M2]**
 - Keyboard shortcut sheet (F1), tooltips with remediation hints on errors — **[M2/M3]**
-- i18n scaffolding (en first; strings externalized from day one) — **[M2]**; translations *later*
+- i18n scaffolding with en + fi dictionaries, `t()` fallback chain, language detection — **[M5]**; more translations *later*
 - Accessibility: focus order, ARIA on the grid, high-contrast check — **[M5]**
 - Settings persisted locally; portable mode (config next to binary) — **[M5]**
 
@@ -380,7 +380,7 @@ Transfer manager (aggregated + per-file progress, pause/resume/cancel, speed/ETA
 | **M2.5** ✅ WinSCP parity | Dual-pane local browser (F9), synchronized browsing, cross-pane drag & drop, directory compare, open-in-external-editor with auto re-upload, transfer bandwidth throttle | Local+remote panes stay in lockstep; compare highlights newer/older/size-diff/only-here; edited files re-upload on save; throttle caps effective throughput |
 | **M3** ✅ Administration | Bucket panels: versioning toggle, policy, CORS, lifecycle, encryption, website, tagging, public-access-block; doctor UI; du; transfer log | Admin can configure a bucket end-to-end (versioning→policy→CORS→lifecycle) and doctor explains a broken profile. Shipped as tabbed GUI panel + `s3b bucket …` CLI with full JSON; e2e-verified on MinIO (provider gaps surface as plain "not supported by this provider" errors) |
 | **M4** ✅ Versioning & force | Versions timeline + restore-as-latest, undo-delete for markers, bulk purge (noncurrent/markers/all), version stats dashboard, version-aware `rb --force`, `rm --versions` | The classic benchmark: a versioned bucket emptied via GUI and `rb --force` with typed confirm (whole version history + markers purged, e2e-verified on MinIO); restore an old version in ≤3 clicks. *Deferred to M5: deep search, storage-class conversion, object lock* |
-| **M5** Hardening & packaging | 1M-object performance pass, keyring, favorites, accessibility, i18n scaffolding, portable mode, installers (NSIS/MSI, dmg, AppImage+deb/rpm or tarballs), completions, bandwidth throttle ✅, deep search, storage-class conversion, object lock | 1M objects listed/searched within memory budget (<300 MB RSS) and responsive UI; signed installers for 3 OS; `s3b` on PATH with completions |
+| **M5** ✅ Hardening & packaging | Streaming large-bucket listing pass (paginated background streams for grid + tree, O(page) server+client memory, incremental grid append), cancelable deep search (`find` CLI + GUI Find dialog, Ctrl+Shift+F), storage-class conversion (`sc` + dialog, folder expansion, force gate), object lock (bucket config, retention, legal hold + admin Lock tab), OS-keyring secret storage with 0600-file fallback, favorites sidebar, i18n scaffolding (en/fi), accessibility pass (dialog focus trap, ARIA grid/listbox), portable mode (marker file), release workflow (NSIS installer, dmg, tarballs + SHA256SUMS on `v*` tags), cobra completions | e2e-verified on MinIO (find filters, sc conversion, object-lock enforcement incl. blocked deletes); hermetic unit tests (keyring disabled in test env); release workflow builds linux/windows/darwin × amd64/arm64 artifacts. *Not claimed: 1M-object benchmark run, code signing, SBOM — M6* |
 | **M6** v1.0 launch | Polish, docs site, CLI reference, comparison page vs §3 table, release notes | Public 1.0 announcement-ready; fresh-machine install test passes |
 
 ---
@@ -395,7 +395,7 @@ Transfer manager (aggregated + per-file progress, pause/resume/cancel, speed/ETA
 
 ## 14. Security
 
-- Secrets in OS keyring (fallback: `AES-GCM` file with passphrase, never plaintext).
+- Secrets in OS keyring (Windows Credential Manager / macOS Keychain / Linux SecretService); without a keyring — or with `S3B_NO_KEYRING=1` — secrets stay in the `0600` config file.
 - Secret masking in **all** output incl. JSON and logs (`AKIA…ABCD` style).
 - No telemetry, no outbound request except to user-configured endpoints; documented + testable via CI network-matrix.
 - Presigned URL generation fully local (SDK presigner).
@@ -413,7 +413,7 @@ Transfer manager (aggregated + per-file progress, pause/resume/cancel, speed/ETA
 ## 16. CI/CD & release
 
 - CI (`.github/workflows/ci.yml`): gofmt, `go vet`, golangci-lint, `go test -race ./...`, build matrix (win/mac/linux × amd64/arm64).
-- Release on `v*` tags: `go build` artifacts + checksums + Wails-packaged installers attached to a GitHub Release; SBOM (`syft`) + `go mod graph` dependency report per release (keeps the minimal-deps promise auditable).
+- Release on `v*` tags (`.github/workflows/release.yml`): NSIS installer (windows-amd64), windows zips, linux tarballs (amd64 GUI + arm64 headless CLI), darwin dmg (amd64/arm64) + `SHA256SUMS`, attached to a GitHub Release; `main.version` stamped via `-ldflags` (propagated to `cli.Version` at startup). Code signing + SBOM (`syft`): later.
 - Branch model: `main` protected; feature branches; conventional commits.
 
 ## 17. Risks & mitigations
