@@ -6,9 +6,9 @@
 | **Repo** | https://github.com/MikkoP88/s3-bucket-browser |
 | **Binary name** | `s3b` (GUI + CLI in one binary) |
 | **License** | MIT |
-| **Plan version** | 1.0 (2026-09-09) |
+| **Plan version** | 1.2 (2026-09-09) |
 | **Derived from** | [s3-bucket-tester](https://github.com/MikkoP88/s3-bucket-tester) (MIT) — read-only source base; provider knowledge, signing, diagnostics and error catalog are ported, not copied blindly |
-| **Status** | M0 — planning complete, implementation starting |
+| **Status** | M1–M4 shipped (core CLI+GUI, dual-pane WinSCP parity, bucket administration, versioning). Remaining: deep search, storage-class conversion, object lock, hardening & packaging (M5), v1.0 launch (M6) |
 
 ---
 
@@ -374,13 +374,14 @@ Transfer manager (aggregated + per-file progress, pause/resume/cancel, speed/ETA
 
 | M | Scope (from §8) | Acceptance criteria |
 |---|---|---|
-| **M0** *(this commit)* | Plan, skeleton, CI, docs structure | Repo exists, CI green, `go build ./...` passes |
-| **M1 Core headless** | `pkg/core` foundations: profile, s3client, listing, transfer, sign port, errhelp port, doctor port; CLI: profile, ls, tree, du, stat, mb, rb, cp, rm, presign, doctor | E2E against MinIO in CI: create profile, make bucket, upload 1k files, list, sync-dry-run, delete; JSON stable; exit codes honored |
-| **M2 GUI foundations** | Wails shell, Explorer layout, selection model, navigation, upload/download + drag&drop, transfer manager, clipboard ops, themes | Beginner flow test: drag a folder into window → uploads with progress; navigate with keyboard only; 100k-object bucket browses at 60 fps scroll |
-| **M3 Administration** | Bucket panels: versioning toggle, policy+analyzer, ACL, CORS, lifecycle, encryption, website, tagging, public-access-block; doctor UI; du; transfer log | Admin can configure a bucket end-to-end (versioning→policy→CORS→lifecycle) and doctor explains a broken profile |
-| **M4 Versioning & force** | Versions tab, restore-as-latest, purge tools, version dashboard, sync engine + GUI, deep search, storage-class conversion, object lock | The classic benchmark: versioned bucket with 10k versions emptied via GUI and `rb --force` with typed confirm + audit log; restore an old version in <3 clicks |
-| **M5 Hardening & packaging** | 1M-object performance pass, keyring, favorites, accessibility, i18n scaffolding, portable mode, installers (NSIS/MSI, dmg, AppImage+deb/rpm or tarballs), completions, bandwidth throttle | 1M objects listed/searched within memory budget (<300 MB RSS) and responsive UI; signed installers for 3 OS; `s3b` on PATH with completions |
-| **M6 v1.0 launch** | Polish, docs site, CLI reference, comparison page vs §3 table, release notes | Public 1.0 announcement-ready; fresh-machine install test passes |
+| **M0** ✅ | Plan, skeleton, CI, docs structure | Repo exists, CI green, `go build ./...` passes |
+| **M1** ✅ Core headless | `pkg/core` foundations: profile, s3client, listing, transfer, sign port, errhelp port, doctor port; CLI: profile, ls, tree, du, stat, mb, rb, cp, rm, presign, doctor | E2E against MinIO in CI: create profile, make bucket, upload 1k files, list, sync-dry-run, delete; JSON stable; exit codes honored |
+| **M2** ✅ GUI foundations | Wails shell, Explorer layout, selection model, navigation, upload/download + drag&drop, transfer manager, clipboard ops, themes | Beginner flow test: drag a folder into window → uploads with progress; navigate with keyboard only; 100k-object bucket browses at 60 fps scroll |
+| **M2.5** ✅ WinSCP parity | Dual-pane local browser (F9), synchronized browsing, cross-pane drag & drop, directory compare, open-in-external-editor with auto re-upload, transfer bandwidth throttle | Local+remote panes stay in lockstep; compare highlights newer/older/size-diff/only-here; edited files re-upload on save; throttle caps effective throughput |
+| **M3** ✅ Administration | Bucket panels: versioning toggle, policy, CORS, lifecycle, encryption, website, tagging, public-access-block; doctor UI; du; transfer log | Admin can configure a bucket end-to-end (versioning→policy→CORS→lifecycle) and doctor explains a broken profile. Shipped as tabbed GUI panel + `s3b bucket …` CLI with full JSON; e2e-verified on MinIO (provider gaps surface as plain "not supported by this provider" errors) |
+| **M4** ✅ Versioning & force | Versions timeline + restore-as-latest, undo-delete for markers, bulk purge (noncurrent/markers/all), version stats dashboard, version-aware `rb --force`, `rm --versions` | The classic benchmark: a versioned bucket emptied via GUI and `rb --force` with typed confirm (whole version history + markers purged, e2e-verified on MinIO); restore an old version in ≤3 clicks. *Deferred to M5: deep search, storage-class conversion, object lock* |
+| **M5** Hardening & packaging | 1M-object performance pass, keyring, favorites, accessibility, i18n scaffolding, portable mode, installers (NSIS/MSI, dmg, AppImage+deb/rpm or tarballs), completions, bandwidth throttle ✅, deep search, storage-class conversion, object lock | 1M objects listed/searched within memory budget (<300 MB RSS) and responsive UI; signed installers for 3 OS; `s3b` on PATH with completions |
+| **M6** v1.0 launch | Polish, docs site, CLI reference, comparison page vs §3 table, release notes | Public 1.0 announcement-ready; fresh-machine install test passes |
 
 ---
 

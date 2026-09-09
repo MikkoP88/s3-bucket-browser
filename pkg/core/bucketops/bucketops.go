@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -61,8 +62,29 @@ func EmptyBucket(ctx context.Context, client *s3.Client, bucket string, force bo
 }
 
 // DeleteBucket removes a bucket. S3 requires it to be empty; with force set,
-// it is emptied first (L2). Returns the deletion stats for reporting.
+// it is emptied first (L2). Versioned (or once-versioned) buckets are special:
+// noncurrent versions and delete markers survive a plain empty, so force
+// purges the whole version history too (M4). Returns the deletion stats.
 func DeleteBucket(ctx context.Context, client *s3.Client, bucket string, force bool) (transfer.DeleteResult, error) {
+	var res transfer.DeleteResult
+	// A versioned bucket keeps versions + markers that a plain object listing
+	// misses; walk versions instead in that case ("" = never configured).
+	if vs, verr := versioning.Status(ctx, client, bucket); verr == nil && vs != "" {
+		st, serr := versioning.CollectStats(ctx, client, bucket, "")
+		if serr == nil && st.Versions+st.DeleteMarkers > 0 {
+			if !force {
+				return res, fmt.Errorf(
+					"bucket %s holds %d current object(s) and %d noncurrent version(s)/delete marker(s): empty it first or pass --force",
+					bucket, st.CurrentObjects, st.Versions+st.DeleteMarkers-st.CurrentObjects)
+			}
+			res, err := versioning.EmptyBucketVersions(ctx, client, bucket)
+			if err != nil {
+				return res, err
+			}
+			_, err = client.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
+			return res, err
+		}
+	}
 	count, err := CountObjects(ctx, client, bucket)
 	if err != nil {
 		// Distinguish "not empty vs not readable": if we cannot list, let the
@@ -70,7 +92,6 @@ func DeleteBucket(ctx context.Context, client *s3.Client, bucket string, force b
 		_, derr := client.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
 		return transfer.DeleteResult{}, derr
 	}
-	var res transfer.DeleteResult
 	if count > 0 {
 		if !force {
 			return res, fmt.Errorf(

@@ -2,7 +2,7 @@
 
 **A Windows-Explorer-style desktop app + CLI for managing Amazon S3 and S3-compatible storage — buckets, objects, versions, and everything in between.**
 
-> **Status: M2 — GUI + CLI in one binary.** Run `s3b` with no arguments for the desktop GUI (Wails/WebView2), or with arguments for the full CLI. Admin panels (M3) and versioning management (M4) follow per the [roadmap](PLAN.md#12-milestones).
+> **Status: M4 — dual-pane transfers, bucket administration and versioning, in GUI and CLI.** Run `s3b` with no arguments for the desktop GUI (Wails/WebView2), or with arguments for the full CLI. Remaining roadmap: scale hardening, packaging and v1.0 polish (see the [roadmap](PLAN.md#12-milestones)).
 
 ## Quickstart (GUI)
 
@@ -11,10 +11,14 @@ go build -o s3b ./cmd/s3b && ./s3b        # no arguments -> desktop app
 ```
 
 - **Explorer layout**: toolbar, back/forward/up history, breadcrumb, folder tree sidebar, sortable details grid, status bar.
+- **Dual-pane local browser** (F9): a full local-filesystem pane beside the S3 pane, WinSCP-style — cross-pane drag & drop uploads/downloads, synchronized browsing, and one-click **directory compare** (color-coded newer/older/size-diff/only-here).
+- **Open in external editor**: edit remote files in your editor of choice; s3b watches for saves and re-uploads automatically (✎ indicator in the status bar).
+- **Versions**: per-object timeline ("Previous Versions"), restore-as-latest, one-click **undo delete** for delete markers, permanent destroy and bulk purge of noncurrent versions — in the GUI dialog and via Shift+Del.
+- **Bucket administration**: versioning toggle, bucket policy, CORS, lifecycle rules, default encryption, public-access block, static website and tags — all in one tabbed admin panel (also `s3b bucket …` on the CLI).
 - **Multi-select everything**: click / Ctrl+click / Shift+click / Ctrl+A, marquee drag-select, type-to-jump, full keyboard map (F1 in-app).
 - **Drag & drop**: drop files or folders from the OS onto the window to upload into the open folder; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket).
-- **Transfer manager**: per-file and byte-level progress, speed, cancel — powered by multipart upload/download.
-- **Safety ladder**: deletes count first and act second; large selections demand typed confirmation, bucket removal demands typing the bucket name.
+- **Transfer manager**: per-file and byte-level progress, speed, cancel — powered by multipart upload/download, with an optional **bandwidth throttle** (512 kB/s … 10 MB/s).
+- **Safety ladder**: deletes count first and act second; large selections demand typed confirmation, bucket removal demands typing the bucket name; removing a versioned bucket with `--force` purges the whole version history, markers included.
 - **Profiles**: color-coded connections, `~/.aws/credentials` import, built-in connectivity test, connection doctor.
 - **Light/dark theme**, conflict policies (overwrite / skip / rename) on upload and download, pre-signed URLs, server-side copy/move, rename, new folder.
 
@@ -52,7 +56,24 @@ s3b presign s3://b/docs/report.pdf --expires 1h
 s3b rm s3://b/tmp/file.txt                # single object
 s3b rm -r --dry-run s3://b/tmp/           # preview a prefix delete
 s3b rm -r --force s3://b/tmp/             # >50 objects requires --force
-s3b rb s3://old-bucket --force            # empty + remove (L2)
+s3b rm -r --versions --force s3://b/tmp/  # destroy all versions too (L3)
+s3b rb s3://old-bucket --force            # empty + remove (L2; purges
+                                          #   version history if versioned)
+
+# Object versions (versioned buckets)
+s3b bucket versioning s3://b on           # enable versioning
+s3b versions ls s3://b/docs/report.pdf    # timeline, newest first
+s3b versions restore s3://b/docs/report.pdf --version-id ID
+s3b versions undo s3://b/docs/report.pdf --version-id MARKER  # un-delete
+s3b versions stat s3://b                  # current/noncurrent/marker stats
+s3b versions purge s3://b --mode noncurrent --dry-run
+s3b versions rm s3://b/docs/report.pdf --all               # permanent (L3)
+
+# Bucket administration
+s3b bucket info s3://b                    # region, versioning, encryption, PAB
+s3b bucket versioning s3://b off
+s3b bucket policy put s3://b policy.json  # also: cors | lifecycle |
+s3b bucket tags put s3://b team=infra     #      encryption | pab | website
 ```
 
 Every command takes `--json` for machine-readable output, `--profile` to pick a connection, and `--verbose` for per-item detail. Exit codes: `0` OK, `1` operation failure, `2` usage/config error, `3` unexpected.

@@ -34,6 +34,9 @@ type App struct {
 	clients map[string]*s3client.Client // cache: profile name -> client
 
 	jobs *jobManager
+
+	editorsMu sync.Mutex
+	editors   map[string]*editSession // open-in-editor sessions (editor.go)
 }
 
 // New creates the service. version is shown in the About dialog / status bar.
@@ -42,6 +45,7 @@ func New(version string) *App {
 		version: version,
 		clients: map[string]*s3client.Client{},
 		jobs:    newJobManager(),
+		editors: map[string]*editSession{},
 	}
 }
 

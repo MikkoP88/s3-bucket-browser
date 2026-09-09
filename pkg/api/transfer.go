@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -10,10 +11,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -223,8 +227,8 @@ type uploadPair struct {
 
 // Upload starts a background upload job and returns its ID. Paths may be
 // files or directories (directories upload recursively). policy is one of
-// overwrite | skip | rename.
-func (a *App) Upload(paths []string, bucket, prefix, policy string) (string, error) {
+// overwrite | skip | rename; maxBPS 0 = unlimited.
+func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64) (string, error) {
 	c, err := a.client("")
 	if err != nil {
 		return "", err
@@ -242,11 +246,11 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string) (string, err
 	}
 	j := a.jobs.add("upload", len(pairs), total)
 	id := j.info.ID
-	go a.runUpload(j, c, bucket, pairs, policy)
+	go a.runUpload(j, c, bucket, pairs, policy, maxBPS)
 	return id, nil
 }
 
-func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs []uploadPair, policy string) {
+func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs []uploadPair, policy string, maxBPS int64) {
 	ctx := j.ctx
 	for _, p := range pairs {
 		if ctx.Err() != nil {
@@ -259,7 +263,7 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 		j.emit(a.jobs, true)
 
 		key := p.key
-		opts := transfer.UploadOptions{Progress: j.progress}
+		opts := transfer.UploadOptions{Progress: j.progress, MaxBPS: maxBPS}
 		switch policy {
 		case PolicySkip:
 			opts.NoClobber = true
@@ -294,7 +298,8 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 }
 
-// finishJob stamps the final status and emits it.
+// finishJob stamps the final status, emits it and appends it to the local
+// transfer history log (JSONL, PLAN.md §8.4 M3).
 func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	j.mu.Lock()
 	j.info.Status = status
@@ -303,8 +308,51 @@ func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	if status == JobDone {
 		j.info.SpeedBps = 0
 	}
+	logEntry := struct {
+		At          string `json:"at"`
+		Op          string `json:"op"`
+		Status      string `json:"status"`
+		TotalFiles  int    `json:"totalFiles"`
+		FailedFiles int    `json:"failedFiles"`
+		TotalBytes  int64  `json:"totalBytes"`
+		SentBytes   int64  `json:"sentBytes"`
+		Error       string `json:"error,omitempty"`
+	}{
+		At:          time.Now().Format(time.RFC3339),
+		Op:          j.info.Op,
+		Status:      status,
+		TotalFiles:  j.info.TotalFiles,
+		FailedFiles: j.info.FailedFiles,
+		TotalBytes:  j.info.TotalBytes,
+		SentBytes:   j.info.SentBytes,
+		Error:       errMsg,
+	}
 	j.mu.Unlock()
 	j.emit(a.jobs, true)
+	a.logTransfer(logEntry)
+}
+
+// logTransfer appends one JSONL line to <configdir>/transfers.log. Logging
+// must never fail a transfer: errors are swallowed.
+func (a *App) logTransfer(entry any) {
+	dir, err := profile.DefaultDir()
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "transfers.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	f.Write(append(b, '\n'))
 }
 
 // expandUploadPaths resolves files and directories into (local, key, size).
@@ -391,8 +439,8 @@ func uniqueLocalPath(p string) string {
 }
 
 // Download starts a background download job and returns its ID. policy is
-// one of overwrite | skip | rename.
-func (a *App) Download(bucket string, items []DownloadItem, destDir, policy string) (string, error) {
+// one of overwrite | skip | rename; maxBPS 0 = unlimited.
+func (a *App) Download(bucket string, items []DownloadItem, destDir, policy string, maxBPS int64) (string, error) {
 	c, err := a.client("")
 	if err != nil {
 		return "", err
@@ -409,11 +457,11 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	}
 	j := a.jobs.add("download", len(items), total)
 	id := j.info.ID
-	go a.runDownload(j, c, bucket, items, destDir, policy)
+	go a.runDownload(j, c, bucket, items, destDir, policy, maxBPS)
 	return id, nil
 }
 
-func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items []DownloadItem, destDir, policy string) {
+func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items []DownloadItem, destDir, policy string, maxBPS int64) {
 	ctx := j.ctx
 	for _, it := range items {
 		if ctx.Err() != nil {
@@ -440,6 +488,7 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 
 		err := transfer.DownloadFile(ctx, c.S3, bucket, it.Key, local, transfer.DownloadOptions{
 			Progress: j.progress,
+			MaxBPS:   maxBPS,
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -462,6 +511,48 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 	} else {
 		a.finishJob(j, JobDone, "")
 	}
+}
+
+// DownloadRef is one dual-pane drop reference: a file key with its known
+// size, or a folder key that gets expanded recursively.
+type DownloadRef struct {
+	Key   string `json:"key"`
+	Size  int64  `json:"size"`
+	IsDir bool   `json:"isDir"`
+}
+
+// DownloadRefs starts a download job from mixed file/folder references:
+// folders are walked recursively (sizes from listing), files use the size
+// shipped by the grid.
+func (a *App) DownloadRefs(bucket string, refs []DownloadRef, destDir, policy string, maxBPS int64) (string, error) {
+	c, err := a.client("")
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := a.quickCtx()
+	defer cancel()
+	var items []DownloadItem
+	for _, r := range refs {
+		if !r.IsDir {
+			items = append(items, DownloadItem{Key: r.Key, Size: r.Size})
+			continue
+		}
+		err := listing.Walk(ctx, c.S3, bucket, dirPrefix(r.Key), func(o s3types.Object) error {
+			key := aws.ToString(o.Key)
+			if strings.HasSuffix(key, "/") {
+				return nil // folder markers
+			}
+			items = append(items, DownloadItem{Key: key, Size: aws.ToInt64(o.Size)})
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	if len(items) == 0 {
+		return "", fmt.Errorf("nothing to download")
+	}
+	return a.Download(bucket, items, destDir, policy, maxBPS)
 }
 
 // PickUploadFiles opens the native multi-select file dialog.

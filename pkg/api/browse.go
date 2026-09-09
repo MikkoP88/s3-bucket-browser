@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"path"
 	"sort"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/bucketops"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/doctor"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -187,13 +189,18 @@ func (a *App) CreateBucket(name, region string) error {
 }
 
 // BucketDeletePreview feeds the L2 confirmation dialog: how many objects
-// would be emptied.
+// (and versions, when the bucket is versioned) would be removed.
 type BucketDeletePreview struct {
-	ObjectCount int  `json:"objectCount"`
-	RequiresL2  bool `json:"requiresL2"` // non-empty: typed confirmation
+	ObjectCount   int  `json:"objectCount"`
+	VersionCount  int  `json:"versionCount"` // versions incl. delete markers
+	DeleteMarkers int  `json:"deleteMarkers"`
+	Versioned     bool `json:"versioned"`
+	RequiresL2    bool `json:"requiresL2"` // non-empty: typed confirmation
 }
 
-// PreviewBucketDelete counts objects in a bucket before removal.
+// PreviewBucketDelete counts objects in a bucket before removal. On
+// versioned buckets it also counts versions + delete markers, because
+// removing the bucket requires deleting every version permanently.
 func (a *App) PreviewBucketDelete(bucket string) (BucketDeletePreview, error) {
 	c, err := a.client("")
 	if err != nil {
@@ -205,11 +212,22 @@ func (a *App) PreviewBucketDelete(bucket string) (BucketDeletePreview, error) {
 	if err != nil {
 		return BucketDeletePreview{}, err
 	}
-	return BucketDeletePreview{ObjectCount: n, RequiresL2: n > 0}, nil
+	p := BucketDeletePreview{ObjectCount: n}
+	if status, err := versioning.Status(ctx, c.S3, bucket); err == nil && status == "Enabled" {
+		p.Versioned = true
+		if st, err := versioning.CollectStats(ctx, c.S3, bucket, ""); err == nil {
+			p.VersionCount = st.Versions
+			p.DeleteMarkers = st.DeleteMarkers
+		}
+	}
+	p.RequiresL2 = p.ObjectCount > 0 || p.VersionCount > 0 || p.DeleteMarkers > 0
+	return p, nil
 }
 
 // DeleteBucket removes a bucket; non-empty buckets require force=true after
-// the GUI showed the typed-confirmation dialog (L2, PLAN.md §9).
+// the GUI showed the typed-confirmation dialog (L2, PLAN.md §9). Versioned
+// buckets are emptied of ALL versions first (L3 — the preview dialog shows
+// the version/delete-marker counts).
 func (a *App) DeleteBucket(bucket string, force bool) (transfer.DeleteResult, error) {
 	c, err := a.client("")
 	if err != nil {
@@ -217,6 +235,21 @@ func (a *App) DeleteBucket(bucket string, force bool) (transfer.DeleteResult, er
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
+	status, _ := versioning.Status(ctx, c.S3, bucket)
+	if status == "Enabled" {
+		if !force {
+			return transfer.DeleteResult{}, fmt.Errorf("refusing to empty versioned bucket without force confirmation")
+		}
+		res, err := versioning.EmptyBucketVersions(ctx, c.S3, bucket)
+		if err != nil {
+			return res, err
+		}
+		_, derr := c.S3.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
+		if derr == nil {
+			a.emit(EventS3Changed, map[string]string{"bucket": bucket})
+		}
+		return res, derr
+	}
 	res, err := bucketops.DeleteBucket(ctx, c.S3, bucket, force)
 	if err == nil {
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})

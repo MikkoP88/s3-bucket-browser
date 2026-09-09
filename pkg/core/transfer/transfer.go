@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,6 +19,52 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
+// rateLimiter throttles throughput to ~bps bytes/second shared across all
+// concurrent parts of a transfer (multipart included). It grants a burst of
+// up to one second worth of bytes, then makes readers sleep proportionally.
+type rateLimiter struct {
+	mu        sync.Mutex
+	bps       int64
+	allowance float64
+	last      time.Time
+}
+
+func newRateLimiter(bps int64) *rateLimiter {
+	if bps <= 0 {
+		return nil
+	}
+	// Start with a full one-second burst budget so the first small write
+	// flies immediately; steady state settles to bps.
+	return &rateLimiter{bps: bps, allowance: float64(bps), last: time.Now()}
+}
+
+// wait accounts for n transferred bytes, sleeping if the budget is spent.
+func (r *rateLimiter) wait(n int) {
+	if r == nil || n <= 0 {
+		return
+	}
+	r.mu.Lock()
+	now := time.Now()
+	if !r.last.IsZero() {
+		r.allowance += now.Sub(r.last).Seconds() * float64(r.bps)
+	}
+	if max := float64(r.bps); r.allowance > max {
+		r.allowance = max // burst cap: one second of budget
+	}
+	r.last = now
+	var sleep time.Duration
+	if need := float64(n); r.allowance < need {
+		sleep = time.Duration((need - r.allowance) / float64(r.bps) * float64(time.Second))
+		r.allowance = 0
+	} else {
+		r.allowance -= float64(n)
+	}
+	r.mu.Unlock()
+	if sleep > 0 {
+		time.Sleep(sleep)
+	}
+}
+
 // ProgressFn receives transferred and total bytes (total may be 0/unknown).
 type ProgressFn func(sent, total int64)
 
@@ -24,6 +72,7 @@ type ProgressFn func(sent, total int64)
 type progressReader struct {
 	r        io.Reader
 	fn       ProgressFn
+	limiter  *rateLimiter
 	sent     int64
 	total    int64
 	reportOn bool // report on every read
@@ -32,6 +81,7 @@ type progressReader struct {
 func (p *progressReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
 	p.sent += int64(n)
+	p.limiter.wait(n)
 	if p.fn != nil && (p.reportOn || err == io.EOF) {
 		p.fn(p.sent, p.total)
 	}
@@ -45,6 +95,7 @@ type UploadOptions struct {
 	NoClobber    bool   // skip if the object already exists
 	PartSize     int64
 	Concurrency  int
+	MaxBPS       int64 // 0 = unlimited (transfer throttle)
 	Progress     ProgressFn
 }
 
@@ -70,8 +121,11 @@ func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key s
 	}
 
 	var body io.Reader = f
-	if opts.Progress != nil {
-		body = &progressReader{r: f, fn: opts.Progress, total: st.Size(), reportOn: true}
+	if opts.Progress != nil || opts.MaxBPS > 0 {
+		body = &progressReader{
+			r: f, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
+			total: st.Size(), reportOn: true,
+		}
 	}
 
 	uploader := manager.NewUploader(client, func(u *manager.Uploader) {
@@ -102,6 +156,7 @@ func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key s
 type DownloadOptions struct {
 	PartSize    int64
 	Concurrency int
+	MaxBPS      int64 // 0 = unlimited (transfer throttle)
 	Progress    ProgressFn
 }
 
@@ -134,8 +189,11 @@ func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath
 			d.Concurrency = opts.Concurrency
 		}
 	})
-	if opts.Progress != nil {
-		w = &progressWriterAt{w: f, fn: opts.Progress, total: total, lastReport: 0}
+	if opts.Progress != nil || opts.MaxBPS > 0 {
+		w = &progressWriterAt{
+			w: f, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
+			total: total, lastReport: 0,
+		}
 	}
 
 	_, err = downloader.Download(ctx, w, &s3.GetObjectInput{
@@ -148,6 +206,7 @@ func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath
 type progressWriterAt struct {
 	w          io.WriterAt
 	fn         ProgressFn
+	limiter    *rateLimiter
 	total      int64
 	sent       int64
 	lastReport int64
@@ -156,7 +215,8 @@ type progressWriterAt struct {
 func (p *progressWriterAt) WriteAt(b []byte, off int64) (int, error) {
 	n, err := p.w.WriteAt(b, off)
 	p.sent += int64(n)
-	if p.sent-p.lastReport >= 1<<20 { // report at most every MiB
+	p.limiter.wait(n)
+	if p.fn != nil && p.sent-p.lastReport >= 1<<20 { // report at most every MiB
 		p.lastReport = p.sent
 		p.fn(p.sent, p.total)
 	}

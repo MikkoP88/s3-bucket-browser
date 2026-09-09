@@ -41,60 +41,68 @@ export function openModal({ title, body, buttons = [], wide = false, onClose }) 
 
 // ---------- confirmations (safety ladder, PLAN.md §9) ----------
 export function confirm({ title, message, okLabel = 'OK', danger = false }) {
+  let settled = false;
   return new Promise((resolve) => {
+    // settle() must run BEFORE close(): close() fires onClose synchronously
+    // and a plain resolve would otherwise always lose the race to it.
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     openModal({
       title,
       body: el('div', {}, message),
       buttons: [
-        { label: 'Cancel', onclick: (close) => { close(); resolve(false); } },
-        { label: okLabel, class: danger ? 'danger' : 'primary', onclick: (close) => { close(); resolve(true); } },
+        { label: 'Cancel', onclick: (close) => { done(false); close(); } },
+        { label: okLabel, class: danger ? 'danger' : 'primary', onclick: (close) => { done(true); close(); } },
       ],
-      onClose: () => resolve(false),
+      onClose: () => done(false),
     });
   });
 }
 
 export function typedConfirm({ title, message, typeWord, okLabel = 'Delete', danger = true }) {
+  let settled = false;
   return new Promise((resolve) => {
-    let input;
-    let okBtn;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const input = el('input', { class: 'input', autocomplete: 'off' });
     const body = el('div', {},
       el('div', {}, message),
       el('label', { class: 'field', text: `Type "${typeWord}" to confirm:` }),
-      input = el('input', { class: 'input', autocomplete: 'off' }),
+      input,
     );
-    const { close } = openModal({
+    openModal({
       title,
       body,
       buttons: [
-        { label: 'Cancel', onclick: (c) => { c(); resolve(false); } },
+        { label: 'Cancel', onclick: (c) => { done(false); c(); } },
         {
           label: okLabel,
-          class: 'danger',
-          onclick: (c) => { if (input.value.trim() === typeWord) { c(); resolve(true); } },
+          class: danger ? 'danger' : 'primary',
+          onclick: (c) => { if (input.value.trim() === typeWord) { done(true); c(); } },
         },
       ],
-      onClose: () => resolve(false),
+      onClose: () => done(false),
     });
-    okBtn = null;
-    input.addEventListener('input', () => { });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && input.value.trim() === typeWord) { done(true); document.querySelector('#modal-root .modal-head .x')?.click(); }
+    });
     input.focus();
   });
 }
 
 export function prompt({ title, label, value = '', okLabel = 'OK' }) {
+  let settled = false;
   return new Promise((resolve) => {
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     const input = el('input', { class: 'input', value, spellcheck: 'false' });
-    const submit = (c) => { c(); resolve(input.value.trim() || null); };
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(current); });
-    const current = openModal({
+    const submit = (close) => { done(input.value.trim() || null); close(); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(closeRef.close); });
+    const closeRef = openModal({
       title,
       body: el('div', {}, el('label', { class: 'field', text: label }), input),
       buttons: [
-        { label: 'Cancel', onclick: (c) => { c(); resolve(null); } },
+        { label: 'Cancel', onclick: (c) => { done(null); c(); } },
         { label: okLabel, class: 'primary', onclick: submit },
       ],
-      onClose: () => resolve(null),
+      onClose: () => done(null),
     });
     input.focus();
     input.select();
@@ -273,6 +281,7 @@ export function helpSheet() {
     ['Enter', 'Open bucket / folder / download object'],
     ['F2', 'Rename'],
     ['Del', 'Delete selection'],
+    ['Shift+Del', 'Delete permanently (all versions)'],
     ['Ctrl+C / X / V', 'Copy / cut / paste'],
     ['Ctrl+A', 'Select all'],
     ['Ctrl+F', 'Filter'],
@@ -282,6 +291,7 @@ export function helpSheet() {
     ['Type letters', 'Jump to item'],
     ['Ctrl+Shift+N', 'New folder'],
     ['Ctrl+U / Ctrl+D', 'Upload files / download selection'],
+    ['F9', 'Toggle dual-pane local browser'],
     ['Esc', 'Clear selection / close'],
     ['F1', 'This sheet'],
   ];
@@ -291,9 +301,22 @@ export function helpSheet() {
   openModal({ title: 'Keyboard shortcuts', body, buttons: [{ label: 'Close' }] });
 }
 
-// ---------- conflict policy ----------
+// ---------- conflict policy + transfer throttle ----------
+const RATE_LIMITS = [
+  [0, 'Unlimited'],
+  [262144, '256 KB/s'],
+  [1048576, '1 MB/s'],
+  [2097152, '2 MB/s'],
+  [5242880, '5 MB/s'],
+  [10485760, '10 MB/s'],
+];
+
+// conflictPolicy resolves null (canceled) or { policy, maxBps }. The speed
+// limit choice is remembered across transfers (localStorage s3b-throttle).
 export function conflictPolicy(kind, target) {
+  let settled = false;
   return new Promise((resolve) => {
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     const options = [
       ['overwrite', 'Overwrite', 'Replace existing files'],
       ['skip', 'Skip', 'Keep existing files'],
@@ -308,14 +331,28 @@ export function conflictPolicy(kind, target) {
         el('div', {}, el('div', { text: label, style: 'font-weight:600' }), el('div', { text: sub, style: 'color:var(--text-dim)' })),
       );
     }));
+    const rate = el('select', { class: 'input', style: 'width:auto' },
+      RATE_LIMITS.map(([v, label]) => el('option', { value: String(v) }, label)));
+    rate.value = localStorage.getItem('s3b-throttle') || '0';
     openModal({
       title: `${kind === 'upload' ? 'Upload' : 'Download'} — conflicting files at ${target}`,
-      body: list,
+      body: el('div', {},
+        list,
+        el('label', { class: 'field', style: 'display:flex;align-items:center;gap:8px;margin-top:10px' },
+          'Speed limit:', rate)),
       buttons: [
-        { label: 'Cancel', onclick: (c) => { c(); resolve(null); } },
-        { label: 'Start', class: 'primary', onclick: (c) => { c(); resolve(choice); } },
+        { label: 'Cancel', onclick: (c) => { done(null); c(); } },
+        {
+          label: 'Start',
+          class: 'primary',
+          onclick: (c) => {
+            localStorage.setItem('s3b-throttle', rate.value);
+            done({ policy: choice, maxBps: parseInt(rate.value, 10) || 0 });
+            c();
+          },
+        },
       ],
-      onClose: () => resolve(null),
+      onClose: () => done(null),
     });
   });
 }
@@ -339,6 +376,478 @@ export function presignDialog(url) {
   });
   input.focus();
   input.select();
+}
+
+// ---------- object versions (M4) ----------
+const asMillis = (v) => (typeof v === 'string' ? Date.parse(v) : v);
+
+export function versionsDialog(bucket, key, onChanged) {
+  const list = el('div', { class: 'ver-list' });
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+
+  const act = async (fn, msg) => {
+    try {
+      await fn();
+      toast(msg, 'ok');
+      onChanged?.();
+      draw();
+    } catch (err) {
+      toast(`Failed: ${err}`, 'error');
+    }
+  };
+  const destroy = async (v) => {
+    if (!(await typedConfirm({
+      title: 'Permanently delete version',
+      message: `This destroys one version of s3://${bucket}/${key}.\nIt cannot be recovered — not even from version history.`,
+      typeWord: 'permanent',
+    }))) return;
+    act(() => api.DeleteVersionPermanent(bucket, key, v.versionId), 'Version destroyed');
+  };
+
+  async function draw() {
+    status.textContent = 'Loading…';
+    let vers;
+    try {
+      vers = await api.ObjectVersions(bucket, key);
+    } catch (err) {
+      list.replaceChildren();
+      status.textContent = String(err);
+      status.style.color = 'var(--danger)';
+      return;
+    }
+    status.style.color = 'var(--text-dim)';
+    status.textContent = vers.length
+      ? `${vers.length} version(s), newest first`
+      : 'No versions — versioning is off or the object never existed.';
+    list.replaceChildren(...vers.map((v) => el('div', { class: `ver-row${v.isLatest ? ' latest' : ''}` },
+      el('span', { class: 'ver-icon', text: v.isDeleteMarker ? '\u26D4' : (v.isLatest ? '\u25CF' : '\u25CB') }),
+      el('span', { class: 'ver-main' },
+        el('div', { text: v.isDeleteMarker ? 'Delete marker (object hidden)' : `${fmtBytes(v.size)} — ${v.storageClass || 'STANDARD'}${v.etag ? ` — ${v.etag}` : ''}` }),
+        el('div', { class: 'ver-sub', text: `${v.lastModified ? fmtDate(asMillis(v.lastModified)) : ''}${v.versionId ? ` — ${v.versionId}` : ''}` }),
+      ),
+      el('span', { class: 'ver-actions' },
+        v.isLatest && !v.isDeleteMarker ? el('span', { class: 'tag', text: 'current' }) : null,
+        !v.isLatest && !v.isDeleteMarker
+          ? el('button', { class: 'btn', text: 'Restore as latest', onclick: () => act(() => api.RestoreVersion(bucket, key, v.versionId), 'Restored as latest') })
+          : null,
+        v.isDeleteMarker
+          ? el('button', { class: 'btn', text: 'Undo delete', onclick: () => act(() => api.UndoDelete(bucket, key, v.versionId), 'Delete removed — object is back') })
+          : null,
+        el('button', { class: 'btn danger', text: 'Destroy', title: 'Delete this version permanently', onclick: () => destroy(v) }),
+      ),
+    )));
+  }
+
+  openModal({
+    title: `Versions — s3://${bucket}/${key}`,
+    body: el('div', {}, status, list),
+    wide: true,
+    buttons: [{ label: 'Close' }],
+  });
+  draw();
+}
+
+// ---------- bucket admin panel (M3) ----------
+export function adminDialog(bucket, onChanged) {
+  const TABS = ['Overview', 'Security', 'Policy', 'ACL', 'CORS', 'Lifecycle', 'Encryption', 'Website', 'Tags', 'Versions'];
+  const strip = el('div', { class: 'tabstrip' });
+  const content = el('div', { class: 'tabbody' });
+  let panel = null;
+  let active = 'Overview';
+
+  const errBox = (e) => el('div', { class: 'banner warn', text: String(e) });
+
+  async function save(fn, okMsg) {
+    try {
+      await fn();
+      toast(okMsg, 'ok');
+      await reload();
+      onChanged?.();
+    } catch (e) {
+      toast(`Failed: ${e}`, 'error');
+    }
+  }
+  async function reload() {
+    content.replaceChildren(el('div', { class: 'field', text: 'Loading…' }));
+    panel = await api.GetBucketAdmin(bucket);
+    drawTab(active);
+  }
+  function select(name) {
+    active = name;
+    strip.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    drawTab(name);
+  }
+
+  function drawTab(name) {
+    if (!panel) return;
+    switch (name) {
+      case 'Overview': {
+        content.replaceChildren(
+          panel.publicWarning ? el('div', { class: 'banner danger', text: `\u26A0 ${panel.publicWarning}` }) : null,
+          el('div', { class: 'kv' },
+            el('div', { class: 'k', text: 'Region' }), el('div', { class: 'v mono', text: panel.region || '—' }),
+            el('div', { class: 'k', text: 'Versioning' }), el('div', { class: 'v', text: panel.versions || 'off (never configured)' }),
+            el('div', { class: 'k', text: 's3:// URI' }), el('div', { class: 'v mono', text: `s3://${bucket}` }),
+          ),
+          el('div', { style: 'margin-top:12px' },
+            el('button', {
+              class: 'btn',
+              text: panel.versions === 'Enabled' ? 'Suspend versioning' : 'Enable versioning',
+              onclick: () => save(() => api.SetBucketVersioning(bucket, panel.versions !== 'Enabled'), 'Versioning updated'),
+            })),
+        );
+        break;
+      }
+      case 'Security': {
+        if (panel.pabErr) { content.replaceChildren(errBox(panel.pabErr)); break; }
+        const fields = [
+          ['blockPublicAcls', 'Block public ACLs'],
+          ['ignorePublicAcls', 'Ignore public ACLs'],
+          ['blockPublicPolicy', 'Block public bucket policies'],
+          ['restrictPublicBuckets', 'Restrict public buckets'],
+        ];
+        const boxes = {};
+        const box = el('div', { class: 'pab' }, fields.map(([k, label]) => {
+          const c = el('input', { type: 'checkbox' });
+          c.checked = !!(panel.pab || {})[k];
+          boxes[k] = c;
+          return el('label', { class: 'pab-row' }, c, ` ${label}`);
+        }));
+        content.replaceChildren(
+          panel.publicWarning ? el('div', { class: 'banner danger', text: `\u26A0 ${panel.publicWarning}` }) : null,
+          el('div', { class: 'field', text: 'Public access block (recommended: all on)' }),
+          box,
+          el('div', { style: 'margin-top:12px' },
+            el('button', {
+              class: 'btn primary',
+              text: 'Save',
+              onclick: () => save(() => api.PutBucketPAB(bucket, {
+                blockPublicAcls: boxes.blockPublicAcls.checked,
+                ignorePublicAcls: boxes.ignorePublicAcls.checked,
+                blockPublicPolicy: boxes.blockPublicPolicy.checked,
+                restrictPublicBuckets: boxes.restrictPublicBuckets.checked,
+              }), 'Public access block saved'),
+            })),
+        );
+        break;
+      }
+      case 'Policy': {
+        if (panel.policyErr) { content.replaceChildren(errBox(panel.policyErr)); break; }
+        const raw = el('textarea', { class: 'input mono', rows: '14', spellcheck: 'false' });
+        raw.value = panel.policy?.raw || '{\n  "Version": "2012-10-17",\n  "Statement": []\n}';
+        const s = panel.policy?.summary;
+        content.replaceChildren(
+          s ? el('div', { class: 'kv', style: 'margin-bottom:10px' },
+            el('div', { class: 'k', text: 'Statements' }), el('div', { class: 'v', text: String(s.statementCount) }),
+            el('div', { class: 'k', text: 'Public read' }), el('div', { class: 'v', text: s.hasPublicRead ? 'YES' : 'no' }),
+            el('div', { class: 'k', text: 'Public write' }), el('div', { class: 'v', text: s.hasPublicWrite ? 'YES' : 'no' }),
+          ) : null,
+          ...(s?.warnings || []).map((w) => el('div', { class: 'banner warn', text: w })),
+          raw,
+          el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
+            el('button', { class: 'btn primary', text: 'Save policy', onclick: () => save(() => api.PutBucketPolicy(bucket, raw.value), 'Policy saved') }),
+            el('button', { class: 'btn danger', text: 'Delete policy', onclick: () => save(() => api.DeleteBucketPolicy(bucket), 'Policy removed') }),
+          ),
+        );
+        break;
+      }
+      case 'ACL': {
+        if (panel.aclErr) { content.replaceChildren(errBox(panel.aclErr)); break; }
+        const s = panel.acl?.summary || {};
+        content.replaceChildren(
+          el('div', { class: 'kv' },
+            el('div', { class: 'k', text: 'Owner' }), el('div', { class: 'v mono', text: panel.acl?.owner || '—' }),
+            el('div', { class: 'k', text: 'Public read' }), el('div', { class: 'v', text: s.publicRead ? 'YES' : 'no' }),
+            el('div', { class: 'k', text: 'Authenticated read' }), el('div', { class: 'v', text: s.authenticatedRead ? 'YES' : 'no' }),
+          ),
+          ...(s.grants || []).length ? el('div', { class: 'field', style: 'margin-top:8px', text: `Grants: ${(s.grants || []).join(', ')}` }) : null,
+          ...(s.warnings || []).map((w) => el('div', { class: 'banner warn', text: w })),
+          el('div', { class: 'field', style: 'margin-top:10px;color:var(--text-dim)', text: 'ACLs are read-only here — manage access through the bucket policy (most providers deprecated bucket ACLs).' }),
+        );
+        break;
+      }
+      case 'CORS': {
+        if (panel.corsErr) { content.replaceChildren(errBox(panel.corsErr)); break; }
+        const rules = (panel.cors || []).map((r) => ({ ...r }));
+        const rowsBox = el('div', {});
+        const splitList = (v) => v.split(',').map((x) => x.trim()).filter(Boolean);
+        function drawRules() {
+          rowsBox.replaceChildren(...rules.map((r, i) => {
+            const origins = el('input', { class: 'input mono', value: (r.origins || []).join(', '), spellcheck: 'false' });
+            const methods = el('input', { class: 'input mono', value: (r.methods || []).join(', '), spellcheck: 'false' });
+            const headers = el('input', { class: 'input mono', value: (r.headers || []).join(', '), spellcheck: 'false' });
+            const expose = el('input', { class: 'input mono', value: (r.expose || []).join(', '), spellcheck: 'false' });
+            const maxAge = el('input', { class: 'input', type: 'number', value: String(r.maxAge || '') });
+            const bind = () => {
+              r.origins = splitList(origins.value);
+              r.methods = splitList(methods.value).map((x) => x.toUpperCase());
+              r.headers = splitList(headers.value);
+              r.expose = splitList(expose.value);
+              r.maxAge = parseInt(maxAge.value, 10) || 0;
+            };
+            [origins, methods, headers, expose, maxAge].forEach((inp) => inp.addEventListener('change', bind));
+            return el('div', { class: 'rule-card' },
+              el('div', { class: 'rule-grid' },
+                el('label', { class: 'lc-cell' }, 'Origins', origins),
+                el('label', { class: 'lc-cell' }, 'Methods', methods),
+                el('label', { class: 'lc-cell' }, 'Allow headers', headers),
+                el('label', { class: 'lc-cell' }, 'Expose headers', expose),
+                el('label', { class: 'lc-cell' }, 'Max age (s)', maxAge),
+              ),
+              el('button', { class: 'btn', text: 'Remove rule', onclick: () => { rules.splice(i, 1); drawRules(); } }),
+            );
+          }));
+        }
+        drawRules();
+        content.replaceChildren(
+          el('div', { class: 'field', text: 'Comma-separated lists; * allowed' }),
+          rowsBox,
+          el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
+            el('button', { class: 'btn', text: '+ Add rule', onclick: () => { rules.push({ origins: ['*'], methods: ['GET'] }); drawRules(); } }),
+            el('button', { class: 'btn primary', text: 'Save', onclick: () => save(() => api.PutBucketCORS(bucket, rules), 'CORS saved') }),
+            el('button', { class: 'btn danger', text: 'Delete all', onclick: () => save(() => api.DeleteBucketCORS(bucket), 'CORS removed') }),
+          ),
+        );
+        break;
+      }
+      case 'Lifecycle': {
+        if (panel.lifecycleErr) { content.replaceChildren(errBox(panel.lifecycleErr)); break; }
+        const rules = (panel.lifecycle || []).map((r) => ({ ...r }));
+        const rowsBox = el('div', {});
+        function drawRules() {
+          rowsBox.replaceChildren(...rules.map((r, i) => {
+            const mkNum = (label, key) => {
+              const inp = el('input', { class: 'input', type: 'number', value: String(r[key] || '') });
+              inp.addEventListener('change', () => { r[key] = parseInt(inp.value, 10) || 0; });
+              return el('label', { class: 'lc-cell' }, label, inp);
+            };
+            const id = el('input', { class: 'input', value: r.id || '' });
+            id.addEventListener('change', () => { r.id = id.value; });
+            const prefix = el('input', { class: 'input mono', value: r.prefix || '', spellcheck: 'false' });
+            prefix.addEventListener('change', () => { r.prefix = prefix.value; });
+            const cls = el('select', { class: 'input' },
+              ['', 'STANDARD_IA', 'INTELLIGENT_TIERING', 'ONEZONE_IA', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE']
+                .map((c) => el('option', { value: c }, c || '—')));
+            cls.value = r.transitionClass || '';
+            cls.addEventListener('change', () => { r.transitionClass = cls.value; });
+            const on = el('input', { type: 'checkbox' });
+            on.checked = !!r.enabled;
+            on.addEventListener('change', () => { r.enabled = on.checked; });
+            const dm = el('input', { type: 'checkbox' });
+            dm.checked = !!r.deleteMarker;
+            dm.addEventListener('change', () => { r.deleteMarker = dm.checked; });
+            return el('div', { class: `rule-card${r.enabled ? '' : ' off'}` },
+              el('div', { class: 'lc-head' },
+                el('label', { class: 'lc-cell' }, 'Rule ID', id),
+                el('label', { class: 'lc-cell' }, 'Prefix filter', prefix),
+                el('label', { style: 'display:flex;align-items:center;gap:6px' }, on, 'Enabled'),
+              ),
+              el('div', { class: 'rule-grid' },
+                mkNum('Transition after (days)', 'transitionDays'),
+                el('label', { class: 'lc-cell' }, 'Transition class', cls),
+                mkNum('Expire after (days)', 'expirationDays'),
+                mkNum('Expire noncurrent after (days)', 'noncurrentDays'),
+                mkNum('Abort incomplete uploads after (days)', 'abortMpuDays'),
+                el('label', { style: 'display:flex;align-items:center;gap:6px' }, dm, 'Expire delete markers'),
+              ),
+              el('div', { style: 'margin-top:8px' },
+                el('button', { class: 'btn', text: 'Remove rule', onclick: () => { rules.splice(i, 1); drawRules(); } })),
+            );
+          }));
+        }
+        drawRules();
+        content.replaceChildren(
+          el('div', { class: 'field', text: 'Transition moves objects to cheaper storage after N days; expiration deletes them. At least one action per rule.' }),
+          rowsBox,
+          el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
+            el('button', { class: 'btn', text: '+ Add rule', onclick: () => { rules.push({ id: `rule-${rules.length + 1}`, enabled: true }); drawRules(); } }),
+            el('button', { class: 'btn primary', text: 'Save', onclick: () => save(() => api.PutBucketLifecycle(bucket, rules), 'Lifecycle saved') }),
+            el('button', { class: 'btn danger', text: 'Delete all', onclick: () => save(() => api.DeleteBucketLifecycle(bucket), 'Lifecycle removed') }),
+          ),
+        );
+        break;
+      }
+      case 'Encryption': {
+        if (panel.encryptionErr) { content.replaceChildren(errBox(panel.encryptionErr)); break; }
+        const algo = el('select', { class: 'input', style: 'width:auto' }, [
+          el('option', { value: 'AES256' }, 'AES256 (SSE-S3)'),
+          el('option', { value: 'aws:kms' }, 'aws:kms (SSE-KMS)'),
+        ]);
+        algo.value = panel.encryption?.algorithm === 'aws:kms' ? 'aws:kms' : 'AES256';
+        const kms = el('input', { class: 'input mono', value: panel.encryption?.kmsKeyId || '', placeholder: 'KMS key ARN / ID (aws:kms only)', spellcheck: 'false' });
+        content.replaceChildren(
+          el('div', { class: 'field', text: `Current: ${panel.encryption?.algorithm || 'none — objects are stored unencrypted by default'}` }),
+          el('label', { class: 'field', text: 'Algorithm' }), algo,
+          el('label', { class: 'field', text: 'KMS key' }), kms,
+          el('div', { style: 'display:flex;gap:8px;margin-top:12px' },
+            el('button', { class: 'btn primary', text: 'Save', onclick: () => save(() => api.PutBucketEncryption(bucket, algo.value, kms.value.trim()), 'Default encryption saved') }),
+            el('button', { class: 'btn danger', text: 'Disable', onclick: () => save(() => api.DeleteBucketEncryption(bucket), 'Default encryption removed') }),
+          ),
+        );
+        break;
+      }
+      case 'Website': {
+        if (panel.websiteErr) { content.replaceChildren(errBox(panel.websiteErr)); break; }
+        const w = panel.website || {};
+        const index = el('input', { class: 'input mono', value: w.indexSuffix || 'index.html', spellcheck: 'false' });
+        const errorKey = el('input', { class: 'input mono', value: w.errorKey || '', placeholder: '404.html', spellcheck: 'false' });
+        const host = el('input', { class: 'input mono', value: w.redirectHost || '', placeholder: 'redirect all requests to host (optional)', spellcheck: 'false' });
+        const proto = el('select', { class: 'input', style: 'width:auto' }, ['https', 'http'].map((p) => el('option', { value: p }, p)));
+        proto.value = w.redirectProtocol || 'https';
+        content.replaceChildren(
+          el('div', { class: 'field', text: 'Static website hosting (endpoint URL depends on the provider)' }),
+          el('label', { class: 'field', text: 'Index document' }), index,
+          el('label', { class: 'field', text: 'Error document' }), errorKey,
+          el('label', { class: 'field', text: 'Redirect all requests to host (overrides index/error)' }), host,
+          el('label', { class: 'field', text: 'Redirect protocol' }), proto,
+          el('div', { style: 'display:flex;gap:8px;margin-top:12px' },
+            el('button', {
+              class: 'btn primary',
+              text: 'Save',
+              onclick: () => save(() => api.PutBucketWebsite(bucket, {
+                indexSuffix: index.value.trim(),
+                errorKey: errorKey.value.trim(),
+                redirectHost: host.value.trim(),
+                redirectProtocol: host.value.trim() ? proto.value : '',
+              }), 'Website configuration saved'),
+            }),
+            el('button', { class: 'btn danger', text: 'Disable', onclick: () => save(() => api.DeleteBucketWebsite(bucket), 'Website hosting disabled') }),
+          ),
+        );
+        break;
+      }
+      case 'Tags': {
+        if (panel.tagsErr) { content.replaceChildren(errBox(panel.tagsErr)); break; }
+        const tags = (panel.tags || []).map((t) => ({ ...t }));
+        const box = el('div', {});
+        function drawTags() {
+          box.replaceChildren(...tags.map((t, i) => {
+            const k = el('input', { class: 'input mono', value: t.key, placeholder: 'key', spellcheck: 'false' });
+            const v = el('input', { class: 'input mono', value: t.value, placeholder: 'value', spellcheck: 'false' });
+            k.addEventListener('change', () => { t.key = k.value.trim(); });
+            v.addEventListener('change', () => { t.value = v.value; });
+            return el('div', { class: 'tag-row' }, k, v,
+              el('button', { class: 'btn', text: '\u00D7', onclick: () => { tags.splice(i, 1); drawTags(); } }));
+          }));
+        }
+        drawTags();
+        content.replaceChildren(
+          el('div', { class: 'field', text: 'Cost-allocation tags' }),
+          box,
+          el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
+            el('button', { class: 'btn', text: '+ Add tag', onclick: () => { tags.push({ key: '', value: '' }); drawTags(); } }),
+            el('button', { class: 'btn primary', text: 'Save', onclick: () => save(() => api.PutBucketTags(bucket, tags), 'Tags saved') }),
+            el('button', { class: 'btn danger', text: 'Delete all', onclick: () => save(() => api.DeleteBucketTags(bucket), 'Tags removed') }),
+          ),
+        );
+        break;
+      }
+      case 'Versions': {
+        content.replaceChildren(el('div', { class: 'field', text: 'Loading version statistics…' }));
+        api.BucketVersionStats(bucket).then((st) => {
+          const purge = async (mode, label) => {
+            try {
+              const n = await api.PurgePreview(bucket, '', mode);
+              if (!n) { toast('Nothing to purge'); return; }
+              const msg = `Permanently remove ${n} ${label} from s3://${bucket}.\nThis cannot be undone.`;
+              const ok = n > 50
+                ? await typedConfirm({ title: 'Purge versions', message: msg, typeWord: 'purge' })
+                : await confirm({ title: 'Purge versions', message: msg, okLabel: 'Purge', danger: true });
+              if (!ok) return;
+              const res = await api.PurgeVersions(bucket, '', mode, true);
+              toast(`Purged ${res.deleted} version(s)`, 'ok');
+              onChanged?.();
+              select('Versions');
+            } catch (e) {
+              toast(`Purge failed: ${e}`, 'error');
+            }
+          };
+          content.replaceChildren(
+            el('div', { class: 'kv' },
+              el('div', { class: 'k', text: 'Versioning' }), el('div', { class: 'v', text: panel.versions || 'off' }),
+              el('div', { class: 'k', text: 'Current objects' }), el('div', { class: 'v', text: String(st.currentObjects) }),
+              el('div', { class: 'k', text: 'Total versions' }), el('div', { class: 'v', text: String(st.versions) }),
+              el('div', { class: 'k', text: 'Delete markers' }), el('div', { class: 'v', text: String(st.deleteMarkers) }),
+              el('div', { class: 'k', text: 'Noncurrent versions' }), el('div', { class: 'v', text: `${st.noncurrent} (${fmtBytes(st.noncurrentBytes)})` }),
+            ),
+            el('div', { class: 'field', style: 'margin-top:12px', text: 'Cleanup tools (bucket-wide, permanent)' }),
+            el('div', { style: 'display:flex;flex-direction:column;gap:8px;align-items:flex-start' },
+              el('button', { class: 'btn', text: 'Purge noncurrent versions\u2026', onclick: () => purge('noncurrent', 'noncurrent version(s)') }),
+              el('button', { class: 'btn', text: 'Purge delete markers\u2026', onclick: () => purge('markers', 'delete marker(s)') }),
+              el('button', {
+                class: 'btn danger',
+                text: 'Empty bucket (all versions)\u2026',
+                onclick: async () => {
+                  if (!(await typedConfirm({
+                    title: `Empty bucket ${bucket}`,
+                    message: `Every object and EVERY version in s3://${bucket} will be permanently destroyed.`,
+                    typeWord: bucket,
+                  }))) return;
+                  try {
+                    const res = await api.EmptyBucketAllVersions(bucket);
+                    toast(`Emptied ${res.deleted} version(s)`, 'ok');
+                    onChanged?.();
+                  } catch (e) {
+                    toast(`Empty failed: ${e}`, 'error');
+                  }
+                },
+              }),
+            ),
+          );
+        }).catch((e) => content.replaceChildren(errBox(e)));
+        break;
+      }
+      default:
+        content.replaceChildren(el('div', { text: name }));
+    }
+  }
+
+  strip.replaceChildren(...TABS.map((t) => el('div', { class: 'tab', 'data-tab': t, text: t, onclick: () => select(t) })));
+  openModal({
+    title: `Bucket administration — ${bucket}`,
+    body: el('div', { class: 'admin' }, strip, content),
+    wide: true,
+    buttons: [{ label: 'Close' }],
+  });
+  reload().catch((e) => content.replaceChildren(errBox(e)));
+}
+
+// ---------- files open in external editor ----------
+export function editingDialog(onChanged) {
+  const list = el('div', {});
+  openModal({
+    title: 'Files open in editor',
+    body: list,
+    wide: true,
+    buttons: [{ label: 'Close', onclick: (c) => { c(); onChanged?.(); } }],
+  });
+  const stop = async (f, upload) => {
+    try {
+      await api.StopEdit(f.bucket, f.key, upload);
+      onChanged?.();
+      draw();
+    } catch (e) {
+      toast(`Stop failed: ${e}`, 'error');
+    }
+  };
+  async function draw() {
+    let files;
+    try {
+      files = await api.EditingFiles();
+    } catch (e) {
+      list.replaceChildren(el('div', { text: String(e), style: 'color:var(--danger)' }));
+      return;
+    }
+    list.replaceChildren(...(files.length ? files.map((f) => el('div', { class: 'tr-job' },
+      el('div', { class: 'tr-top' },
+        el('span', { class: 'tr-name', text: `${f.bucket}/${f.key}${f.dirty ? ' \u270E' : ''}` }),
+        el('span', { class: 'tr-status mono', text: f.local }),
+        el('button', { class: 'btn', text: 'Stop & upload', onclick: () => stop(f, true) }),
+        el('button', { class: 'btn', text: 'Stop & discard', onclick: () => stop(f, false) }),
+      ),
+    )) : [el('div', { text: 'No files are being edited.', style: 'color:var(--text-dim)' })]));
+  }
+  draw();
 }
 
 // ---------- toasts ----------

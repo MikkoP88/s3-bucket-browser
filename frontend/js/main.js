@@ -7,12 +7,15 @@ import { Tree } from './tree.js';
 import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
   profileEditor, helpSheet, conflictPolicy, presignDialog, toast, openModal,
+  versionsDialog, adminDialog, editingDialog,
 } from './dialogs.js';
+import { LocalPane, aggregateCompare } from './local.js';
 import { t } from './i18n.js';
 
 const $ = (id) => document.getElementById(id);
 
 const grid = new Grid();
+const localPane = new LocalPane();
 const tree = new Tree({ onNavigate: (loc) => nav.to(loc), onDropTo: dropToTarget });
 
 let profiles = [];
@@ -24,12 +27,14 @@ async function boot() {
   $('status-version').textContent = `s3b v${await api.GetVersion()}`;
   wireToolbar();
   wireGrid();
+  wireLocalPane();
   wireKeys();
   wireDrop();
   wireEvents();
 
   const ok = await refreshProfiles();
   if (ok) nav.to({ kind: 'buckets' });
+  if (localStorage.getItem('s3b-panes') === '1') localPane.show();
 }
 
 function initTheme() {
@@ -133,6 +138,7 @@ async function loadView(loc) {
         ]);
       }
       tree.reveal(loc).catch(() => {});
+      localPane.syncTo(loc.prefix || '');
       $('btn-up').disabled = false;
     }
   } catch (err) {
@@ -204,6 +210,25 @@ function wireGrid() {
   });
 }
 
+function wireLocalPane() {
+  localPane.on.openFail = (e) => toast(`Local: ${e}`, 'error');
+  localPane.on.dropFolder = (folder, payload) => downloadRefs(payload.entries, folder.path);
+  localPane.on.dropBody = (payload) => downloadRefs(payload.entries, localPane.dir);
+  localPane.on.compare = compareDirs;
+  localPane.on.syncBase = () => {
+    const loc = nav.current;
+    return loc?.kind === 'objects' ? { dir: localPane.dir, prefix: loc.prefix || '' } : null;
+  };
+  localPane.on.syncUp = (dir) => {
+    const loc = nav.current;
+    if (loc?.kind !== 'objects') return;
+    const prefix = localPane.remotePrefixFor(dir);
+    if (prefix !== null && prefix !== (loc.prefix || '')) {
+      nav.to({ kind: 'objects', bucket: loc.bucket, prefix });
+    }
+  };
+}
+
 // ============================ context menu ============================
 function showContextMenu(e, rows) {
   const menu = $('ctxmenu');
@@ -215,6 +240,7 @@ function showContextMenu(e, rows) {
   if (loc.kind === 'buckets') {
     const b = rows[0];
     items.push(['Open', 'Enter', () => nav.to({ kind: 'objects', bucket: b.key, prefix: '' })]);
+    items.push(['Admin panel\u2026', '', () => adminDialog(b.key, refreshCurrent)]);
     items.push(['Doctor\u2026', '', async () => runDoctor(b.key)]);
     items.push(['Properties', '', () => bucketProperties(b.key)]);
     items.push(null);
@@ -231,7 +257,12 @@ function showContextMenu(e, rows) {
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
     items.push(null);
     items.push(['New folder', 'Ctrl+Shift+N', () => newFolder()]);
-    if (sel === 1 && !rows[0].isDir) items.push(['Pre-sign URL\u2026', '', () => presign(rows[0])]);
+    if (sel === 1 && !rows[0].isDir) {
+      items.push(['Edit', '', () => editObject(rows[0])]);
+      items.push(['Pre-sign URL\u2026', '', () => presign(rows[0])]);
+    }
+    if (sel === 1) items.push(['Previous versions\u2026', '', () => versionsDialog(loc.bucket, rows[0].key, refreshCurrent)]);
+    items.push(['Delete permanently\u2026', 'Shift+Del', () => deletePermanentSelection(), !sel]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties()]);
   }
 
@@ -257,13 +288,14 @@ document.addEventListener('mousedown', (e) => {
 window.addEventListener('blur', hideContextMenu);
 
 // ============================ actions ============================
-async function uploadPaths(paths) {
+async function uploadPaths(paths, prefixOverride) {
   const loc = nav.current;
   if (loc.kind !== 'objects') { toast('Open a bucket first'); return; }
-  const policy = await conflictPolicy('upload', `s3://${loc.bucket}/${loc.prefix || ''}`);
-  if (!policy) return;
+  const prefix = prefixOverride !== undefined ? prefixOverride : (loc.prefix || '');
+  const res = await conflictPolicy('upload', `s3://${loc.bucket}/${prefix || ''}`);
+  if (!res) return;
   try {
-    await api.Upload(paths, loc.bucket, loc.prefix || '', policy);
+    await api.Upload(paths, loc.bucket, prefix, res.policy, res.maxBps);
     toast(`Uploading ${paths.length} item(s)\u2026`);
     showTransfersBadge();
   } catch (err) {
@@ -286,15 +318,22 @@ async function downloadSelection(overrideRows) {
   if (loc.kind !== 'objects') return;
   const rows = overrideRows || grid.selectedRows();
   if (!rows.length) { toast('Select objects to download'); return; }
-  const items = rows.filter((r) => !r.isDir).map((r) => ({ key: r.key, size: r.size }));
-  if (!items.length) { toast('Folders download is recursive — select files (M3)'); return; }
+  const refs = rows.map((r) => ({ key: r.key, size: r.size || 0, isDir: !!r.isDir }));
   const dest = await api.PickFolder('Choose download folder');
   if (!dest) return;
-  const policy = await conflictPolicy('download', dest);
-  if (!policy) return;
+  await downloadRefs(refs, dest);
+}
+
+// downloadRefs downloads mixed file/folder refs into dest — folders expand
+// recursively on the backend (dual-pane drops, Ctrl+D with folders selected).
+async function downloadRefs(entries, dest) {
+  const loc = nav.current;
+  if (!entries?.length) return;
+  const res = await conflictPolicy('download', dest);
+  if (!res) return;
   try {
-    await api.Download(loc.bucket, items, dest, policy);
-    toast(`Downloading ${items.length} object(s)\u2026`);
+    await api.DownloadRefs(loc.bucket, entries, dest, res.policy, res.maxBps);
+    toast(`Downloading ${entries.length} item(s)\u2026`);
     showTransfersBadge();
   } catch (err) {
     toast(`Download failed: ${err}`, 'error');
@@ -337,6 +376,87 @@ async function deleteSelection() {
   } catch (err) {
     toast(`Delete failed: ${err}`, 'error');
   }
+}
+
+async function editObject(row) {
+  const loc = nav.current;
+  try {
+    await api.EditObject(loc.bucket, row.key);
+    toast(`Opening ${row.name} — saves upload automatically`, 'ok');
+    updateEditingStatus();
+  } catch (err) {
+    toast(`Edit failed: ${err}`, 'error');
+  }
+}
+
+// Shift+Del: destroy the selection including all versions and delete markers
+// (safety ladder L3, PLAN.md §9).
+async function deletePermanentSelection() {
+  const loc = nav.current;
+  if (loc.kind !== 'objects') return;
+  const rows = grid.selectedRows();
+  if (!rows.length) return;
+  const ok = await typedConfirm({
+    title: 'Delete permanently',
+    message: `Every version of ${rows.length} object(s) will be destroyed.\nUnlike Delete, this erases version history too — it cannot be undone.`,
+    typeWord: 'permanent',
+  });
+  if (!ok) return;
+  try {
+    let failed = 0;
+    for (const r of rows) {
+      try {
+        await api.DeleteObjectPermanently(loc.bucket, r.key);
+      } catch (e) {
+        failed++;
+        toast(`${r.name}: ${e}`, 'error');
+      }
+    }
+    if (!failed) toast(`Destroyed ${rows.length} object(s) including all versions`, 'ok');
+    refreshCurrent();
+  } catch (err) {
+    toast(`Permanent delete failed: ${err}`, 'error');
+  }
+}
+
+// compareDirs compares the local pane folder against the remote prefix and
+// decorates both grids (WinSCP-style keep-in-sync).
+async function compareDirs() {
+  const loc = nav.current;
+  if (loc?.kind !== 'objects') { toast('Open a bucket folder to compare against'); return; }
+  if (!localPane.dir) { toast('Local pane is at filesystem roots — open a folder first'); return; }
+  try {
+    const rows = await api.CompareDir(localPane.dir, loc.bucket, loc.prefix || '');
+    localPane.setCompare(rows);
+    grid.setCmp(aggregateCompare(rows));
+    const n = (s) => rows.filter((r) => r.status === s).length;
+    properties(`Compare — ${localPane.dir} \u2194 s3://${loc.bucket}/${loc.prefix || ''}`, [
+      ['Identical', n('same')],
+      ['Only local (to upload)', n('only-local')],
+      ['Only remote (to download)', n('only-remote')],
+      ['Newer local', n('newer-local')],
+      ['Newer remote', n('newer-remote')],
+      ['Different size', n('size-diff')],
+    ]);
+  } catch (err) {
+    toast(`Compare failed: ${err}`, 'error');
+  }
+}
+
+// updateEditingStatus refreshes the status-bar editor indicator.
+function updateEditingStatus() {
+  api.EditingFiles().then((files) => {
+    const sp = $('status-editing');
+    sp.classList.toggle('hidden', !files.length);
+    sp.textContent = `\u270E ${files.length} in editor`;
+  }).catch(() => {});
+}
+
+function togglePanes() {
+  const on = !localPane.visible;
+  localStorage.setItem('s3b-panes', on ? '1' : '0');
+  if (on) localPane.show();
+  else localPane.hide();
 }
 
 async function renameSelection() {
@@ -477,6 +597,10 @@ function wireDrop() {
 }
 
 async function dropToTarget(target, data, e) {
+  if (data.paths?.length) { // dragged in from the local pane → upload
+    uploadPaths(data.paths, target.prefix);
+    return;
+  }
   const srcBucket = data.bucket;
   if (!srcBucket || !data.keys?.length) return;
   const move = srcBucket === target.bucket
@@ -539,6 +663,7 @@ function wireToolbar() {
   $('btn-upload').onclick = uploadFiles;
   $('btn-upload-dir').onclick = uploadFolder;
   $('btn-download').onclick = () => downloadSelection();
+  $('btn-panes').onclick = togglePanes;
   $('btn-newfolder').onclick = newFolder;
   $('btn-doctor').onclick = () => runDoctor(nav.current?.kind === 'objects' ? nav.current.bucket : '');
   $('btn-transfers').onclick = () => transferManager();
@@ -607,7 +732,8 @@ function wireKeys() {
     if (e.key === 'Backspace') { e.preventDefault(); const p = parentOf(nav.current); if (p) nav.to(p); return; }
     if (e.key === 'F5') { e.preventDefault(); refreshCurrent(); return; }
     if (e.key === 'F2') { e.preventDefault(); renameSelection(); return; }
-    if (e.key === 'Delete') { e.preventDefault(); deleteSelection(); return; }
+    if (e.key === 'Delete') { e.preventDefault(); if (e.shiftKey) deletePermanentSelection(); else deleteSelection(); return; }
+    if (e.key === 'F9') { e.preventDefault(); togglePanes(); return; }
     if (ctrl && e.key.toLowerCase() === 'a') { e.preventDefault(); grid.selectAll(); return; }
     if (ctrl && e.key.toLowerCase() === 'c') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'copy'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Copied ${r.length} item(s)`); } return; }
     if (ctrl && e.key.toLowerCase() === 'x') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'cut'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Cut ${r.length} item(s)`); } return; }
@@ -634,6 +760,12 @@ function wireEvents() {
     if (j.status === 'running') showTransfersBadge();
     else showTransfersBadge();
   });
+  onEvent('editor:saved', (d) => {
+    toast(`Uploaded ${d?.key ? basename(d.key) : 'edited file'}`, 'ok');
+    updateEditingStatus();
+  });
+  $('status-editing').onclick = () => editingDialog(updateEditingStatus);
+  window.addEventListener('focus', updateEditingStatus);
 }
 
 function showTransfersBadge() {

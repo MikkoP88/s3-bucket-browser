@@ -13,6 +13,7 @@ import (
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/spf13/cobra"
@@ -314,7 +315,7 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 }
 
 func rmCmd() *cobra.Command {
-	var recursive, force, dryRun bool
+	var recursive, force, dryRun, versions bool
 	cmd := &cobra.Command{
 		Use:   "rm s3://bucket[/prefix]",
 		Short: "Delete objects (prefix delete needs --recursive; large batches need --force)",
@@ -327,6 +328,9 @@ func rmCmd() *cobra.Command {
 			u, err := parseS3URI(args[0])
 			if err != nil {
 				return err
+			}
+			if versions {
+				return runRmVersions(cmd.Context(), c, u, recursive, force, dryRun)
 			}
 
 			// Single object delete: bare key, no --recursive.
@@ -382,7 +386,60 @@ func rmCmd() *cobra.Command {
 	f.BoolVar(&force, "force", false,
 		fmt.Sprintf("allow deleting more than %d objects (L1 safety gate)", rmForceThreshold))
 	f.BoolVar(&dryRun, "dry-run", false, "list what would be deleted, do nothing")
+	f.BoolVar(&versions, "versions", false,
+		"permanently destroy every version and delete marker too (L3: unrecoverable)")
 	return cmd
+}
+
+// runRmVersions implements `rm --versions`: an exact key destroys its whole
+// timeline; a prefix (with --recursive) purges every version beneath it.
+func runRmVersions(ctx context.Context, c *s3client.Client, u s3URI, recursive, force, dryRun bool) error {
+	if !u.IsPrefix && !recursive {
+		if dryRun {
+			fmt.Printf("would permanently delete every version of s3://%s/%s\n", u.Bucket, u.Key)
+			return nil
+		}
+		res, err := versioning.DeleteAllVersions(ctx, c.S3, u.Bucket, u.Key)
+		if err != nil {
+			return opErr(err)
+		}
+		reportDelete(res)
+		if flagJSON {
+			return printJSON(res)
+		}
+		return nil
+	}
+	if !recursive {
+		return usageErr("refusing to purge versions under %q without --recursive", u.Key)
+	}
+	prefix := dirPrefix(u)
+	n, err := versioning.CountPurge(ctx, c.S3, u.Bucket, prefix, versioning.PurgeAll)
+	if err != nil {
+		return opErr(err)
+	}
+	if dryRun {
+		if flagJSON {
+			return printJSON(map[string]any{"wouldPurge": n, "bucket": u.Bucket, "prefix": prefix})
+		}
+		fmt.Printf("would permanently delete %d version(s)/marker(s) under s3://%s/%s\n", n, u.Bucket, prefix)
+		if n > rmForceThreshold && !force {
+			col.dim.Printf("note: running it requires --force (> %d)\n", rmForceThreshold)
+		}
+		return nil
+	}
+	if n > rmForceThreshold && !force {
+		return opErr(fmt.Errorf(
+			"would permanently delete %d version(s) — pass --force to proceed", n))
+	}
+	res, err := versioning.Purge(ctx, c.S3, u.Bucket, prefix, versioning.PurgeAll)
+	if err != nil {
+		return opErr(err)
+	}
+	reportDelete(res)
+	if flagJSON {
+		return printJSON(res)
+	}
+	return nil
 }
 
 func syncCmd() *cobra.Command {

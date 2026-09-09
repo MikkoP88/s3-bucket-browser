@@ -6,6 +6,15 @@ import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
 const ROW_H = 28;
 const OVERSCAN = 8;
 
+// acceptedMimes lists the drag payload types a pane accepts on folder rows:
+// the remote pane takes same-pane moves plus local-pane uploads; the local
+// pane takes remote downloads only (local moves are Explorer's job).
+function acceptedMimes(kind) {
+  return kind === 'remote'
+    ? ['application/x-s3b', 'application/x-s3b-local']
+    : ['application/x-s3b'];
+}
+
 const COLUMNS = [
   { id: 'name', label: 'Name', flex: true },
   { id: 'size', label: 'Size', num: true },
@@ -14,10 +23,16 @@ const COLUMNS = [
 ];
 
 export class Grid {
-  constructor() {
-    this.head = document.getElementById('grid-head');
-    this.body = document.getElementById('grid-body');
-    this.canvas = document.getElementById('grid-canvas');
+  // prefix mounts the grid on <prefix>grid-head/-body/-canvas so two grids
+  // can coexist (remote + local dual-pane). kind: 'remote' | 'local' decides
+  // the drag payload type: drops land on folder rows of the other pane (the
+  // remote pane additionally accepts same-pane moves).
+  constructor(prefix = '') {
+    this.head = document.getElementById(`${prefix}grid-head`);
+    this.body = document.getElementById(`${prefix}grid-body`);
+    this.canvas = document.getElementById(`${prefix}grid-canvas`);
+    this.kind = prefix ? 'local' : 'remote';
+    this.mime = prefix ? 'application/x-s3b-local' : 'application/x-s3b';
 
     this.all = [];          // model rows (as listed)
     this.rows = [];         // filtered + sorted
@@ -97,6 +112,13 @@ export class Grid {
 
   rowByKey(key) { return this.rows.find((r) => r.key === key) || null; }
 
+  // setCmp decorates rows with directory-compare statuses (name -> status)
+  // and repaints; null clears the decorations.
+  setCmp(map) {
+    for (const r of this.all) r.cmp = map ? (map.get(r.name) || '') : '';
+    this.render();
+  }
+
   selectAll() {
     this.sel = new Set(this.rows.map((r) => r.key));
     this.render(true);
@@ -141,11 +163,12 @@ export class Grid {
       row._model = m;
       row.classList.toggle('sel', this.sel.has(m.key));
       row.classList.toggle('focus', m.key === this.focusKey);
+      row.dataset.cmp = m.cmp || '';
       const cells = row.children;
       cells[0].children[0].textContent = fileIcon(m.name, m.isDir);
       cells[0].children[1].textContent = m.name;
       cells[1].textContent = m.isDir ? '' : fmtBytes(m.size);
-      cells[2].textContent = m.isDir ? '' : fmtDate(m.lastModified);
+      cells[2].textContent = m.isDir ? '' : fmtDate(m.lastModified || m.modTime);
       cells[3].textContent = m.isDir ? '' : (m.storageClass || '');
     }
     if (force) this.on.select?.(this.selectedRows());
@@ -193,13 +216,13 @@ export class Grid {
         this.sel.add(m.key);
         this.render();
       }
-      e.dataTransfer.setData('application/x-s3b', JSON.stringify(this.dragPayload()));
+      e.dataTransfer.setData(this.mime, JSON.stringify(this.dragPayload()));
       e.dataTransfer.effectAllowed = 'copyMove';
       this.on.dragstart?.(this.selectedRows());
     });
     row.addEventListener('dragover', (e) => {
       if (!row._model?.isDir) return;
-      if (!e.dataTransfer.types.includes('application/x-s3b')) return;
+      if (!acceptedMimes(this.kind).some((t) => e.dataTransfer.types.includes(t))) return;
       e.preventDefault();
       row.classList.add('drop-target');
     });
@@ -207,16 +230,25 @@ export class Grid {
     row.addEventListener('drop', (e) => {
       row.classList.remove('drop-target');
       if (!row._model?.isDir) return;
-      const data = e.dataTransfer.getData('application/x-s3b');
-      if (!data) return;
+      let payload = null;
+      for (const t of acceptedMimes(this.kind)) {
+        const d = e.dataTransfer.getData(t);
+        if (d) { payload = JSON.parse(d); break; }
+      }
+      if (!payload) return;
       e.preventDefault();
       e.stopPropagation();
-      this.on.drop?.(row._model, JSON.parse(data), e);
+      this.on.drop?.(row._model, payload, e);
     });
   }
 
   dragPayload() {
-    return { keys: [...this.sel] }; // bucket added by main
+    const rows = this.selectedRows();
+    if (this.kind === 'local') return { paths: rows.map((r) => r.path) };
+    return { // bucket added by main
+      keys: rows.map((r) => r.key),
+      entries: rows.map((r) => ({ key: r.key, size: r.size || 0, isDir: !!r.isDir })),
+    };
   }
 
   // ---------- keyboard ----------

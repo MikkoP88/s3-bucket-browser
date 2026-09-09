@@ -106,8 +106,84 @@ step "doctor"
 "$BIN" doctor "s3://$BUCKET" | grep -q 'DNS Resolution Check' || fail "doctor output"
 pass "doctor runs clean"
 
+step "versioning (M4)"
+"$BIN" bucket versioning "s3://$BUCKET" on | grep -q 'versioning enabled' || fail "versioning on"
+printf 'v1\n' > "$WORK/ver1.txt"
+printf 'v2\n' > "$WORK/ver2.txt"
+"$BIN" cp "$WORK/ver1.txt" "s3://$BUCKET/ver.txt" >/dev/null
+"$BIN" cp "$WORK/ver2.txt" "s3://$BUCKET/ver.txt" >/dev/null
+n="$("$BIN" versions ls "s3://$BUCKET/ver.txt" --json | grep -c '"versionId"')"
+[ "$n" = "2" ] || fail "versions ls count = $n, want 2"
+# rows are newest-first: the second versionId is v1
+vid="$("$BIN" versions ls "s3://$BUCKET/ver.txt" --json | grep -o '"versionId": "[^"]*"' | sed -n 2p | cut -d'"' -f4)"
+[ -n "$vid" ] || fail "could not parse version id"
+"$BIN" versions restore "s3://$BUCKET/ver.txt" --version-id "$vid" | grep -q 'restored' || fail "versions restore"
+"$BIN" cp "s3://$BUCKET/ver.txt" "$WORK/restored.txt" >/dev/null
+cmp "$WORK/ver1.txt" "$WORK/restored.txt" || fail "restore served wrong content"
+pass "timeline, restore-as-latest correct"
+
+step "versioning: delete marker + undo delete"
+"$BIN" rm "s3://$BUCKET/ver.txt" >/dev/null  # versioned delete → marker
+"$BIN" versions ls "s3://$BUCKET/ver.txt" --json | grep -q '"isDeleteMarker": true' \
+  || fail "rm created no delete marker"
+mid="$("$BIN" versions ls "s3://$BUCKET/ver.txt" --json | grep -B2 '"isDeleteMarker": true' | grep -o '"versionId": "[^"]*"' | cut -d'"' -f4)"
+[ -n "$mid" ] || fail "could not parse delete-marker id"
+"$BIN" versions undo "s3://$BUCKET/ver.txt" --version-id "$mid" | grep -q 'is back' || fail "versions undo"
+"$BIN" cp "s3://$BUCKET/ver.txt" "$WORK/back.txt" >/dev/null
+cmp "$WORK/ver1.txt" "$WORK/back.txt" || fail "undo restored wrong content"
+pass "undo delete brings the object back"
+
+step "versioning: purge + permanent destroy (L3)"
+"$BIN" versions stat "s3://$BUCKET" | grep -q 'total versions:' || fail "versions stat"
+printf 'a\n' > "$WORK/a.txt"
+printf 'b\n' > "$WORK/b.txt"
+"$BIN" cp "$WORK/a.txt" "s3://$BUCKET/vp.txt" >/dev/null
+"$BIN" cp "$WORK/b.txt" "s3://$BUCKET/vp.txt" >/dev/null
+"$BIN" versions purge "s3://$BUCKET" --mode noncurrent --dry-run | grep -q 'would purge' \
+  || fail "versions purge dry-run"
+"$BIN" versions purge "s3://$BUCKET" --mode noncurrent | grep -q 'deleted' \
+  || fail "versions purge noncurrent"
+"$BIN" versions rm "s3://$BUCKET/ver.txt" --all | grep -q 'deleted' || fail "versions rm --all"
+# grep -c exits 1 on zero matches — guard with || true or set -e kills the script.
+n="$("$BIN" versions ls "s3://$BUCKET/ver.txt" --json | grep -c '"versionId"' || true)"
+[ "$n" = "0" ] || fail "timeline not destroyed, $n left"
+pass "purge and permanent destroy work"
+
+step "bucket admin (M3)"
+"$BIN" bucket info "s3://$BUCKET" | grep -q 'versioning:' || fail "bucket info"
+"$BIN" bucket tags put "s3://$BUCKET" team=e2e env=ci | grep -q 'tag(s) saved' || fail "tags put"
+"$BIN" bucket tags get "s3://$BUCKET" | grep -q 'team=e2e' || fail "tags get"
+# Recent MinIO releases dropped the bucket-CORS API: accept a graceful
+# "not supported" as a pass (the engine maps provider gaps to plain errors).
+cors_out="$(printf '[{"origins":["https://example.com"],"methods":["GET"],"maxAge":3600}]' \
+  | "$BIN" bucket cors put "s3://$BUCKET" - 2>&1 || true)"
+case "$cors_out" in
+  *"CORS saved"*)
+    "$BIN" bucket cors get "s3://$BUCKET" | grep -q 'example.com' || fail "cors get" ;;
+  *"not supported"*)
+    printf 'SKIP  bucket CORS API not supported by this MinIO\n' ;;
+  *)
+    fail "cors put: $cors_out" ;;
+esac
+cat > "$WORK/policy.json" <<EOF
+{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":"s3:GetObject","Resource":"arn:aws:s3:::$BUCKET/*"}]}
+EOF
+"$BIN" bucket policy put "s3://$BUCKET" "$WORK/policy.json" | grep -q 'policy saved' || fail "policy put"
+"$BIN" bucket policy get "s3://$BUCKET" | grep -q "$BUCKET" || fail "policy get"
+enc_out="$("$BIN" bucket encryption put "s3://$BUCKET" --algo AES256 2>&1 || true)"
+case "$enc_out" in
+  *"saved"*)
+    "$BIN" bucket encryption get "s3://$BUCKET" | grep -q 'AES256' || fail "encryption get" ;;
+  *"not supported"*)
+    printf 'SKIP  default encryption not supported by this MinIO\n' ;;
+  *)
+    fail "encryption put: $enc_out" ;;
+esac
+pass "tags/cors/policy/encryption manageable"
+
 step "bucket removal + cleanup"
-"$BIN" rb "s3://$BUCKET" --force | grep -q 'removed bucket' || fail "rb --force"
+# Versioned bucket with markers: rb --force must purge version history too (M4).
+"$BIN" rb "s3://$BUCKET" --force | grep -q 'removed bucket' || fail "rb --force (versioned)"
 if "$BIN" ls --json | grep -q "$BUCKET"; then fail "bucket still visible"; fi
 "$BIN" profile remove lab | grep -q 'removed profile' || fail "profile cleanup"
 pass "bucket and profile removed"
