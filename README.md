@@ -2,7 +2,42 @@
 
 **A Windows-Explorer-style desktop app + CLI for managing Amazon S3 and S3-compatible storage — buckets, objects, versions, and everything in between.**
 
-> **Status: M0 — planning.** The full product plan, architecture, feature catalogue, CLI spec and milestones live in [PLAN.md](PLAN.md). Implementation starts at milestone M1.
+> **Status: M1 — CLI complete.** The full CLI (`s3b`) is implemented and integration-tested against MinIO on every push. The desktop GUI (M2), admin panels (M3) and versioning UI (M4) follow per the [roadmap](PLAN.md#12-milestones).
+
+## Quickstart (CLI)
+
+```bash
+go build -o s3b ./cmd/s3b
+
+# Connect to any S3 provider (AWS, MinIO, Wasabi, R2, ...) — credentials
+# also fall back to $S3B_ACCESS_KEY / $S3B_SECRET_KEY
+s3b profile add lab --endpoint http://localhost:9000 \
+    --access-key minioadmin --secret-key minioadmin --default
+s3b profile test lab          # lightweight connectivity check
+s3b doctor s3://my-bucket     # deep diagnosis: DNS → TCP → TLS → auth → policy/ACL
+
+s3b ls                        # buckets          s3b ls s3://b/photos/    # folder view
+s3b tree s3://b               # ASCII tree       s3b du s3://b/photos/    # size + count
+s3b stat s3://b/photos/a.jpg  # object metadata
+s3b mb s3://new-bucket        s3b mkdir s3://b/folder/
+
+s3b cp report.pdf s3://b/docs/            # upload
+s3b cp -r ./site s3://b/site/             # recursive upload
+s3b cp s3://b/docs/report.pdf ./out/      # download
+s3b cp s3://b/a.jpg s3://b/copy/a.jpg    # server-side copy
+s3b mv s3://b/old.txt s3://b/new.txt
+s3b sync ./site s3://b/site/ --delete     # two-way safe sync
+s3b presign s3://b/docs/report.pdf --expires 1h
+
+s3b rm s3://b/tmp/file.txt                # single object
+s3b rm -r --dry-run s3://b/tmp/           # preview a prefix delete
+s3b rm -r --force s3://b/tmp/             # >50 objects requires --force
+s3b rb s3://old-bucket --force            # empty + remove (L2)
+```
+
+Every command takes `--json` for machine-readable output, `--profile` to pick a connection, and `--verbose` for per-item detail. Exit codes: `0` OK, `1` operation failure, `2` usage/config error, `3` unexpected.
+
+**Safety ladder** (PLAN.md §9): destructive operations count first and act second. Prefix deletes over 50 objects require `--force`, removing non-empty buckets requires `--force`, and the GUI will additionally require typed confirmation.
 
 ## Why another S3 browser?
 

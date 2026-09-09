@@ -1,0 +1,5 @@
+# Normalize text files to LF in the repository.
+* text=auto
+
+# Shell scripts must stay LF end-to-end (they run on Linux CI runners).
+*.sh text eol=lf
