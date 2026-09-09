@@ -165,6 +165,7 @@ export class Grid {
       row.appendChild(el('div', { class: 'gc lastModified' }));
       row.appendChild(el('div', { class: 'gc storageClass' }));
       this.wireRow(row);
+      this.canvas.appendChild(row); // pool rows live in the canvas; recycled via display/top
       this.pool.push(row);
     }
     for (let i = 0; i < this.pool.length; i++) {

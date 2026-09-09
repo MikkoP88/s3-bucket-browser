@@ -5,8 +5,9 @@
 import { Grid } from './grid.js';
 import { prompt } from './dialogs.js';
 import { fmtBytes } from './util.js';
+import { api } from './api.js';
 
-const app = () => window.go.main.App;
+const app = () => api;
 const $ = (id) => document.getElementById(id);
 
 // aggregateCompare folds recursive CompareDir rows into per-child statuses

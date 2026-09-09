@@ -28,7 +28,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg
-          go build -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b ./cmd/s3b
+          go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b ./cmd/s3b
           cp LICENSE README.md dist/pkg/
           tar -C dist/pkg -czf "dist/s3b-${VERSION}-linux-amd64.tar.gz" s3b LICENSE README.md
         env:
@@ -40,7 +40,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg-arm
-          go build -ldflags "-s -w -X main.version=${VERSION}" -tags s3b_headless -o dist/pkg-arm/s3b ./cmd/s3b
+          go build -tags s3b_headless -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg-arm/s3b ./cmd/s3b
           cp LICENSE README.md dist/pkg-arm/
           tar -C dist/pkg-arm -czf "dist/s3b-${VERSION}-linux-arm64-cli.tar.gz" s3b LICENSE README.md
         env:
@@ -65,7 +65,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg dist/pkg-arm
-          go build -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
+          go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
           cp LICENSE README.md dist/pkg/
           (cd dist/pkg && zip -q "../s3b-${VERSION}-windows-amd64.zip" *)
           cp dist/pkg/s3b.exe dist/  # staging for the NSIS installer
@@ -76,7 +76,7 @@ jobs:
       - name: Build windows-arm64 zip
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          go build -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
+          go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
           cp LICENSE README.md dist/pkg-arm/
           (cd dist/pkg-arm && zip -q "../s3b-${VERSION}-windows-arm64.zip" *)
         env:
@@ -109,14 +109,14 @@ jobs:
           go-version: "1.25"
           cache: true
 
-      # The frontend is embedded (plain go build, no wails toolchain needed);
-      # we hand-roll a minimal .app bundle and wrap it in a dmg.
+      # The frontend is embedded, so go build with Wails' tags suffices
+      # (no wails CLI toolchain); hand-roll a minimal .app bundle and dmg.
       - name: Build app bundle and dmg
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           APP="dist/S3 Bucket Browser.app"
           mkdir -p "$APP/Contents/MacOS"
-          go build -ldflags "-s -w -X main.version=${VERSION}" -o "$APP/Contents/MacOS/s3b" ./cmd/s3b
+          go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o "$APP/Contents/MacOS/s3b" ./cmd/s3b
           sed "s/__VERSION__/${VERSION}/g" scripts/installer/Info.plist > "$APP/Contents/Info.plist"
           hdiutil create -volname "S3 Bucket Browser" -srcfolder "$APP" -ov -format UDZO "dist/s3b-${VERSION}-darwin-${{ matrix.goarch }}.dmg"
         env:
@@ -128,8 +128,35 @@ jobs:
           name: release-darwin-${{ matrix.goarch }}
           path: dist/*.dmg
 
+  # Supply-chain metadata for the release: full dependency graph plus an
+  # SBOM (docs/security.md, PLAN.md §16).
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Dependency report
+        run: |
+          mkdir -p dist
+          go mod graph > dist/s3b-dependencies.txt
+
+      - name: SBOM (syft, SPDX-JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          artifact-name: release-sbom
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dependencies
+          path: dist/s3b-dependencies.txt
+
   release:
-    needs: [linux, windows, darwin]
+    needs: [linux, windows, darwin, sbom]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

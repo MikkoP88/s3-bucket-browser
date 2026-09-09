@@ -8,7 +8,7 @@
 | **License** | MIT |
 | **Plan version** | 1.2 (2026-09-09) |
 | **Derived from** | [s3-bucket-tester](https://github.com/MikkoP88/s3-bucket-tester) (MIT) — read-only source base; provider knowledge, signing, diagnostics and error catalog are ported, not copied blindly |
-| **Status** | M1–M5 shipped (core CLI+GUI, WinSCP-parity transfers, administration, versioning, hardening & packaging). Remaining: v1.0 launch (M6) |
+| **Status** | M1–M6 shipped — v1.0 (core CLI+GUI, WinSCP-parity transfers, administration, versioning, hardening & packaging, launch docs). Plan closed at v1.0; further work tracks in [CHANGELOG.md](CHANGELOG.md) |
 
 ---
 
@@ -138,7 +138,7 @@ The base repository is treated as a read-only upstream: we port code into this r
 | `github.com/zalando/go-keyring` (+ ` Daniels/gnome-keyring` transitive) | MIT | OS keychain |
 | `github.com/fatih/color` | MIT | Terminal colors |
 
-npm runtime dependencies: **0**. (Dev-only: Wails CLI; optional esbuild for minification — never shipped.) Total transitive Go modules target: **≤ 40**. `go mod tidy` diff is reviewed in every release checklist; Dependabot weekly.
+npm runtime dependencies: **0**. (Dev-only: Wails CLI; optional esbuild for minification — never shipped.) Go modules linked into the v1.0 GUI binary: **45** (`go version -m` audit; the budget is ≤ 50 — Wails' asset server alone pulls echo/gorilla/websocket). `go mod tidy` diff is reviewed in every release checklist; Dependabot weekly.
 
 ---
 
@@ -381,7 +381,7 @@ Transfer manager (aggregated + per-file progress, pause/resume/cancel, speed/ETA
 | **M3** ✅ Administration | Bucket panels: versioning toggle, policy, CORS, lifecycle, encryption, website, tagging, public-access-block; doctor UI; du; transfer log | Admin can configure a bucket end-to-end (versioning→policy→CORS→lifecycle) and doctor explains a broken profile. Shipped as tabbed GUI panel + `s3b bucket …` CLI with full JSON; e2e-verified on MinIO (provider gaps surface as plain "not supported by this provider" errors) |
 | **M4** ✅ Versioning & force | Versions timeline + restore-as-latest, undo-delete for markers, bulk purge (noncurrent/markers/all), version stats dashboard, version-aware `rb --force`, `rm --versions` | The classic benchmark: a versioned bucket emptied via GUI and `rb --force` with typed confirm (whole version history + markers purged, e2e-verified on MinIO); restore an old version in ≤3 clicks. *Deferred to M5: deep search, storage-class conversion, object lock* |
 | **M5** ✅ Hardening & packaging | Streaming large-bucket listing pass (paginated background streams for grid + tree, O(page) server+client memory, incremental grid append), cancelable deep search (`find` CLI + GUI Find dialog, Ctrl+Shift+F), storage-class conversion (`sc` + dialog, folder expansion, force gate), object lock (bucket config, retention, legal hold + admin Lock tab), OS-keyring secret storage with 0600-file fallback, favorites sidebar, i18n scaffolding (en/fi), accessibility pass (dialog focus trap, ARIA grid/listbox), portable mode (marker file), release workflow (NSIS installer, dmg, tarballs + SHA256SUMS on `v*` tags), cobra completions | e2e-verified on MinIO (find filters, sc conversion, object-lock enforcement incl. blocked deletes); hermetic unit tests (keyring disabled in test env); release workflow builds linux/windows/darwin × amd64/arm64 artifacts. *Not claimed: 1M-object benchmark run, code signing, SBOM — M6* |
-| **M6** v1.0 launch | Polish, docs site, CLI reference, comparison page vs §3 table, release notes | Public 1.0 announcement-ready; fresh-machine install test passes |
+| **M6** ✅ v1.0 launch | Polish, docs, CLI reference, comparison page vs §3 table, release notes | `docs/cli.md` generated from the cobra tree (`go run ./tools/gendocs`, CI freshness check); `docs/comparison.md` + `docs/security.md` + `CHANGELOG.md` + `CONTRIBUTING.md` written; release pipeline attaches SBOM (syft) + `go mod graph` report; CI compile-checks the NSIS installer per push; memory-bound listing test (250k objects via in-process mock S3: heap +0.1 MB streaming vs 40 MB retaining) + 100k listing benchmark. *Fix shipped with it: GUI builds now pass Wails' `-tags desktop,production` (plain `go build` showed Wails' build-tag error instead of the app). Not claimed: 1M-object live benchmark run, code signing, fresh-machine manual install audit — post-1.0* |
 
 ---
 
@@ -408,12 +408,12 @@ Transfer manager (aggregated + per-file progress, pause/resume/cancel, speed/ETA
 - **Protocol**: ported `httptest` mock-server suite (policy/ACL/signing) extended per operation.
 - **Integration**: GitHub Actions service container running MinIO; full CLI E2E per milestone; AWS-only features (lifecycle nuances, object lock) tested against an AWS account in a manually-triggered workflow with ephemeral credentials.
 - **GUI**: pure-logic JS unit tests for selection/sort models; manual test checklist per milestone; Playwright-against-webview investigated in M5.
-- **Benchmarks**: listing & sync benchmarks with `go test -bench`, tracked in CI artifacts.
+- **Benchmarks**: `BenchmarkWalkDir100k` (100k objects against an in-process mock S3) via `go test -bench`; the O(page) streaming guarantee is asserted, not just measured — `TestWalkDirStreamingMemoryBounded` walks 250k objects and fails if the live heap grows >32 MB (measured: +0.1 MB streaming vs 40 MB retaining). Sync benchmark: later.
 
 ## 16. CI/CD & release
 
-- CI (`.github/workflows/ci.yml`): gofmt, `go vet`, golangci-lint, `go test -race ./...`, build matrix (win/mac/linux × amd64/arm64).
-- Release on `v*` tags (`.github/workflows/release.yml`): NSIS installer (windows-amd64), windows zips, linux tarballs (amd64 GUI + arm64 headless CLI), darwin dmg (amd64/arm64) + `SHA256SUMS`, attached to a GitHub Release; `main.version` stamped via `-ldflags` (propagated to `cli.Version` at startup). Code signing + SBOM (`syft`): later.
+- CI (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race ./...`, docs-freshness check (`tools/gendocs` regenerates `docs/cli.md`; diff must be empty), NSIS installer compile check, build matrix (win/mac/linux × amd64/arm64; GUI builds pass `-tags desktop,production`, linux-arm64 ships as headless CLI), MinIO e2e (headless build). golangci-lint: not wired (Makefile `lint` target exists); candidate post-1.0.
+- Release on `v*` tags (`.github/workflows/release.yml`): NSIS installer (windows-amd64), windows zips, linux tarballs (amd64 GUI + arm64 headless CLI), darwin dmg (amd64/arm64) + `SHA256SUMS`, SBOM (syft, SPDX-JSON) and `go mod graph` dependency report, attached to a GitHub Release; `main.version` stamped via `-ldflags` (propagated to `cli.Version` at startup); GUI builds pass `-tags desktop,production` (Wails requirement — without them the GUI face shows Wails' build-tag error; plain CLI builds and `-tags s3b_headless` are unaffected). Code signing: post-1.0.
 - Branch model: `main` protected; feature branches; conventional commits.
 
 ## 17. Risks & mitigations

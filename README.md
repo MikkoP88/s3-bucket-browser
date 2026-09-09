@@ -2,12 +2,14 @@
 
 **A Windows-Explorer-style desktop app + CLI for managing Amazon S3 and S3-compatible storage — buckets, objects, versions, and everything in between.**
 
-> **Status: M5 — hardening & packaging.** Deep search, storage-class conversion and object lock join the GUI and CLI; secrets live in the OS keyring; listings stream for huge buckets. Remaining roadmap: v1.0 launch polish (see the [roadmap](PLAN.md#12-milestones)).
+> **Status: v1.0.** All launch milestones (M0–M6) are shipped and CI-green. Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
 
 ## Quickstart (GUI)
 
 ```bash
-go build -o s3b ./cmd/s3b && ./s3b        # no arguments -> desktop app
+# Wails needs its build tags for a working GUI — see
+# https://wails.io/docs/guides/manual-builds
+go build -tags desktop,production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop app
 ```
 
 - **Deep search** (Ctrl+Shift+F): filter every object under a bucket/folder by name glob, size, age or storage class — results stream in and are cancelable; click a result to jump straight to the object.
@@ -37,7 +39,8 @@ go build -tags s3b_headless -o s3b ./cmd/s3b
 ## Quickstart (CLI)
 
 ```bash
-go build -o s3b ./cmd/s3b
+go build -o s3b ./cmd/s3b   # CLI-only works in any build; add -tags
+                             # desktop,production if you want the GUI too
 
 # Connect to any S3 provider (AWS, MinIO, Wasabi, R2, ...) — credentials
 # also fall back to $S3B_ACCESS_KEY / $S3B_SECRET_KEY
@@ -104,7 +107,7 @@ Every command takes `--json` for machine-readable output, `--profile` to pick a 
 
 ## Install
 
-Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), standalone zips/tarballs for Windows/Linux, and macOS dmg images — all checksummed in `SHA256SUMS`. Or build from source as shown above; releases stamp the version into `s3b version`.
+Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), standalone zips/tarballs for Windows/Linux, and macOS dmg images — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
 
 ## Why another S3 browser?
 

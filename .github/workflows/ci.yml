@@ -31,6 +31,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # docs/cli.md is generated (tools/gendocs); fail when it no longer
+      # matches the command tree so help-text drift can't ship silently.
+      - name: Docs freshness
+        run: |
+          go run ./tools/gendocs
+          git diff --exit-code -- docs/cli.md || {
+            echo "::error::docs/cli.md is stale — run: go run ./tools/gendocs"
+            exit 1
+          }
+
       - name: Test
         run: go test -race ./...
 
@@ -40,20 +50,22 @@ jobs:
       matrix:
         include:
           # Linux GUI builds need cgo + webkit natively; arm64 ships as the
-          # headless CLI (-tags s3b_headless, no GTK deps).
-          - { os: ubuntu-latest, goos: linux, goarch: amd64, tags: "", artifact: s3b-linux-amd64 }
+          # headless CLI (-tags s3b_headless, no GTK deps). GUI builds carry
+          # Wails' tags — without them the binary shows Wails' build-tag
+          # error instead of the app.
+          - { os: ubuntu-latest, goos: linux, goarch: amd64, tags: desktop,production, artifact: s3b-linux-amd64 }
           - { os: ubuntu-latest, goos: linux, goarch: arm64, tags: s3b_headless, artifact: s3b-linux-arm64-cli }
-          - { os: ubuntu-latest, goos: windows, goarch: amd64, artifact: s3b-windows-amd64.exe }
-          - { os: ubuntu-latest, goos: windows, goarch: arm64, artifact: s3b-windows-arm64.exe }
+          - { os: ubuntu-latest, goos: windows, goarch: amd64, tags: desktop,production, artifact: s3b-windows-amd64.exe }
+          - { os: ubuntu-latest, goos: windows, goarch: arm64, tags: desktop,production, artifact: s3b-windows-arm64.exe }
           # darwin GUI needs Cocoa/WebKit: build on a macOS runner.
-          - { os: macos-latest, goos: darwin, goarch: amd64, artifact: s3b-darwin-amd64 }
-          - { os: macos-latest, goos: darwin, goarch: arm64, artifact: s3b-darwin-arm64 }
+          - { os: macos-latest, goos: darwin, goarch: amd64, tags: desktop,production, artifact: s3b-darwin-amd64 }
+          - { os: macos-latest, goos: darwin, goarch: arm64, tags: desktop,production, artifact: s3b-darwin-arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install GUI build deps (linux GUI only)
-        if: matrix.goos == 'linux' && matrix.tags == ''
+        if: matrix.goos == 'linux' && matrix.tags != 's3b_headless'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
@@ -80,11 +92,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install GUI build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
-
+      # The e2e script builds the headless CLI (-tags s3b_headless), a
+      # pure-Go build that needs no GUI headers.
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
@@ -101,3 +110,24 @@ jobs:
 
       - name: E2E against MinIO
         run: bash scripts/e2e-minio.sh
+
+  # The NSIS installer is only packaged on releases; compile-check it on
+  # every push so .nsi regressions surface in CI, not at tag time.
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+      - name: Install NSIS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nsis
+      - name: Compile installer (with real cross-built payload)
+        run: |
+          mkdir -p dist
+          GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags "-s -w" -o dist/s3b.exe ./cmd/s3b
+          makensis -DVERSION=0.0.0-ci scripts/installer/s3b.nsi
+          test -f dist/s3b-setup-0.0.0-ci.exe

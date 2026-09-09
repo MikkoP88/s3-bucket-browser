@@ -20,7 +20,9 @@ trap 'rm -rf "$WORK"' EXIT
 if [ -z "${S3B_BIN:-}" ]; then
   BIN="$WORK/s3b"
   case "$(go env GOOS)" in windows) BIN="$BIN.exe";; esac
-  (cd "$ROOT" && go build -o "$BIN" ./cmd/s3b)
+  # Headless CLI build: the suite exercises the CLI face only, and the
+  # pure-Go build needs no GTK/webkit headers (hermetic CI).
+  (cd "$ROOT" && go build -tags s3b_headless -o "$BIN" ./cmd/s3b)
 else
   BIN="$S3B_BIN"
 fi

@@ -1,8 +1,27 @@
-// Thin wrapper over the generated Wails bindings (window.go.pkg.api.App).
-// Every App method becomes api.<Method>(...args) returning a Promise.
+// Thin wrapper over the generated Wails bindings.
+// Wails exposes bound methods at window.go[<package>].App.<Method>, where
+// <package> is the struct's full import path ("github.com/.../pkg/api"),
+// a module-relative path ("pkg.api") or "main" depending on the Wails
+// version — so resolve the App struct once by probing window.go.
+let appObj = null;
+const resolveApp = () => {
+  if (appObj) return appObj;
+  const go = window.go;
+  if (go) {
+    for (const pkg of Object.keys(go)) {
+      const app = go[pkg]?.App;
+      if (app && typeof app.GetVersion === 'function') {
+        appObj = app;
+        return app;
+      }
+    }
+  }
+  return null;
+};
+
 const call = (method, ...args) => {
-  const fn = window.go?.pkg?.api?.App?.[method];
-  if (!fn) return Promise.reject(new Error(`backend binding missing: ${method}`));
+  const fn = resolveApp()?.[method];
+  if (typeof fn !== 'function') return Promise.reject(new Error(`backend binding missing: ${method}`));
   return fn(...args);
 };
 
