@@ -1,0 +1,36 @@
+# Binaries and build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+s3b
+s3browser
+/bin/
+/dist/
+/build/bin/
+/frontend/dist/
+
+# Test and coverage
+*.test
+*.out
+coverage.*
+results.json
+
+# Go workspace
+go.work
+go.work.sum
+
+# Node (dev-only tooling; no runtime deps)
+node_modules/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local env / secrets
+.env
+*.local.json
