@@ -4,8 +4,8 @@
 *.dll
 *.so
 *.dylib
-s3b
-s3browser
+/s3b
+/s3browser
 /bin/
 /dist/
 /build/bin/
