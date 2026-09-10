@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Versioning & object-lock visuals (M10.4): the navbar now shows guard chips
+  for the browsed bucket — versioning state (on / suspended) and object-lock
+  mode with retention days — fetched through a new cheap `GetBucketGuard`
+  endpoint (two tolerant calls, cached per bucket per session; clicking a
+  chip opens the bucket admin panel). The Previous Versions dialog gains a
+  vs-current column: every old version shows its size delta against the
+  current one (or an "identical" tag when the ETags match) plus a one-click
+  "vs current" diff, next to the existing A/B compare. Single-object
+  Properties now include the object's retention mode/until date and legal
+  hold state when the bucket has a lock config.
 - Multi-run commands (M10.3): Properties, Pre-sign URL and Object lock now
   accept the full selection. A multi-selection Properties summarizes
   composition (folders/files), total size, modification range and the

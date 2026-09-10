@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/adminops"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/bucketops"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
@@ -378,7 +379,7 @@ func (a *App) RunDoctorCheck(bucket, name string) (*doctor.CheckResult, error) {
 	return &res, nil
 }
 
-// ListVersions reports whether a bucket has versioning enabled (used by the
+// BucketVersioning reports whether a bucket has versioning enabled (used by the
 // object grid's version badge; full version browsing is M4).
 func (a *App) BucketVersioning(bucket string) (string, error) {
 	c, err := a.client("")
@@ -394,6 +395,34 @@ func (a *App) BucketVersioning(bucket string) (string, error) {
 		return "", err
 	}
 	return string(out.Status), nil
+}
+
+// BucketGuard is the cheap per-view guard state of a bucket: versioning
+// status and whether object lock is configured (two quick calls — the full
+// admin panel costs ten more).
+type BucketGuard struct {
+	Versioning  string `json:"versioning"` // "" | Suspended | Enabled
+	LockEnabled bool   `json:"lockEnabled"`
+	LockMode    string `json:"lockMode,omitempty"` // GOVERNANCE | COMPLIANCE
+	LockDays    int32  `json:"lockDays,omitempty"` // default retention days
+}
+
+// GetBucketGuard reads the bucket's versioning + object-lock state for the
+// navbar chips; a failing section degrades to its zero value (that chip
+// just doesn't show).
+func (a *App) GetBucketGuard(bucket string) (BucketGuard, error) {
+	c, err := a.client("")
+	if err != nil {
+		return BucketGuard{}, err
+	}
+	ctx, cancel := a.quickCtx()
+	defer cancel()
+	var g BucketGuard
+	g.Versioning, _ = versioning.Status(ctx, c.S3, bucket)
+	if lock, err := adminops.GetLockConfig(ctx, c.S3, bucket); err == nil {
+		g.LockEnabled, g.LockMode, g.LockDays = lock.Enabled, lock.Mode, lock.Days
+	}
+	return g, nil
 }
 
 func firstNonEmpty(vals ...string) string {

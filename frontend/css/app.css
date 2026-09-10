@@ -531,6 +531,17 @@ kbd {
 .ver-pick { padding: 2px 8px; font-size: 11px; }
 .ver-pick.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 
+/* Bucket guard chips + vs-current delta (M10.4) */
+.guard-chips { display: flex; align-items: center; gap: 4px; flex: none; }
+.guard-chip {
+  padding: 1px 8px; border: 1px solid var(--border); border-radius: 10px;
+  font-size: 11px; color: var(--text-dim); cursor: pointer; white-space: nowrap;
+  user-select: none;
+}
+.guard-chip:hover { border-color: var(--accent); }
+.guard-chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.ver-delta { font-family: var(--mono); font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+
 .verd-meta { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border-soft); border-radius: 6px; overflow: hidden; }
 .verd-mrow { display: grid; grid-template-columns: 130px 1fr 1fr; gap: 8px; padding: 5px 10px; font-size: 13px; }
 .verd-mrow:not(.verd-mhead):nth-child(even) { background: var(--panel-alt); }

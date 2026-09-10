@@ -444,6 +444,50 @@ function renderBreadcrumb() {
     bc.appendChild(c);
   }
   bc.lastChild?.classList.add('current');
+  updateGuardChips(loc);
+}
+
+// ====================== bucket guard chips (M10.4) ======================
+// guardCache memoizes one GetBucketGuard per bucket per session; chips next
+// to the breadcrumb show versioning + object-lock state (cached value draws
+// immediately, a fresh fetch updates it) and open the admin panel on click.
+const guardCache = new Map();
+
+function updateGuardChips(loc) {
+  const box = $('guard-chips');
+  if (loc?.kind !== 'objects') { box.classList.add('hidden'); box.replaceChildren(); return; }
+  const { bucket } = loc;
+  const cached = guardCache.get(bucket);
+  if (cached) drawGuardChips(bucket, cached);
+  else { box.classList.add('hidden'); box.replaceChildren(); }
+  api.GetBucketGuard(bucket)
+    .then((g) => {
+      if (nav.current?.kind === 'objects' && nav.current.bucket === bucket) {
+        guardCache.set(bucket, g);
+        drawGuardChips(bucket, g);
+      }
+    })
+    .catch(() => {});
+}
+
+function drawGuardChips(bucket, g) {
+  const box = $('guard-chips');
+  const chips = [];
+  if (g.versioning === 'Enabled') {
+    chips.push(['Versions on', 'Versioning is enabled — every write keeps previous versions (see "Previous versions" on a row)', true]);
+  } else if (g.versioning === 'Suspended') {
+    chips.push(['Versions suspended', 'Versioning is suspended — new writes replace the current version; existing versions are kept', false]);
+  }
+  if (g.lockEnabled) {
+    chips.push([`Lock: ${g.lockMode || 'on'}${g.lockDays ? ` ${g.lockDays}d` : ''}`, 'Object Lock is enabled — WORM protection (see "Object lock" on a row)', true]);
+  }
+  if (!chips.length) { box.classList.add('hidden'); box.replaceChildren(); return; }
+  box.classList.remove('hidden');
+  box.replaceChildren(...chips.map(([text, title, on]) => {
+    const c = el('span', { class: `guard-chip${on ? ' on' : ''}`, text, title });
+    c.onclick = () => adminDialog(bucket, refreshCurrent);
+    return c;
+  }));
 }
 
 // ============================ grid wiring ============================
@@ -1376,6 +1420,17 @@ async function selectionProperties() {
       ]),
       ['s3:// URI', `s3://${loc.bucket}/${row.key}`],
     ];
+    // Object-lock state of the selected object (M10.4): one extra call,
+    // tolerating buckets without a lock config (rows simply stay away).
+    if (!row.isDir) {
+      try {
+        const lock = await api.GetObjectLock(loc.bucket, row.key, '');
+        rows.push(
+          ['Retention', lock.mode ? `${lock.mode} until ${lock.retainUntil ? fmtDate(lock.retainUntil) : '?'}` : 'none'],
+          ['Legal hold', lock.legalHold || 'off'],
+        );
+      } catch { /* no lock config or no permission — skip */ }
+    }
     properties(`Properties — ${st.name}`, rows);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');

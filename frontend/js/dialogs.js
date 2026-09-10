@@ -707,6 +707,15 @@ export function versionsDialog(bucket, key, onChanged) {
     if (pick.a && !vers.some((v) => v.versionId === pick.a.versionId)) pick.a = null;
     if (pick.b && !vers.some((v) => v.versionId === pick.b.versionId)) pick.b = null;
     renderPickBar();
+    // vs-current (M10.4): each old version shows its size delta against the
+    // current one and can be diffed against it with one click.
+    const latest = vers.find((v) => v.isLatest && !v.isDeleteMarker);
+    const deltaChip = (v) => {
+      if (!latest || v.isLatest) return null;
+      if (v.etag && v.etag === latest.etag) return el('span', { class: 'tag', text: 'identical' });
+      const d = (v.size || 0) - (latest.size || 0);
+      return el('span', { class: 'ver-delta', text: `${d >= 0 ? '+' : '\u2212'}${fmtBytes(Math.abs(d))} vs current` });
+    };
     list.replaceChildren(...vers.map((v) => el('div', { class: `ver-row${v.isLatest ? ' latest' : ''}` },
       el('span', { class: 'ver-icon', text: v.isDeleteMarker ? '\u26D4' : (v.isLatest ? '\u25CF' : '\u25CB') }),
       el('span', { class: 'ver-main' },
@@ -714,6 +723,7 @@ export function versionsDialog(bucket, key, onChanged) {
         el('div', { class: 'ver-sub', text: `${v.lastModified ? fmtDate(asMillis(v.lastModified)) : ''}${v.versionId ? ` — ${v.versionId}` : ''}` }),
       ),
       el('span', { class: 'ver-actions' },
+        deltaChip(v),
         ...(v.versionId && !v.isDeleteMarker
           ? ['a', 'b'].map((side) => el('button', {
               class: `btn ver-pick${pick[side]?.versionId === v.versionId ? ' on' : ''}`,
@@ -723,6 +733,9 @@ export function versionsDialog(bucket, key, onChanged) {
             }))
           : []),
         v.isLatest && !v.isDeleteMarker ? el('span', { class: 'tag', text: 'current' }) : null,
+        !v.isLatest && !v.isDeleteMarker && latest
+          ? el('button', { class: 'btn', text: 'vs current', title: 'Diff this version against the current one', onclick: () => versionDiffDialog(bucket, key, v, latest) })
+          : null,
         !v.isLatest && !v.isDeleteMarker
           ? el('button', { class: 'btn', text: 'Restore as latest', onclick: () => act(() => api.RestoreVersion(bucket, key, v.versionId), 'Restored as latest') })
           : null,
