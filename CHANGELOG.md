@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Top menu bar (File / Edit / View / Help): dropdown menus with shortcut
+  hints, separators and greyed-out unavailable actions; minimal About
+  dialog (version, MIT license, project URL).
+- Central command-state system: toolbar buttons now grey out when their
+  action is unavailable (no selection, no profile, nothing to paste, …).
+- Doctor v2 backend: every check carries start/finish timestamps, checks
+  can be run individually by name (`DoctorChecks`, `RunDoctorCheck`),
+  policy and ACL are timed separately; hermetic unit tests for the
+  registry.
+
 ### Fixed
 
 - Windows: launching the GUI no longer opens an empty console window behind

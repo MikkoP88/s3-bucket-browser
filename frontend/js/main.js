@@ -11,7 +11,8 @@ import {
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang } from './i18n.js';
-import { setCommandContext, updateCommandState } from './commands.js';
+import { setCommandContext, updateCommandState, commandState } from './commands.js';
+import { createMenubar } from './menubar.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -38,6 +39,7 @@ async function boot() {
   initTheme();
   $('status-version').textContent = `s3b v${await api.GetVersion()}`;
   wireToolbar();
+  mountMenubar();
   wireGrid();
   wireLocalPane();
   wireKeys();
@@ -847,7 +849,99 @@ function profilesDialog() {
   });
 }
 
+// ============================ menu bar ============================
+// enabled flags are re-evaluated on every dropdown open (menubar.js
+// re-renders), reading live state through commandState().
+function mountMenubar() {
+  const st = () => commandState();
+  const inObjects = () => nav.current?.kind === 'objects';
+
+  const defs = [
+    {
+      label: t('menu.file'),
+      items: [
+        { label: t('menu.importAws'), action: importAws },
+        null,
+        { label: t('menu.exit'), action: () => api.ExitApp() },
+      ],
+    },
+    {
+      label: t('menu.edit'),
+      items: [
+        { label: t('menu.cut'), kbd: 'Ctrl+X', action: cutSelection, enabled: () => st().canCut },
+        { label: t('menu.copy'), kbd: 'Ctrl+C', action: copySelection, enabled: () => st().canCopy },
+        { label: t('menu.paste'), kbd: 'Ctrl+V', action: () => paste(), enabled: () => st().canPaste },
+        { label: t('menu.selectAll'), kbd: 'Ctrl+A', action: () => grid.selectAll(), enabled: inObjects },
+        null,
+        { label: t('menu.rename'), kbd: 'F2', action: () => renameSelection(), enabled: () => st().canRename },
+        { label: t('menu.delete'), kbd: 'Del', action: () => deleteSelection(), enabled: () => st().canDelete },
+      ],
+    },
+    {
+      label: t('menu.view'),
+      items: [
+        { label: t('menu.refresh'), kbd: 'F5', action: refreshCurrent },
+        null,
+        { label: t('menu.theme'), action: toggleTheme },
+        { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
+        { label: t('menu.filter'), kbd: 'Ctrl+F', action: () => { $('filter').focus(); $('filter').select(); } },
+      ],
+    },
+    {
+      label: t('menu.help'),
+      items: [
+        { label: t('menu.keys'), kbd: 'F1', action: helpSheet },
+        null,
+        { label: t('menu.doctor'), action: () => runDoctor(nav.current?.kind === 'objects' ? nav.current.bucket : ''), enabled: () => st().canDoctor },
+        { label: t('menu.about'), action: aboutDialog },
+      ],
+    },
+  ];
+
+  const mb = createMenubar(defs);
+  $('menubar').replaceChildren(mb.root);
+}
+
+// aboutDialog: minimal About box — name, version, license, project URL.
+function aboutDialog() {
+  const body = el('div', { class: 'kv' });
+  const draw = (v) => {
+    body.replaceChildren(
+      el('div', { class: 'k', text: 's3b' }),
+      el('div', { class: 'v mono', text: `v${v || '?'}` }),
+      el('div', { class: 'k', text: t('menu.aboutLicense') }),
+      el('div', { class: 'v', text: 'MIT' }),
+      el('div', { class: 'k', text: t('menu.aboutUrl') }),
+      el('div', { class: 'v mono', text: 'https://github.com/MikkoP88/s3-bucket-browser' }),
+    );
+  };
+  draw('');
+  api.GetVersion().then(draw).catch(() => {});
+  openModal({ title: t('menu.aboutTitle'), body, buttons: [{ label: 'Close' }] });
+}
+
 // ============================ keyboard ============================
+// copySelection/cutSelection: shared by Ctrl+C/X and the Edit menu.
+function copySelection() {
+  const r = grid.selectedRows();
+  if (!r.length) return;
+  clipboard.mode = 'copy';
+  clipboard.bucket = nav.current?.bucket;
+  clipboard.keys = r.map((x) => x.key);
+  toast(`Copied ${r.length} item(s)`);
+  updateCommandState();
+}
+
+function cutSelection() {
+  const r = grid.selectedRows();
+  if (!r.length) return;
+  clipboard.mode = 'cut';
+  clipboard.bucket = nav.current?.bucket;
+  clipboard.keys = r.map((x) => x.key);
+  toast(`Cut ${r.length} item(s)`);
+  updateCommandState();
+}
+
 function wireKeys() {
   document.addEventListener('keydown', (e) => {
     // modal-open keys still work (Escape handled in dialogs)
@@ -865,8 +959,8 @@ function wireKeys() {
     if (e.key === 'Delete') { e.preventDefault(); if (e.shiftKey) deletePermanentSelection(); else deleteSelection(); return; }
     if (e.key === 'F9') { e.preventDefault(); togglePanes(); return; }
     if (ctrl && e.key.toLowerCase() === 'a') { e.preventDefault(); grid.selectAll(); return; }
-    if (ctrl && e.key.toLowerCase() === 'c') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'copy'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Copied ${r.length} item(s)`); updateCommandState(); } return; }
-    if (ctrl && e.key.toLowerCase() === 'x') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'cut'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Cut ${r.length} item(s)`); updateCommandState(); } return; }
+    if (ctrl && e.key.toLowerCase() === 'c') { copySelection(); return; }
+    if (ctrl && e.key.toLowerCase() === 'x') { cutSelection(); return; }
     if (ctrl && e.key.toLowerCase() === 'v') { e.preventDefault(); paste(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); findFromHere(); return; }
     if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); $('filter').focus(); $('filter').select(); return; }

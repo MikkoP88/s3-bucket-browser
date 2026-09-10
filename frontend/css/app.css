@@ -93,6 +93,33 @@ body {
   border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px;
 }
 
+/* ================= Menu bar ================= */
+.menubar {
+  display: flex; align-items: stretch;
+  padding: 0 4px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.mb-menu { position: relative; }
+.mb-title {
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
+  border-radius: 4px; color: var(--text);
+}
+.mb-title:hover, .mb-title.open { background: var(--hover); }
+.mb-dd {
+  position: absolute; top: 100%; left: 0; z-index: 95; min-width: 220px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: var(--shadow); padding: 4px;
+}
+.mb-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.mb-item:hover { background: var(--hover); }
+.mb-item.disabled { color: var(--text-dim); opacity: .6; pointer-events: none; }
+.mb-item .mb-kbd { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+.mb-sep { height: 1px; background: var(--border-soft); margin: 4px 6px; }
+
 /* ================= Navbar / breadcrumb / filter ================= */
 .navbar {
   display: flex; align-items: center; gap: 8px;
