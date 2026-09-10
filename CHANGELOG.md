@@ -8,6 +8,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Portable release builds (M10.6): every release now ships portable
+  editions next to the installers — `s3b-<ver>-linux-amd64-portable.tar.gz`,
+  `s3b-<ver>-linux-arm64-cli-portable.tar.gz` and
+  `s3b-<ver>-windows-{amd64,arm64}-portable.zip`. Each archive is the
+  binary plus `LICENSE`, a generated `NOTICE` (direct dependencies with
+  SPDX ids read live from go.mod, full pinned module graph, SBOM pointer),
+  the `s3b-portable` marker that keeps all state in a `config` folder
+  beside the binary, and a `README-portable.md` explaining usage, what
+  travels and what deliberately does not (OS-keychain secrets stay on the
+  host machine). macOS keeps the dmg as its only form — portable mode
+  still works there if a user drops a marker next to the binary.
 - CLI parity (M10.5): every saved non-S3 source is now reachable from the
   shell as `NAME://dir` URIs — `ls`, `tree`, `du`, `stat`, `mkdir`, `rm`,
   `cp` and `mv` all accept them beside `s3://` paths (e.g.

@@ -49,6 +49,22 @@ jobs:
           GOOS: linux
           GOARCH: arm64
 
+      # Portable editions (plan-v2 M10 item 6): the s3b-portable marker has
+      # redirected config beside the binary since M5 — the release job just
+      # bundles binary + LICENSE + NOTICE + marker + README-portable.md.
+      # NOTICE is generated from go.mod so versions are always current.
+      - name: Build linux portable tarballs
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash scripts/gen-notice.sh "$VERSION" > NOTICE
+          mkdir -p dist/port dist/port-arm
+          cp dist/pkg/s3b LICENSE NOTICE README-portable.md dist/port/
+          touch dist/port/s3b-portable
+          tar -C dist/port -czf "dist/s3b-${VERSION}-linux-amd64-portable.tar.gz" s3b LICENSE NOTICE README-portable.md s3b-portable
+          cp dist/pkg-arm/s3b LICENSE NOTICE README-portable.md dist/port-arm/
+          touch dist/port-arm/s3b-portable
+          tar -C dist/port-arm -czf "dist/s3b-${VERSION}-linux-arm64-cli-portable.tar.gz" s3b LICENSE NOTICE README-portable.md s3b-portable
+
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux
@@ -92,6 +108,18 @@ jobs:
           GOOS: windows
           GOARCH: arm64
 
+      - name: Build windows portable zips
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash scripts/gen-notice.sh "$VERSION" > NOTICE
+          mkdir -p dist/port dist/port-arm
+          cp dist/pkg/s3b.exe LICENSE NOTICE README-portable.md dist/port/
+          touch dist/port/s3b-portable
+          (cd dist/port && zip -q "../s3b-${VERSION}-windows-amd64-portable.zip" *)
+          cp dist/pkg-arm/s3b.exe LICENSE NOTICE README-portable.md dist/port-arm/
+          touch dist/port-arm/s3b-portable
+          (cd dist/port-arm && zip -q "../s3b-${VERSION}-windows-arm64-portable.zip" *)
+
       - name: Build NSIS installer
         run: |
           sudo apt-get update
@@ -110,6 +138,9 @@ jobs:
             dist/s3b-setup-*.exe
 
   darwin:
+    # No portable variant: the dmg/.app is the macOS distribution idiom —
+    # a bare binary + marker is not. Portable mode itself still works there
+    # if a user drops a s3b-portable marker next to the binary.
     strategy:
       fail-fast: false
       matrix:
