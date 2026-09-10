@@ -131,6 +131,31 @@ jobs:
       - name: E2E against MinIO
         run: bash scripts/e2e-minio.sh
 
+  # Real OpenSSH (atmoz/sftp) and vsftpd (fauria/vsftpd) containers: the
+  # remote engines' handshakes, auth success/failure and PASV data
+  # connections, exercised through `s3b source test` (M9).
+  e2e-remote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Start SFTP + FTP servers
+        run: |
+          docker run -d --name sftp -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100
+          # PASV_ADDRESS + mapped passive port range make PASV data
+          # connections work through Docker NAT.
+          docker run -d --name ftp -p 2121:21 -p 21000-21002:21000-21002 \
+            -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
+            -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 fauria/vsftpd
+
+      - name: E2E remote engines
+        run: bash scripts/e2e-remote.sh
+
   # The NSIS installer is only packaged on releases; compile-check it on
   # every push so .nsi regressions surface in CI, not at tag time.
   installer:
