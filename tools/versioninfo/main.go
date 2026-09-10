@@ -35,7 +35,7 @@ const (
 	productName       = "S3 Bucket Browser"
 	fileDescription   = "S3 Bucket Browser - GUI + CLI for S3-compatible storage"
 	internalName      = "s3b"
-	legalCopyright    = "Copyright (c) MikkoP88 - MIT License"
+	legalCopyright    = "Copyright (c) MikkoP88 - PolyForm Internal Use License 1.0.0"
 	originalFilename  = "s3b.exe"
 	stringTableLangID = 0x0409 // en-US
 	charSetID         = 0x04B0 // 1200 = Unicode

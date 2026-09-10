@@ -127,6 +127,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Relicensed from MIT to the **PolyForm Internal Use License 1.0.0** with
+  an Additional Use Grant (LICENSE): any person or company may use,
+  modify and run the tool freely for their own operations — explicitly
+  including buckets that back their own apps, websites and SaaS services
+  offered to end customers — while the tool may not be used to operate
+  storage offered or provisioned to others as a bucket/storage service
+  (a storage provider's tenant/customer buckets), and the software may
+  not be redistributed. Versions up to and including v1.0.0 remain MIT
+  for their recipients. Third-party dependency packages keep their own
+  permissive licenses (MIT/Apache-2.0), unaffected by this change; the
+  per-release dependency report and SBOM continue to carry their notices.
+  The Windows VERSIONINFO resource, the macOS Info.plist and the GUI
+  About dialog now state the new license.
+
 - Checkbox column in both grids (remote + local pane): a per-row checkbox
   toggles selection without resetting the rest, and the header checkbox
   selects all / none (indeterminate when partial). It feeds the existing

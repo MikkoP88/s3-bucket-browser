@@ -172,7 +172,7 @@ Candidates vetted for "well-maintained + valid license + minimal deps":
   gets replaced or dropped. wails' indirect set is pinned by wails itself.
 - **License compliance**: NOTICE/THIRD-PARTY.md generated per release from the
   SBOM (already SPDX) — license text + version pin per module, plus the
-  project's own MIT header. LICENSE audit in M7 (gofmt for the file list),
+  project's own LICENSE. LICENSE audit in M7 (gofmt for the file list),
   surfaced in About + docs/security.md.
 
 ## Verification per milestone

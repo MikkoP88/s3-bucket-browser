@@ -5,7 +5,7 @@
 | **Project** | s3-bucket-browser — visual desktop app + CLI for managing S3 buckets and objects |
 | **Repo** | https://github.com/MikkoP88/s3-bucket-browser |
 | **Binary name** | `s3b` (GUI + CLI in one binary) |
-| **License** | MIT |
+| **License** | PolyForm Internal Use 1.0.0 + Additional Use Grant (≤ v1.0.0: MIT) |
 | **Plan version** | 1.2 (2026-09-09) |
 | **Derived from** | [s3-bucket-tester](https://github.com/MikkoP88/s3-bucket-tester) (MIT) — read-only source base; provider knowledge, signing, diagnostics and error catalog are ported, not copied blindly |
 | **Status** | M1–M6 shipped — v1.0 (core CLI+GUI, WinSCP-parity transfers, administration, versioning, hardening & packaging, launch docs). Plan closed at v1.0; further work tracks in [CHANGELOG.md](CHANGELOG.md) |
@@ -19,7 +19,7 @@
 - It looks and behaves like Windows File Explorer: tree, list, columns, multi-select, drag & drop, context menus, keyboard-first navigation.
 - Every action available in the GUI is available from the CLI, and vice versa. One binary: run it with no arguments to get the GUI, run it with arguments to get the CLI.
 - It speaks *every* S3 dialect: AWS and all S3-compatible providers (MinIO, Ceph, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean Spaces, IBM COS, Hetzner, …) — and it knows each provider's quirks and warns before you hit them.
-- It is MIT-licensed, dependency-minimal, telemetry-free, and cross-platform (Windows, macOS, Linux; amd64 + arm64).
+- It is source-available (PolyForm Internal Use), dependency-minimal, telemetry-free, and cross-platform (Windows, macOS, Linux; amd64 + arm64).
 
 ### Success criteria
 
@@ -60,7 +60,7 @@
 | **AWS Console** | Web | — | Full | Clunky | — (use AWS CLI) | Slow on big buckets, noisy, poor multi-account, dangerous clicks |
 | **AWS CLI** | CLI | Apache-2.0 | Full (raw) | Yes (jq gymnastics) | Excellent | No GUI; version purges are a known pain |
 
-GitHub landscape check (live, 2026-09): repositories matching "s3 browser gui / s3 file manager desktop" are either dead (2009-era `objc-s3`), tiny web download pages, or single-purpose Qt/web tools (`s3-bucket-diver`, React admin UIs). **No active, MIT, cross-platform, professional S3 desktop GUI+CLI exists.** That is the gap this project fills.
+GitHub landscape check (live, 2026-09): repositories matching "s3 browser gui / s3 file manager desktop" are either dead (2009-era `objc-s3`), tiny web download pages, or single-purpose Qt/web tools (`s3-bucket-diver`, React admin UIs). **No active, source-available, cross-platform, professional S3 desktop GUI+CLI exists.** That is the gap this project fills.
 
 ### The seven gaps we exploit
 
@@ -70,7 +70,7 @@ GitHub landscape check (live, 2026-09): repositories matching "s3 browser gui / 
 4. **Provider-quirk intelligence.** Ported capability matrix from s3-bucket-tester: warn that Cloudflare R2 rejects path-style, MinIO ACLs are synthetic, B2 has no policy/ACL APIs, AWS path-style is deprecated — *before* the request fails.
 5. **Connection doctor.** DNS → TCP → TLS → auth → policy/ACL checks with plain-language remediation (ported from s3-bucket-tester). No competitor diagnoses anything.
 6. **Performance at scale.** Virtualized rendering + streaming ListObjectsV2 pagination + cancelable deep search. Most GUIs choke far below 100k objects.
-7. **MIT + minimal deps + no telemetry.** Every rival is GPL, freeware, paid, or AGPL.
+7. **Source-available + minimal deps + no telemetry.** Every rival is GPL, freeware, paid, AGPL or stalled.
 
 ---
 

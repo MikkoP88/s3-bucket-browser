@@ -1551,7 +1551,7 @@ function aboutDialog() {
       el('div', { class: 'k', text: t('menu.aboutPublisher') }),
       el('div', { class: 'v', text: 'MikkoP88' }),
       el('div', { class: 'k', text: t('menu.aboutLicense') }),
-      el('div', { class: 'v', text: 'MIT — Copyright (c) MikkoP88' }),
+      el('div', { class: 'v', text: 'PolyForm Internal Use 1.0.0 — Copyright (c) MikkoP88' }),
       el('div', { class: 'k', text: t('menu.aboutUrl') }),
       el('div', { class: 'v mono', text: 'https://github.com/MikkoP88/s3-bucket-browser' }),
     );

@@ -9,7 +9,7 @@
 
 | Tool | Platforms | License | S3 admin depth | Versioning UX | CLI | Main weakness |
 |---|---|---|---|---|---|---|
-| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | MIT | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock) | First-class (timeline, restore, undo delete, purge, force-empty versioned buckets) | Yes — same binary, same engine | 1.0: no code signing or SBOM yet; no CloudFront/KMS consoles; single maintainer |
+| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock) | First-class (timeline, restore, undo delete, purge, force-empty versioned buckets) | Yes — same binary, same engine | 1.0: no code signing or SBOM yet; no CloudFront/KMS consoles; single maintainer |
 | **S3 Browser / "CS Browser" 13.x** (s3browser.com) | Windows only | Freeware; Pro paid | Deep (policy, ACL, CORS, lifecycle, CloudFront) | Yes, incl. delete versions | No | Windows-only, closed-source, dated UI |
 | **Cyberduck** | Win, macOS | GPL-3.0 (copyleft) | Medium (versioning, lifecycle, logging, storage class, SSE) | Partial | `duck` (separate) | GPL, Java footprint, no Linux desktop, generic multi-protocol (S3 not first-class) |
 | **MSP360 (CloudBerry) Explorer** | Win, macOS | Freemium (1 account free) | Medium-deep | Yes | No (separate paid) | Paywalls for sync/encryption/multi-account |
@@ -24,8 +24,9 @@
 
 GitHub landscape check (2026-09): repositories matching "s3 browser gui / s3
 file manager desktop" are either dead, tiny web download pages, or
-single-purpose tools. **No active, MIT, cross-platform, professional S3
-desktop GUI+CLI other than this one.** That is the gap this project fills.
+single-purpose tools. **No active, source-available, cross-platform,
+professional S3 desktop GUI+CLI other than this one.** That is the gap
+this project fills.
 
 ## The seven gaps we exploit
 
@@ -52,9 +53,9 @@ desktop GUI+CLI other than this one.** That is the gap this project fills.
 6. **Performance at scale.** Streaming ListObjectsV2 pagination (the Go
    side holds one page at a time), virtualized rendering, cancelable deep
    search. Most GUIs choke far below 100k objects.
-7. **MIT + minimal deps + no telemetry.** Every rival is GPL, freeware,
-   paid, or AGPL. Zero npm runtime dependencies; the dependency budget is
-   audited each release (PLAN.md §6).
+7. **Source-available + minimal deps + no telemetry.** Every rival is
+   GPL, freeware, paid, AGPL or stalled. Zero npm runtime dependencies;
+   the dependency budget is audited each release (PLAN.md §6).
 
 ## What s3b deliberately does not do (v1.0)
 

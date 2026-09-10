@@ -118,7 +118,7 @@ Because none of the existing ones do it all:
 | | S3 Bucket Browser | S3 Browser (CS) | Cyberduck | MSP360 | AWS Console |
 |---|---|---|---|---|---|
 | Windows / macOS / Linux | yes (M2) | / – | / – | / – | browser |
-| Open source (MIT) | yes | no | GPL | no | – |
+| Source-available (PolyForm Internal Use) | yes | no | GPL | no | – |
 | Explorer-style multi-select, drag & drop | yes (core goal) | partial | partial | partial | no |
 | Versioning management (restore, purge, force-empty versioned buckets) | first-class | partial | partial | partial | clunky |
 | GUI **and** CLI in one binary | yes | no | separate | no | – |
@@ -133,7 +133,7 @@ See [PLAN.md §3](PLAN.md#3-competitive-landscape--gap-analysis) for the full la
 1. Looks and behaves like **Windows File Explorer** (multi-select, drag & drop, context menus, keyboard-first).
 2. **One binary, two faces**: run `s3b` with no arguments for the GUI, with arguments for the CLI — same engine, full parity.
 3. **Safe by default, force when asked**: destructive operations follow a typed-confirmation safety ladder.
-4. **Minimal dependencies**: Go + OS webview + official AWS SDK; zero npm runtime dependencies. MIT-licensed.
+4. **Minimal dependencies**: Go + OS webview + official AWS SDK; zero npm runtime dependencies. Source-available under the [PolyForm Internal Use License](LICENSE).
 5. Speaks **every S3 dialect** — AWS, MinIO, Ceph, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean Spaces, IBM COS, Hetzner — and knows each provider's quirks.
 
 ## Relationship to s3-bucket-tester
@@ -142,4 +142,8 @@ This project builds on [s3-bucket-tester](https://github.com/MikkoP88/s3-bucket-
 
 ## License
 
-[MIT](LICENSE) © 2026 Mikko Pesonen (MikkoP88) and S3 Bucket Browser Contributors.
+[PolyForm Internal Use License 1.0.0](LICENSE) © 2026 Mikko Pesonen (MikkoP88) — source-available, with an Additional Use Grant. In short:
+
+- **Allowed**: any person or company using, modifying and running the tool for their own operations — explicitly including buckets that back the company's own apps, websites and SaaS services offered to end customers.
+- **Not allowed**: using the tool to operate storage that is offered or provisioned to others as a bucket/storage service (a storage provider's tenant/customer buckets), and redistributing the software.
+- Versions up to and including v1.0.0 were released under MIT and remain MIT for their recipients. Third-party dependencies keep their own permissive licenses (MIT/Apache-2.0), unaffected by this change.
