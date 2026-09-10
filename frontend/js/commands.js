@@ -21,6 +21,7 @@ export function commandState() {
   const loc = nav.current;
   const inObjects = loc?.kind === 'objects';
   const inBuckets = loc?.kind === 'buckets';
+  const inRemote = loc?.kind === 'remote'; // remote-native ops need no S3 profile
   const hasProfile = ctx.hasProfile();
   const sel = ctx.selectionCount();
   const hasClipboard = clipboard.keys.length > 0;
@@ -29,13 +30,13 @@ export function commandState() {
     hasProfile,
     canBack: nav.canBack(),
     canForward: nav.canForward(),
-    canUp: inObjects && !!parentOf(loc),
+    canUp: (inObjects || inRemote) && !!parentOf(loc),
     canUpload: inObjects && hasProfile,
     canDownload: inObjects && hasProfile && sel >= 1,
-    canNewFolder: inObjects && hasProfile,
+    canNewFolder: (inObjects && hasProfile) || inRemote,
     canCreateBucket: inBuckets && hasProfile,
-    canDelete: inObjects && hasProfile && sel >= 1,
-    canRename: inObjects && hasProfile && sel === 1,
+    canDelete: ((inObjects && hasProfile) || inRemote) && sel >= 1,
+    canRename: ((inObjects && hasProfile) || inRemote) && sel === 1,
     canCopy: inObjects && hasProfile && sel >= 1,
     canCut: inObjects && hasProfile && sel >= 1,
     canPaste: inObjects && hasProfile && hasClipboard,

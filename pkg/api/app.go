@@ -36,9 +36,9 @@ type App struct {
 	mu      sync.Mutex
 	clients map[string]*s3client.Client // cache: profile name -> client
 
-	remoteOpMu sync.Mutex             // serializes remotefs ops (FTP: one data connection)
-	engMu      sync.Mutex             // guards engines
-	engines    map[string]remotefs.FS // cache: source ID -> live engine (M9)
+	engMu   sync.Mutex             // guards engines + srcOps
+	engines map[string]remotefs.FS // cache: source ID -> live engine (M9)
+	srcOps  map[string]*sync.Mutex // per-source engine-op locks (FTP: one data connection)
 
 	pfMu sync.Mutex
 	pf   *openProfileFile // open encrypted Profile file session (nil = none)
@@ -61,6 +61,7 @@ func New(version string) *App {
 		version:  version,
 		clients:  map[string]*s3client.Client{},
 		engines:  map[string]remotefs.FS{},
+		srcOps:   map[string]*sync.Mutex{},
 		jobs:     newJobManager(),
 		editors:  map[string]*editSession{},
 		searches: map[string]context.CancelFunc{},

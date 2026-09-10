@@ -156,6 +156,18 @@ export class Tree {
     n.loaded = true;
   }
 
+  // updateRemoteDir feeds a freshly listed directory view into its tree
+  // node, so the tree tracks remote mutations (mkdir/rename/delete) with
+  // the grid instead of showing stale children until re-expand.
+  updateRemoteDir(source, path, entries) {
+    const id = (!path || path === '/') ? this.srcKey(source) : this.rsrcKey(source, path);
+    const n = this.nodes.get(id);
+    if (!n) return;
+    this.buildRemoteChildren(n, entries);
+    n.expanded = true;
+    this.render();
+  }
+
   // listDirs streams one directory view and keeps only the folders.
   listDirs(bucket, prefix) {
     return new Promise((resolve, reject) => {
@@ -257,8 +269,9 @@ export class Tree {
     row.dataset.prefix = n.prefix;
 
     // S3 nodes keep their drop target + context menu (internal copy/move
-    // and the bucket/folder menus are S3 operations); remote nodes get
-    // theirs with the cross-source transfer matrix.
+    // and the bucket/folder menus are S3 operations); remote directory
+    // nodes get the engine-native ops (drop targets land with the
+    // cross-source transfer matrix).
     if (n.bucket !== undefined) {
       row.addEventListener('dragover', (e) => {
         if (!e.dataTransfer.types.includes('application/x-s3b')) return;
@@ -273,6 +286,12 @@ export class Tree {
         e.preventDefault();
         this.onDropTo({ bucket: n.bucket, prefix: n.prefix }, JSON.parse(data), e);
       });
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onContext?.(e, n);
+      });
+    } else if (n.kind === 'rdir') {
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();

@@ -59,6 +59,7 @@ func TestIsMasked(t *testing.T) {
 // newTestApp points the profile store at a throwaway dir (mirrors S3B_CONFIG).
 func newTestApp(t *testing.T) *App {
 	t.Helper()
+	testNoEvents = true // no Wails event bus in tests (see events.go)
 	dir := t.TempDir()
 	t.Setenv("S3B_CONFIG", dir)
 	return New("test")

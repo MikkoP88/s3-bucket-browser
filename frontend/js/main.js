@@ -290,9 +290,10 @@ async function loadView(loc) {
       currentEntries = entries;
       grid.setRows(entries);
       if (!currentEntries.length) {
-        showEmpty(t('emptyFolder'), 'Uploads and downloads for remote sources arrive with cross-source transfers', []);
+        showEmpty(t('emptyFolder'), 'This folder is empty', []);
       }
       tree.reveal(loc).catch(() => {});
+      tree.updateRemoteDir(loc.source, loc.path || '/', entries);
       $('btn-up').disabled = !parentOf(loc);
     }
   } catch (err) {
@@ -562,6 +563,18 @@ function showContextMenu(e, rows) {
     items.push(['Properties', '', () => bucketProperties(b.key)]);
     items.push(null);
     items.push(['Delete bucket\u2026', '', () => deleteBucket(b.key)]);
+  } else if (loc.kind === 'remote') {
+    // Remote sources: the engine-native operations (transfers arrive with
+    // the cross-source matrix).
+    if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
+    items.push(null);
+    items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
+    items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
+    items.push(null);
+    items.push(['New folder', 'Ctrl+Shift+N', () => newFolder()]);
+    items.push(null);
+    items.push(['Refresh', 'F5', () => refreshCurrent()]);
+    items.push(['Properties', 'Alt+Enter', () => selectionProperties(), !sel]);
   } else {
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
     items.push([`Download${sel ? ` (${sel})` : ''}`, 'Ctrl+D', () => downloadSelection()]);
@@ -603,6 +616,16 @@ function showEmptyAreaMenu(e) {
     ]);
     return;
   }
+  if (loc.kind === 'remote') {
+    openMenu(e, [
+      ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
+      null,
+      ['Select all', 'Ctrl+A', () => grid.selectAll()],
+      ['Refresh', 'F5', () => refreshCurrent()],
+      ['Properties', '', () => folderProperties()],
+    ]);
+    return;
+  }
   openMenu(e, [
     ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
     null,
@@ -621,6 +644,19 @@ function showEmptyAreaMenu(e) {
 // folderProperties summarizes the current folder view (from the live grid).
 function folderProperties() {
   const loc = nav.current;
+  if (loc?.kind === 'remote') {
+    const rows = grid.rows;
+    const files = rows.filter((r) => !r.isDir);
+    const bytes = files.reduce((s, r) => s + (r.size || 0), 0);
+    properties(`Properties — ${loc.source}:${loc.path || '/'}`, [
+      ['Source type', sources.find((s) => s.name === loc.source)?.type || '?'],
+      ['Folders', rows.length - files.length],
+      ['Files', files.length],
+      ['Total size', fmtBytes(bytes)],
+      ...(view.filter ? [['Name filter', view.filter]] : []),
+    ]);
+    return;
+  }
   if (loc?.kind !== 'objects') return;
   const rows = grid.rows;
   const files = rows.filter((r) => !r.isDir);
@@ -634,9 +670,21 @@ function folderProperties() {
 }
 
 // showTreeMenu gives sidebar nodes (buckets and folders) context-menu parity
-// with grid rows. node = {bucket, prefix, label} from the Tree.
+// with grid rows. node = {bucket, prefix, label} from the Tree, or a
+// {kind:'rdir', source, path, label} remote directory node.
 function showTreeMenu(e, node) {
   const st = commandState();
+  if (node.kind === 'rdir') {
+    openMenu(e, [
+      ['Open', '', () => nav.to({ kind: 'remote', source: node.source, path: node.path })],
+      null,
+      ['New folder here\u2026', 'Ctrl+Shift+N', () => newRemoteFolderIn(node.source, node.path)],
+      null,
+      ['Rename\u2026', 'F2', () => renameRemoteTreeFolder(node)],
+      ['Delete\u2026', 'Del', () => deleteRemoteSelection(node.source, [node.path])],
+    ]);
+    return;
+  }
   const go = () => nav.to({ kind: 'objects', bucket: node.bucket, prefix: node.prefix });
   if (node.prefix === '') {
     openMenu(e, [
@@ -699,6 +747,31 @@ async function renameTreeFolder(node) {
   try {
     await api.RenameObject(node.bucket, node.prefix, name);
     toast('Renamed', 'ok'); // s3:changed refreshes the view + tree
+  } catch (err) {
+    toast(`Rename failed: ${err}`, 'error');
+  }
+}
+
+// Remote-source tree nodes: the same native ops as the grid's remote rows.
+async function newRemoteFolderIn(source, path) {
+  const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
+  if (!name) return;
+  try {
+    await api.RemoteMkdir(source, remoteChildPath(path, name));
+    toast('Folder created', 'ok');
+    if (nav.current?.kind === 'remote' && nav.current.source === source) refreshCurrent();
+  } catch (err) {
+    toast(`Create folder failed: ${err}`, 'error');
+  }
+}
+
+async function renameRemoteTreeFolder(node) {
+  const name = await prompt({ title: 'Rename', label: 'New name', value: node.label });
+  if (!name || name === node.label) return;
+  try {
+    await api.RemoteRename(node.source, node.path, name);
+    toast('Renamed', 'ok');
+    if (nav.current?.kind === 'remote' && nav.current.source === node.source) refreshCurrent();
   } catch (err) {
     toast(`Rename failed: ${err}`, 'error');
   }
@@ -791,6 +864,10 @@ async function downloadRefs(entries, dest, bucketOverride) {
 
 async function deleteSelection(bucketOverride, keysOverride) {
   const loc = nav.current;
+  if (!bucketOverride && loc.kind === 'remote') {
+    deleteRemoteSelection();
+    return;
+  }
   if (!bucketOverride && loc.kind === 'buckets') {
     const row = grid.selectedRows()[0];
     if (row) deleteBucket(row.key);
@@ -916,7 +993,8 @@ async function renameSelection() {
   const name = await prompt({ title: 'Rename', label: 'New name', value: row.name });
   if (!name || name === row.name) return;
   try {
-    await api.RenameObject(loc.bucket, row.key, name);
+    if (loc.kind === 'remote') await api.RemoteRename(loc.source, row.key, name);
+    else await api.RenameObject(loc.bucket, row.key, name);
     toast('Renamed', 'ok');
     refreshCurrent();
   } catch (err) {
@@ -924,8 +1002,26 @@ async function renameSelection() {
   }
 }
 
+// remoteChildPath builds the anchored path of a new child in dir (dir is
+// the location path: '' or '/sub/', both with/without trailing content).
+function remoteChildPath(dir, name) {
+  return `${dir && dir.endsWith('/') ? dir : `${dir}/`}${name}`;
+}
+
 async function newFolder() {
   const loc = nav.current;
+  if (loc.kind === 'remote') {
+    const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
+    if (!name) return;
+    try {
+      await api.RemoteMkdir(loc.source, remoteChildPath(loc.path || '', name));
+      toast('Folder created', 'ok');
+      refreshCurrent();
+    } catch (err) {
+      toast(`Create folder failed: ${err}`, 'error');
+    }
+    return;
+  }
   if (loc.kind !== 'objects') { toast('Open a bucket first'); return; }
   const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
   if (!name) return;
@@ -935,6 +1031,34 @@ async function newFolder() {
     refreshCurrent();
   } catch (err) {
     toast(`Create folder failed: ${err}`, 'error');
+  }
+}
+
+// deleteRemoteSelection: count-then-act delete on a remote source. Remote
+// filesystems have no trash and no versions — the typed confirm says so.
+async function deleteRemoteSelection(overrideSource, overrideKeys) {
+  const loc = nav.current;
+  const source = overrideSource || loc?.source;
+  if (!source) return;
+  const keys = overrideKeys || grid.selectedRows().map((r) => r.key);
+  if (!keys.length) return;
+  try {
+    const p = await api.RemoteDeletePreview(source, keys);
+    const desc = `${p.files} file(s), ${p.folders} folder(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}`;
+    if (p.errors?.length) toast(`Warning: ${p.errors.slice(0, 2).join('; ')}`, 'error');
+    const ok = await typedConfirm({
+      title: `Delete from ${source}`,
+      message: `You are about to delete ${desc}.\nRemote sources have no trash or versions — this cannot be undone.`,
+      typeWord: 'delete',
+      okLabel: 'Delete',
+    });
+    if (!ok) return;
+    const res = await api.RemoteRemove(source, keys);
+    if (res.errors?.length) toast(`${res.deleted} deleted, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
+    else toast(`Deleted ${res.deleted} item(s)`, 'ok');
+    refreshCurrent();
+  } catch (err) {
+    toast(`Delete failed: ${err}`, 'error');
   }
 }
 
@@ -1002,6 +1126,24 @@ async function selectionProperties() {
   const loc = nav.current;
   const row = grid.selectedRows()[0];
   if (!row) return;
+  if (loc.kind === 'remote') {
+    try {
+      const st = await api.RemoteStat(loc.source, row.key);
+      properties(`Properties — ${row.name}`, [
+        ['Name', row.name],
+        ['Type', row.isDir ? 'Folder' : 'File'],
+        ...(!row.isDir ? [
+          ['Size', fmtBytes(st.size)],
+          ['Last modified', fmtDate(st.lastModified)],
+        ] : []),
+        ['Source', `${loc.source} (${sources.find((s) => s.name === loc.source)?.type || '?'})`],
+        ['Path', row.key],
+      ]);
+    } catch (err) {
+      toast(`Properties failed: ${err}`, 'error');
+    }
+    return;
+  }
   try {
     const st = await api.StatObject(loc.bucket, row.key);
     const rows = [

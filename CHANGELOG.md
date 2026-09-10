@@ -8,6 +8,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Remote-native file operations (M9): the grid, empty-area and sidebar
+  tree context menus on remote sources now offer New folder, Rename
+  (F2) and count-then-act Delete (Del) — a new `remotefs.Walk` powers
+  the delete preview (files/folders/bytes), the typed confirm states
+  plainly that remote filesystems have no trash or versions, and the
+  tree stays in sync with the grid after every remote mutation
+  (`RemoteMkdir`/`RemoteRename`/`RemoteStat`/`RemoteDeletePreview`/
+  `RemoteRemove` on the API). Engine operations serialize per source
+  (the FTP engine allows exactly one data connection), with locks
+  acquired in sorted-ID order so multi-source operations can never
+  deadlock.
 - Per-source browsing (M9): the sidebar tree's top level is now the
   configured data sources — the default S3 source expands into its
   buckets exactly as before, while sftp/scp/ftp/ftps/local sources
