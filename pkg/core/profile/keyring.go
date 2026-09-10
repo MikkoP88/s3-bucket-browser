@@ -45,12 +45,25 @@ func secretAccount(name, kind string) string {
 	return "profiles/" + name + "/" + kind
 }
 
+// sourceSecretAccount is the keyring account for a source's secret kinds
+// ("password", "s3secret", "s3token") — keyed by source ID so the entries
+// live and die with the source, independent of any profile.
+func sourceSecretAccount(id, kind string) string {
+	return "sources/" + id + "/" + kind
+}
+
+// keyringPutAccount stores a secret under a full account name; an empty
+// value deletes the entry.
+func keyringPutAccount(account, value string) error {
+	if value == "" {
+		return keyring.Delete(keyringService, account)
+	}
+	return keyring.Set(keyringService, account, value)
+}
+
 // keyringPut stores a secret; an empty value deletes the entry.
 func keyringPut(name, kind, value string) error {
-	if value == "" {
-		return keyring.Delete(keyringService, secretAccount(name, kind))
-	}
-	return keyring.Set(keyringService, secretAccount(name, kind), value)
+	return keyringPutAccount(secretAccount(name, kind), value)
 }
 
 // keyringGet reads a secret; empty string when absent.
@@ -66,6 +79,13 @@ func keyringGet(name, kind string) (string, error) {
 func keyringDeleteAll(name string) {
 	_ = keyring.Delete(keyringService, secretAccount(name, "secret"))
 	_ = keyring.Delete(keyringService, secretAccount(name, "token"))
+}
+
+// sourceKeyringDeleteAll removes every keyring entry of a source.
+func sourceKeyringDeleteAll(id string) {
+	for _, kind := range []string{"password", "s3secret", "s3token"} {
+		_ = keyring.Delete(keyringService, sourceSecretAccount(id, kind))
+	}
 }
 
 // migrateSecretsToKeyring moves every plaintext secret in the store into
@@ -94,6 +114,43 @@ func (s *Store) migrateSecretsToKeyring() int {
 		p.SecretInKeyring = true
 		moved++
 	}
+	moved += s.migrateSourceSecretsToKeyring()
+	return moved
+}
+
+// migrateSourceSecretsToKeyring moves source secrets (sftp/ftp password,
+// embedded S3 credentials) into source-scoped keyring accounts.
+func (s *Store) migrateSourceSecretsToKeyring() int {
+	moved := 0
+	for i := range s.Sources {
+		src := &s.Sources[i]
+		if src.ID == "" {
+			continue // no stable account name until persisted with an ID
+		}
+		if src.Password != "" {
+			if err := keyringPutAccount(sourceSecretAccount(src.ID, "password"), src.Password); err == nil {
+				src.Password = ""
+				src.PassInKeyring = true
+				moved++
+			}
+		}
+		if src.S3 == nil || (src.S3.SecretKey == "" && src.S3.SessionToken == "") {
+			continue
+		}
+		ok := true
+		if src.S3.SecretKey != "" {
+			ok = keyringPutAccount(sourceSecretAccount(src.ID, "s3secret"), src.S3.SecretKey) == nil
+		}
+		if ok && src.S3.SessionToken != "" {
+			ok = keyringPutAccount(sourceSecretAccount(src.ID, "s3token"), src.S3.SessionToken) == nil
+		}
+		if ok {
+			src.S3.SecretKey = ""
+			src.S3.SessionToken = ""
+			src.S3.SecretInKeyring = true
+			moved++
+		}
+	}
 	return moved
 }
 
@@ -113,6 +170,23 @@ func (s *Store) hydrateSecretsFromKeyring() {
 		}
 		if v, err := keyringGet(p.Name, "token"); err == nil {
 			p.SessionToken = v
+		}
+	}
+	for i := range s.Sources {
+		src := &s.Sources[i]
+		if src.PassInKeyring && src.Password == "" {
+			if v, err := keyring.Get(keyringService, sourceSecretAccount(src.ID, "password")); err == nil {
+				src.Password = v
+			}
+		}
+		if src.S3 == nil || !src.S3.SecretInKeyring || src.S3.SecretKey != "" {
+			continue
+		}
+		if v, err := keyring.Get(keyringService, sourceSecretAccount(src.ID, "s3secret")); err == nil {
+			src.S3.SecretKey = v
+		}
+		if v, err := keyring.Get(keyringService, sourceSecretAccount(src.ID, "s3token")); err == nil {
+			src.S3.SessionToken = v
 		}
 	}
 }

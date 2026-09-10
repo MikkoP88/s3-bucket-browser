@@ -35,6 +35,9 @@ type App struct {
 	mu      sync.Mutex
 	clients map[string]*s3client.Client // cache: profile name -> client
 
+	pfMu sync.Mutex
+	pf   *openProfileFile // open encrypted Profile file session (nil = none)
+
 	jobs *jobManager
 
 	editorsMu sync.Mutex
@@ -112,11 +115,15 @@ func (a *App) loadStore() (*profile.Store, error) {
 }
 
 // client resolves (and caches) an S3 client. An empty name selects the
-// default profile. The cache is dropped whenever profiles change.
+// default profile. When a Profile file is open, its s3 sources win over the
+// local store (source name == profile name). The cache is dropped whenever
+// profiles or the open file change. Locking: pfMu is only ever taken
+// OUTSIDE a.mu, so the container snapshot is resolved before locking.
 func (a *App) client(name string) (*s3client.Client, error) {
 	if a.ctx == nil {
 		return nil, errNoContext
 	}
+	cSrc, haveSrc := a.containerS3Source(name)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if c, ok := a.clients[name]; ok && name != "" {
@@ -130,9 +137,14 @@ func (a *App) client(name string) (*s3client.Client, error) {
 		}
 		a.store = s
 	}
-	p, err := a.profileByName(s, name)
-	if err != nil {
-		return nil, err
+	var p profile.Profile
+	if haveSrc {
+		p = *cSrc.S3
+	} else {
+		var err error
+		if p, err = a.profileByName(s, name); err != nil {
+			return nil, err
+		}
 	}
 	// Timeout 0: no whole-request deadline — large uploads/downloads are
 	// bounded by the per-job cancellation instead (quick ops use quickCtx).

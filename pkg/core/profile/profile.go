@@ -65,10 +65,13 @@ func Mask(s string) string {
 	return s[:4] + "…" + s[len(s)-2:]
 }
 
-// Store is a collection of profiles persisted to a JSON file.
+// Store is a collection of profiles persisted to a JSON file. Since M8 it
+// also carries Sources (connections of any type); the legacy Profiles array
+// stays the S3 specialization the CLI and the browsing stack resolve.
 type Store struct {
 	Path     string
 	Profiles []Profile `json:"profiles"`
+	Sources  []Source  `json:"sources,omitempty"`
 }
 
 // ErrNotFound is returned when a profile name is unknown.
@@ -123,8 +126,28 @@ func LoadFrom(path string) (*Store, error) {
 	if err := json.Unmarshal(data, s); err != nil {
 		return nil, fmt.Errorf("invalid profile store %s: %w", path, err)
 	}
+	s.ensureSourceIDs()
 	s.hydrateSecretsFromKeyring()
 	return s, nil
+}
+
+// ensureSourceIDs assigns an ID to any source that arrived without one
+// (hand-edited stores); persisted on the next Save.
+func (s *Store) ensureSourceIDs() {
+	used := map[string]bool{}
+	for _, src := range s.Sources {
+		used[src.ID] = true
+	}
+	for i := range s.Sources {
+		if s.Sources[i].ID == "" {
+			id := newSourceID()
+			for used[id] {
+				id = newSourceID()
+			}
+			s.Sources[i].ID = id
+			used[id] = true
+		}
+	}
 }
 
 // Save persists the store (0600). When an OS keyring is available,
