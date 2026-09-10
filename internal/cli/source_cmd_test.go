@@ -119,10 +119,23 @@ func TestSourceAddRemoteAndGuards(t *testing.T) {
 	if code := Execute([]string{"source", "use", "ftpbox"}); code != exitUsage {
 		t.Errorf("use on non-s3: exit %d, want %d", code, exitUsage)
 	}
-	// test on a non-s3 source reports the honest "engine ships next" note
-	// and exits 0 (nothing failed — the connection is saved).
-	if code := Execute([]string{"source", "test", "ftpbox"}); code != exitOK {
-		t.Errorf("test on non-s3: exit %d, want %d", code, exitOK)
+	// test now really dials the remotefs engine: a local source over a
+	// temp directory connects and exits 0…
+	if code := Execute([]string{"source", "add", "disk", "--type", "local",
+		"--root", t.TempDir()}); code != 0 {
+		t.Fatalf("add local: exit %d", code)
+	}
+	if code := Execute([]string{"source", "test", "disk"}); code != exitOK {
+		t.Errorf("test on local: exit %d, want %d", code, exitOK)
+	}
+	// …and an unreachable remote source fails honestly (exit 1). Port 1 on
+	// loopback refuses without depending on DNS behavior.
+	if code := Execute([]string{"source", "add", "dead", "--type", "sftp",
+		"--host", "127.0.0.1", "--port", "1", "--username", "u", "--password", "x"}); code != 0 {
+		t.Fatalf("add dead: exit %d", code)
+	}
+	if code := Execute([]string{"source", "test", "dead"}); code != exitOpFail {
+		t.Errorf("test on unreachable sftp: exit %d, want %d", code, exitOpFail)
 	}
 	// --default only applies to s3 sources.
 	if code := Execute([]string{"source", "add", "s2", "--type", "sftp", "--host", "h", "--default"}); code != exitUsage {

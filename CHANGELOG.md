@@ -8,6 +8,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Per-source browsing (M9): the sidebar tree's top level is now the
+  configured data sources — the default S3 source expands into its
+  buckets exactly as before, while sftp/scp/ftp/ftps/local sources
+  expand into their remote directories and browse in the main grid with
+  the same row shape, sorting, breadcrumb and Up navigation as S3
+  (engine connections are cached per source and dropped on any source
+  edit). Non-default S3 sources open a read-only bucket listing with an
+  honest hint (their object operations route through the default profile
+  until multi-source transfers land). `Test` now dials remote sources
+  for real — GUI editor and `s3b source test` alike connect, list the
+  root, and report honestly instead of "engine ships next".
 - Remote-filesystem engines (M9): new `pkg/core/remotefs` package defines
   one `FS` contract (List/Stat/Open/Create/MkdirAll/Remove/Rename/Close)
   over the data-source schema and ships engines for SFTP/SCP (pkg/sftp +

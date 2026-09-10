@@ -1,5 +1,7 @@
 // Navigation history + selection/clipboard/view state.
 // Locations: {kind:'buckets'} | {kind:'objects', bucket, prefix}
+//          | {kind:'srcroot', source}          — non-default S3 source root
+//          | {kind:'remote', source, path}     — sftp/scp/ftp/ftps/local
 
 export const nav = {
   stack: [],       // back stack
@@ -46,7 +48,13 @@ export const nav = {
 
 // Parent of a location; null when already at top.
 export function parentOf(loc) {
-  if (loc.kind === 'buckets') return null;
+  if (loc.kind === 'buckets' || loc.kind === 'srcroot') return null;
+  if (loc.kind === 'remote') {
+    if (!loc.path || loc.path === '' || loc.path === '/') return null;
+    const p = loc.path.replace(/\/+$/, '');
+    const i = p.lastIndexOf('/');
+    return { kind: 'remote', source: loc.source, path: i >= 0 ? p.slice(0, i + 1) : '' };
+  }
   if (!loc.prefix || loc.prefix === '') return { kind: 'buckets' };
   const p = loc.prefix.replace(/\/+$/, '');
   const i = p.lastIndexOf('/');

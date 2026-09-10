@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -35,6 +36,10 @@ type App struct {
 	mu      sync.Mutex
 	clients map[string]*s3client.Client // cache: profile name -> client
 
+	remoteOpMu sync.Mutex             // serializes remotefs ops (FTP: one data connection)
+	engMu      sync.Mutex             // guards engines
+	engines    map[string]remotefs.FS // cache: source ID -> live engine (M9)
+
 	pfMu sync.Mutex
 	pf   *openProfileFile // open encrypted Profile file session (nil = none)
 
@@ -55,6 +60,7 @@ func New(version string) *App {
 	return &App{
 		version:  version,
 		clients:  map[string]*s3client.Client{},
+		engines:  map[string]remotefs.FS{},
 		jobs:     newJobManager(),
 		editors:  map[string]*editSession{},
 		searches: map[string]context.CancelFunc{},
@@ -82,6 +88,7 @@ func (a *App) Shutdown(ctx context.Context) {
 		cancel()
 	}
 	a.streamMu.Unlock()
+	a.closeEngines() // live SFTP/FTP connections
 }
 
 // GetVersion returns the application version string.
@@ -167,11 +174,13 @@ func (a *App) profileByName(s *profile.Store, name string) (profile.Profile, err
 	return s.Get(name)
 }
 
-// invalidateClients drops cached clients after a profile mutation.
+// invalidateClients drops cached clients after a profile mutation. Remote
+// engines ride along: a source edit may change host or credentials.
 func (a *App) invalidateClients() {
 	a.mu.Lock()
 	a.clients = map[string]*s3client.Client{}
 	a.mu.Unlock()
+	a.closeEngines()
 }
 
 // emit sends a Wails event (no-op before Startup).

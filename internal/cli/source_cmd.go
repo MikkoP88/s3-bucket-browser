@@ -15,6 +15,7 @@ import (
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/provider"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -409,11 +410,23 @@ func sourceTestCmd() *cobra.Command {
 				}
 			}
 			if src.Type != profile.TypeS3 || src.S3 == nil {
-				msg := fmt.Sprintf("%s connections are browsable once the %s engine ships (planned next); the connection is saved as configured", src.Type, src.Type)
-				if flagJSON {
-					return printJSON(map[string]any{"source": src.Name, "ok": false, "message": msg})
+				// Real probe: dial the remotefs engine and list the root.
+				fs, err := remotefs.Dial(cmd.Context(), src)
+				if err == nil {
+					defer fs.Close()
+					_, err = fs.List(cmd.Context(), "/")
 				}
-				col.warn.Printf("SKIP %s — %s\n", src.Name, msg)
+				if err != nil {
+					col.errf.Printf("FAIL %s: %v\n", src.Name, err)
+					if flagJSON {
+						return printJSON(map[string]any{"source": src.Name, "ok": false, "message": err.Error()})
+					}
+					return opErr(fmt.Errorf("connectivity test failed"))
+				}
+				if flagJSON {
+					return printJSON(map[string]any{"source": src.Name, "ok": true})
+				}
+				col.ok.Printf("OK %s — connected over %s\n", src.Name, src.Type)
 				return nil
 			}
 			p := *src.S3

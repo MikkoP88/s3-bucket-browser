@@ -244,10 +244,7 @@ func (a *App) TestSource(idOrName string) TestResult {
 		return TestResult{OK: false, Message: err.Error()}
 	}
 	if src.Type != profile.TypeS3 || src.S3 == nil {
-		return TestResult{
-			OK:      false,
-			Message: fmt.Sprintf("%s connections are browsable once the %s engine ships (planned next); the connection is saved as configured", src.Type, src.Type),
-		}
+		return a.testRemoteSource(src)
 	}
 	return a.TestProfile(src.Name)
 }

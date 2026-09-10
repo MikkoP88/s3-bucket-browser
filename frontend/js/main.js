@@ -165,6 +165,7 @@ async function refreshSources() {
   const def = s3srcs.find((s) => s.default) || s3srcs[0];
   if (def) sel.value = def.name;
   $('status-profile').textContent = def ? def.name : '';
+  tree.setSources(sources, nav.current); // M9: sources are the tree's top level
   if (!sources.length) {
     showOnboarding();
     return false;
@@ -265,6 +266,34 @@ async function loadView(loc) {
       tree.reveal(loc).catch(() => {});
       localPane.syncTo(loc.prefix || '');
       $('btn-up').disabled = false;
+    } else if (loc.kind === 'srcroot') {
+      // non-default S3 source: read-only bucket listing (its object
+      // operations route through the default profile until multi-source
+      // transfers land)
+      $('sidebar-head').textContent = loc.source;
+      const buckets = await api.ListSourceBuckets(loc.source);
+      currentEntries = buckets.map((b) => ({
+        key: b.name, name: b.name, isDir: true, size: 0,
+        lastModified: b.createdAt, bucketCreated: true,
+      }));
+      grid.setRows(currentEntries);
+      if (!currentEntries.length) {
+        const src = sources.find((s) => s.name === loc.source);
+        showEmpty('No buckets', `${src?.s3?.endpoint || 'This endpoint'} has no buckets yet`, []);
+      }
+      $('btn-up').disabled = true;
+    } else if (loc.kind === 'remote') {
+      // sftp/scp/ftp/ftps/local source browsed through its remotefs
+      // engine; rows carry the same shape as S3 listings
+      $('sidebar-head').textContent = loc.source;
+      const entries = await api.RemoteList(loc.source, loc.path || '/');
+      currentEntries = entries;
+      grid.setRows(entries);
+      if (!currentEntries.length) {
+        showEmpty(t('emptyFolder'), 'Uploads and downloads for remote sources arrive with cross-source transfers', []);
+      }
+      tree.reveal(loc).catch(() => {});
+      $('btn-up').disabled = !parentOf(loc);
     }
   } catch (err) {
     currentEntries = [];
@@ -363,6 +392,29 @@ function renderBreadcrumb() {
   const bc = $('breadcrumb');
   bc.replaceChildren();
   const loc = nav.current || { kind: 'buckets' };
+  if (loc.kind === 'srcroot' || loc.kind === 'remote') {
+    const icon = loc.kind === 'srcroot' ? '\u{1F5C2}' : '\u{1F5DD}';
+    const atRoot = loc.kind === 'srcroot' || !loc.path;
+    const root = el('span', { class: `crumb${atRoot ? ' current' : ''}`, text: `${icon} ${loc.source}` });
+    root.onclick = () => nav.to(loc.kind === 'srcroot'
+      ? { kind: 'srcroot', source: loc.source }
+      : { kind: 'remote', source: loc.source, path: '' });
+    bc.appendChild(root);
+    if (loc.kind === 'remote' && loc.path) {
+      let acc = '';
+      for (const part of loc.path.split('/')) {
+        if (!part) continue;
+        acc += part + '/';
+        bc.appendChild(el('span', { class: 'crumb-sep', text: '\u203A' }));
+        const c = el('span', { class: 'crumb', text: part });
+        const target = acc;
+        c.onclick = () => nav.to({ kind: 'remote', source: loc.source, path: target });
+        bc.appendChild(c);
+      }
+      bc.lastChild?.classList.add('current');
+    }
+    return;
+  }
   const root = el('span', { class: `crumb${loc.kind === 'buckets' ? ' current' : ''}`, text: '\u{1F5C2} S3' });
   root.onclick = () => nav.to({ kind: 'buckets' });
   bc.appendChild(root);
@@ -389,6 +441,15 @@ function wireGrid() {
   grid.on.select = updateStatus;
   grid.on.activate = (row) => {
     const loc = nav.current;
+    if (loc.kind === 'srcroot') {
+      toast('Set this source as default (dropdown or "Use") to manage its objects — per-source transfers ship next');
+      return;
+    }
+    if (loc.kind === 'remote') {
+      if (row.isDir) nav.to({ kind: 'remote', source: loc.source, path: row.key });
+      else toast('File operations on remote sources arrive with cross-source transfers');
+      return;
+    }
     if (loc.kind === 'buckets') {
       nav.to({ kind: 'objects', bucket: row.key, prefix: '' });
     } else if (row.isDir) {

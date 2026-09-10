@@ -11,6 +11,8 @@ import (
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/bucketops"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/doctor"
@@ -30,6 +32,29 @@ func (a *App) ListBuckets() ([]BucketView, error) {
 	if err != nil {
 		return nil, err
 	}
+	return a.bucketsOf(c)
+}
+
+// ListSourceBuckets returns the buckets visible to one named S3 source —
+// the per-source root view for non-default S3 sources (their object
+// operations still route through the default profile until multi-source
+// transfers land).
+func (a *App) ListSourceBuckets(idOrName string) ([]BucketView, error) {
+	src, err := a.sourceByIDOrName(idOrName)
+	if err != nil {
+		return nil, err
+	}
+	if src.Type != profile.TypeS3 || src.S3 == nil {
+		return nil, fmt.Errorf("source %q is not an S3 source", src.Name)
+	}
+	c, err := a.client(src.Name)
+	if err != nil {
+		return nil, err
+	}
+	return a.bucketsOf(c)
+}
+
+func (a *App) bucketsOf(c *s3client.Client) ([]BucketView, error) {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	buckets, err := listing.ListBuckets(ctx, c.S3)
