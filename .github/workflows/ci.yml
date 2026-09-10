@@ -81,7 +81,15 @@ jobs:
           cache: true
 
       - name: Build
-        run: go build -ldflags "-s -w" $BUILD_TAGS -o dist/${{ matrix.artifact }} ./cmd/s3b
+        run: |
+          # Windows builds embed publisher metadata (VERSIONINFO) via a
+          # generated .syso; it must be removed afterwards so it can never
+          # leak into another matrix job's (cross-arch) build.
+          if [ "$GOOS" = "windows" ]; then
+            GOOS= GOARCH= go run ./tools/versioninfo -version 0.0.0-ci -arch "$GOARCH"
+          fi
+          go build -ldflags "-s -w" $BUILD_TAGS -o dist/${{ matrix.artifact }} ./cmd/s3b
+          rm -f cmd/s3b/*.syso
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -140,7 +148,9 @@ jobs:
       - name: Compile installer (with real cross-built payload)
         run: |
           mkdir -p dist
+          go run ./tools/versioninfo -version 0.0.0-ci -arch amd64
           GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags "-s -w" -o dist/s3b.exe ./cmd/s3b
+          rm -f cmd/s3b/*.syso
           makensis -DVERSION=0.0.0-ci \
             -DPAYLOAD="$PWD/dist/s3b.exe" \
             -DOUT="$PWD/dist/s3b-setup-0.0.0-ci.exe" \

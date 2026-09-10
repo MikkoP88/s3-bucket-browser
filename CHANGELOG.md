@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Publisher metadata everywhere Windows and macOS surface it: the
+  binaries now carry a proper VERSIONINFO resource (CompanyName,
+  ProductName, FileDescription, versions, LegalCopyright, …) generated at
+  build time by a new dependency-free tool (`tools/versioninfo`) that
+  emits the COFF `.syso` for each target arch — validated end-to-end by
+  reading the fields back with Windows itself. The NSIS installer adds
+  DisplayIcon and URLInfoAbout to its ARP entry, the macOS Info.plist
+  gains NSHumanReadableCopyright, and the About dialog shows the
+  publisher. CI and release pipelines generate + clean the .syso around
+  each Windows build (a stale cross-arch .syso breaks the other build).
 - Sidebar tree context-menu parity: right-clicking a bucket node (Open,
   Favorites, Upload files/folder here, Paste, Find, Admin, Doctor,
   Properties, Delete bucket) or a folder node (Open, Upload here,

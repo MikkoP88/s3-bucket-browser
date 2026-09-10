@@ -1150,15 +1150,17 @@ function mountMenubar() {
   $('menubar').replaceChildren(mb.root);
 }
 
-// aboutDialog: minimal About box — name, version, license, project URL.
+// aboutDialog: minimal About box — name, version, publisher, license, URL.
 function aboutDialog() {
   const body = el('div', { class: 'kv' });
   const draw = (v) => {
     body.replaceChildren(
       el('div', { class: 'k', text: 's3b' }),
       el('div', { class: 'v mono', text: `v${v || '?'}` }),
+      el('div', { class: 'k', text: t('menu.aboutPublisher') }),
+      el('div', { class: 'v', text: 'MikkoP88' }),
       el('div', { class: 'k', text: t('menu.aboutLicense') }),
-      el('div', { class: 'v', text: 'MIT' }),
+      el('div', { class: 'v', text: 'MIT — Copyright (c) MikkoP88' }),
       el('div', { class: 'k', text: t('menu.aboutUrl') }),
       el('div', { class: 'v mono', text: 'https://github.com/MikkoP88/s3-bucket-browser' }),
     );

@@ -11,6 +11,9 @@
 /build/bin/
 /frontend/dist/
 
+# Generated at build time by tools/versioninfo (arch-specific .syso)
+cmd/s3b/*.syso
+
 # Test and coverage
 *.test
 *.out

@@ -64,7 +64,9 @@ Section "S3 Bucket Browser (required)"
 
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "DisplayName" "S3 Bucket Browser"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "DisplayIcon" "$INSTDIR\s3b.exe,0"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "Publisher" "MikkoP88"
+  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "URLInfoAbout" "https://github.com/MikkoP88/s3-bucket-browser"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "InstallLocation" "$INSTDIR"
   WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\S3BucketBrowser" "NoModify" 1
