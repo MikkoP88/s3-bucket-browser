@@ -8,6 +8,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Multi-run commands (M10.3): Properties, Pre-sign URL and Object lock now
+  accept the full selection. A multi-selection Properties summarizes
+  composition (folders/files), total size, modification range and the
+  deepest common prefix without per-item round trips; multi presign signs
+  every selected object locally and lists one URL per row with copy-per-row
+  and copy-all; the lock dialog's retention/legal-hold actions run on every
+  selected object through a shared batch runner with live per-item status
+  (pending/running/ok/failed + error), a Stop button and a final tally.
+  The status bar grows into a selection summary bar — count, folders,
+  files and total size of the current selection. Download and Storage
+  class were already selection-wide.
 - Panels v2 (M10): the dual-pane's side pane is no longer local-only — a
   source dropdown binds it to the workstation filesystem or to any remote
   source (sftp/scp/ftp/ftps/local-dir; S3 sources keep browsing in the main

@@ -618,6 +618,30 @@ export function presignDialog(url) {
   input.select();
 }
 
+// presignListDialog shows one pre-signed URL per selected object with
+// copy-per-row and copy-all (multi-run presign — signing itself is local).
+export function presignListDialog(list) {
+  const copyText = async (text) => {
+    try { await navigator.clipboard.writeText(text); } catch { /* clipboard unavailable */ }
+  };
+  openModal({
+    title: `Pre-signed URLs — ${list.length} object(s)`,
+    body: el('div', {},
+      el('div', { class: 'field', text: 'Anyone with a URL can download that object (expires as configured).' }),
+      el('div', { class: 'psn-list' }, list.map(({ name, url }) => el('div', { class: 'psn-row' },
+        el('span', { class: 'psn-name', text: name, title: url }),
+        el('input', { class: 'input mono', value: url, readonly: 'readonly' }),
+        el('button', { class: 'btn', text: 'Copy', onclick: () => copyText(url) }),
+      ))),
+    ),
+    buttons: [
+      { label: 'Copy all', onclick: () => copyText(list.map((x) => `${x.name}\t${x.url}`).join('\n')) },
+      { label: 'Close', class: 'primary' },
+    ],
+    wide: true,
+  });
+}
+
 // ---------- object versions (M4) ----------
 const asMillis = (v) => (typeof v === 'string' ? Date.parse(v) : v);
 
@@ -1454,8 +1478,101 @@ export function classDialog(bucket, rows, onChanged) {
   sel.focus();
 }
 
-// ---------- object lock per object (M5) ----------
-export function lockDialog(bucket, key, onChanged) {
+// ---------- batch runner (M10.3) ----------
+// batchDialog runs one operation per item, sequentially, with live
+// per-item status — the batch-progress surface for multi-run commands.
+// run(item) throws to mark a failure; Stop (or closing) abandons the rest.
+export function batchDialog({ title, intro = '', items, run, onDone }) {
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: `0/${items.length}` });
+  const list = el('div', { class: 'batch-list' });
+  let stopped = false;
+
+  const rowEls = items.map((it) => {
+    const r = el('div', { class: 'batch-row pending' },
+      el('span', { class: 'batch-ic', text: '\u23F3' }),
+      el('span', { class: 'batch-lbl', text: it.label }));
+    list.appendChild(r);
+    return r;
+  });
+  const setRow = (i, state, note = '') => {
+    rowEls[i].className = `batch-row ${state}`;
+    rowEls[i].replaceChildren(
+      el('span', { class: 'batch-ic', text: state === 'ok' ? '\u2713' : state === 'fail' ? '\u2717' : state === 'running' ? '\u25B6' : '\u23F3' }),
+      el('span', { class: 'batch-lbl', text: items[i].label }),
+      ...(note ? [el('span', { class: 'batch-note', text: note })] : []),
+    );
+  };
+
+  openModal({
+    title,
+    body: el('div', {},
+      ...(intro ? [el('div', { class: 'field', text: intro })] : []),
+      status, list),
+    buttons: [
+      { label: 'Stop', onclick: () => { stopped = true; } },
+      { label: 'Close', class: 'primary' },
+    ],
+    onClose: () => { stopped = true; },
+  });
+
+  (async () => {
+    let ok = 0, fail = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (stopped) break;
+      setRow(i, 'running');
+      try { await run(items[i]); ok++; setRow(i, 'ok'); }
+      catch (err) { fail++; setRow(i, 'fail', String(err)); }
+      status.textContent = `${ok + fail}/${items.length} — ${ok} ok${fail ? `, ${fail} failed` : ''}`;
+    }
+    status.textContent = stopped
+      ? `Stopped — ${ok} ok, ${fail} failed, ${items.length - ok - fail} not run`
+      : `Finished — ${ok} ok${fail ? `, ${fail} failed` : ''}`;
+    onDone?.(ok, fail);
+  })();
+}
+
+// ---------- object lock per object (M5; multi since M10.3) ----------
+// lockDialog applies retention / legal hold to one object (with live state)
+// or, for a multi-selection, to every selected object via the batch runner.
+export function lockDialog(bucket, rows, onChanged) {
+  if (!rows?.length) return;
+  if (rows.length === 1) return lockDialogOne(bucket, rows[0], onChanged);
+
+  const mode = el('select', { class: 'input', style: 'width:auto' },
+    ['GOVERNANCE', 'COMPLIANCE'].map((m) => el('option', { value: m }, m)));
+  const until = el('input', { class: 'input mono', value: '+30d', spellcheck: 'false' });
+
+  const launch = (label, fn) => () => batchDialog({
+    title: `${label} — ${rows.length} object(s)`,
+    intro: `Applying to ${rows.length} object(s) in s3://${bucket}.`,
+    items: rows.map((r) => ({ label: r.name, key: r.key })),
+    run: (it) => fn(it.key),
+    onDone: (ok) => { if (ok) onChanged?.(); },
+  });
+
+  openModal({
+    title: `Object lock — ${rows.length} object(s) in ${bucket}`,
+    body: el('div', {},
+      el('div', { class: 'field', text: 'The four actions below run on every selected object, one at a time, with per-item results.' }),
+      el('div', { class: 'field', style: 'margin-top:10px', text: 'Retention (current version of each object)' }),
+      el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
+        mode, until,
+        el('button', { class: 'btn primary', text: 'Set\u2026', onclick: launch('Set retention', (key) => api.PutObjectRetention(bucket, key, '', mode.value, until.value.trim())) }),
+        el('button', { class: 'btn', text: 'Clear\u2026', title: 'Removes GOVERNANCE retention (COMPLIANCE cannot be removed)', onclick: launch('Clear retention', (key) => api.ClearObjectRetention(bucket, key, '')) }),
+      ),
+      el('div', { class: 'field', style: 'margin-top:14px', text: 'Legal hold' }),
+      el('div', { style: 'display:flex;gap:8px;align-items:center' },
+        el('button', { class: 'btn', text: 'Hold ON\u2026', onclick: launch('Legal hold ON', (key) => api.SetObjectLegalHold(bucket, key, '', true)) }),
+        el('button', { class: 'btn', text: 'Hold OFF\u2026', onclick: launch('Legal hold OFF', (key) => api.SetObjectLegalHold(bucket, key, '', false)) }),
+      ),
+      el('div', { class: 'field', style: 'margin-top:14px;color:var(--text-dim)', text: 'COMPLIANCE retention cannot be shortened or removed. GOVERNANCE can. Legal hold keeps every version until turned off.' }),
+    ),
+    buttons: [{ label: 'Close' }],
+  });
+}
+
+function lockDialogOne(bucket, row, onChanged) {
+  const key = row.key;
   const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
   const mode = el('select', { class: 'input', style: 'width:auto' },
     ['GOVERNANCE', 'COMPLIANCE'].map((m) => el('option', { value: m }, m)));

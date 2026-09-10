@@ -554,6 +554,27 @@ kbd {
 .diff-row.add .diff-sign { color: #43a047; }
 .diff-row.gap { justify-content: center; color: var(--text-dim); padding: 2px 0; user-select: none; letter-spacing: 2px; }
 
+/* Batch runner + multi presign (M10.3) */
+.batch-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; max-height: 40vh; overflow: auto; }
+.batch-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px; border-radius: 4px;
+  border: 1px solid var(--border-soft);
+  font-size: 13px;
+}
+.batch-row .batch-ic { flex: none; width: 16px; text-align: center; }
+.batch-row .batch-lbl { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-row .batch-note { flex: 1; min-width: 0; color: var(--danger); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-row.ok .batch-ic { color: #43a047; }
+.batch-row.fail { border-color: var(--danger); }
+.batch-row.fail .batch-ic { color: #e53935; }
+.batch-row.running { border-color: var(--accent); }
+
+.psn-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 50vh; overflow: auto; }
+.psn-row { display: flex; align-items: center; gap: 8px; }
+.psn-row .psn-name { flex: 0 0 200px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+.psn-row .input { flex: 1; min-width: 0; }
+
 /* ================= Admin panel dialog ================= */
 .admin { display: flex; flex-direction: column; min-width: 560px; }
 .tabstrip { display: flex; gap: 2px; border-bottom: 1px solid var(--border); overflow-x: auto; }

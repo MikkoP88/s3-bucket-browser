@@ -6,7 +6,7 @@ import { Grid } from './grid.js';
 import { Tree } from './tree.js';
 import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
-  sourceEditor, helpSheet, conflictPolicy, presignDialog, toast, openModal,
+  sourceEditor, helpSheet, conflictPolicy, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
@@ -627,11 +627,11 @@ function showContextMenu(e, rows) {
     items.push(['New folder', 'Ctrl+Shift+N', () => newFolder()]);
     if (sel === 1 && !rows[0].isDir) {
       items.push(['Edit', '', () => editObject(rows[0])]);
-      items.push(['Pre-sign URL\u2026', '', () => presign(rows[0])]);
     }
+    if (sel && !rows.some((r) => r.isDir)) items.push(['Pre-sign URL\u2026', '', () => presign(rows)]);
     if (sel === 1) items.push(['Previous versions\u2026', '', () => versionsDialog(loc.bucket, rows[0].key, refreshCurrent)]);
     if (sel) items.push(['Storage class\u2026', '', () => classDialog(loc.bucket, rows, refreshCurrent)]);
-    if (sel === 1 && !rows[0].isDir) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows[0].key, refreshCurrent)]);
+    if (sel && !rows.some((r) => r.isDir)) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows, refreshCurrent)]);
     items.push(['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, loc.prefix || '', openSearchResult)]);
     items.push(['Delete permanently\u2026', 'Shift+Del', () => deletePermanentSelection(), !sel]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties()]);
@@ -1319,11 +1319,19 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
   updateCommandState();
 }
 
-async function presign(row) {
+async function presign(rowsOverride) {
   const loc = nav.current;
+  const rows = rowsOverride || grid.selectedRows();
+  if (!rows.length) return;
   try {
-    const url = await api.PresignObject(loc.bucket, row.key, 3600);
-    presignDialog(url);
+    if (rows.length === 1) {
+      const url = await api.PresignObject(loc.bucket, rows[0].key, 3600);
+      presignDialog(url);
+      return;
+    }
+    const list = [];
+    for (const r of rows) list.push({ name: r.name, url: await api.PresignObject(loc.bucket, r.key, 3600) });
+    presignListDialog(list);
   } catch (err) {
     toast(`Presign failed: ${err}`, 'error');
   }
@@ -1331,8 +1339,10 @@ async function presign(row) {
 
 async function selectionProperties() {
   const loc = nav.current;
-  const row = grid.selectedRows()[0];
-  if (!row) return;
+  const rows = grid.selectedRows();
+  if (!rows.length) return;
+  if (rows.length > 1) { multiProperties(loc, rows); return; }
+  const row = rows[0];
   if (loc.kind === 'remote') {
     try {
       const st = await api.RemoteStat(loc.source, row.key);
@@ -1370,6 +1380,41 @@ async function selectionProperties() {
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');
   }
+}
+
+// multiProperties summarizes a multi-selection: composition, total size,
+// modification range and the deepest common prefix (M10.3 multi-run
+// Properties — no per-item round trips).
+function multiProperties(loc, rows) {
+  const files = rows.filter((r) => !r.isDir);
+  const folders = rows.length - files.length;
+  const bytes = files.reduce((s, r) => s + (r.size || 0), 0);
+  const parts = [];
+  if (folders) parts.push(`${folders} folder(s)`);
+  if (files.length) parts.push(`${files.length} file(s)`);
+
+  const props = [['Items', `${rows.length} (${parts.join(', ')})`]];
+  if (files.length) props.push(['Total size', fmtBytes(bytes)]);
+
+  const ms = (v) => (typeof v === 'string' ? Date.parse(v) : v);
+  const times = rows.map((r) => ms(r.lastModified || r.modTime)).filter((v) => Number.isFinite(v) && v > 0);
+  if (times.length) {
+    props.push(['Modified range', `${fmtDate(Math.min(...times))} — ${fmtDate(Math.max(...times))}`]);
+  }
+
+  if (loc?.kind === 'objects' || loc?.kind === 'remote') {
+    const common = rows.reduce((p, r) => {
+      const k = r.key || '';
+      let i = 0;
+      while (i < p.length && i < k.length && p[i] === k[i]) i++;
+      const cut = p.slice(0, i).lastIndexOf('/');
+      return cut < 0 ? '' : p.slice(0, cut + 1);
+    }, rows[0].key || '');
+    props.push(['Common prefix', common || '(none)']);
+  }
+  if (loc?.kind === 'remote') props.push(['Source', loc.source]);
+  else if (loc?.kind === 'objects') props.push(['Bucket', loc.bucket]);
+  properties(`Properties — ${rows.length} item(s)`, props);
 }
 
 async function bucketProperties(bucket) {
@@ -2080,11 +2125,24 @@ function showTransfersBadge() {
 }
 
 function updateStatus() {
-  const sel = grid.selectedRows().length;
+  const selRows = grid.selectedRows();
+  const sel = selRows.length;
   const total = grid.rows.length;
-  $('status-selection').textContent = sel
-    ? `${sel} of ${total} ${t('items')} ${t('selected')}`
-    : `${total} ${total === 1 ? t('item') : t('items')}`;
+  let text;
+  if (sel) {
+    // Selection summary bar (M10.3): count, folders/files, total size.
+    const folders = selRows.filter((r) => r.isDir).length;
+    const files = sel - folders;
+    const bytes = selRows.reduce((s, r) => s + (!r.isDir ? (r.size || 0) : 0), 0);
+    const parts = [];
+    if (folders) parts.push(`${folders} folder(s)`);
+    if (files) parts.push(`${files} file(s)`);
+    if (bytes > 0) parts.push(fmtBytes(bytes));
+    text = `${sel} of ${total} ${t('items')} ${t('selected')}${parts.length ? ` \u2014 ${parts.join(', ')}` : ''}`;
+  } else {
+    text = `${total} ${total === 1 ? t('item') : t('items')}`;
+  }
+  $('status-selection').textContent = text;
   updateCommandState();
 }
 
