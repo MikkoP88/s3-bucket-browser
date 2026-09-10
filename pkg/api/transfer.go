@@ -246,6 +246,7 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 	}
 	j := a.jobs.add("upload", len(pairs), total)
 	id := j.info.ID
+	a.emitLog(LogInfo, "upload", fmt.Sprintf("job %s: uploading %d file(s) (%d bytes) to %s/%s", id, len(pairs), total, bucket, dirPrefix(prefix)))
 	go a.runUpload(j, c, bucket, pairs, policy, maxBPS)
 	return id, nil
 }
@@ -302,6 +303,8 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 // transfer history log (JSONL, PLAN.md §8.4 M3).
 func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	j.mu.Lock()
+	id, done, totalFiles, sentBytes, failedFiles :=
+		j.info.ID, j.info.DoneFiles, j.info.TotalFiles, j.info.SentBytes, j.info.FailedFiles
 	j.info.Status = status
 	j.info.Error = errMsg
 	j.info.CurrentFile = ""
@@ -330,6 +333,9 @@ func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	j.mu.Unlock()
 	j.emit(a.jobs, true)
 	a.logTransfer(logEntry)
+	a.emitLog(jobStatusLevel(status), logEntry.Op,
+		fmt.Sprintf("job %s finished: %s — %d/%d file(s), %d bytes sent, %d failed",
+			id, status, done, totalFiles, sentBytes, failedFiles))
 }
 
 // logTransfer appends one JSONL line to <configdir>/transfers.log. Logging
@@ -457,6 +463,7 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	}
 	j := a.jobs.add("download", len(items), total)
 	id := j.info.ID
+	a.emitLog(LogInfo, "download", fmt.Sprintf("job %s: downloading %d object(s) (%d bytes) from %s to %s", id, len(items), total, bucket, destDir))
 	go a.runDownload(j, c, bucket, items, destDir, policy, maxBPS)
 	return id, nil
 }

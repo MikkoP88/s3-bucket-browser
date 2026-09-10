@@ -95,7 +95,17 @@ func (a *App) DeleteSelection(bucket string, keys []string, force bool) (transfe
 		return transfer.DeleteResult{}, fmt.Errorf(
 			"%d object(s) selected — typed confirmation (force) required to delete", len(all))
 	}
+	a.emitLog(LogInfo, "delete", fmt.Sprintf("deleting %d object(s) from %s", len(all), bucket))
 	res, err := transfer.DeleteKeys(ctx, c.S3, bucket, all)
+	switch {
+	case err != nil:
+		a.emitLog(LogError, "delete", fmt.Sprintf("deleting %d object(s) from %s failed: %v", len(all), bucket, err))
+	case len(res.Errors) > 0:
+		a.emitLog(LogWarn, "delete", fmt.Sprintf("deleted %d of %d object(s) from %s — %s",
+			res.Deleted, len(all), bucket, strings.Join(res.Errors, "; ")))
+	default:
+		a.emitLog(LogInfo, "delete", fmt.Sprintf("deleted %d object(s) from %s", res.Deleted, bucket))
+	}
 	if res.Deleted > 0 {
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	}
@@ -132,6 +142,7 @@ func (a *App) RenameObject(bucket, key, newName string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
+	a.emitLog(LogInfo, "rename", fmt.Sprintf("renaming %s/%s to %q", bucket, key, newName))
 
 	if strings.HasSuffix(key, "/") { // folder: move everything beneath it
 		trimmed := strings.TrimSuffix(key, "/")
@@ -187,6 +198,21 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	res, err := a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move)
+	verb := "copied"
+	if move {
+		verb = "moved"
+	}
+	switch {
+	case err != nil:
+		a.emitLog(LogError, "copy", fmt.Sprintf("%s %d item(s) from %s to %s/%s failed: %v",
+			verb, len(keys), bucket, dstBucket, dirPrefix(dstPrefix), err))
+	case len(res.Errors) > 0:
+		a.emitLog(LogWarn, "copy", fmt.Sprintf("%s %d item(s) to %s/%s with %d error(s) — %s",
+			verb, res.Copied+res.Moved, dstBucket, dirPrefix(dstPrefix), len(res.Errors), strings.Join(res.Errors, "; ")))
+	default:
+		a.emitLog(LogInfo, "copy", fmt.Sprintf("%s %d item(s) from %s to %s/%s",
+			verb, res.Copied+res.Moved, bucket, dstBucket, dirPrefix(dstPrefix)))
+	}
 	if res.Copied > 0 || res.Moved > 0 {
 		a.emit(EventS3Changed, map[string]string{"bucket": dstBucket, "prefix": dirPrefix(dstPrefix)})
 	}

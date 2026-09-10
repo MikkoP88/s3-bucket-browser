@@ -17,6 +17,7 @@ import (
 const (
 	EventTransferUpdate = "transfer:update" // payload: JobInfo snapshot
 	EventS3Changed      = "s3:changed"      // payload: {bucket, prefix} — refresh views
+	EventLogLine        = "log:line"        // payload: LogLine — in-app log drawer
 )
 
 // quickOpTimeout bounds listing/stat/presign calls so a dead endpoint can
