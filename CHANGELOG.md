@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Remote-filesystem engines (M9): new `pkg/core/remotefs` package defines
+  one `FS` contract (List/Stat/Open/Create/MkdirAll/Remove/Rename/Close)
+  over the data-source schema and ships engines for SFTP/SCP (pkg/sftp +
+  x/crypto/ssh — password incl. keyboard-interactive, plus OpenSSH default
+  identity keys), FTP/FTPS (jlaffaye/ftp — implicit TLS on port 990,
+  explicit AUTH TLS otherwise, anonymous default), and local directories.
+  All engines speak anchored slash paths ("/" = the source root) with
+  `CleanPath` making root escape impossible by construction, emit the same
+  `listing.Entry` rows as the S3 pipeline so the grid renders unchanged,
+  and are validated against an in-process SSH+SFTP server (real handshake,
+  real filesystem) plus a full local contract suite. Engine teardown closes
+  the SSH transport before the sftp client so slow servers cannot hang the
+  drain goroutines.
 - Data sources (M8): connection profiles generalize into data sources of
   any type — S3 today, with the sftp/scp/ftp/ftps/local schemas already
   fixed so Profile files and the API are forward-compatible for the
