@@ -17,6 +17,13 @@ follow [Semantic Versioning](https://semver.org/).
   can be run individually by name (`DoctorChecks`, `RunDoctorCheck`),
   policy and ACL are timed separately; hermetic unit tests for the
   registry.
+- Doctor v2 dialog: check list rendered before running, "Run all" plus
+  per-check re-run, status pills, start→finish times and durations,
+  expandable detail (advice, error, raw info JSON).
+- Structured in-app log events (`log:line`): transfers, doctor runs,
+  batch operations (delete/copy/move/rename/mkdir/storage-class) and
+  listing failures emit timestamped, scoped, leveled log lines for the
+  upcoming log drawer; no secrets are ever logged.
 
 ### Fixed
 

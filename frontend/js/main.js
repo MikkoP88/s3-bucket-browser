@@ -696,13 +696,8 @@ async function bucketProperties(bucket) {
   }
 }
 
-async function runDoctor(bucket) {
-  try {
-    const rep = await api.RunDoctor(bucket || '');
-    doctorDialog(rep);
-  } catch (err) {
-    toast(`Doctor failed: ${err}`, 'error');
-  }
+function runDoctor(bucket) {
+  doctorDialog(bucket || '');
 }
 
 // ============================ drag & drop ============================

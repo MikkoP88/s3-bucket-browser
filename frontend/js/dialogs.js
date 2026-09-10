@@ -143,27 +143,149 @@ export function properties(title, rows) {
   openModal({ title, body, buttons: [{ label: 'Close' }] });
 }
 
-// ---------- doctor ----------
-export function doctorDialog(report) {
-  const body = el('div', {});
-  body.appendChild(el('div', { class: 'kv', },
-    el('div', { class: 'k', text: 'Endpoint' }), el('div', { class: 'v mono', text: report.endpoint }),
-    el('div', { class: 'k', text: 'Provider' }), el('div', { class: 'v', text: report.provider }),
-    el('div', { class: 'k', text: 'Bucket' }), el('div', { class: 'v mono', text: report.bucket || '—' }),
-  ));
-  body.appendChild(el('div', { style: 'height:10px' }));
-  for (const c of report.checks || []) {
-    body.appendChild(el('div', { class: 'doc-check' },
-      el('span', { class: `st ${c.status}`, text: c.status }),
-      el('span', {}, `${c.check}${c.detail ? ` — ${c.detail}` : ''}${c.error ? ` (${c.error})` : ''}`),
-      el('span', { class: 'dt', text: `${c.durationMs} ms` }),
-    ));
+// ---------- doctor (v2: per-check rows, run-all, per-check re-run) ----------
+const docTime = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (x) => String(x).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
+export function doctorDialog(bucket) {
+  const summary = el('div', { class: 'doc-summary' });
+  const list = el('div', { class: 'doc-list' });
+  const warnBox = el('div', {});
+  const meta = el('div', { class: 'kv' });
+
+  const fmtDur = (c) => (c && typeof c.durationMs === 'number' ? `${c.durationMs} ms` : '');
+
+  // detail body for one check: advice, error, info (each hidden if absent)
+  const detailOf = (c) => el('div', { class: 'doc-detail' },
+    c.advice ? el('div', { class: 'banner warn' },
+      el('div', { text: `${t('doctor.advice')}: ${c.advice.suggestion || c.advice.cause || c.advice.code}` }),
+      ...(c.advice.commands || []).map((cmd) => el('div', { class: 'mono doc-cmd', text: cmd })),
+    ) : null,
+    c.error ? el('div', { class: 'doc-detail-sec' },
+      el('div', { class: 'doc-detail-k', text: t('doctor.error') }),
+      el('div', { class: 'doc-detail-v', text: c.error }),
+    ) : null,
+    c.info ? el('div', { class: 'doc-detail-sec' },
+      el('div', { class: 'doc-detail-k', text: t('doctor.info') }),
+      el('pre', { class: 'mono doc-pre', text: JSON.stringify(c.info, null, 2) }),
+    ) : null,
+    c.detail && !c.error ? el('div', { class: 'doc-detail-sec' },
+      el('div', { class: 'doc-detail-k', text: t('doctor.info') }),
+      el('div', { class: 'doc-detail-v', text: c.detail }),
+    ) : null,
+  );
+
+  function makeRow(name) {
+    let result = null;
+    let expanded = false;
+    let detail = detailOf(null);
+    detail.classList.add('hidden');
+    const twist = el('span', { class: 'doc-twist', text: '\u25B8' });
+    const pill = el('span', { class: 'doc-pill notrun', text: t('doctor.notRun') });
+    const times = el('span', { class: 'doc-times mono' });
+    const dur = el('span', { class: 'doc-dt', text: '' });
+    const rerunBtn = el('button', {
+      class: 'btn doc-rerun', text: '\u25B6', title: t('doctor.rerun'),
+      onclick: () => rerun(name),
+    });
+    const row = el('div', { class: 'doc-row' },
+      el('div', { class: 'doc-row-top' },
+        twist,
+        el('span', { class: 'doc-name', text: name }),
+        pill, times, dur, rerunBtn,
+      ),
+      detail,
+    );
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.doc-rerun')) return;
+      expanded = !expanded;
+      twist.textContent = expanded ? '\u25BE' : '\u25B8';
+      detail.classList.toggle('hidden', !expanded);
+    });
+    return {
+      row,
+      setRunning(on) {
+        pill.className = `doc-pill ${on ? 'running' : (result ? result.status : 'notrun')}`;
+        pill.textContent = on ? '\u21BB' : (result ? t(`doctor.${result.status}`) : t('doctor.notRun'));
+        pill.classList.toggle('spin', on);
+        rerunBtn.disabled = on;
+      },
+      update(c) {
+        result = c;
+        pill.className = `doc-pill ${c.status}`;
+        pill.textContent = t(`doctor.${c.status}`);
+        times.textContent = `${docTime(c.started_at) || '—'} \u2192 ${docTime(c.finished_at) || '—'}`;
+        dur.textContent = fmtDur(c);
+        const nd = detailOf(c);
+        nd.classList.toggle('hidden', !expanded);
+        detail.replaceWith(nd);
+        detail = nd;
+      },
+    };
   }
-  for (const w of report.warnings || []) {
-    body.appendChild(el('div', { class: 'doc-check' },
-      el('span', { class: 'st WARN', text: 'WARN' }), el('span', { text: w })));
+
+  const rows = new Map();
+  const setSummary = (s) => {
+    summary.textContent = s
+      ? t('doctor.summary', { pass: s.pass, warn: s.warn, fail: s.fail, skip: s.skip })
+      : '';
+  };
+
+  async function rerun(name) {
+    const r = rows.get(name);
+    if (!r) return;
+    r.setRunning(true);
+    try {
+      const c = await api.RunDoctorCheck(bucket, name);
+      r.update(c);
+    } catch (err) {
+      r.update({ check: name, status: 'fail', error: String(err), durationMs: 0, started_at: '', finished_at: '' });
+      toast(`${name}: ${err}`, 'error');
+    }
+    r.setRunning(false);
   }
-  openModal({ title: `Connection doctor — ${report.summary.pass} pass, ${report.summary.warn} warn, ${report.summary.fail} fail`, body, wide: true, buttons: [{ label: 'Close' }] });
+
+  async function runAll() {
+    for (const r of rows.values()) r.setRunning(true);
+    try {
+      const rep = await api.RunDoctor(bucket);
+      meta.replaceChildren(
+        el('div', { class: 'k', text: 'Endpoint' }), el('div', { class: 'v mono', text: rep.endpoint }),
+        el('div', { class: 'k', text: 'Provider' }), el('div', { class: 'v', text: rep.provider }),
+        el('div', { class: 'k', text: 'Bucket' }), el('div', { class: 'v mono', text: rep.bucket || '—' }),
+      );
+      for (const c of rep.checks || []) rows.get(c.check)?.update(c);
+      warnBox.replaceChildren(...(rep.warnings || []).map((w) =>
+        el('div', { class: 'banner warn', text: w })));
+      setSummary(rep.summary);
+    } catch (err) {
+      toast(`Doctor failed: ${err}`, 'error');
+    }
+    for (const r of rows.values()) r.setRunning(false);
+  }
+
+  openModal({
+    title: `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`,
+    body: el('div', {}, summary, meta, el('div', { style: 'height:10px' }), list, warnBox),
+    wide: true,
+    buttons: [
+      { label: t('doctor.runAll'), class: 'primary', onclick: () => runAll() },
+      { label: 'Close' },
+    ],
+  });
+
+  api.DoctorChecks().then((names) => {
+    for (const name of names) {
+      const r = makeRow(name);
+      rows.set(name, r);
+      list.appendChild(r.row);
+    }
+  }).catch((err) => toast(`Doctor: ${err}`, 'error'));
 }
 
 // ---------- transfer manager ----------
