@@ -8,6 +8,29 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Data sources (M8): connection profiles generalize into data sources of
+  any type — S3 today, with the sftp/scp/ftp/ftps/local schemas already
+  fixed so Profile files and the API are forward-compatible for the
+  remote-filesystem engines. Legacy S3 profiles migrate one-way into
+  sources on first load and S3 sources keep mirroring into the profile
+  store, so browsing and the CLI resolve them by name exactly as before.
+  The GUI grows a unified type-aware source editor (per-type field sets,
+  local-folder browser, honest "engines ship next" Test for non-S3
+  types), a Data sources manager dialog, and source-typed status.
+- Password-encrypted Profile files (`*.s3bprofile`): a portable bundle of
+  data sources to hand a colleague or move between machines. The
+  container is AES-256-GCM encrypted with a scrypt-derived key
+  (N=32768), versioned (`s3bpf1|` magic), and carries per-file random
+  salt + nonce; a wrong password and a corrupted file are deliberately
+  indistinguishable. While a file is open it is the single source of
+  truth — edits stay in memory (dirty indicator in the status bar) until
+  Save/Save As re-encrypts, and nothing leaks into the local store.
+  Full File-menu lifecycle (New/Open/Save (Ctrl+S)/Save As/Close with
+  unsaved-changes guards) and native pickers included.
+- Source-scoped keyring accounts (`sources/<id>/…`): source secrets get
+  the same OS-keyring treatment as profile secrets, with an independent
+  lifecycle so removing a source cleans up after itself.
+
 - Publisher metadata everywhere Windows and macOS surface it: the
   binaries now carry a proper VERSIONINFO resource (CompanyName,
   ProductName, FileDescription, versions, LegalCopyright, …) generated at
@@ -74,6 +97,9 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Generated source IDs re-roll on nanosecond-clock collisions (observed
+  on Windows), which could silently replace a just-added source with the
+  next one.
 - Windows: launching the GUI no longer opens an empty console window behind
   the app. The binary keeps its console subsystem (the CLI needs it), but
   GUI mode now detaches the console at startup (`FreeConsole`), so

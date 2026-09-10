@@ -112,12 +112,16 @@ export function typedConfirm({ title, message, typeWord, okLabel = 'Delete', dan
   });
 }
 
-export function prompt({ title, label, value = '', okLabel = 'OK' }) {
+export function prompt({ title, label, value = '', okLabel = 'OK', password = false }) {
   let settled = false;
   return new Promise((resolve) => {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     const input = el('input', { class: 'input', value, spellcheck: 'false' });
-    const submit = (close) => { done(input.value.trim() || null); close(); };
+    if (password) {
+      input.type = 'password';
+      input.autocomplete = 'new-password';
+    }
+    const submit = (close) => { done(password ? (input.value || null) : (input.value.trim() || null)); close(); };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(closeRef.close); });
     const closeRef = openModal({
       title,
@@ -326,26 +330,50 @@ export function transferManager(onClose) {
   return { close: () => { origClose(); } };
 }
 
-// ---------- profile editor ----------
-const PROFILE_COLORS = ['#0b63ce', '#1b7f3b', '#b3261e', '#9a6700', '#7c3aed', '#0e7490', '#be185d', '#57606a'];
+// ---------- data source editor (M8: any connection type) ----------
+const SOURCE_COLORS = ['#0b63ce', '#1b7f3b', '#b3261e', '#9a6700', '#7c3aed', '#0e7490', '#be185d', '#57606a'];
 
-export function profileEditor(existing, onSaved) {
+const SOURCE_TYPES = [
+  ['s3', 'Amazon S3 / S3-compatible'],
+  ['sftp', 'SFTP'],
+  ['scp', 'SCP (SFTP engine)'],
+  ['ftp', 'FTP'],
+  ['ftps', 'FTPS'],
+  ['local', 'Local folder'],
+];
+
+// sourceEditor edits one data source of any type. existing is a (masked)
+// Source from ListSources or null. Secret fields arrive empty with the
+// stored mask as placeholder; the backend re-attaches stored values.
+export function sourceEditor(existing, onSaved) {
   const f = {
     name: el('input', { class: 'input', value: existing?.name || '', spellcheck: 'false' }),
-    endpoint: el('input', { class: 'input mono', value: existing?.endpoint || '', placeholder: 'https://s3.amazonaws.com (empty = AWS)' }),
-    region: el('input', { class: 'input', value: existing?.region || '', placeholder: 'us-east-1' }),
-    accessKey: el('input', { class: 'input mono', value: existing?.accessKeyId || '', autocomplete: 'off' }),
-    secretKey: el('input', { class: 'input mono', type: 'password', placeholder: existing?.secretMasked || '', autocomplete: 'new-password' }),
+    type: el('select', { class: 'input' }, SOURCE_TYPES.map(([v, l]) => el('option', { value: v }, l))),
+    // s3 (legacy profile fields)
+    endpoint: el('input', { class: 'input mono', value: existing?.s3?.endpoint || '', placeholder: 'https://s3.amazonaws.com (empty = AWS)' }),
+    region: el('input', { class: 'input', value: existing?.s3?.region || '', placeholder: 'us-east-1' }),
+    accessKey: el('input', { class: 'input mono', value: existing?.s3?.accessKeyId || '', autocomplete: 'off' }),
+    secretKey: el('input', { class: 'input mono', type: 'password', placeholder: existing?.s3?.secretKey || 'secret access key', autocomplete: 'new-password' }),
     token: el('input', { class: 'input mono', type: 'password', placeholder: 'optional (temporary credentials)', autocomplete: 'new-password' }),
     pathStyle: el('input', { type: 'checkbox' }),
     insecure: el('input', { type: 'checkbox' }),
-    setDefault: el('input', { type: 'checkbox', checked: true }),
+    // remote filesystems
+    host: el('input', { class: 'input mono', value: existing?.host || '', placeholder: 'server.example.com', spellcheck: 'false' }),
+    port: el('input', { class: 'input mono', type: 'number', min: '0', max: '65535', value: existing?.port || '', placeholder: 'type default' }),
+    username: el('input', { class: 'input mono', value: existing?.username || '', autocomplete: 'off' }),
+    password: el('input', { class: 'input mono', type: 'password', placeholder: existing?.password || 'password', autocomplete: 'new-password' }),
+    root: el('input', { class: 'input mono', value: existing?.root || '', placeholder: 'starting directory (optional)' }),
+    // local
+    localRoot: el('input', { class: 'input mono', value: existing?.localRoot || '', placeholder: 'C:\\data or /home/user/data', spellcheck: 'false' }),
+    setDefault: el('input', { type: 'checkbox', checked: !existing }),
   };
-  f.pathStyle.checked = !!existing?.pathStyle;
-  f.insecure.checked = !!existing?.insecure;
+  f.type.value = existing?.type || 's3';
+  f.pathStyle.checked = !!existing?.s3?.pathStyle;
+  f.insecure.checked = !!existing?.s3?.insecure;
+  if (existing) f.setDefault.checked = !!existing.default;
 
-  let color = existing?.color || PROFILE_COLORS[0];
-  const chips = el('div', { class: 'chips' }, PROFILE_COLORS.map((c) =>
+  let color = existing?.color || SOURCE_COLORS[0];
+  const chips = el('div', { class: 'chips' }, SOURCE_COLORS.map((c) =>
     el('div', { class: `chip${c === color ? ' sel' : ''}`, style: `background:${c}`, onclick: (e) => {
       color = c;
       chips.querySelectorAll('.chip').forEach((n) => n.classList.remove('sel'));
@@ -354,8 +382,9 @@ export function profileEditor(existing, onSaved) {
   ));
 
   const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
-  const body = el('div', {},
-    el('label', { class: 'field', text: 'Profile name' }), f.name,
+
+  // Type-specific field sets, re-rendered when the type select changes.
+  const s3Fields = () => el('div', {},
     el('label', { class: 'field', text: 'Endpoint URL' }), f.endpoint,
     el('label', { class: 'field', text: 'Region' }), f.region,
     el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px' },
@@ -366,20 +395,66 @@ export function profileEditor(existing, onSaved) {
     el('div', { style: 'display:flex;gap:18px;margin-top:10px' },
       el('label', { style: 'display:flex;align-items:center;gap:6px' }, f.pathStyle, 'Path-style addressing'),
       el('label', { style: 'display:flex;align-items:center;gap:6px' }, f.insecure, 'Skip TLS verify'),
-      el('label', { style: 'display:flex;align-items:center;gap:6px' }, f.setDefault, 'Default'),
     ),
+  );
+  const remoteFields = () => el('div', {},
+    el('div', { style: 'display:grid;grid-template-columns:2fr 1fr;gap:12px' },
+      el('div', {}, el('label', { class: 'field', text: 'Host' }), f.host),
+      el('div', {}, el('label', { class: 'field', text: 'Port' }), f.port),
+    ),
+    el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px' },
+      el('div', {}, el('label', { class: 'field', text: 'Username' }), f.username),
+      el('div', {}, el('label', { class: 'field', text: 'Password' }), f.password),
+    ),
+    el('label', { class: 'field', text: 'Start directory' }), f.root,
+  );
+  const localFields = () => el('div', {},
+    el('label', { class: 'field', text: 'Folder' }),
+    el('div', { style: 'display:flex;gap:8px' },
+      f.localRoot,
+      el('button', {
+        class: 'btn', text: 'Browse\u2026', onclick: async () => {
+          const dir = await api.PickFolder('Choose the source folder');
+          if (dir) f.localRoot.value = dir;
+        },
+      }),
+    ),
+  );
+
+  const fields = el('div', { style: 'margin-top:4px' });
+  const defaults = el('label', { style: 'display:flex;align-items:center;gap:6px' }, f.setDefault, 'Default source');
+  const draw = () => {
+    const t = f.type.value;
+    fields.replaceChildren(
+      t === 's3' ? s3Fields() : t === 'local' ? localFields() : remoteFields(),
+    );
+    defaults.style.display = t === 's3' ? '' : 'none';
+  };
+  f.type.onchange = draw;
+  draw();
+
+  const body = el('div', {},
+    el('label', { class: 'field', text: 'Name' }), f.name,
+    el('label', { class: 'field', text: 'Type' }), f.type,
+    fields,
+    el('div', { style: 'display:flex;gap:18px;margin-top:10px' }, defaults),
     el('label', { class: 'field', text: 'Accent color' }), chips,
     status,
   );
 
   openModal({
-    title: existing ? `Edit profile — ${existing.name}` : 'Add profile',
+    title: existing ? `Edit source — ${existing.name}` : 'Add data source',
     body,
     buttons: [
       {
         label: 'Test',
         onclick: async () => {
-          status.textContent = 'Testing…';
+          if (f.type.value !== 's3') {
+            status.textContent = 'Remote-filesystem engines ship next — the connection is saved as configured.';
+            status.style.color = 'var(--text-dim)';
+            return;
+          }
+          status.textContent = 'Testing\u2026';
           try {
             const res = await api.TestProfile(f.name.value.trim());
             status.textContent = res.ok ? `\u2705 ${res.message}` : `\u274C ${res.message}`;
@@ -394,9 +469,17 @@ export function profileEditor(existing, onSaved) {
         label: 'Save',
         class: 'primary',
         onclick: async (close) => {
-          try {
-            await api.SaveProfile({
-              name: f.name.value.trim(),
+          const t = f.type.value;
+          const src = {
+            id: existing?.id || '',
+            name: f.name.value.trim(),
+            type: t,
+            color,
+            default: t === 's3' ? f.setDefault.checked : false,
+          };
+          if (t === 's3') {
+            src.s3 = {
+              name: src.name,
               endpoint: f.endpoint.value.trim(),
               region: f.region.value.trim(),
               accessKeyId: f.accessKey.value.trim(),
@@ -404,9 +487,18 @@ export function profileEditor(existing, onSaved) {
               sessionToken: f.token.value,
               pathStyle: f.pathStyle.checked,
               insecure: f.insecure.checked,
-              color,
-              setDefault: f.setDefault.checked,
-            });
+            };
+          } else if (t === 'local') {
+            src.localRoot = f.localRoot.value.trim();
+          } else {
+            src.host = f.host.value.trim();
+            src.port = parseInt(f.port.value, 10) || 0;
+            src.username = f.username.value.trim();
+            src.password = f.password.value;
+            src.root = f.root.value.trim();
+          }
+          try {
+            await api.SaveSource(src);
             close();
             onSaved?.();
           } catch (err) {
@@ -439,6 +531,7 @@ export function helpSheet() {
     ['Ctrl+U / Ctrl+D', 'Upload files / download selection'],
     ['F9', 'Toggle dual-pane local browser'],
     ['Ctrl+L', 'Toggle log area'],
+    ['Ctrl+S', 'Save profile file'],
     ['Esc', 'Clear selection / close'],
     ['F1', 'This sheet'],
   ];

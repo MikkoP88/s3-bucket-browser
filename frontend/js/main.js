@@ -6,7 +6,7 @@ import { Grid } from './grid.js';
 import { Tree } from './tree.js';
 import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
-  profileEditor, helpSheet, conflictPolicy, presignDialog, toast, openModal,
+  sourceEditor, helpSheet, conflictPolicy, presignDialog, toast, openModal,
   versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
@@ -24,10 +24,11 @@ const logArea = createLogArea();
 
 setCommandContext({
   selectionCount: () => grid.selectedRows().length,
-  hasProfile: () => profiles.length > 0,
+  // Browsing still means S3; remote-filesystem engines land with M9.
+  hasProfile: () => sources.some((s) => s.type === 's3'),
 });
 
-let profiles = [];
+let sources = []; // data sources of any type (M8)
 let currentEntries = []; // unfiltered rows of the active view
 
 // Streaming listing state (M5): generation counter + active stream token.
@@ -58,8 +59,9 @@ async function boot() {
   if (ar > 0) setAutoRefresh(ar);
   refreshOnFocus = localStorage.getItem('s3b-refresh-focus') === '1';
 
-  const ok = await refreshProfiles();
+  const ok = await refreshSources();
   if (ok) nav.to({ kind: 'buckets' });
+  refreshPfState(); // container sessions do not survive restarts; defensive
   if (localStorage.getItem('s3b-panes') === '1') localPane.show();
   updateCommandState();
 }
@@ -122,21 +124,48 @@ function toggleTheme() {
   localStorage.setItem('s3b-theme', next);
 }
 
-// ============================ profiles ============================
-async function refreshProfiles(selectAfter = true) {
-  try {
-    profiles = await api.ListProfiles();
-  } catch (err) {
-    toast(`Profiles: ${err}`, 'error');
-    profiles = [];
+// ============================ data sources (M8) ============================
+// providerLabel mirrors pkg/provider.Detect for the dropdown/dialog labels
+// (the Source JSON does not carry the derived provider key).
+function providerLabel(endpoint) {
+  const e = (endpoint || '').toLowerCase();
+  if (!e) return 'aws';
+  const has = (s) => e.includes(s);
+  switch (true) {
+    case has('amazonaws.com'): return 'aws';
+    case has('wasabisys.com'): return 'wasabi';
+    case has('backblazeb2.com'): return 'b2';
+    case has('objectstorage.cloud.ibm.com'): return 'ibm';
+    case has('digitaloceanspaces.com'): return 'do';
+    case has('minio') || has('aistor'): return 'minio';
+    case has('cloudflare') || has('r2'): return 'cloudflare';
+    case has('hetzner'): return 'hetzner';
+    case has('ceph') || has('rgw'): return 'ceph';
+    case has('dell') || has('ecs'): return 'dell';
+    case has('netapp') || has('storagegrid'): return 'netapp';
+    case /^(localhost|127\.|\[?::1)/.test(e): return 'minio'; // local labs
+    default: return 'custom';
   }
+}
+
+// refreshSources reloads all data sources (an open Profile file wins over
+// the local store), rebuilds the s3 dropdown, and shows onboarding when
+// there is nothing to browse with yet.
+async function refreshSources() {
+  try {
+    sources = await api.ListSources();
+  } catch (err) {
+    toast(`Sources: ${err}`, 'error');
+    sources = [];
+  }
+  const s3srcs = sources.filter((s) => s.type === 's3');
   const sel = $('profile-select');
-  sel.replaceChildren(...profiles.map((p) =>
-    el('option', { value: p.name }, `${p.default ? '\u2605 ' : ''}${p.name} (${p.provider})`)));
-  const def = profiles.find((p) => p.default) || profiles[0];
+  sel.replaceChildren(...s3srcs.map((s) =>
+    el('option', { value: s.name }, `${s.default ? '\u2605 ' : ''}${s.name} (${providerLabel(s.s3?.endpoint)})`)));
+  const def = s3srcs.find((s) => s.default) || s3srcs[0];
   if (def) sel.value = def.name;
   $('status-profile').textContent = def ? def.name : '';
-  if (!profiles.length) {
+  if (!sources.length) {
     showOnboarding();
     return false;
   }
@@ -149,8 +178,8 @@ function showOnboarding() {
   $('sidebar-head').textContent = t('buckets');
   tree.container.replaceChildren();
   renderBreadcrumb();
-  showEmpty(t('noProfiles'), t('noProfilesSub'), [
-    el('button', { class: 'btn primary', text: t('addProfile'), onclick: () => profileEditor(null, afterProfileSaved) }),
+  showEmpty(t('noSources'), t('noSourcesSub'), [
+    el('button', { class: 'btn primary', text: t('addSource'), onclick: () => sourceEditor(null, afterSourceSaved) }),
     el('button', { class: 'btn', text: t('importAws'), onclick: importAws }),
   ]);
 }
@@ -163,7 +192,7 @@ async function importAws() {
       : res.skipped.length ? `Skipped: ${res.skipped.join(', ')}` : 'Nothing found in ~/.aws/credentials';
     toast(msg, res.imported.length ? 'ok' : '');
     if (res.imported.length) {
-      await refreshProfiles();
+      await refreshSources();
       nav.to({ kind: 'buckets' });
     }
   } catch (err) {
@@ -171,9 +200,12 @@ async function importAws() {
   }
 }
 
-function afterProfileSaved() {
-  refreshProfiles().then((ok) => { if (ok) nav.to({ kind: 'buckets' }); });
-  toast('Profile saved', 'ok');
+function afterSourceSaved() {
+  refreshSources().then((ok) => {
+    if (ok && sources.some((s) => s.type === 's3')) nav.to({ kind: 'buckets' });
+  });
+  refreshPfState(); // a container edit flips the dirty flag
+  toast('Source saved', 'ok');
 }
 
 // ============================ navigation ============================
@@ -388,9 +420,12 @@ function wireGrid() {
     if (e.target.closest('.tnode')) return; // node menu lands with sidebar parity (M7.9)
     e.preventDefault();
     openMenu(e, [
-      [t('addProfile'), '', () => profileEditor(null, afterProfileSaved)],
+      [t('addSource'), '', () => sourceEditor(null, afterSourceSaved)],
       null,
       [t('importAws'), '', () => importAws()],
+      null,
+      [t('pf.new'), '', newProfileFileUi],
+      [t('pf.open'), '', openProfileFileUi],
       null,
       ['Collapse all', '', () => tree.collapseAll()],
       ['Refresh', 'F5', () => refreshCurrent()],
@@ -1019,14 +1054,24 @@ function wireToolbar() {
   $('btn-newfolder').onclick = newFolder;
   $('btn-doctor').onclick = () => runDoctor(nav.current?.kind === 'objects' ? nav.current.bucket : '');
   $('btn-transfers').onclick = () => transferManager();
-  $('btn-profiles').onclick = () => profilesDialog();
+  $('btn-profiles').onclick = () => sourcesDialog();
   $('btn-theme').onclick = toggleTheme;
   $('btn-help').onclick = helpSheet;
+  // Switching the dropdown makes another s3 source the default. The source
+  // flag travels through SaveSource (store and Profile-file mode alike); in
+  // store mode the legacy mirror is re-flagged too so browsing and the CLI
+  // agree. Masked secrets ride along and are re-attached server-side by ID.
   $('profile-select').onchange = async () => {
-    await api.SetDefaultProfile($('profile-select').value);
-    await refreshProfiles();
-    nav.to({ kind: 'buckets' });
-    toast('Profile switched', 'ok');
+    const name = $('profile-select').value;
+    try {
+      await makeDefaultSource(name);
+      await refreshSources();
+      nav.to({ kind: 'buckets' });
+      toast('Source switched', 'ok');
+    } catch (err) {
+      toast(`Switch failed: ${err}`, 'error');
+      await refreshSources();
+    }
   };
   $('filter').addEventListener('input', debounce(() => {
     view.filter = $('filter').value;
@@ -1048,22 +1093,38 @@ function findFromHere() {
   else toast('Open a bucket first — or select one');
 }
 
-function profilesDialog() {
+// sourceDetail is the secondary line in the sources dialog.
+function sourceDetail(s) {
+  if (s.type === 's3') return `${providerLabel(s.s3?.endpoint)}${s.s3?.endpoint ? ` — ${s.s3.endpoint}` : ''}`;
+  if (s.type === 'local') return `local — ${s.localRoot || ''}`;
+  return `${s.type} — ${s.host || ''}${s.port ? `:${s.port}` : ''}`;
+}
+
+function sourcesDialog() {
   const list = el('div', {});
   const draw = () => {
-    list.replaceChildren(...profiles.map((p) => el('div', { class: 'tr-job' },
+    list.replaceChildren(...sources.map((s) => el('div', { class: 'tr-job' },
       el('div', { class: 'tr-top' },
         el('span', { class: 'tr-name' },
-          el('span', { style: `color:${p.color || 'var(--accent)'};margin-right:6px`, text: '\u25CF' }),
-          `${p.name} ${p.default ? '(\u2605 default)' : ''}`),
-        el('span', { class: 'tr-status', text: `${p.provider}${p.endpoint ? ` — ${p.endpoint}` : ''}` }),
-        el('button', { class: 'btn', text: 'Edit', onclick: () => { profileEditor(p, async () => { await refreshProfiles(); draw(); }); } }),
-        el('button', { class: 'btn', text: 'Default', onclick: async () => { await api.SetDefaultProfile(p.name); await refreshProfiles(); draw(); } }),
-        el('button', { class: 'btn', text: 'Remove', onclick: async () => {
-          if (await confirm({ title: `Remove profile ${p.name}?`, message: 'Stored credentials will be deleted.', danger: true, okLabel: 'Remove' })) {
-            await api.RemoveProfile(p.name);
-            await refreshProfiles();
+          el('span', { style: `color:${s.color || 'var(--accent)'};margin-right:6px`, text: '\u25CF' }),
+          `${s.name} ${s.default ? '(\u2605 default)' : ''}`),
+        el('span', { class: 'tr-status', text: sourceDetail(s) }),
+        el('button', { class: 'btn', text: 'Edit', onclick: () => { sourceEditor(s, async () => { await refreshSources(); draw(); }); } }),
+        ...(s.type === 's3' ? [el('button', { class: 'btn', text: 'Default', onclick: async () => {
+          try {
+            await makeDefaultSource(s.name);
+            await refreshSources();
             draw();
+          } catch (err) { toast(`Default failed: ${err}`, 'error'); }
+        } })] : []),
+        el('button', { class: 'btn', text: 'Remove', onclick: async () => {
+          if (await confirm({ title: `Remove source ${s.name}?`, message: 'Stored credentials will be deleted.', danger: true, okLabel: 'Remove' })) {
+            try {
+              await api.RemoveSource(s.id || s.name);
+              await refreshSources();
+              refreshPfState();
+              draw();
+            } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
           }
         } }),
       ),
@@ -1072,15 +1133,136 @@ function profilesDialog() {
   };
   draw();
   openModal({
-    title: 'Connection profiles',
+    title: t('sourcesTitle'),
     body: list,
     wide: true,
     buttons: [
       { label: t('importAws'), onclick: async (c) => { c(); importAws(); } },
-      { label: t('addProfile'), class: 'primary', onclick: (c) => { c(); profileEditor(null, afterProfileSaved); } },
+      { label: t('addSource'), class: 'primary', onclick: (c) => { c(); sourceEditor(null, afterSourceSaved); } },
       { label: 'Close' },
     ],
   });
+}
+
+// ============================ profile file session (M8) ============================
+// pfState mirrors GetProfileFileState() (open container + dirty flag). The
+// File menu reads it for enablement; the status bar shows the session.
+let pfState = { open: false };
+
+async function refreshPfState() {
+  try {
+    pfState = await api.GetProfileFileState();
+  } catch {
+    pfState = { open: false };
+  }
+  const sp = $('status-pfile');
+  if (pfState.open) {
+    sp.classList.remove('hidden');
+    sp.textContent = `\u{1F510} ${pfState.name || 'profile file'}${pfState.dirty ? ' \u25CF' : ''}`;
+    sp.title = pfState.path
+      ? `${pfState.path}${pfState.dirty ? ' — unsaved changes (Ctrl+S)' : ''}`
+      : 'unsaved profile file — use File \u2192 Save profile file as\u2026';
+  } else {
+    sp.classList.add('hidden');
+  }
+}
+
+// makeDefaultSource flips the default flag in one place: the source record
+// via SaveSource (works in store and Profile-file mode) and, in store mode,
+// the legacy mirror via SetDefaultProfile so browsing and the CLI agree.
+async function makeDefaultSource(name) {
+  await refreshPfState();
+  const src = sources.find((s) => s.type === 's3' && s.name === name);
+  if (!src) return;
+  await api.SaveSource({ ...src, default: true, s3: { ...src.s3, default: true } });
+  if (!pfState.open) await api.SetDefaultProfile(name);
+}
+
+async function newProfileFileUi() {
+  const name = await prompt({ title: t('pf.new'), label: t('pf.nameLabel'), value: 'work' });
+  if (name === null) return;
+  const pw = await prompt({ title: t('pf.new'), label: t('pf.pwLabel'), okLabel: 'Create', password: true });
+  if (!pw) return; // empty resolves null too — a password is required anyway
+  const pw2 = await prompt({ title: t('pf.new'), label: t('pf.pwRepeat'), okLabel: 'Create', password: true });
+  if (pw2 !== pw) { toast('Passwords do not match', 'error'); return; }
+  try {
+    await api.NewProfileFile(name.trim(), pw);
+    toast(t('pf.created'), 'ok');
+    await refreshSources();
+    await refreshPfState();
+  } catch (err) { toast(`${err}`, 'error'); }
+}
+
+async function openProfileFileUi() {
+  let path;
+  try {
+    path = await api.PickOpenProfileFile();
+  } catch (err) { toast(`${err}`, 'error'); return; }
+  if (!path) return;
+  const pw = await prompt({ title: t('pf.open'), label: t('pf.pwFor', { name: basename(path) }), okLabel: 'Open', password: true });
+  if (!pw) return;
+  try {
+    await api.OpenProfileFile(path, pw);
+    toast(`${t('pf.opened')}: ${basename(path)}`, 'ok');
+    await refreshSources();
+    await refreshPfState();
+    if (sources.some((s) => s.type === 's3')) nav.to({ kind: 'buckets' });
+  } catch (err) {
+    toast(`${err}`, 'error'); // wrong password and corruption look identical by design
+  }
+}
+
+async function saveProfileFileUi() {
+  await refreshPfState();
+  if (!pfState.open) return; // Ctrl+S is global; silently ignore without a session
+  if (!pfState.path) return saveAsProfileFileUi(); // never saved yet
+  try {
+    await api.SaveProfileFile();
+    toast(t('pf.saved'), 'ok');
+    await refreshPfState();
+  } catch (err) { toast(`${err}`, 'error'); }
+}
+
+async function saveAsProfileFileUi() {
+  await refreshPfState();
+  if (!pfState.open) return;
+  let path;
+  try {
+    path = await api.PickSaveProfileFile(pfState.name || 'profile');
+  } catch (err) { toast(`${err}`, 'error'); return; }
+  if (!path) return;
+  // The password prompt resolves null for cancel AND empty input; the label
+  // says empty keeps the current password, so both proceed with pw || ''.
+  const pw = await prompt({ title: t('pf.saveAs'), label: t('pf.newPw'), okLabel: 'Save', password: true });
+  try {
+    await api.SaveProfileFileAs(path, pw || '');
+    toast(`${t('pf.saved')}: ${basename(path)}`, 'ok');
+    await refreshPfState();
+  } catch (err) { toast(`${err}`, 'error'); }
+}
+
+async function closeProfileFileUi() {
+  await refreshPfState();
+  if (!pfState.open) return;
+  try {
+    await api.CloseProfileFile(false);
+  } catch (err) {
+    // Dirty: offer a forced close that discards the container edits.
+    const ok = await confirm({
+      title: t('pf.close'),
+      message: 'The profile file has unsaved changes.\nClose anyway and discard them?',
+      okLabel: 'Discard & close',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await api.CloseProfileFile(true);
+    } catch (err2) { toast(`${err2}`, 'error'); return; }
+  }
+  toast(t('pf.closed'), 'ok');
+  await refreshSources();
+  await refreshPfState();
+  if (sources.some((s) => s.type === 's3')) nav.to({ kind: 'buckets' });
 }
 
 // ============================ menu bar ============================
@@ -1098,6 +1280,12 @@ function mountMenubar() {
         { label: t('menu.uploadFolder'), action: uploadFolder, enabled: () => st().canUpload },
         null,
         { label: t('menu.importAws'), action: importAws },
+        null,
+        { label: t('pf.new'), action: newProfileFileUi },
+        { label: t('pf.open'), action: openProfileFileUi },
+        { label: t('pf.save'), kbd: 'Ctrl+S', action: saveProfileFileUi, enabled: () => pfState.open },
+        { label: t('pf.saveAs'), action: saveAsProfileFileUi, enabled: () => pfState.open },
+        { label: t('pf.close'), action: closeProfileFileUi, enabled: () => pfState.open },
         null,
         { label: t('menu.exit'), action: () => api.ExitApp() },
       ],
@@ -1216,6 +1404,7 @@ function wireKeys() {
     if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); $('filter').focus(); $('filter').select(); return; }
     if (ctrl && e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLogArea(); return; }
     if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); uploadFiles(); return; }
+    if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); saveProfileFileUi(); return; }
     if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); downloadSelection(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newFolder(); return; }
     if (e.key === 'Escape') { grid.clearSelection(); return; }

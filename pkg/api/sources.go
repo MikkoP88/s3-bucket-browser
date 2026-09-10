@@ -21,7 +21,37 @@ import (
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// PickOpenProfileFile opens the native file dialog for *.s3bprofile.
+func (a *App) PickOpenProfileFile() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "Open profile file",
+		Filters: []runtime.FileFilter{{
+			DisplayName: "s3b profile files (*.s3bprofile)",
+			Pattern:     "*.s3bprofile",
+		}},
+	})
+}
+
+// PickSaveProfileFile opens the native save dialog for *.s3bprofile.
+func (a *App) PickSaveProfileFile(defaultName string) (string, error) {
+	if defaultName == "" {
+		defaultName = "profile.s3bprofile"
+	}
+	if !strings.HasSuffix(defaultName, ".s3bprofile") {
+		defaultName += ".s3bprofile"
+	}
+	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Save profile file",
+		DefaultFilename: defaultName,
+		Filters: []runtime.FileFilter{{
+			DisplayName: "s3b profile files (*.s3bprofile)",
+			Pattern:     "*.s3bprofile",
+		}},
+	})
+}
 
 // errNoProfileFile is returned when a Profile file operation has no session.
 var errNoProfileFile = errors.New("no profile file is open")
