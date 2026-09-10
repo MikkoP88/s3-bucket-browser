@@ -28,6 +28,11 @@ follow [Semantic Versioning](https://semver.org/).
   timestamp + level + scope + message per line, level filter, copy,
   clear, auto-scroll toggle, 2000-line ring buffer; hidden by default
   and remembered across sessions.
+- Auto refresh: View ▸ Auto refresh with Off / 5 s / 10 s / 30 s / 60 s
+  intervals plus a "refresh on focus" option; ticks are skipped while a
+  modal or context menu is open, transfers are running, or the window is
+  hidden; the interval shows in the status bar and persists. The menu
+  bar gained one-level submenus and checkmark items to support this.
 
 ### Fixed
 

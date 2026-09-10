@@ -53,6 +53,11 @@ async function boot() {
   $('logarea').replaceChildren(logArea.root);
   if (localStorage.getItem('s3b-log') === '1') $('logarea').classList.remove('hidden');
 
+  // Auto refresh: restore interval + refresh-on-focus from the last session.
+  const ar = parseInt(localStorage.getItem('s3b-autorefresh') || '0', 10);
+  if (ar > 0) setAutoRefresh(ar);
+  refreshOnFocus = localStorage.getItem('s3b-refresh-focus') === '1';
+
   const ok = await refreshProfiles();
   if (ok) nav.to({ kind: 'buckets' });
   if (localStorage.getItem('s3b-panes') === '1') localPane.show();
@@ -65,6 +70,44 @@ function toggleLogArea() {
   const elx = $('logarea');
   const open = elx.classList.toggle('hidden') === false;
   localStorage.setItem('s3b-log', open ? '1' : '0');
+}
+
+// ============================ auto refresh ============================
+let autoTimer = null;
+let autoRefreshMs = 0;
+let refreshOnFocus = false;
+
+// autoRefreshBlocked: conditions under which a background refresh must not
+// fire — a modal or context menu is open, or transfers are running (the
+// transfer badge is visible exactly then; uploads also refresh views via
+// s3:changed on their own).
+function autoRefreshBlocked() {
+  if (!$('modal-root').classList.contains('hidden')) return true;
+  if (!$('ctxmenu').classList.contains('hidden')) return true;
+  if (!$('transfer-badge').classList.contains('hidden')) return true;
+  return false;
+}
+
+function autoTick() {
+  if (document.hidden || autoRefreshBlocked()) return;
+  refreshCurrent();
+}
+
+// setAutoRefresh (re)starts the interval timer; 0 disables it. The choice
+// is persisted and mirrored in the status bar.
+function setAutoRefresh(ms) {
+  autoRefreshMs = ms;
+  localStorage.setItem('s3b-autorefresh', String(ms));
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  if (ms > 0) autoTimer = setInterval(autoTick, ms);
+  const sb = $('status-auto');
+  sb.classList.toggle('hidden', ms === 0);
+  sb.textContent = `\u21BB ${ms / 1000}s`;
+}
+
+function setRefreshOnFocus(on) {
+  refreshOnFocus = on;
+  localStorage.setItem('s3b-refresh-focus', on ? '1' : '0');
 }
 
 function initTheme() {
@@ -896,6 +939,16 @@ function mountMenubar() {
         { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
         { label: t('menu.log'), kbd: 'Ctrl+L', action: toggleLogArea },
         { label: t('menu.filter'), kbd: 'Ctrl+F', action: () => { $('filter').focus(); $('filter').select(); } },
+        null,
+        {
+          label: t('menu.autorefresh'),
+          items: [0, 5000, 10000, 30000, 60000].map((ms) => ({
+            label: ms === 0 ? t('ar.off') : `${ms / 1000} s`,
+            checked: () => autoRefreshMs === ms,
+            action: () => setAutoRefresh(ms),
+          })),
+        },
+        { label: t('ar.focus'), checked: () => refreshOnFocus, action: () => setRefreshOnFocus(!refreshOnFocus) },
       ],
     },
     {
@@ -1005,6 +1058,9 @@ function wireEvents() {
   $('status-editing').onclick = () => editingDialog(updateEditingStatus);
   $('status-log').onclick = toggleLogArea;
   window.addEventListener('focus', updateEditingStatus);
+  window.addEventListener('focus', () => {
+    if (refreshOnFocus && !autoRefreshBlocked()) refreshCurrent();
+  });
 }
 
 function showTransfersBadge() {

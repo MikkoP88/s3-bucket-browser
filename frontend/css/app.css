@@ -118,7 +118,14 @@ body {
 .mb-item:hover { background: var(--hover); }
 .mb-item.disabled { color: var(--text-dim); opacity: .6; pointer-events: none; }
 .mb-item .mb-kbd { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+.mb-item .mb-check { flex: none; width: 14px; font-size: 11px; color: var(--ok); }
+.mb-item.has-sub { position: relative; }
+.mb-item .mb-arrow { margin-left: auto; color: var(--text-dim); font-size: 10px; }
+.mb-dd.sub {
+  top: -5px; left: 100%; min-width: 150px; margin-left: 2px;
+}
 .mb-sep { height: 1px; background: var(--border-soft); margin: 4px 6px; }
+.sb-auto { color: var(--accent); }
 
 /* ================= Navbar / breadcrumb / filter ================= */
 .navbar {

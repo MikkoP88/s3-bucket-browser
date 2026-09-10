@@ -81,6 +81,10 @@ const dict = {
     'log.copy': 'Copy',
     'log.clear': 'Clear',
     'log.autoscroll': 'Auto-scroll',
+    // auto refresh
+    'menu.autorefresh': 'Auto refresh',
+    'ar.off': 'Off',
+    'ar.focus': 'Refresh on focus',
   },
   fi: {
     buckets: 'Bucketit',
@@ -160,6 +164,10 @@ const dict = {
     'log.copy': 'Kopioi',
     'log.clear': 'Tyhjenn\u00e4',
     'log.autoscroll': 'Autovieritys',
+    // auto refresh
+    'menu.autorefresh': 'Automaattinen p\u00e4ivitys',
+    'ar.off': 'Pois',
+    'ar.focus': 'P\u00e4ivit\u00e4 kohdistettaessa',
   },
 };
 
