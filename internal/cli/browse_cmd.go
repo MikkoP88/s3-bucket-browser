@@ -3,8 +3,11 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/bucketops"
@@ -35,18 +38,41 @@ func dirPrefix(u s3URI) string {
 func lsCmd() *cobra.Command {
 	var recursive bool
 	var maxKeys int32
+	var watch bool
+	var watchEvery time.Duration
 	cmd := &cobra.Command{
-		Use:   "ls [s3://bucket[/prefix]]",
-		Short: "List buckets, or one directory view of a bucket",
-		Long:  "Without an argument lists all buckets.\nWith s3://bucket/prefix shows one directory view (folders + objects);\n--recursive streams every object under the prefix instead.",
+		Use:   "ls [s3://bucket[/prefix] | NAME://dir]",
+		Short: "List buckets, or one directory view of a bucket or source",
+		Long:  "Without an argument lists all buckets.\nWith s3://bucket/prefix shows one directory view (folders + objects);\n--recursive streams every object under the prefix instead.\nSource URIs (NAME://dir over any saved non-S3 source) work the same way.\n--watch re-lists and prints changes until Ctrl+C (plan-v2 M10.5).",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				if watch {
+					return usageErr("--watch needs a bucket/prefix or source URI")
+				}
+				c, err := resolveClient(cmd.Context())
+				if err != nil {
+					return err
+				}
+				return listBucketsView(cmd, c)
+			}
+			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
+				return err
+			} else if r != nil {
+				defer r.Close()
+				if watch {
+					if flagJSON {
+						return usageErr("--watch is interactive; drop it (or --json)")
+					}
+					return watchEntries(watchEvery, args[0], func() ([]listing.Entry, error) {
+						return r.fs.List(cmd.Context(), r.path)
+					})
+				}
+				return remoteLs(cmd.Context(), r, recursive)
+			}
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
 				return err
-			}
-			if len(args) == 0 {
-				return listBucketsView(cmd, c)
 			}
 			u, err := parseS3URI(args[0])
 			if err != nil {
@@ -56,10 +82,19 @@ func lsCmd() *cobra.Command {
 			if u.HasPrefix {
 				prefix = dirPrefix(u)
 			}
-			entries, err := listing.List(cmd.Context(), c.S3, u.Bucket, prefix, listing.Options{
-				Recursive: recursive,
-				MaxKeys:   maxKeys,
-			})
+			fetch := func() ([]listing.Entry, error) {
+				return listing.List(cmd.Context(), c.S3, u.Bucket, prefix, listing.Options{
+					Recursive: recursive,
+					MaxKeys:   maxKeys,
+				})
+			}
+			if watch {
+				if flagJSON {
+					return usageErr("--watch is interactive; drop it (or --json)")
+				}
+				return watchEntries(watchEvery, args[0], fetch)
+			}
+			entries, err := fetch()
 			if err != nil {
 				return opErr(err)
 			}
@@ -75,7 +110,77 @@ func lsCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.BoolVarP(&recursive, "recursive", "r", false, "stream every object under the prefix")
 	f.Int32Var(&maxKeys, "max-keys", 0, "keys per page (0 = server default)")
+	f.BoolVar(&watch, "watch", false, "keep re-listing and print changes until Ctrl+C")
+	f.DurationVar(&watchEvery, "interval", 2*time.Second, "poll interval for --watch")
 	return cmd
+}
+
+// watchEntries re-lists a directory until Ctrl+C: the first pass prints
+// the full view, later passes print only added/changed (+) and removed (-)
+// entries. Transient errors after the first pass are printed, not fatal.
+func watchEntries(every time.Duration, label string, fetch func() ([]listing.Entry, error)) error {
+	modUnix := func(e listing.Entry) int64 {
+		if e.LastModified != nil {
+			return e.LastModified.Unix()
+		}
+		return 0
+	}
+	snap := map[string]string{}
+	first := true
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	fmt.Fprintln(os.Stderr, "watching "+label+" every "+every.String()+" — Ctrl+C to stop")
+	take := func() error {
+		entries, err := fetch()
+		if err != nil {
+			if first {
+				return err
+			}
+			fmt.Fprintln(os.Stderr, "watch error:", err)
+			return nil
+		}
+		next := map[string]string{}
+		for _, e := range entries {
+			next[e.Name] = fmt.Sprintf("%d/%d", e.Size, modUnix(e))
+			if first {
+				printEntry(e)
+				continue
+			}
+			if prev, ok := snap[e.Name]; !ok || prev != next[e.Name] {
+				mark := "+"
+				if ok {
+					mark = "~"
+				}
+				col.hi.Printf("%s %s%s\n", mark, e.Name, map[bool]string{true: "/", false: ""}[e.IsDir])
+			}
+		}
+		if !first {
+			for name := range snap {
+				if _, ok := next[name]; !ok {
+					col.errf.Printf("- %s\n", name)
+				}
+			}
+		}
+		snap = next
+		first = false
+		return nil
+	}
+	if err := take(); err != nil {
+		return opErr(err)
+	}
+	for {
+		select {
+		case <-stop:
+			return nil
+		case <-tick.C:
+			if err := take(); err != nil {
+				return opErr(err)
+			}
+		}
+	}
 }
 
 func listBucketsView(cmd *cobra.Command, c *s3client.Client) error {
@@ -109,22 +214,28 @@ func listBucketsView(cmd *cobra.Command, c *s3client.Client) error {
 
 func printEntry(e listing.Entry) {
 	if e.IsDir {
-		col.hi.Printf("%9s  %s\n", "DIR", e.Name+"/")
+		col.hi.Fprintf(out, "%9s  %s\n", "DIR", e.Name+"/")
 		return
 	}
 	mod := ""
 	if e.LastModified != nil {
 		mod = e.LastModified.Local().Format("2006-01-02 15:04")
 	}
-	fmt.Printf("%9s  %s  %s\n", humanSize(e.Size), mod, e.Name)
+	fmt.Fprintf(out, "%9s  %s  %s\n", humanSize(e.Size), mod, e.Name)
 }
 
 func treeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "tree s3://bucket[/prefix]",
-		Short: "Show a bucket subtree as an ASCII tree",
+		Use:   "tree s3://bucket[/prefix] | NAME://dir",
+		Short: "Show a bucket or source subtree as an ASCII tree",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
+				return err
+			} else if r != nil {
+				defer r.Close()
+				return remoteTree(cmd.Context(), r)
+			}
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
 				return err
@@ -181,10 +292,16 @@ func drawTree(ctx context.Context, c *s3client.Client, bucket, prefix, indent st
 
 func duCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "du s3://bucket[/prefix]",
-		Short: "Count objects and total size under a prefix",
+		Use:   "du s3://bucket[/prefix] | NAME://dir",
+		Short: "Count objects and total size under a prefix or source folder",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
+				return err
+			} else if r != nil {
+				defer r.Close()
+				return remoteDu(cmd.Context(), r)
+			}
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
 				return err
@@ -213,10 +330,16 @@ func duCmd() *cobra.Command {
 
 func statCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stat s3://bucket[/key]",
-		Short: "Show bucket or object metadata",
+		Use:   "stat s3://bucket[/key] | NAME://path",
+		Short: "Show bucket, object or source-path metadata",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
+				return err
+			} else if r != nil {
+				defer r.Close()
+				return remoteStat(cmd.Context(), r)
+			}
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
 				return err

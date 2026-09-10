@@ -8,6 +8,22 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- CLI parity (M10.5): every saved non-S3 source is now reachable from the
+  shell as `NAME://dir` URIs — `ls`, `tree`, `du`, `stat`, `mkdir`, `rm`,
+  `cp` and `mv` all accept them beside `s3://` paths (e.g.
+  `s3b ls lab://docs`, `s3b cp lab://a.txt s3://bucket/`, `s3b cp
+  s3://bucket/pics/ lab://archive/ -r`). The copy engine composes every
+  operand mix — remote/S3/local on either side — with recursive tree
+  copies, per-file progress, dry-run, and a temp-file spool when a source
+  would otherwise copy onto itself; `--force` still gates large deletes.
+  `ls --watch` re-lists any bucket or source directory on `--interval`
+  (default 2s) and prints only `+` added, `~` changed and `-` removed
+  entries until Ctrl+C. A new `s3b log` command tails the app activity
+  log the GUI drawer shows: activity is now persisted as JSON lines in
+  `events.jsonl` beside the profiles (capped at 1 MiB, rotating to the
+  newest half), and `s3b log [-n N] [--level info|warn|error]
+  [--scope prefix] [-f]` filters or follows it. Source-only commands no
+  longer require an S3 profile to exist.
 - Versioning & object-lock visuals (M10.4): the navbar now shows guard chips
   for the browsed bucket — versioning state (on / suspended) and object-lock
   mode with retention days — fetched through a new cheap `GetBucketGuard`

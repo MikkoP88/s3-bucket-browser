@@ -133,6 +133,7 @@ func NewRoot() *cobra.Command {
 		findCmd(),
 		scCmd(),
 		lockCmd(),
+		logCmd(),
 		versionCmd(),
 	)
 	root.CompletionOptions.HiddenDefaultCmd = false

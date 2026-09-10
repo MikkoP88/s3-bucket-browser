@@ -54,13 +54,20 @@ func copyLikeCmd(name, short string, move bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   fmt.Sprintf("%s SRC DST", name),
 		Short: short,
-		Long: "Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy).\n" +
+		Long: "Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy),\n" +
+			"plus NAME:// source URIs (any saved non-S3 source) on either side.\n" +
 			"SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := resolveClient(cmd.Context())
-			if err != nil {
-				return err
+			// The S3 client is only needed when one side is s3:// — source-
+			// URI-only copies work without any configured S3 profile.
+			var c *s3client.Client
+			if strings.HasPrefix(args[0], "s3://") || strings.HasPrefix(args[1], "s3://") {
+				var err error
+				c, err = resolveClient(cmd.Context())
+				if err != nil {
+					return err
+				}
 			}
 			opts.Move = move
 			n, err := runCopy(cmd.Context(), c, args[0], args[1], opts)
@@ -87,8 +94,24 @@ func copyLikeCmd(name, short string, move bool) *cobra.Command {
 	return cmd
 }
 
-// runCopy dispatches on direction and returns the item count.
+// runCopy dispatches on direction and returns the item count. Source URIs
+// (NAME:// — any saved non-S3 source, M10.5) take the remotefs pipeline;
+// everything else keeps its historical path.
 func runCopy(ctx context.Context, c *s3client.Client, src, dst string, opts copyOptions) (int, error) {
+	srcRef, err := dialSourceURI(ctx, src)
+	if err != nil {
+		return 0, err
+	}
+	dstRef, err := dialSourceURI(ctx, dst)
+	if err != nil {
+		srcRef.Close()
+		return 0, err
+	}
+	defer srcRef.Close()
+	defer dstRef.Close()
+	if srcRef != nil || dstRef != nil {
+		return copyRemoteDispatch(ctx, c, src, dst, srcRef, dstRef, opts)
+	}
 	srcS3 := strings.HasPrefix(src, "s3://")
 	dstS3 := strings.HasPrefix(dst, "s3://")
 	switch {
@@ -317,10 +340,16 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 func rmCmd() *cobra.Command {
 	var recursive, force, dryRun, versions bool
 	cmd := &cobra.Command{
-		Use:   "rm s3://bucket[/prefix]",
-		Short: "Delete objects (prefix delete needs --recursive; large batches need --force)",
+		Use:   "rm s3://bucket[/prefix] | NAME://path",
+		Short: "Delete objects or source files (folders need --recursive; large batches --force)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
+				return err
+			} else if r != nil {
+				defer r.Close()
+				return remoteRm(cmd.Context(), r, recursive, force, dryRun)
+			}
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
 				return err

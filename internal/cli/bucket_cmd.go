@@ -87,10 +87,16 @@ func rbCmd() *cobra.Command {
 
 func mkdirCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "mkdir s3://bucket/path/...",
-		Short: "Create a folder marker (zero-byte object ending in \"/\")",
+		Use:   "mkdir s3://bucket/path/... | NAME://dir",
+		Short: "Create a folder marker (S3) or a real folder (source URIs)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
+				return err
+			} else if r != nil {
+				defer r.Close()
+				return remoteMkdir(cmd.Context(), r)
+			}
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
 				return err
