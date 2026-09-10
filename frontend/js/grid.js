@@ -53,14 +53,28 @@ export class Grid {
 
   // ---------- setup ----------
   renderHead() {
-    this.head.replaceChildren(...COLUMNS.map((c) => {
-      const ind = el('span', { class: 'sort-ind' });
-      if (this.sortKey === c.id) ind.textContent = this.sortDir > 0 ? '\u25B2' : '\u25BC';
-      return el('div', {
-        class: `gh${c.num ? ' num' : ''}`,
-        onclick: () => this.cycleSort(c.id),
-      }, el('span', { text: c.label }), ind);
-    }));
+    // Leading checkbox column: header box = select all/none (indeterminate
+    // when partial); per-row boxes toggle membership in this.sel without
+    // disturbing the rest of the selection or the keyboard focus model.
+    const cb = el('input', { type: 'checkbox', title: 'Select all / none' });
+    cb.setAttribute('aria-label', 'Select all');
+    cb.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.rows.length && this.sel.size >= this.rows.length) this.clearSelection();
+      else this.selectAll();
+    });
+    this.headCb = cb;
+    this.head.replaceChildren(
+      el('div', { class: 'gh check' }, cb),
+      ...COLUMNS.map((c) => {
+        const ind = el('span', { class: 'sort-ind' });
+        if (this.sortKey === c.id) ind.textContent = this.sortDir > 0 ? '\u25B2' : '\u25BC';
+        return el('div', {
+          class: `gh${c.num ? ' num' : ''}`,
+          onclick: () => this.cycleSort(c.id),
+        }, el('span', { text: c.label }), ind);
+      }),
+    );
   }
 
   cycleSort(id) {
@@ -159,6 +173,7 @@ export class Grid {
     const need = Math.max(0, last - first + 1);
     while (this.pool.length < need) {
       const row = el('div', { class: 'grid-row', draggable: 'true', role: 'option' });
+      row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox' })));
       const nameCell = el('div', { class: 'gc name' }, el('span', { class: 'icon' }), el('span', { class: 'tname' }));
       row.appendChild(nameCell);
       row.appendChild(el('div', { class: 'gc num size' }));
@@ -181,16 +196,40 @@ export class Grid {
       row.setAttribute('aria-selected', this.sel.has(m.key) ? 'true' : 'false');
       row.dataset.cmp = m.cmp || '';
       const cells = row.children;
-      cells[0].children[0].textContent = fileIcon(m.name, m.isDir);
-      cells[0].children[1].textContent = m.name;
-      cells[1].textContent = m.isDir ? '' : fmtBytes(m.size);
-      cells[2].textContent = m.isDir ? '' : fmtDate(m.lastModified || m.modTime);
-      cells[3].textContent = m.isDir ? '' : (m.storageClass || '');
+      const cb = cells[0].children[0];
+      cb.checked = this.sel.has(m.key);
+      cb.setAttribute('aria-label', `Select ${m.name}`);
+      cells[1].children[0].textContent = fileIcon(m.name, m.isDir);
+      cells[1].children[1].textContent = m.name;
+      cells[2].textContent = m.isDir ? '' : fmtBytes(m.size);
+      cells[3].textContent = m.isDir ? '' : fmtDate(m.lastModified || m.modTime);
+      cells[4].textContent = m.isDir ? '' : (m.storageClass || '');
+    }
+    // header checkbox reflects the full selection state
+    if (this.headCb) {
+      const n = this.rows.length;
+      this.headCb.checked = n > 0 && this.sel.size >= n;
+      this.headCb.indeterminate = this.sel.size > 0 && this.sel.size < n;
     }
     if (force) this.on.select?.(this.selectedRows());
   }
 
   wireRow(row) {
+    // checkbox column: clicks toggle membership in this.sel only — no drag,
+    // no dbl-activate, no plain-click selection reset.
+    const cb = row.children[0].children[0];
+    cb.addEventListener('mousedown', (e) => e.stopPropagation());
+    cb.addEventListener('dblclick', (e) => e.stopPropagation());
+    cb.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const m = row._model;
+      if (!m) return;
+      if (this.sel.has(m.key)) this.sel.delete(m.key); else this.sel.add(m.key);
+      this.focusKey = m.key;
+      this.anchorKey = m.key;
+      this.render();
+      this.on.select?.(this.selectedRows());
+    });
     row.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       const m = row._model;
@@ -226,6 +265,7 @@ export class Grid {
       this.on.context?.(e, this.selectedRows());
     });
     row.addEventListener('dragstart', (e) => {
+      if (e.target.type === 'checkbox') { e.preventDefault(); return; } // no drag from the checkbox
       const m = row._model;
       if (!this.sel.has(m.key)) {
         this.sel.clear();

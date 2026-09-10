@@ -36,6 +36,12 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Checkbox column in both grids (remote + local pane): a per-row checkbox
+  toggles selection without resetting the rest, and the header checkbox
+  selects all / none (indeterminate when partial). It feeds the existing
+  selection model, so every command (download, copy, drag & drop, …)
+  works on checked rows unchanged.
+
 - One Upload command: the separate "Upload folder" toolbar button is gone.
   A single "Upload ▾" button opens a small menu (Files / Folder); Ctrl+U
   still opens the file picker directly, and File ▸ Upload files/folder

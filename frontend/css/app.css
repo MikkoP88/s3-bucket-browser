@@ -195,7 +195,7 @@ body {
 
 .grid-head, .grid-row {
   display: grid;
-  grid-template-columns: minmax(200px, 3fr) 110px 160px 110px;
+  grid-template-columns: 34px minmax(200px, 3fr) 110px 160px 110px;
   gap: 0;
 }
 .grid-head {
@@ -233,6 +233,9 @@ body {
 }
 .gc.num { justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .gc .icon { flex: none; width: 16px; text-align: center; }
+.gh.check, .gc.check { justify-content: center; padding: 0; }
+.gh.check { cursor: default; }
+.gc.check input, .gh.check input { accent-color: var(--accent); cursor: pointer; }
 .grid-row.dragging { opacity: .4; }
 
 /* ================= Empty state ================= */
