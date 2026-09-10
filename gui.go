@@ -24,6 +24,7 @@ var frontendFS embed.FS
 
 // Run starts the desktop GUI and blocks until the window closes.
 func Run(version string) error {
+	detachConsole()
 	app := api.New(version)
 	assets, err := fs.Sub(frontendFS, "frontend")
 	if err != nil {

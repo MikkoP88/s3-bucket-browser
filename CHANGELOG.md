@@ -4,6 +4,16 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Windows: launching the GUI no longer opens an empty console window behind
+  the app. The binary keeps its console subsystem (the CLI needs it), but
+  GUI mode now detaches the console at startup (`FreeConsole`), so
+  double-click / Start-menu launches are popup-free; CLI behavior and
+  launching from a terminal are unchanged.
+
 ## [1.0.0] — 2026-09-09
 
 First stable release. Windows-Explorer-style S3 GUI + CLI in one binary,
