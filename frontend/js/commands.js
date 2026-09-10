@@ -26,6 +26,7 @@ export function commandState() {
   const hasClipboard = clipboard.keys.length > 0;
 
   return {
+    hasProfile,
     canBack: nav.canBack(),
     canForward: nav.canForward(),
     canUp: inObjects && !!parentOf(loc),

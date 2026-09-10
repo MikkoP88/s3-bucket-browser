@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Sidebar tree context-menu parity: right-clicking a bucket node (Open,
+  Favorites, Upload files/folder here, Paste, Find, Admin, Doctor,
+  Properties, Delete bucket) or a folder node (Open, Upload here,
+  Download, Copy/Cut/Paste-into, Rename, Delete, Find, Properties with
+  recursive object counts) now matches the details grid. Upload, paste,
+  download and delete accept an explicit bucket/prefix, so tree actions
+  work on nodes outside the current view.
 - Empty-area context menus: right-click on the grid background (Paste,
   Upload files/folder, New folder, Download all…, Find, Refresh,
   Properties — folder stats from the live view; New bucket / Import AWS /

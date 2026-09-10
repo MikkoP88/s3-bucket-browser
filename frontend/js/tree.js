@@ -3,10 +3,11 @@ import { api, onEvent } from './api.js';
 import { el } from './util.js';
 
 export class Tree {
-  constructor({ onNavigate, onDropTo }) {
+  constructor({ onNavigate, onDropTo, onContext }) {
     this.container = document.getElementById('tree');
     this.onNavigate = onNavigate;
     this.onDropTo = onDropTo;
+    this.onContext = onContext;
     this.nodes = new Map(); // id -> node
     this.currentId = null;
   }
@@ -148,6 +149,12 @@ export class Tree {
       if (!data) return;
       e.preventDefault();
       this.onDropTo({ bucket: n.bucket, prefix: n.prefix }, JSON.parse(data), e);
+    });
+    // context-menu parity with grid rows (menu built by main.js)
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.onContext?.(e, n);
     });
 
     n.el = row;

@@ -19,7 +19,7 @@ const $ = (id) => document.getElementById(id);
 
 const grid = new Grid();
 const localPane = new LocalPane();
-const tree = new Tree({ onNavigate: (loc) => nav.to(loc), onDropTo: dropToTarget });
+const tree = new Tree({ onNavigate: (loc) => nav.to(loc), onDropTo: dropToTarget, onContext: showTreeMenu });
 const logArea = createLogArea();
 
 setCommandContext({
@@ -537,6 +537,91 @@ function folderProperties() {
   ]);
 }
 
+// showTreeMenu gives sidebar nodes (buckets and folders) context-menu parity
+// with grid rows. node = {bucket, prefix, label} from the Tree.
+function showTreeMenu(e, node) {
+  const st = commandState();
+  const go = () => nav.to({ kind: 'objects', bucket: node.bucket, prefix: node.prefix });
+  if (node.prefix === '') {
+    openMenu(e, [
+      ['Open', '', go],
+      [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
+      null,
+      ['Upload files here\u2026', 'Ctrl+U', () => uploadFilesTo(node.bucket, ''), !st.hasProfile],
+      ['Upload folder here\u2026', '', () => uploadFolderTo(node.bucket, ''), !st.hasProfile],
+      ['Paste here', 'Ctrl+V', () => paste('', node.bucket), !(st.hasProfile && clipboard.keys.length)],
+      null,
+      ['Find in bucket\u2026', 'Ctrl+Shift+F', () => findDialog(node.bucket, '', openSearchResult), !st.hasProfile],
+      ['Admin panel\u2026', '', () => adminDialog(node.bucket, refreshCurrent), !st.hasProfile],
+      ['Doctor\u2026', '', () => runDoctor(node.bucket), !st.hasProfile],
+      ['Properties', '', () => bucketProperties(node.bucket), !st.hasProfile],
+      null,
+      ['Delete bucket\u2026', '', () => deleteBucket(node.bucket), !st.hasProfile],
+    ]);
+    return;
+  }
+  const clipCopy = () => { clipboard.mode = 'copy'; clipboard.bucket = node.bucket; clipboard.keys = [node.prefix]; toast(`Copied ${node.label}`); updateCommandState(); };
+  const clipCut = () => { clipboard.mode = 'cut'; clipboard.bucket = node.bucket; clipboard.keys = [node.prefix]; toast(`Cut ${node.label}`); updateCommandState(); };
+  openMenu(e, [
+    ['Open', '', go],
+    null,
+    ['Upload files here\u2026', 'Ctrl+U', () => uploadFilesTo(node.bucket, node.prefix), !st.hasProfile],
+    ['Upload folder here\u2026', '', () => uploadFolderTo(node.bucket, node.prefix), !st.hasProfile],
+    ['Download\u2026', '', () => downloadTreeEntry(node), !st.hasProfile],
+    null,
+    ['Copy', 'Ctrl+C', clipCopy, !st.hasProfile],
+    ['Cut', 'Ctrl+X', clipCut, !st.hasProfile],
+    ['Paste into folder', 'Ctrl+V', () => paste(node.prefix, node.bucket), !(st.hasProfile && clipboard.keys.length)],
+    null,
+    ['Rename\u2026', 'F2', () => renameTreeFolder(node), !st.hasProfile],
+    ['Delete\u2026', 'Del', () => deleteSelection(node.bucket, [node.prefix]), !st.hasProfile],
+    null,
+    ['Find here\u2026', 'Ctrl+Shift+F', () => findDialog(node.bucket, node.prefix, openSearchResult), !st.hasProfile],
+    ['Properties', '', () => treeProperties(node), !st.hasProfile],
+  ]);
+}
+
+async function uploadFilesTo(bucket, prefix) {
+  const paths = await api.PickUploadFiles();
+  if (paths?.length) uploadPaths(paths, prefix, bucket);
+}
+
+async function uploadFolderTo(bucket, prefix) {
+  const dir = await api.PickFolder('Choose a folder to upload');
+  if (dir) uploadPaths([dir], prefix, bucket);
+}
+
+async function downloadTreeEntry(node) {
+  const dest = await api.PickFolder('Choose download folder');
+  if (!dest) return;
+  await downloadRefs([{ key: node.prefix, size: 0, isDir: true }], dest, node.bucket);
+}
+
+async function renameTreeFolder(node) {
+  const name = await prompt({ title: 'Rename', label: 'New name', value: node.label });
+  if (!name || name === node.label) return;
+  try {
+    await api.RenameObject(node.bucket, node.prefix, name);
+    toast('Renamed', 'ok'); // s3:changed refreshes the view + tree
+  } catch (err) {
+    toast(`Rename failed: ${err}`, 'error');
+  }
+}
+
+async function treeProperties(node) {
+  try {
+    const st = await api.StatObject(node.bucket, node.prefix);
+    properties(`Properties — ${node.label}`, [
+      ['Type', 'Folder'],
+      ['Objects', st.usage.objectCount],
+      ['Total size', fmtBytes(st.usage.totalBytes)],
+      ['s3:// URI', `s3://${node.bucket}/${node.prefix}`],
+    ]);
+  } catch (err) {
+    toast(`Properties failed: ${err}`, 'error');
+  }
+}
+
 function hideContextMenu() { $('ctxmenu').classList.add('hidden'); }
 document.addEventListener('mousedown', (e) => {
   if (!e.target.closest('#ctxmenu')) hideContextMenu();
@@ -544,14 +629,15 @@ document.addEventListener('mousedown', (e) => {
 window.addEventListener('blur', hideContextMenu);
 
 // ============================ actions ============================
-async function uploadPaths(paths, prefixOverride) {
+async function uploadPaths(paths, prefixOverride, bucketOverride) {
   const loc = nav.current;
-  if (loc.kind !== 'objects') { toast('Open a bucket first'); return; }
+  const bucket = bucketOverride || loc?.bucket;
+  if (!bucket || (!bucketOverride && loc.kind !== 'objects')) { toast('Open a bucket first'); return; }
   const prefix = prefixOverride !== undefined ? prefixOverride : (loc.prefix || '');
-  const res = await conflictPolicy('upload', `s3://${loc.bucket}/${prefix || ''}`);
+  const res = await conflictPolicy('upload', `s3://${bucket}/${prefix || ''}`);
   if (!res) return;
   try {
-    await api.Upload(paths, loc.bucket, prefix, res.policy, res.maxBps);
+    await api.Upload(paths, bucket, prefix, res.policy, res.maxBps);
     toast(`Uploading ${paths.length} item(s)\u2026`);
     showTransfersBadge();
   } catch (err) {
@@ -592,13 +678,14 @@ async function downloadSelection(overrideRows) {
 
 // downloadRefs downloads mixed file/folder refs into dest — folders expand
 // recursively on the backend (dual-pane drops, Ctrl+D with folders selected).
-async function downloadRefs(entries, dest) {
+async function downloadRefs(entries, dest, bucketOverride) {
   const loc = nav.current;
-  if (!entries?.length) return;
+  const bucket = bucketOverride || loc.bucket;
+  if (!entries?.length || !bucket) return;
   const res = await conflictPolicy('download', dest);
   if (!res) return;
   try {
-    await api.DownloadRefs(loc.bucket, entries, dest, res.policy, res.maxBps);
+    await api.DownloadRefs(bucket, entries, dest, res.policy, res.maxBps);
     toast(`Downloading ${entries.length} item(s)\u2026`);
     showTransfersBadge();
   } catch (err) {
@@ -606,36 +693,37 @@ async function downloadRefs(entries, dest) {
   }
 }
 
-async function deleteSelection() {
+async function deleteSelection(bucketOverride, keysOverride) {
   const loc = nav.current;
-  if (loc.kind === 'buckets') {
+  if (!bucketOverride && loc.kind === 'buckets') {
     const row = grid.selectedRows()[0];
     if (row) deleteBucket(row.key);
     return;
   }
-  const rows = grid.selectedRows();
-  if (!rows.length) return;
-  const keys = rows.map((r) => r.key);
+  const bucket = bucketOverride || loc.bucket;
+  if (!bucket || (!bucketOverride && loc.kind !== 'objects')) return;
+  const keys = keysOverride || grid.selectedRows().map((r) => r.key);
+  if (!keys.length) return;
   try {
-    const p = await api.PreviewDelete(loc.bucket, keys);
+    const p = await api.PreviewDelete(bucket, keys);
     const desc = `${p.count} object(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}${p.folders ? ` in ${p.folders} folder(s)` : ''}`;
     let ok;
     if (p.requiresL2) {
       ok = await typedConfirm({
-        title: `Delete from s3://${loc.bucket}`,
+        title: `Delete from s3://${bucket}`,
         message: `You are about to delete ${desc}.\nThis cannot be undone.`,
         typeWord: 'delete',
       });
     } else {
       ok = await confirm({
-        title: `Delete from s3://${loc.bucket}`,
+        title: `Delete from s3://${bucket}`,
         message: `Delete ${desc}? This cannot be undone.`,
         okLabel: 'Delete',
         danger: true,
       });
     }
     if (!ok) return;
-    const res = await api.DeleteSelection(loc.bucket, keys, p.requiresL2);
+    const res = await api.DeleteSelection(bucket, keys, p.requiresL2);
     if (res.errors?.length) toast(`${res.deleted} deleted, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
     else toast(`Deleted ${res.deleted} object(s)`, 'ok');
     refreshCurrent();
@@ -786,12 +874,14 @@ async function deleteBucket(bucket) {
   }
 }
 
-async function paste() {
+async function paste(prefixOverride, bucketOverride) {
   const loc = nav.current;
-  if (loc.kind !== 'objects' || !clipboard.keys.length) return;
+  const bucket = bucketOverride || loc.bucket;
+  if (!bucket || (!bucketOverride && loc.kind !== 'objects') || !clipboard.keys.length) return;
+  const prefix = prefixOverride !== undefined ? prefixOverride : (loc.prefix || '');
   const move = clipboard.mode === 'cut';
   try {
-    const res = await api.CopySelection(clipboard.bucket, clipboard.keys, loc.bucket, loc.prefix || '', move);
+    const res = await api.CopySelection(clipboard.bucket, clipboard.keys, bucket, prefix, move);
     if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
     else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} item(s)`, 'ok');
     if (move) clipboard.keys = [];
