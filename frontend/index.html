@@ -64,17 +64,19 @@
         </div>
       </div>
 
-      <!-- Local pane (dual-pane mode, F9) -->
-      <section class="local-pane hidden" id="local-pane" aria-label="Local folder">
+      <!-- Side pane (dual-pane mode, F9): the workstation filesystem or any
+           remote source -->
+      <section class="local-pane hidden" id="local-pane" aria-label="Side pane">
         <div class="lp-bar">
+          <select class="lp-src" id="local-src" title="Pane source: the workstation filesystem, or any remote source (S3 sources browse in the main view)"></select>
           <button class="tb-btn" id="local-up" title="Up (Backspace)">&#9650;</button>
           <button class="tb-btn" id="local-home" title="Home folder">&#127968;</button>
           <button class="tb-btn" id="local-refresh" title="Refresh">&#8635;</button>
           <div class="lp-crumb" id="local-crumb" title="Click to type a path"></div>
-          <label class="lp-sync" title="Synchronized browsing: the local folder follows the remote prefix">
+          <label class="lp-sync" title="Synchronized browsing: the local folder follows the remote prefix (local source only)">
             <input type="checkbox" id="local-sync"> Sync
           </label>
-          <button class="tb-btn" id="local-compare" title="Compare the local folder with the remote prefix">&#8644; Compare</button>
+          <button class="tb-btn" id="local-compare" title="Compare the side pane with the main view">&#8644; Compare</button>
         </div>
         <div class="lp-grid-head">
           <div class="grid-head" id="local-grid-head"></div>

@@ -8,6 +8,26 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Panels v2 (M10): the dual-pane's side pane is no longer local-only — a
+  source dropdown binds it to the workstation filesystem or to any remote
+  source (sftp/scp/ftp/ftps/local-dir; S3 sources keep browsing in the main
+  view), remembered across restarts. A remote-bound pane is a full peer in
+  the transfer matrix: its clipboard records the remote origin, its drags
+  carry `{source, dir, keys, entries}`, its row/empty-area menus offer
+  Download, Copy/Cut/Paste-into-folder, Rename, Delete, New folder, Upload
+  and engine-side Properties, and Enter on a file downloads it. Directory
+  compare is now pane↔pane through one `CompareAny(left, right)` driver —
+  local ↔ S3, local ↔ remote and remote ↔ remote — with the same
+  recursive size/mtime verdicts, 2 s clock tolerance and grid decorations
+  (`CompareDir` is a thin wrapper over it); the summary dialog labels the
+  sides by their real refs. Versioning gains a compare view: pick any two
+  versions A/B in the Versions dialog to see a metadata table (size, mtime,
+  ETag, storage class — identical ETags answer instantly) plus a unified
+  line diff of the contents (LCS with common prefix/suffix trimming,
+  context collapsing and hard caps; `VersionDiffText` streams each version
+  with a 512 KB limit, skips delete markers and binary content, and says
+  so). Synchronized browsing stays local-binding-only (it maps local dirs
+  to S3 prefixes) and disables itself on other bindings.
 - Cross-source transfers (M10 backend): `TransferCross` streams copies
   between any two sides — S3 (the default profile or a named S3 source),
   the remote-filesystem sources (sftp/scp/ftp/ftps/local-dir) and the

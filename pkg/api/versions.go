@@ -1,10 +1,19 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"unicode/utf8"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // ObjectVersions returns the version timeline of one key, newest first.
@@ -143,4 +152,116 @@ func (a *App) EmptyBucketAllVersions(bucket string) (transfer.DeleteResult, erro
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	}
 	return res, err
+}
+
+// ---------------- version compare (M10 panels v2) ----------------
+
+// versionDiffCap bounds each side's fetched text; larger versions compare by
+// metadata only.
+const versionDiffCap = 512 * 1024
+
+// VersionTexts carries the comparable content of two versions for the
+// compare view. Metadata (size/ETag/time/class) comes from the version list
+// the dialog already holds; this call is about content.
+type VersionTexts struct {
+	AText     string `json:"aText"`
+	BText     string `json:"bText"`
+	Truncated bool   `json:"truncated"` // a side hit the size cap
+	Skipped   string `json:"skipped"`   // "" when text was fetched; otherwise why
+}
+
+// VersionDiffText fetches two versions' content for the compare view.
+// Binary, oversized or delete-marker versions are skipped with a reason
+// instead of streaming megabytes into the dialog.
+func (a *App) VersionDiffText(bucket, key, versionA, versionB string) (VersionTexts, error) {
+	c, err := a.client("")
+	if err != nil {
+		return VersionTexts{}, err
+	}
+	if versionA == "" || versionB == "" {
+		return VersionTexts{}, errors.New("two version IDs are required")
+	}
+	ctx, cancel := a.quickCtx()
+	defer cancel()
+
+	var out VersionTexts
+	for i, id := range [2]string{versionA, versionB} {
+		txt, trunc, skip, err := fetchVersionText(ctx, c.S3, bucket, key, id)
+		if err != nil {
+			return out, err
+		}
+		if skip != "" {
+			out.Skipped = fmt.Sprintf("version %s: %s", shortVersion(id), skip)
+			return out, nil
+		}
+		if i == 0 {
+			out.AText = txt
+		} else {
+			out.BText = txt
+		}
+		out.Truncated = out.Truncated || trunc
+	}
+	return out, nil
+}
+
+// shortVersion keeps skip messages readable.
+func shortVersion(id string) string {
+	if len(id) > 12 {
+		return "…" + id[len(id)-8:]
+	}
+	return id
+}
+
+// fetchVersionText reads one version's body (capped) and reports whether it
+// is comparable text.
+func fetchVersionText(ctx context.Context, cl *s3.Client, bucket, key, versionID string) (string, bool, string, error) {
+	out, err := cl.GetObject(ctx, &s3.GetObjectInput{
+		Bucket:    aws.String(bucket),
+		Key:       aws.String(key),
+		VersionId: aws.String(versionID),
+	})
+	if err != nil {
+		var rerr *awshttp.ResponseError
+		if errors.As(err, &rerr) && rerr.HTTPStatusCode() == http.StatusMethodNotAllowed {
+			return "", false, "delete marker — no content", nil
+		}
+		return "", false, "", err
+	}
+	defer out.Body.Close()
+	if n := aws.ToInt64(out.ContentLength); n > versionDiffCap {
+		return "", false, fmt.Sprintf("size %s exceeds the %d KB text cap", fmtSize(n), versionDiffCap/1024), nil
+	}
+	b, err := io.ReadAll(io.LimitReader(out.Body, versionDiffCap+1))
+	if err != nil {
+		return "", false, "", err
+	}
+	trunc := int64(len(b)) > versionDiffCap
+	if trunc {
+		b = b[:versionDiffCap]
+	}
+	if !looksTexty(b) {
+		return "", false, "binary content", nil
+	}
+	return string(b), trunc, "", nil
+}
+
+// looksTexty reports whether b plausibly decodes as text: valid UTF-8 with
+// no NUL bytes (unit-tested).
+func looksTexty(b []byte) bool {
+	if bytes.IndexByte(b, 0) >= 0 {
+		return false
+	}
+	return utf8.Valid(b)
+}
+
+// fmtSize is a tiny byte formatter for skip messages.
+func fmtSize(n int64) string {
+	const k = 1024
+	switch {
+	case n >= k*k:
+		return fmt.Sprintf("%.1f MB", float64(n)/(k*k))
+	case n >= k:
+		return fmt.Sprintf("%.1f KB", float64(n)/k)
+	}
+	return fmt.Sprintf("%d B", n)
 }

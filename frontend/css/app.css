@@ -458,6 +458,14 @@ kbd {
   padding: 4px 6px;
   border-bottom: 1px solid var(--border);
 }
+.lp-src {
+  max-width: 150px;
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-alt); color: var(--text);
+}
 .lp-crumb {
   flex: 1; min-width: 0;
   padding: 3px 8px;
@@ -511,6 +519,40 @@ kbd {
 .ver-sub { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ver-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 .ver-actions .btn { padding: 2px 10px; font-size: 12px; }
+
+/* A/B picks + version compare (Panels v2) */
+.ver-pickbar {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 8px; padding: 6px 8px;
+  border: 1px dashed var(--border); border-radius: 6px;
+  font-size: 12px;
+}
+.ver-picklbl { color: var(--text-dim); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ver-pick { padding: 2px 8px; font-size: 11px; }
+.ver-pick.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+
+.verd-meta { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border-soft); border-radius: 6px; overflow: hidden; }
+.verd-mrow { display: grid; grid-template-columns: 130px 1fr 1fr; gap: 8px; padding: 5px 10px; font-size: 13px; }
+.verd-mrow:not(.verd-mhead):nth-child(even) { background: var(--panel-alt); }
+.verd-mhead { font-weight: 600; border-bottom: 1px solid var(--border-soft); font-family: var(--mono); font-size: 12px; }
+.verd-mlbl { color: var(--text-dim); }
+
+.diff {
+  margin-top: 8px;
+  border: 1px solid var(--border-soft); border-radius: 6px;
+  font-family: var(--mono); font-size: 12px;
+  overflow: auto; max-height: 50vh;
+  background: var(--panel-alt);
+}
+.diff-row { display: flex; gap: 0; white-space: pre; }
+.diff-row .diff-ln { flex: none; width: 46px; text-align: right; padding-right: 6px; color: var(--text-dim); user-select: none; }
+.diff-row .diff-sign { flex: none; width: 16px; text-align: center; user-select: none; }
+.diff-row .diff-text { flex: 1; min-width: 0; padding-right: 8px; }
+.diff-row.del { background: rgba(229, 57, 53, 0.14); }
+.diff-row.del .diff-sign { color: #e53935; }
+.diff-row.add { background: rgba(67, 160, 71, 0.14); }
+.diff-row.add .diff-sign { color: #43a047; }
+.diff-row.gap { justify-content: center; color: var(--text-dim); padding: 2px 0; user-select: none; letter-spacing: 2px; }
 
 /* ================= Admin panel dialog ================= */
 .admin { display: flex; flex-direction: column; min-width: 560px; }

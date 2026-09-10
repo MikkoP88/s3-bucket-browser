@@ -167,6 +167,14 @@ async function refreshSources() {
   if (def) sel.value = def.name;
   $('status-profile').textContent = def ? def.name : '';
   tree.setSources(sources, nav.current); // M9: sources are the tree's top level
+  // M10 panels v2: the side pane's source dropdown follows the source set
+  localPane.sources = sources.map((s) => ({ id: s.id, name: s.name, type: s.type }));
+  localPane.renderSources();
+  if (!localPane.bindingApplied) localPane.restoreBinding();
+  else if (localPane.binding.kind === 'remote'
+    && !sources.some((s) => (s.id || s.name) === localPane.binding.source)) {
+    localPane.rebind('local'); // bound source was removed
+  }
   if (!sources.length) {
     showOnboarding();
     return false;
@@ -497,11 +505,29 @@ function wireGrid() {
 }
 
 function wireLocalPane() {
-  localPane.on.openFail = (e) => toast(`Local: ${e}`, 'error');
-  localPane.on.dropFolder = (folder, payload) => dropToLocal(payload, folder.path);
-  localPane.on.dropBody = (payload) => dropToLocal(payload, localPane.dir);
+  localPane.on.openFail = (e) => toast(`${localPane.binding.kind === 'remote' ? localPane.binding.source : 'Local'}: ${e}`, 'error');
+  // Drops dispatch by pane binding: a remote-bound pane is a transfer target
+  // like any other remote dir (move/copy rules of dropToTarget apply); the
+  // local binding keeps the download-into-folder path.
+  localPane.on.dropFolder = (folder, payload, e) => {
+    if (localPane.binding.kind === 'remote') {
+      dropToTarget({ kind: 'remote', source: localPane.binding.source, dir: folder.key || localPane.dir || '/' }, payload, e);
+      return;
+    }
+    dropToLocal(payload, folder.path);
+  };
+  localPane.on.dropBody = (payload, e) => {
+    if (localPane.binding.kind === 'remote') {
+      dropToTarget({ kind: 'remote', source: localPane.binding.source, dir: localPane.dir || '/' }, payload, e);
+      return;
+    }
+    dropToLocal(payload, localPane.dir);
+  };
+  // Enter on a file of a remote-bound pane downloads it (WinSCP-style).
+  localPane.on.activateRemoteFile = (_source, row) => downloadSideRows([row]);
   localPane.grid.on.context = (e, rows) => showLocalRowMenu(e, rows);
   localPane.on.contextEmpty = (e, dir) => {
+    if (localPane.binding.kind === 'remote') { sideRemoteEmptyMenu(e); return; }
     const st = commandState();
     openMenu(e, [
       ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
@@ -938,6 +964,15 @@ function xferDestLabel(dest) {
   return dest.dir;
 }
 
+// sidePaneDest is the side pane as a transfer destination (remote-bound →
+// its source dir; local binding → its folder; null at filesystem roots /
+// hidden pane).
+function sidePaneDest() {
+  if (!localPane.visible) return null;
+  if (localPane.binding.kind === 'remote') return { kind: 'remote', source: localPane.binding.source, dir: localPane.dir || '/' };
+  return localPane.dir ? { kind: 'local', dir: localPane.dir } : null;
+}
+
 // startTransfer runs one background TransferCross job; resolves false when
 // the user canceled the conflict dialog or the job failed to start.
 async function startTransfer({ items = [], localPaths = [], dest, move = false, label } = {}) {
@@ -1068,23 +1103,53 @@ async function deletePermanentSelection() {
   }
 }
 
-// compareDirs compares the local pane folder against the remote prefix and
-// decorates both grids (WinSCP-style keep-in-sync).
-async function compareDirs() {
+// sidePaneRef is the side pane's compare reference: a remote-bound pane
+// compares its source dir, the local binding its folder (null at roots).
+function sidePaneRef() {
+  if (localPane.binding.kind === 'remote') return { kind: 'remote', source: localPane.binding.source, dir: localPane.dir || '/' };
+  return localPane.dir ? { kind: 'local', dir: localPane.dir } : null;
+}
+
+// mainCompareRef is the main view's compare reference (bucket folder or
+// remote dir), null elsewhere.
+function mainCompareRef() {
   const loc = nav.current;
-  if (loc?.kind !== 'objects') { toast('Open a bucket folder to compare against'); return; }
-  if (!localPane.dir) { toast('Local pane is at filesystem roots — open a folder first'); return; }
+  if (loc?.kind === 'objects') return { kind: 's3', bucket: loc.bucket, prefix: loc.prefix || '' };
+  if (loc?.kind === 'remote') return { kind: 'remote', source: loc.source, dir: loc.path || '/' };
+  return null;
+}
+
+function cmpRefLabel(ref) {
+  if (ref.kind === 's3') return `s3://${ref.bucket}/${ref.prefix || ''}`;
+  if (ref.kind === 'remote') return `${ref.source}:${ref.dir}`;
+  return ref.dir;
+}
+
+// compareDirs compares the side pane against the main view (local ↔ S3,
+// remote ↔ remote, local ↔ remote, …) and decorates both grids
+// (WinSCP-style keep-in-sync).
+async function compareDirs() {
+  const x = sidePaneRef();
+  const y = mainCompareRef();
+  if (!x) {
+    toast(localPane.binding.kind === 'remote'
+      ? 'Open a folder on the source first'
+      : 'Side pane is at filesystem roots — open a folder first');
+    return;
+  }
+  if (!y) { toast('Open a bucket folder or remote directory to compare against'); return; }
   try {
-    const rows = await api.CompareDir(localPane.dir, loc.bucket, loc.prefix || '');
+    const rows = await api.CompareAny(x, y);
     localPane.setCompare(rows);
     grid.setCmp(aggregateCompare(rows));
     const n = (s) => rows.filter((r) => r.status === s).length;
-    properties(`Compare — ${localPane.dir} \u2194 s3://${loc.bucket}/${loc.prefix || ''}`, [
+    const xl = cmpRefLabel(x), yl = cmpRefLabel(y);
+    properties(`Compare — ${xl} \u2194 ${yl}`, [
       ['Identical', n('same')],
-      ['Only local (to upload)', n('only-local')],
-      ['Only remote (to download)', n('only-remote')],
-      ['Newer local', n('newer-local')],
-      ['Newer remote', n('newer-remote')],
+      [`Only on left (${xl})`, n('only-local')],
+      [`Only on right (${yl})`, n('only-remote')],
+      ['Newer on left', n('newer-local')],
+      ['Newer on right', n('newer-remote')],
       ['Different size', n('size-diff')],
     ]);
   } catch (err) {
@@ -1216,13 +1281,14 @@ async function deleteBucket(bucket) {
   }
 }
 
-async function paste(prefixOverride, bucketOverride) {
+async function paste(prefixOverride, bucketOverride, destOverride) {
   const loc = nav.current;
   if (!clipHasItems()) return;
   let dest;
-  if (bucketOverride) dest = { kind: 's3', bucket: bucketOverride, dir: prefixOverride !== undefined ? prefixOverride : '' };
+  if (destOverride) dest = destOverride; // explicit target (side-pane menus)
+  else if (bucketOverride) dest = { kind: 's3', bucket: bucketOverride, dir: prefixOverride !== undefined ? prefixOverride : '' };
   else if (prefixOverride !== undefined && loc?.kind === 'remote') dest = { kind: 'remote', source: loc.source, dir: prefixOverride };
-  else dest = xferDestOf(loc) || (localPane.visible && localPane.dir ? { kind: 'local', dir: localPane.dir } : null);
+  else dest = xferDestOf(loc) || sidePaneDest();
   if (!dest) return;
 
   // Same-dir paste is a no-op (would spam "(1)" renames).
@@ -1392,9 +1458,10 @@ async function dropToLocal(payload, dir) {
   if (payload.entries?.length) downloadRefs(payload.entries, dir, payload.bucket);
 }
 
-// showLocalRowMenu: the local pane's per-row menu (open/copy/cut feed the
+// showLocalRowMenu: the side pane's per-row menu (open/copy/cut feed the
 // cross-source clipboard; local file management stays with Explorer).
 function showLocalRowMenu(e, rows) {
+  if (localPane.binding.kind === 'remote') return showSideRemoteRowMenu(e, rows);
   const sel = rows.length;
   if (!sel) return;
   openMenu(e, [
@@ -1412,6 +1479,109 @@ function showLocalRowMenu(e, rows) {
       ]);
     }, sel !== 1],
   ]);
+}
+
+// showSideRemoteRowMenu: per-row menu for a remote-bound side pane — the
+// same engine-native operations as the main remote view.
+function showSideRemoteRowMenu(e, rows) {
+  const sel = rows.length;
+  if (!sel) return;
+  const b = localPane.binding;
+  openMenu(e, [
+    ...(sel === 1 && rows[0].isDir
+      ? [['Open', 'Enter', () => localPane.grid.on.activate(rows[0])]]
+      : [[`Download${sel ? ` (${sel})` : ''}\u2026`, 'Ctrl+D', () => downloadSideRows(rows)]]),
+    null,
+    ['Copy', 'Ctrl+C', () => copySelection(), !sel],
+    ['Cut', 'Ctrl+X', () => cutSelection(), !sel],
+    ...(sel === 1 && rows[0].isDir
+      ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir: rows[0].key }), !clipHasItems()]]
+      : []),
+    null,
+    ['Rename', 'F2', async () => {
+      const row = rows[0];
+      const name = await prompt({ title: 'Rename', label: 'New name', value: row.name });
+      if (!name || name === row.name) return;
+      try {
+        await api.RemoteRename(b.source, row.key, name);
+        toast('Renamed', 'ok');
+        localPane.refresh();
+      } catch (err) {
+        toast(`Rename failed: ${err}`, 'error');
+      }
+    }, sel !== 1],
+    ['Delete\u2026', 'Del', () => deleteRemoteSelection(b.source, rows.map((r) => r.key)).then(() => localPane.refresh()), !sel],
+    null,
+    ['Properties', 'Alt+Enter', () => sideRemoteProperties(rows[0]), sel !== 1],
+  ]);
+}
+
+// sideRemoteEmptyMenu: empty-area menu of a remote-bound side pane —
+// paste/uploads land in the pane's current dir.
+function sideRemoteEmptyMenu(e) {
+  const b = localPane.binding;
+  const dir = localPane.dir || '/';
+  openMenu(e, [
+    ['Paste', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir }), !clipHasItems()],
+    null,
+    ['Upload files\u2026', '', async () => {
+      const paths = await api.PickUploadFiles();
+      if (paths?.length) uploadToRemote(paths, b.source, dir);
+    }],
+    ['Upload folder\u2026', '', async () => {
+      const picked = await api.PickFolder('Choose a folder to upload');
+      if (picked) uploadToRemote([picked], b.source, dir);
+    }],
+    ['New folder', 'Ctrl+Shift+N', async () => {
+      const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
+      if (!name) return;
+      try {
+        await api.RemoteMkdir(b.source, remoteChildPath(localPane.dir || '', name));
+        toast('Folder created', 'ok');
+        localPane.refresh();
+      } catch (err) {
+        toast(`Create folder failed: ${err}`, 'error');
+      }
+    }],
+    null,
+    [`Download all\u2026`, '', () => downloadSideRows(localPane.grid.rows), !localPane.grid.rows.length],
+    ['Select all', 'Ctrl+A', () => localPane.grid.selectAll()],
+    ['Refresh', 'F5', () => localPane.refresh()],
+  ]);
+}
+
+// downloadSideRows downloads rows from a remote-bound side pane into a
+// picked local folder.
+async function downloadSideRows(rows) {
+  const b = localPane.binding;
+  if (!rows?.length) return;
+  const dest = await api.PickFolder('Choose download folder');
+  if (!dest) return;
+  await startTransfer({
+    items: rows.map((r) => ({ source: b.source, key: r.key, size: r.size || 0, isDir: !!r.isDir })),
+    dest: { kind: 'local', dir: dest },
+    label: dest,
+  });
+}
+
+// sideRemoteProperties shows one row's engine-side metadata.
+async function sideRemoteProperties(row) {
+  const b = localPane.binding;
+  try {
+    const st = await api.RemoteStat(b.source, row.key);
+    properties(`Properties — ${row.name}`, [
+      ['Name', row.name],
+      ['Type', row.isDir ? 'Folder' : 'File'],
+      ...(!row.isDir ? [
+        ['Size', fmtBytes(st.size)],
+        ['Last modified', fmtDate(st.lastModified)],
+      ] : []),
+      ['Source', b.source],
+      ['Path', row.key],
+    ]);
+  } catch (err) {
+    toast(`Properties failed: ${err}`, 'error');
+  }
 }
 
 // Patch grid drag payload to carry the origin (bucket or remote source + dir)
@@ -1796,15 +1966,29 @@ function setClip(mode) {
   if (localPane.visible) {
     const lrows = localPane.grid.selectedRows();
     if (!lrows.length) return;
-    Object.assign(clipboard, {
-      mode,
-      kind: 'local',
-      bucket: null,
-      source: null,
-      dir: localPane.dir,
-      keys: [],
-      paths: lrows.map((x) => x.path),
-    });
+    // A remote-bound pane contributes a remote clipboard payload (keys +
+    // origin source/dir), the local binding the workstation paths.
+    if (localPane.binding.kind === 'remote') {
+      Object.assign(clipboard, {
+        mode,
+        kind: 'remote',
+        bucket: null,
+        source: localPane.binding.source,
+        dir: localPane.dir || '/',
+        keys: lrows.map((x) => x.key),
+        paths: [],
+      });
+    } else {
+      Object.assign(clipboard, {
+        mode,
+        kind: 'local',
+        bucket: null,
+        source: null,
+        dir: localPane.dir,
+        keys: [],
+        paths: lrows.map((x) => x.path),
+      });
+    }
     toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${lrows.length} item(s)`);
     updateCommandState();
   }

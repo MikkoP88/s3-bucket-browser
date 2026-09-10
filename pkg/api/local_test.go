@@ -5,50 +5,48 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// Hermetic tests for the dual-pane directory compare (M2.5). No S3 backend:
-// CompareSides is the pure core; the remote side is plain s3types.Objects.
+// Hermetic tests for the pane-to-pane directory compare. No S3 backend:
+// compareFileMaps is the pure core; the walkers are exercised over local
+// dirs and the local remotefs engine in compare_test.go.
 
-func TestCompareSides(t *testing.T) {
+func TestCompareFileMaps(t *testing.T) {
 	now := time.Now().UnixMilli()
-	local := map[string]localFile{
-		"only-local.txt":   {size: 10, mtime: now},
-		"same.txt":         {size: 100, mtime: now},
-		"size.txt":         {size: 100, mtime: now},
-		"newer-local.txt":  {size: 100, mtime: now},
-		"newer-remote.txt": {size: 100, mtime: now},
-		"tolerance.txt":    {size: 100, mtime: now},
+	left := map[string]localFile{
+		"only-left.txt":   {size: 10, mtime: now},
+		"same.txt":        {size: 100, mtime: now},
+		"size.txt":        {size: 100, mtime: now},
+		"newer-left.txt":  {size: 100, mtime: now},
+		"newer-right.txt": {size: 100, mtime: now},
+		"tolerance.txt":   {size: 100, mtime: now},
 	}
-	remote := map[string]s3types.Object{
-		"only-remote.txt":  {Size: aws.Int64(10), LastModified: aws.Time(time.UnixMilli(now))},
-		"same.txt":         {Size: aws.Int64(100), LastModified: aws.Time(time.UnixMilli(now))},
-		"size.txt":         {Size: aws.Int64(101), LastModified: aws.Time(time.UnixMilli(now))},
-		"newer-local.txt":  {Size: aws.Int64(100), LastModified: aws.Time(time.UnixMilli(now - 60_000))},
-		"newer-remote.txt": {Size: aws.Int64(100), LastModified: aws.Time(time.UnixMilli(now + 60_000))},
-		"tolerance.txt":    {Size: aws.Int64(100), LastModified: aws.Time(time.UnixMilli(now + 1_000))},
+	right := map[string]localFile{
+		"only-right.txt":  {size: 10, mtime: now},
+		"same.txt":        {size: 100, mtime: now},
+		"size.txt":        {size: 101, mtime: now},
+		"newer-left.txt":  {size: 100, mtime: now - 60_000},
+		"newer-right.txt": {size: 100, mtime: now + 60_000},
+		"tolerance.txt":   {size: 100, mtime: now + 1_000},
 	}
 
-	rows := CompareSides(local, remote)
+	rows := compareFileMaps(left, right)
 	got := map[string]string{}
 	for _, r := range rows {
 		got[r.Key] = r.Status
 	}
 	want := map[string]string{
-		"only-local.txt":   CmpOnlyLocal,
-		"only-remote.txt":  CmpOnlyRemote,
-		"same.txt":         CmpSame,
-		"size.txt":         CmpSizeDiff,
-		"newer-local.txt":  CmpNewerLocal,
-		"newer-remote.txt": CmpNewerRemote,
-		"tolerance.txt":    CmpSame, // 1s apart is inside the 2s clock tolerance
+		"only-left.txt":   CmpOnlyLocal,
+		"only-right.txt":  CmpOnlyRemote,
+		"same.txt":        CmpSame,
+		"size.txt":        CmpSizeDiff,
+		"newer-left.txt":  CmpNewerLocal,
+		"newer-right.txt": CmpNewerRemote,
+		"tolerance.txt":   CmpSame, // 1s apart is inside the 2s clock tolerance
 	}
 	for k, w := range want {
 		if got[k] != w {
-			t.Errorf("CompareSides(%s) = %q, want %q", k, got[k], w)
+			t.Errorf("compareFileMaps(%s) = %q, want %q", k, got[k], w)
 		}
 	}
 	for i := 1; i < len(rows); i++ {
@@ -62,8 +60,8 @@ func TestCompareSides(t *testing.T) {
 	}
 }
 
-func TestCompareSidesEmpty(t *testing.T) {
-	if rows := CompareSides(nil, nil); len(rows) != 0 {
+func TestCompareFileMapsEmpty(t *testing.T) {
+	if rows := compareFileMaps(nil, nil); len(rows) != 0 {
 		t.Errorf("empty sides produced %d rows, want 0", len(rows))
 	}
 }

@@ -624,6 +624,26 @@ const asMillis = (v) => (typeof v === 'string' ? Date.parse(v) : v);
 export function versionsDialog(bucket, key, onChanged) {
   const list = el('div', { class: 'ver-list' });
   const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  // A/B version picks (Panels v2): any two versions can be compared —
+  // metadata always, a unified text diff when both sides are text.
+  const pick = { a: null, b: null };
+  const pickBar = el('div', { class: 'ver-pickbar' });
+
+  const verShort = (v) => (v
+    ? `${v.lastModified ? fmtDate(asMillis(v.lastModified)) : ''}${v.versionId ? ` \u00b7 \u2026${v.versionId.slice(-6)}` : ''}`
+    : '\u2014');
+  const renderPickBar = () => {
+    const ready = pick.a && pick.b && pick.a.versionId !== pick.b.versionId;
+    pickBar.replaceChildren(
+      el('span', { class: 'ver-picklbl', text: `A: ${verShort(pick.a)}` }),
+      el('span', { class: 'ver-picklbl', text: `B: ${verShort(pick.b)}` }),
+      el('button', {
+        class: 'btn', text: 'Compare A \u2194 B', disabled: !ready,
+        title: 'Compare the two picked versions (metadata + text diff)',
+        onclick: () => versionDiffDialog(bucket, key, pick.a, pick.b),
+      }),
+    );
+  };
 
   const act = async (fn, msg) => {
     try {
@@ -659,6 +679,10 @@ export function versionsDialog(bucket, key, onChanged) {
     status.textContent = vers.length
       ? `${vers.length} version(s), newest first`
       : 'No versions — versioning is off or the object never existed.';
+    // Drop picks that vanished (e.g. destroyed in another window).
+    if (pick.a && !vers.some((v) => v.versionId === pick.a.versionId)) pick.a = null;
+    if (pick.b && !vers.some((v) => v.versionId === pick.b.versionId)) pick.b = null;
+    renderPickBar();
     list.replaceChildren(...vers.map((v) => el('div', { class: `ver-row${v.isLatest ? ' latest' : ''}` },
       el('span', { class: 'ver-icon', text: v.isDeleteMarker ? '\u26D4' : (v.isLatest ? '\u25CF' : '\u25CB') }),
       el('span', { class: 'ver-main' },
@@ -666,6 +690,14 @@ export function versionsDialog(bucket, key, onChanged) {
         el('div', { class: 'ver-sub', text: `${v.lastModified ? fmtDate(asMillis(v.lastModified)) : ''}${v.versionId ? ` — ${v.versionId}` : ''}` }),
       ),
       el('span', { class: 'ver-actions' },
+        ...(v.versionId && !v.isDeleteMarker
+          ? ['a', 'b'].map((side) => el('button', {
+              class: `btn ver-pick${pick[side]?.versionId === v.versionId ? ' on' : ''}`,
+              text: side.toUpperCase(),
+              title: `Pick as side ${side.toUpperCase()} of the compare`,
+              onclick: () => { pick[side] = pick[side]?.versionId === v.versionId ? null : v; draw(); },
+            }))
+          : []),
         v.isLatest && !v.isDeleteMarker ? el('span', { class: 'tag', text: 'current' }) : null,
         !v.isLatest && !v.isDeleteMarker
           ? el('button', { class: 'btn', text: 'Restore as latest', onclick: () => act(() => api.RestoreVersion(bucket, key, v.versionId), 'Restored as latest') })
@@ -680,11 +712,127 @@ export function versionsDialog(bucket, key, onChanged) {
 
   openModal({
     title: `Versions — s3://${bucket}/${key}`,
-    body: el('div', {}, status, list),
+    body: el('div', {}, status, pickBar, list),
     wide: true,
     buttons: [{ label: 'Close' }],
   });
   draw();
+}
+
+// ---------- version compare (Panels v2) ----------
+// versionDiffDialog compares two picked versions of one object: a metadata
+// table (size / mtime / ETag / class) plus a unified line diff when both
+// sides are text within the backend's 512 KB cap.
+export function versionDiffDialog(bucket, key, va, vb) {
+  const short = (id) => (!id ? '(null version)' : (id.length > 12 ? `\u2026${id.slice(-8)}` : id));
+  const meta = el('div', { class: 'verd-meta' });
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const diffBox = el('div', { class: 'diff' });
+
+  const mrow = (label, a, b, head = false) => el('div', { class: `verd-mrow${head ? ' verd-mhead' : ''}` },
+    el('span', { class: 'verd-mlbl', text: label }),
+    el('span', { text: a }),
+    el('span', { text: b }));
+
+  openModal({
+    title: `Compare versions — s3://${bucket}/${key}`,
+    body: el('div', {}, meta, status, diffBox),
+    wide: true,
+    buttons: [{ label: 'Close' }],
+  });
+
+  meta.replaceChildren(
+    mrow('', `A \u00b7 ${short(va.versionId)}`, `B \u00b7 ${short(vb.versionId)}`, true),
+    mrow('Size', fmtBytes(va.size || 0), fmtBytes(vb.size || 0)),
+    mrow('Last modified',
+      va.lastModified ? fmtDate(asMillis(va.lastModified)) : '\u2014',
+      vb.lastModified ? fmtDate(asMillis(vb.lastModified)) : '\u2014'),
+    mrow('ETag', va.etag || '\u2014', vb.etag || '\u2014'),
+    mrow('Storage class', va.storageClass || '\u2014', vb.storageClass || '\u2014'),
+  );
+
+  if (va.etag && va.etag === vb.etag) {
+    status.textContent = 'ETags match — the two versions hold identical content.';
+    return;
+  }
+
+  status.textContent = 'Loading contents\u2026';
+  api.VersionDiffText(bucket, key, va.versionId, vb.versionId).then((res) => {
+    if (res.skipped) { status.textContent = res.skipped; return; }
+    status.textContent = res.truncated
+      ? 'Text exceeds the 512 KB diff cap — showing the first 512 KB of each side.'
+      : '';
+    renderDiff(diffBox, res.aText, res.bText);
+  }).catch((err) => {
+    status.textContent = String(err);
+    status.style.color = 'var(--danger)';
+  });
+}
+
+// renderDiff paints a unified line diff: common prefix/suffix are trimmed,
+// the changed middle runs through an LCS table (huge rewrites fall back to
+// one wholesale replacement block), and long equal runs collapse to markers.
+function renderDiff(box, aText, bText) {
+  const A = String(aText ?? '').replace(/\r\n/g, '\n').split('\n');
+  const B = String(bText ?? '').replace(/\r\n/g, '\n').split('\n');
+  let p = 0;
+  while (p < A.length && p < B.length && A[p] === B[p]) p++;
+  let s = 0;
+  while (s < A.length - p && s < B.length - p && A[A.length - 1 - s] === B[B.length - 1 - s]) s++;
+  const midA = A.slice(p, A.length - s);
+  const midB = B.slice(p, B.length - s);
+  const rows = [];
+  if (midA.length && midB.length && midA.length * midB.length > 4_000_000) {
+    for (let i = 0; i < midA.length; i++) rows.push({ t: '-', text: midA[i], la: p + i + 1 });
+    for (let j = 0; j < midB.length; j++) rows.push({ t: '+', text: midB[j], lb: p + j + 1 });
+  } else {
+    const n = midA.length, m = midB.length, w = m + 1;
+    const dp = new Int32Array((n + 1) * w);
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i * w + j] = midA[i] === midB[j]
+          ? dp[(i + 1) * w + j + 1] + 1
+          : Math.max(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+      }
+    }
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (midA[i] === midB[j]) { rows.push({ t: ' ', text: midA[i], la: p + i + 1, lb: p + j + 1 }); i++; j++; }
+      else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) { rows.push({ t: '-', text: midA[i], la: p + i + 1 }); i++; }
+      else { rows.push({ t: '+', text: midB[j], lb: p + j + 1 }); j++; }
+    }
+    for (; i < n; i++) rows.push({ t: '-', text: midA[i], la: p + i + 1 });
+    for (; j < m; j++) rows.push({ t: '+', text: midB[j], lb: p + j + 1 });
+  }
+  const full = [
+    ...A.slice(0, p).map((text, k) => ({ t: ' ', text, la: k + 1, lb: k + 1 })),
+    ...rows,
+    ...A.slice(A.length - s).map((text, k) => ({ t: ' ', text, la: A.length - s + k + 1, lb: B.length - s + k + 1 })),
+  ];
+  // Keep 3 context lines around every change; collapse the remaining runs.
+  const keep = new Array(full.length).fill(false);
+  full.forEach((r, idx) => {
+    if (r.t !== ' ') for (let k = Math.max(0, idx - 3); k <= Math.min(full.length - 1, idx + 3); k++) keep[k] = true;
+  });
+  const shown = [];
+  let inGap = false;
+  for (let k = 0; k < full.length; k++) {
+    if (keep[k]) { shown.push(full[k]); inGap = false; }
+    else if (!inGap) { shown.push({ t: '@' }); inGap = true; }
+  }
+  const cap = 4000;
+  const clipped = shown.length > cap;
+  const draw = (r) => (r.t === '@'
+    ? el('div', { class: 'diff-row gap', text: '\u00b7\u00b7\u00b7' })
+    : el('div', { class: `diff-row ${r.t === ' ' ? 'ctx' : r.t === '-' ? 'del' : 'add'}` },
+        el('span', { class: 'diff-ln', text: r.la != null ? String(r.la) : '' }),
+        el('span', { class: 'diff-ln', text: r.lb != null ? String(r.lb) : '' }),
+        el('span', { class: 'diff-sign', text: r.t === ' ' ? '' : r.t }),
+        el('span', { class: 'diff-text', text: r.text })));
+  box.replaceChildren(
+    ...(clipped ? shown.slice(0, cap) : shown).map(draw),
+    ...(clipped ? [el('div', { class: 'diff-row gap', text: `\u00b7\u00b7\u00b7 ${shown.length - cap} more rows not shown` })] : []),
+  );
 }
 
 // ---------- bucket admin panel (M3) ----------

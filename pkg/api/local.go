@@ -8,10 +8,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-
-	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // LocalEntry is one row of the local (dual-pane) grid.
@@ -169,9 +165,12 @@ func linuxTerminal(dir string) *exec.Cmd {
 
 // ---------------- directory compare (WinSCP-style keep in sync) ----------------
 
-// CompareStatus classifies one row of a local-vs-remote comparison.
+// CompareStatus classifies one row of a pane-to-pane comparison. The names
+// are historical (the original compare was local-dir vs S3-prefix); the
+// generalized driver in compare.go uses them for the left/right sides and
+// the summary dialog labels the sides for the user.
 const (
-	CmpOnlyLocal   = "only-local"
+	CmpOnlyLocal   = "only-local" // only on the left (x) side
 	CmpOnlyRemote  = "only-remote"
 	CmpSame        = "same"
 	CmpNewerLocal  = "newer-local"
@@ -179,7 +178,8 @@ const (
 	CmpSizeDiff    = "size-diff"
 )
 
-// CompareRow is one compared path (relative to the compared dir/prefix).
+// CompareRow is one compared path (relative to the compared dir/prefix);
+// Local* fields are the left side, Remote* the right side.
 type CompareRow struct {
 	Key         string `json:"key"` // slash-separated relative path
 	Status      string `json:"status"`
@@ -189,7 +189,7 @@ type CompareRow struct {
 	RemoteMtime int64  `json:"remoteMtime,omitempty"` // unix millis
 }
 
-// localFile describes one file found during the local walk.
+// localFile describes one file found during a local walk.
 type localFile struct {
 	size  int64
 	mtime int64
@@ -219,86 +219,12 @@ func walkLocalFiles(dir string) (map[string]localFile, error) {
 	return out, err
 }
 
-// CompareDir compares a local directory against a bucket prefix (recursive,
-// files only; folder markers are ignored). Sizes and mtimes drive the
-// verdict; remote mtimes are the server's LastModified.
+// CompareDir compares a local directory against a bucket prefix — the
+// original dual-pane compare, now a thin wrapper over the generalized
+// CompareAny driver (any local/remote/S3 pair).
 func (a *App) CompareDir(localDir, bucket, prefix string) ([]CompareRow, error) {
-	c, err := a.client("")
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
-
-	local, err := walkLocalFiles(filepath.Clean(localDir))
-	if err != nil {
-		return nil, err
-	}
-	remote := map[string]s3types.Object{}
-	err = listing.Walk(ctx, c.S3, bucket, dirPrefix(prefix), func(o s3types.Object) error {
-		key := aws.ToString(o.Key)
-		if strings.HasSuffix(key, "/") {
-			return nil // folder markers
-		}
-		rel := strings.TrimPrefix(key, dirPrefix(prefix))
-		if rel == "" {
-			return nil
-		}
-		remote[rel] = o
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return CompareSides(local, remote), nil
-}
-
-// CompareSides is the pure comparison (unit-tested): local files vs remote
-// objects keyed by relative path.
-func CompareSides(local map[string]localFile, remote map[string]s3types.Object) []CompareRow {
-	keys := make([]string, 0, len(local)+len(remote))
-	seen := map[string]bool{}
-	for k := range local {
-		keys = append(keys, k)
-		seen[k] = true
-	}
-	for k := range remote {
-		if !seen[k] {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-
-	rows := make([]CompareRow, 0, len(keys))
-	for _, k := range keys {
-		l, hasL := local[k]
-		r, hasR := remote[k]
-		row := CompareRow{Key: k}
-		if hasL {
-			row.LocalSize = l.size
-			row.LocalMtime = l.mtime
-		}
-		if hasR {
-			row.RemoteSize = aws.ToInt64(r.Size)
-			if r.LastModified != nil {
-				row.RemoteMtime = r.LastModified.UnixMilli()
-			}
-		}
-		switch {
-		case !hasR:
-			row.Status = CmpOnlyLocal
-		case !hasL:
-			row.Status = CmpOnlyRemote
-		case l.size != row.RemoteSize:
-			row.Status = CmpSizeDiff
-		case l.mtime > row.RemoteMtime+2000: // clocks differ; 2s tolerance
-			row.Status = CmpNewerLocal
-		case row.RemoteMtime > l.mtime+2000:
-			row.Status = CmpNewerRemote
-		default:
-			row.Status = CmpSame
-		}
-		rows = append(rows, row)
-	}
-	return rows
+	return a.CompareAny(
+		CompareRef{Kind: "local", Dir: localDir},
+		CompareRef{Kind: "s3", Bucket: bucket, Prefix: prefix},
+	)
 }
