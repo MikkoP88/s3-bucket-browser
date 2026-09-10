@@ -63,22 +63,23 @@ described here. The same engine backs both.
   - [s3b completion zsh](#s3b-completion-zsh) — Generate the autocompletion script for zsh
 - [s3b cp](#s3b-cp) — Copy files (local↔S3, S3→S3 server-side)
 - [s3b doctor](#s3b-doctor) — Diagnose connectivity: DNS, TCP, TLS, auth, bucket policy, ACL
-- [s3b du](#s3b-du) — Count objects and total size under a prefix
+- [s3b du](#s3b-du) — Count objects and total size under a prefix or source folder
 - [s3b find](#s3b-find) — Deep search objects by name, size, age or storage class
 - [s3b help](#s3b-help) — Help about any command
 - [s3b lock](#s3b-lock) — Object lock: retention and legal hold per object version
   - [s3b lock legalhold](#s3b-lock-legalhold) — Show or toggle the legal hold of an object version
   - [s3b lock retention](#s3b-lock-retention) — Show, set or clear object retention
-- [s3b ls](#s3b-ls) — List buckets, or one directory view of a bucket
+- [s3b log](#s3b-log) — Show the activity log (GUI events: transfers, deletes, doctor runs)
+- [s3b ls](#s3b-ls) — List buckets, or one directory view of a bucket or source
 - [s3b mb](#s3b-mb) — Make a bucket
-- [s3b mkdir](#s3b-mkdir) — Create a folder marker (zero-byte object ending in "/")
+- [s3b mkdir](#s3b-mkdir) — Create a folder marker (S3) or a real folder (source URIs)
 - [s3b mv](#s3b-mv) — Move files (copy, then delete sources on success)
 - [s3b presign](#s3b-presign) — Generate a pre-signed GET URL for an object
 - [s3b profile](#s3b-profile) — Manage connection profiles
   - [s3b profile list](#s3b-profile-list) — List profiles (secrets masked)
   - [s3b profile test](#s3b-profile-test) — Test connectivity for a profile (lightweight doctor)
 - [s3b rb](#s3b-rb) — Remove a bucket (must be empty, or pass --force)
-- [s3b rm](#s3b-rm) — Delete objects (prefix delete needs --recursive; large batches need --force)
+- [s3b rm](#s3b-rm) — Delete objects or source files (folders need --recursive; large batches --force)
 - [s3b sc](#s3b-sc) — Convert objects to another storage class (server-side copy)
 - [s3b source](#s3b-source) — Manage data sources (any connection type)
   - [s3b source add](#s3b-source-add) — Add or update a data source
@@ -88,9 +89,9 @@ described here. The same engine backs both.
   - [s3b source remove](#s3b-source-remove) — Remove a data source
   - [s3b source test](#s3b-source-test) — Test connectivity for a source
   - [s3b source use](#s3b-source-use) — Set the default source
-- [s3b stat](#s3b-stat) — Show bucket or object metadata
+- [s3b stat](#s3b-stat) — Show bucket, object or source-path metadata
 - [s3b sync](#s3b-sync) — Sync a local folder with an S3 prefix (either direction)
-- [s3b tree](#s3b-tree) — Show a bucket subtree as an ASCII tree
+- [s3b tree](#s3b-tree) — Show a bucket or source subtree as an ASCII tree
 - [s3b version](#s3b-version) — Print the s3b version
 - [s3b versions](#s3b-versions) — Object version management (versioned buckets)
   - [s3b versions ls](#s3b-versions-ls) — List the version timeline of an object, newest first
@@ -140,6 +141,7 @@ Documentation: https://github.com/MikkoP88/s3-bucket-browser
 * [s3b find](#s3b-find)
 * [s3b help](#s3b-help)
 * [s3b lock](#s3b-lock)
+* [s3b log](#s3b-log)
 * [s3b ls](#s3b-ls)
 * [s3b mb](#s3b-mb)
 * [s3b mkdir](#s3b-mkdir)
@@ -1442,7 +1444,8 @@ Copy files (local↔S3, S3→S3 server-side)
 
 ### Synopsis
 
-Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy).
+Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy),
+plus NAME:// source URIs (any saved non-S3 source) on either side.
 SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.
 
 ```
@@ -1514,10 +1517,10 @@ s3b doctor [s3://bucket]
 
 ## s3b du
 
-Count objects and total size under a prefix
+Count objects and total size under a prefix or source folder
 
 ```
-s3b du s3://bucket[/prefix]
+s3b du s3://bucket[/prefix] | NAME://dir
 ```
 
 ### Options inherited from parent commands
@@ -1740,25 +1743,76 @@ s3b lock retention s3://bucket/key [--version-id ID] [--mode M --until T | --cle
 
 * [s3b lock](#s3b-lock)
 
+## s3b log
+
+Show the activity log (GUI events: transfers, deletes, doctor runs)
+
+### Synopsis
+
+Prints the persisted activity log (events.jsonl in the config dir) —
+the same lines the GUI log drawer shows, kept across sessions.
+--follow keeps watching for new lines.
+
+```
+s3b log [flags]
+```
+
+### Options
+
+```
+  -f, --follow              keep watching for new lines
+      --interval duration   poll interval in --follow (default 1s)
+      --level string        filter by level: info, warn, error
+  -n, --lines int           show the last N lines (0 = all) (default 50)
+      --scope string        filter by scope prefix (transfer, doctor, ...)
+
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b](#s3b)
+
 ## s3b ls
 
-List buckets, or one directory view of a bucket
+List buckets, or one directory view of a bucket or source
 
 ### Synopsis
 
 Without an argument lists all buckets.
 With s3://bucket/prefix shows one directory view (folders + objects);
 --recursive streams every object under the prefix instead.
+Source URIs (NAME://dir over any saved non-S3 source) work the same way.
+--watch re-lists and prints changes until Ctrl+C (plan-v2 M10.5).
 
 ```
-s3b ls [s3://bucket[/prefix]] [flags]
+s3b ls [s3://bucket[/prefix] | NAME://dir] [flags]
 ```
 
 ### Options
 
 ```
-      --max-keys int32   keys per page (0 = server default)
-  -r, --recursive        stream every object under the prefix
+      --interval duration   poll interval for --watch (default 2s)
+      --max-keys int32      keys per page (0 = server default)
+  -r, --recursive           stream every object under the prefix
+      --watch               keep re-listing and print changes until Ctrl+C
 
 ```
 
@@ -1827,10 +1881,10 @@ s3b mb s3://bucket [flags]
 
 ## s3b mkdir
 
-Create a folder marker (zero-byte object ending in "/")
+Create a folder marker (S3) or a real folder (source URIs)
 
 ```
-s3b mkdir s3://bucket/path/...
+s3b mkdir s3://bucket/path/... | NAME://dir
 ```
 
 ### Options inherited from parent commands
@@ -1861,7 +1915,8 @@ Move files (copy, then delete sources on success)
 
 ### Synopsis
 
-Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy).
+Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy),
+plus NAME:// source URIs (any saved non-S3 source) on either side.
 SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.
 
 ```
@@ -2065,10 +2120,10 @@ s3b rb s3://bucket [flags]
 
 ## s3b rm
 
-Delete objects (prefix delete needs --recursive; large batches need --force)
+Delete objects or source files (folders need --recursive; large batches --force)
 
 ```
-s3b rm s3://bucket[/prefix] [flags]
+s3b rm s3://bucket[/prefix] | NAME://path [flags]
 ```
 
 ### Options
@@ -2438,10 +2493,10 @@ s3b source use NAME
 
 ## s3b stat
 
-Show bucket or object metadata
+Show bucket, object or source-path metadata
 
 ```
-s3b stat s3://bucket[/key]
+s3b stat s3://bucket[/key] | NAME://path
 ```
 
 ### Options inherited from parent commands
@@ -2512,10 +2567,10 @@ s3b sync SRC DST [flags]
 
 ## s3b tree
 
-Show a bucket subtree as an ASCII tree
+Show a bucket or source subtree as an ASCII tree
 
 ```
-s3b tree s3://bucket[/prefix]
+s3b tree s3://bucket[/prefix] | NAME://dir
 ```
 
 ### Options inherited from parent commands
