@@ -313,7 +313,7 @@ export function transferManager(onClose) {
     const bar = el('div', { class: 'tr-bar' }, el('div', { style: `width:${pct}%` }));
     const job = el('div', { class: `tr-job ${j.status}` },
       el('div', { class: 'tr-top' },
-        el('span', { class: 'tr-name', text: `${j.op === 'upload' ? '\u2191' : '\u2193'} ${j.currentFile || j.id}` }),
+        el('span', { class: 'tr-name', text: `${j.op === 'upload' ? '\u2191' : j.op === 'transfer' ? '\u21C4' : '\u2193'} ${j.currentFile || j.id}` }),
         el('span', { class: 'tr-status', text: `${j.status} — ${j.doneFiles}/${j.totalFiles} files, ${fmtBytes(j.sentBytes)}${j.totalBytes ? ` / ${fmtBytes(j.totalBytes)}` : ''}${j.speedBps ? ` @ ${fmtSpeed(j.speedBps)}` : ''}` }),
         j.status === 'running' ? el('button', { class: 'btn', text: 'Cancel', onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
       ),
@@ -450,7 +450,7 @@ export function sourceEditor(existing, onSaved) {
         label: 'Test',
         onclick: async () => {
           if (f.type.value !== 's3') {
-            status.textContent = 'Remote-filesystem engines ship next — the connection is saved as configured.';
+            status.textContent = 'Save the source first — Test in the Data sources manager dials it for real.';
             status.style.color = 'var(--text-dim)';
             return;
           }
@@ -575,7 +575,7 @@ export function conflictPolicy(kind, target) {
       RATE_LIMITS.map(([v, label]) => el('option', { value: String(v) }, label)));
     rate.value = localStorage.getItem('s3b-throttle') || '0';
     openModal({
-      title: `${kind === 'upload' ? 'Upload' : 'Download'} — conflicting files at ${target}`,
+      title: `${kind === 'upload' ? 'Upload' : kind === 'transfer' ? 'Transfer' : 'Download'} — conflicting files at ${target}`,
       body: el('div', {},
         list,
         el('label', { class: 'field', style: 'display:flex;align-items:center;gap:8px;margin-top:10px' },

@@ -1,7 +1,7 @@
 // S3 Bucket Browser — application shell (Explorer layout, PLAN.md §11).
 import { api, onEvent } from './api.js';
 import { el, fmtBytes, basename, debounce } from './util.js';
-import { nav, parentOf, clipboard, view } from './state.js';
+import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid } from './grid.js';
 import { Tree } from './tree.js';
 import {
@@ -24,8 +24,9 @@ const logArea = createLogArea();
 
 setCommandContext({
   selectionCount: () => grid.selectedRows().length,
-  // Browsing still means S3; remote-filesystem engines land with M9.
   hasProfile: () => sources.some((s) => s.type === 's3'),
+  localSelectionCount: () => (localPane.visible ? localPane.grid.selectedRows().length : 0),
+  localPaneOpen: () => localPane.visible,
 });
 
 let sources = []; // data sources of any type (M8)
@@ -443,12 +444,12 @@ function wireGrid() {
   grid.on.activate = (row) => {
     const loc = nav.current;
     if (loc.kind === 'srcroot') {
-      toast('Set this source as default (dropdown or "Use") to manage its objects — per-source transfers ship next');
+      toast('Set this source as default (dropdown or "Use") to manage its objects');
       return;
     }
     if (loc.kind === 'remote') {
       if (row.isDir) nav.to({ kind: 'remote', source: loc.source, path: row.key });
-      else toast('File operations on remote sources arrive with cross-source transfers');
+      else downloadSelection([{ key: row.key, size: row.size, name: row.name }]);
       return;
     }
     if (loc.kind === 'buckets') {
@@ -462,8 +463,8 @@ function wireGrid() {
   grid.on.context = (e, rows) => showContextMenu(e, rows);
   grid.on.drop = (targetRow, data, e) => {
     const loc = nav.current;
-    if (loc.kind !== 'objects') return;
-    dropToTarget({ bucket: loc.bucket, prefix: targetRow.key }, data, e);
+    if (loc.kind === 'objects') dropToTarget({ kind: 's3', bucket: loc.bucket, dir: targetRow.key }, data, e);
+    else if (loc.kind === 'remote') dropToTarget({ kind: 'remote', source: loc.source, dir: targetRow.key }, data, e);
   };
   grid.body.addEventListener('mousedown', (e) => {
     if (e.target === grid.body || e.target === grid.canvas) {
@@ -497,10 +498,14 @@ function wireGrid() {
 
 function wireLocalPane() {
   localPane.on.openFail = (e) => toast(`Local: ${e}`, 'error');
-  localPane.on.dropFolder = (folder, payload) => downloadRefs(payload.entries, folder.path);
-  localPane.on.dropBody = (payload) => downloadRefs(payload.entries, localPane.dir);
+  localPane.on.dropFolder = (folder, payload) => dropToLocal(payload, folder.path);
+  localPane.on.dropBody = (payload) => dropToLocal(payload, localPane.dir);
+  localPane.grid.on.context = (e, rows) => showLocalRowMenu(e, rows);
   localPane.on.contextEmpty = (e, dir) => {
+    const st = commandState();
     openMenu(e, [
+      ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
+      null,
       ['Select all', 'Ctrl+A', () => localPane.grid.selectAll()],
       ['Refresh', '', () => localPane.refresh()],
       null,
@@ -564,9 +569,16 @@ function showContextMenu(e, rows) {
     items.push(null);
     items.push(['Delete bucket\u2026', '', () => deleteBucket(b.key)]);
   } else if (loc.kind === 'remote') {
-    // Remote sources: the engine-native operations (transfers arrive with
-    // the cross-source matrix).
+    // Remote sources: engine-native operations plus the cross-source
+    // transfer matrix (copy/cut/paste/download stream through TransferCross).
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
+    items.push([`Download${sel ? ` (${sel})` : ''}\u2026`, 'Ctrl+D', () => downloadSelection(), !sel]);
+    items.push(null);
+    items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
+    items.push(['Cut', 'Ctrl+X', () => cutSelection(), !sel]);
+    if (sel === 1 && rows[0].isDir) {
+      items.push(['Paste into folder', 'Ctrl+V', () => paste(rows[0].key), !clipHasItems()]);
+    }
     items.push(null);
     items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
@@ -579,9 +591,9 @@ function showContextMenu(e, rows) {
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
     items.push([`Download${sel ? ` (${sel})` : ''}`, 'Ctrl+D', () => downloadSelection()]);
     items.push(null);
-    items.push(['Cut', 'Ctrl+X', () => { clipboard.mode = 'cut'; clipboard.bucket = loc.bucket; clipboard.keys = rows.map((r) => r.key); toast(`Cut ${rows.length} item(s)`); updateCommandState(); }]);
-    items.push(['Copy', 'Ctrl+C', () => { clipboard.mode = 'copy'; clipboard.bucket = loc.bucket; clipboard.keys = rows.map((r) => r.key); toast(`Copied ${rows.length} item(s)`); updateCommandState(); }]);
-    items.push(['Paste', 'Ctrl+V', () => paste(), !clipboard.keys.length || !inObjects]);
+    items.push(['Cut', 'Ctrl+X', () => cutSelection()]);
+    items.push(['Copy', 'Ctrl+C', () => copySelection()]);
+    items.push(['Paste', 'Ctrl+V', () => paste(), !clipHasItems() || !inObjects]);
     items.push(null);
     items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
@@ -618,8 +630,13 @@ function showEmptyAreaMenu(e) {
   }
   if (loc.kind === 'remote') {
     openMenu(e, [
+      ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
+      null,
+      ['Upload files\u2026', 'Ctrl+U', () => uploadFiles()],
+      ['Upload folder\u2026', '', () => uploadFolder()],
       ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
       null,
+      ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
       ['Select all', 'Ctrl+A', () => grid.selectAll()],
       ['Refresh', 'F5', () => refreshCurrent()],
       ['Properties', '', () => folderProperties()],
@@ -678,6 +695,32 @@ function showTreeMenu(e, node) {
     openMenu(e, [
       ['Open', '', () => nav.to({ kind: 'remote', source: node.source, path: node.path })],
       null,
+      ['Upload files here\u2026', 'Ctrl+U', async () => {
+        const paths = await api.PickUploadFiles();
+        if (paths?.length) uploadToRemote(paths, node.source, node.path);
+      }],
+      ['Upload folder here\u2026', '', async () => {
+        const dir = await api.PickFolder('Choose a folder to upload');
+        if (dir) uploadToRemote([dir], node.source, node.path);
+      }],
+      ['Download\u2026', '', async () => {
+        const dest = await api.PickFolder('Choose download folder');
+        if (dest) startTransfer({
+          items: [{ source: node.source, key: node.path, isDir: true }],
+          dest: { kind: 'local', dir: dest }, label: dest,
+        });
+      }],
+      null,
+      ['Copy', 'Ctrl+C', () => {
+        Object.assign(clipboard, { mode: 'copy', kind: 'remote', bucket: null, source: node.source, dir: parentRemoteDir(node.path), keys: [node.path], paths: [] });
+        toast(`Copied ${node.label}`); updateCommandState();
+      }],
+      ['Cut', 'Ctrl+X', () => {
+        Object.assign(clipboard, { mode: 'cut', kind: 'remote', bucket: null, source: node.source, dir: parentRemoteDir(node.path), keys: [node.path], paths: [] });
+        toast(`Cut ${node.label}`); updateCommandState();
+      }],
+      ['Paste into folder', 'Ctrl+V', () => paste(node.path), !clipHasItems()],
+      null,
       ['New folder here\u2026', 'Ctrl+Shift+N', () => newRemoteFolderIn(node.source, node.path)],
       null,
       ['Rename\u2026', 'F2', () => renameRemoteTreeFolder(node)],
@@ -704,8 +747,8 @@ function showTreeMenu(e, node) {
     ]);
     return;
   }
-  const clipCopy = () => { clipboard.mode = 'copy'; clipboard.bucket = node.bucket; clipboard.keys = [node.prefix]; toast(`Copied ${node.label}`); updateCommandState(); };
-  const clipCut = () => { clipboard.mode = 'cut'; clipboard.bucket = node.bucket; clipboard.keys = [node.prefix]; toast(`Cut ${node.label}`); updateCommandState(); };
+  const clipCopy = () => { Object.assign(clipboard, { mode: 'copy', kind: 's3', bucket: node.bucket, source: null, dir: node.prefix.replace(/\/+$/, ''), keys: [node.prefix], paths: [] }); toast(`Copied ${node.label}`); updateCommandState(); };
+  const clipCut = () => { Object.assign(clipboard, { mode: 'cut', kind: 's3', bucket: node.bucket, source: null, dir: node.prefix.replace(/\/+$/, ''), keys: [node.prefix], paths: [] }); toast(`Cut ${node.label}`); updateCommandState(); };
   openMenu(e, [
     ['Open', '', go],
     null,
@@ -816,12 +859,18 @@ async function uploadPaths(paths, prefixOverride, bucketOverride) {
 
 async function uploadFiles() {
   const paths = await api.PickUploadFiles();
-  if (paths?.length) uploadPaths(paths);
+  if (!paths?.length) return;
+  const loc = nav.current;
+  if (loc?.kind === 'remote') return uploadToRemote(paths, loc.source, loc.path || '/');
+  uploadPaths(paths);
 }
 
 async function uploadFolder() {
   const dir = await api.PickFolder('Choose a folder to upload');
-  if (dir) uploadPaths([dir]);
+  if (!dir) return;
+  const loc = nav.current;
+  if (loc?.kind === 'remote') return uploadToRemote([dir], loc.source, loc.path || '/');
+  uploadPaths([dir]);
 }
 
 // showUploadMenu is the single Upload command: a small menu under the button
@@ -836,12 +885,20 @@ function showUploadMenu(e) {
 
 async function downloadSelection(overrideRows) {
   const loc = nav.current;
-  if (loc.kind !== 'objects') return;
+  if (loc.kind !== 'objects' && loc.kind !== 'remote') return;
   const rows = overrideRows || grid.selectedRows();
-  if (!rows.length) { toast('Select objects to download'); return; }
-  const refs = rows.map((r) => ({ key: r.key, size: r.size || 0, isDir: !!r.isDir }));
+  if (!rows.length) { toast('Select items to download'); return; }
   const dest = await api.PickFolder('Choose download folder');
   if (!dest) return;
+  if (loc.kind === 'remote') {
+    await startTransfer({
+      items: rows.map((r) => ({ source: loc.source, key: r.key, size: r.size || 0, isDir: !!r.isDir })),
+      dest: { kind: 'local', dir: dest },
+      label: dest,
+    });
+    return;
+  }
+  const refs = rows.map((r) => ({ key: r.key, size: r.size || 0, isDir: !!r.isDir }));
   await downloadRefs(refs, dest);
 }
 
@@ -860,6 +917,71 @@ async function downloadRefs(entries, dest, bucketOverride) {
   } catch (err) {
     toast(`Download failed: ${err}`, 'error');
   }
+}
+
+// ====================== cross-source transfers ======================
+// The TransferCross matrix: any read side (S3, a remote source, local-pane
+// paths) into any write side (S3 bucket/prefix, remote dir, local folder).
+// S3→S3 keeps the synchronous CopySelection path (server-side copies); every
+// other combination goes through the background streaming job.
+
+// xferDestOf derives the destination of the current view, or null.
+function xferDestOf(loc) {
+  if (loc?.kind === 'objects') return { kind: 's3', bucket: loc.bucket, dir: loc.prefix || '' };
+  if (loc?.kind === 'remote') return { kind: 'remote', source: loc.source, dir: loc.path || '/' };
+  return null;
+}
+
+function xferDestLabel(dest) {
+  if (dest.kind === 's3') return `s3://${dest.bucket}/${dest.dir || ''}`;
+  if (dest.kind === 'remote') return `${dest.source}:${dest.dir}`;
+  return dest.dir;
+}
+
+// startTransfer runs one background TransferCross job; resolves false when
+// the user canceled the conflict dialog or the job failed to start.
+async function startTransfer({ items = [], localPaths = [], dest, move = false, label } = {}) {
+  const res = await conflictPolicy('transfer', label || xferDestLabel(dest));
+  if (!res) return false;
+  try {
+    await api.TransferCross(items, localPaths, dest, res.policy, res.maxBps, move);
+    toast(`${move ? 'Moving' : 'Copying'} ${items.length + localPaths.length} item(s)\u2026`);
+    showTransfersBadge();
+    return true;
+  } catch (err) {
+    toast(`Transfer failed: ${err}`, 'error');
+    return false;
+  }
+}
+
+// clipboardToXfer builds { items, localPaths } from the current clipboard.
+// Sizes are unknown at paste time (only keys are kept); the planner re-reads
+// them — size feeds just the progress totals.
+function clipboardToXfer() {
+  if (clipboard.kind === 'local') return { items: [], localPaths: clipboard.paths };
+  if (clipboard.kind === 'remote') {
+    return {
+      items: clipboard.keys.map((k) => ({ source: clipboard.source, key: k, isDir: k.endsWith('/') })),
+      localPaths: [],
+    };
+  }
+  return {
+    items: clipboard.keys.map((k) => ({ bucket: clipboard.bucket, key: k, isDir: k.endsWith('/') })),
+    localPaths: [],
+  };
+}
+
+// uploadToRemote pushes picked local files/folders into a remote source.
+async function uploadToRemote(paths, source, dir) {
+  await startTransfer({ localPaths: paths, dest: { kind: 'remote', source, dir }, label: `${source}:${dir}` });
+}
+
+// parentRemoteDir: the anchored parent of a remote path ("/a/b" → "/a",
+// "/b" → "/") — the origin dir recorded when tree nodes feed the clipboard.
+function parentRemoteDir(p) {
+  const t = (p || '/').replace(/\/+$/, '');
+  const i = t.lastIndexOf('/');
+  return i <= 0 ? '/' : t.slice(0, i + 1);
 }
 
 async function deleteSelection(bucketOverride, keysOverride) {
@@ -1096,20 +1218,39 @@ async function deleteBucket(bucket) {
 
 async function paste(prefixOverride, bucketOverride) {
   const loc = nav.current;
-  const bucket = bucketOverride || loc.bucket;
-  if (!bucket || (!bucketOverride && loc.kind !== 'objects') || !clipboard.keys.length) return;
-  const prefix = prefixOverride !== undefined ? prefixOverride : (loc.prefix || '');
+  if (!clipHasItems()) return;
+  let dest;
+  if (bucketOverride) dest = { kind: 's3', bucket: bucketOverride, dir: prefixOverride !== undefined ? prefixOverride : '' };
+  else if (prefixOverride !== undefined && loc?.kind === 'remote') dest = { kind: 'remote', source: loc.source, dir: prefixOverride };
+  else dest = xferDestOf(loc) || (localPane.visible && localPane.dir ? { kind: 'local', dir: localPane.dir } : null);
+  if (!dest) return;
+
+  // Same-dir paste is a no-op (would spam "(1)" renames).
+  const normP = (s) => (s || '').replace(/\/+$/, '');
+  const sameDir = (clipboard.kind === 's3' && dest.kind === 's3' && clipboard.bucket === dest.bucket && normP(clipboard.dir) === normP(dest.dir))
+    || (clipboard.kind === 'remote' && dest.kind === 'remote' && clipboard.source === dest.source && normP(clipboard.dir) === normP(dest.dir));
+  if (sameDir) { toast('Source and destination are the same'); return; }
+
   const move = clipboard.mode === 'cut';
-  try {
-    const res = await api.CopySelection(clipboard.bucket, clipboard.keys, bucket, prefix, move);
-    if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-    else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} item(s)`, 'ok');
-    if (move) clipboard.keys = [];
-    updateCommandState();
-    refreshCurrent();
-  } catch (err) {
-    toast(`Paste failed: ${err}`, 'error');
+  // S3 → S3 keeps the synchronous server-side copy path.
+  if (clipboard.kind !== 'local' && clipboard.kind !== 'remote' && dest.kind === 's3') {
+    const prefix = prefixOverride !== undefined ? prefixOverride : (loc?.prefix || '');
+    try {
+      const res = await api.CopySelection(clipboard.bucket, clipboard.keys, dest.bucket, prefix, move);
+      if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
+      else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} item(s)`, 'ok');
+      if (move) clipboard.keys = [];
+      updateCommandState();
+      refreshCurrent();
+    } catch (err) {
+      toast(`Paste failed: ${err}`, 'error');
+    }
+    return;
   }
+  const { items, localPaths } = clipboardToXfer();
+  const started = await startTransfer({ items, localPaths, dest, move });
+  if (started && move) { clipboard.keys = []; clipboard.paths = []; clipboard.mode = null; }
+  updateCommandState();
 }
 
 async function presign(row) {
@@ -1182,35 +1323,106 @@ function runDoctor(bucket) {
 function wireDrop() {
   onEvent('wails:file-drop', (data) => {
     const paths = data?.paths || [];
-    if (paths.length) uploadPaths(paths);
+    if (!paths.length) return;
+    const loc = nav.current;
+    if (loc?.kind === 'remote') { uploadToRemote(paths, loc.source, loc.path || '/'); return; }
+    uploadPaths(paths);
   });
 }
 
+// dropToTarget is the single drop dispatcher: target is
+// {kind:'s3',bucket,dir} | {kind:'remote',source,dir} (legacy {bucket,prefix}
+// call sites are normalized). Modifier rules: copy by default, Shift forces
+// move; within the same S3 bucket or the same remote source, move is the
+// default (Ctrl keeps a copy), matching Explorer.
 async function dropToTarget(target, data, e) {
-  if (data.paths?.length) { // dragged in from the local pane → upload
-    uploadPaths(data.paths, target.prefix);
+  const dest = target.kind ? target : { kind: 's3', bucket: target.bucket, dir: target.prefix || '' };
+  if (data.paths?.length) { // dragged from the local pane
+    if (dest.kind === 's3') { uploadPaths(data.paths, dest.dir, dest.bucket); return; }
+    if (dest.kind === 'remote') { await startTransfer({ localPaths: data.paths, dest, move: e.shiftKey }); return; }
+    return;
+  }
+  if (data.source) { // dragged from a remote source view
+    const items = (data.entries || []).map((en) => ({ source: data.source, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
+    if (!items.length) return;
+    const sameSource = dest.kind === 'remote' && dest.source === data.source;
+    if (sameSource && destDirOf(dest) === data.dir) return; // onto itself
+    const move = sameSource ? (!e.ctrlKey || e.shiftKey) : e.shiftKey;
+    await startTransfer({ items, dest, move });
     return;
   }
   const srcBucket = data.bucket;
   if (!srcBucket || !data.keys?.length) return;
-  const move = srcBucket === target.bucket
-    ? !e.ctrlKey || e.shiftKey   // same bucket: move (Shift forces)
-    : e.shiftKey;                // cross bucket: copy (Shift forces move)
-  try {
-    const res = await api.CopySelection(srcBucket, data.keys, target.bucket, target.prefix || '', move);
-    if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-    else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} object(s)`, 'ok');
-    refreshCurrent();
-  } catch (err) {
-    toast(`Drag & drop ${move ? 'move' : 'copy'} failed: ${err}`, 'error');
+  if (dest.kind === 's3') {
+    const move = srcBucket === dest.bucket
+      ? !e.ctrlKey || e.shiftKey   // same bucket: move (Shift forces)
+      : e.shiftKey;                // cross bucket: copy (Shift forces move)
+    try {
+      const res = await api.CopySelection(srcBucket, data.keys, dest.bucket, dest.dir || '', move);
+      if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
+      else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} object(s)`, 'ok');
+      refreshCurrent();
+    } catch (err) {
+      toast(`Drag & drop ${move ? 'move' : 'copy'} failed: ${err}`, 'error');
+    }
+    return;
   }
+  // S3 → remote/local streams through TransferCross.
+  const items = (data.entries || []).map((en) => ({ bucket: srcBucket, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
+  if (!items.length) return;
+  await startTransfer({ items, dest, move: e.shiftKey });
 }
 
-// Patch grid drag payload to include the source bucket.
+// destDirOf normalizes a destination dir for comparison.
+function destDirOf(dest) {
+  if (dest.kind === 'remote') return (dest.dir || '/').replace(/\/+$/, '') || '/';
+  if (dest.kind === 's3') return dest.dir || '';
+  return dest.dir;
+}
+
+// dropToLocal handles drops onto the local pane (folder rows and body): S3
+// origin keeps the DownloadRefs fast path, remote origin streams down.
+async function dropToLocal(payload, dir) {
+  if (!dir || payload.paths?.length) return; // local→local is Explorer's job
+  if (payload.source) {
+    const items = (payload.entries || []).map((en) => ({ source: payload.source, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
+    if (items.length) await startTransfer({ items, dest: { kind: 'local', dir }, label: dir });
+    return;
+  }
+  if (payload.entries?.length) downloadRefs(payload.entries, dir, payload.bucket);
+}
+
+// showLocalRowMenu: the local pane's per-row menu (open/copy/cut feed the
+// cross-source clipboard; local file management stays with Explorer).
+function showLocalRowMenu(e, rows) {
+  const sel = rows.length;
+  if (!sel) return;
+  openMenu(e, [
+    [rows.length === 1 && rows[0].isDir ? 'Open' : 'Open / Preview', 'Enter', () => localPane.grid.on.activate(rows[0])],
+    null,
+    ['Copy', 'Ctrl+C', () => copySelection()],
+    ['Cut', 'Ctrl+X', () => cutSelection()],
+    null,
+    ['Properties', 'Alt+Enter', () => {
+      const r = rows[0];
+      properties(`Properties — ${r.name}`, [
+        ['Type', r.isDir ? 'Folder' : 'File'],
+        ...(!r.isDir ? [['Size', fmtBytes(r.size || 0)]] : []),
+        ['Path', r.path],
+      ]);
+    }, sel !== 1],
+  ]);
+}
+
+// Patch grid drag payload to carry the origin (bucket or remote source + dir)
+// so drops build the right TransferCross items.
 const origDragPayload = grid.dragPayload.bind(grid);
 grid.dragPayload = () => {
   const loc = nav.current;
-  return { ...origDragPayload(), bucket: loc.kind === 'objects' ? loc.bucket : null };
+  const base = origDragPayload();
+  if (loc?.kind === 'objects') return { ...base, bucket: loc.bucket, dir: loc.prefix || '' };
+  if (loc?.kind === 'remote') return { ...base, source: loc.source, dir: loc.path || '/' };
+  return base;
 };
 
 // ============================ marquee ============================
@@ -1562,26 +1774,46 @@ function aboutDialog() {
 }
 
 // ============================ keyboard ============================
-// copySelection/cutSelection: shared by Ctrl+C/X and the Edit menu.
-function copySelection() {
-  const r = grid.selectedRows();
-  if (!r.length) return;
-  clipboard.mode = 'copy';
-  clipboard.bucket = nav.current?.bucket;
-  clipboard.keys = r.map((x) => x.key);
-  toast(`Copied ${r.length} item(s)`);
-  updateCommandState();
+// setClip records the current selection (main grid by location kind, else the
+// local pane's selection) as the clipboard payload.
+function setClip(mode) {
+  const loc = nav.current;
+  const rows = grid.selectedRows();
+  if (rows.length && (loc?.kind === 'objects' || loc?.kind === 'remote')) {
+    Object.assign(clipboard, {
+      mode,
+      kind: loc.kind === 'remote' ? 'remote' : 's3',
+      bucket: loc.kind === 'objects' ? loc.bucket : null,
+      source: loc.kind === 'remote' ? loc.source : null,
+      dir: loc.kind === 'remote' ? (loc.path || '/') : (loc.prefix || ''),
+      keys: rows.map((x) => x.key),
+      paths: [],
+    });
+    toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${rows.length} item(s)`);
+    updateCommandState();
+    return;
+  }
+  if (localPane.visible) {
+    const lrows = localPane.grid.selectedRows();
+    if (!lrows.length) return;
+    Object.assign(clipboard, {
+      mode,
+      kind: 'local',
+      bucket: null,
+      source: null,
+      dir: localPane.dir,
+      keys: [],
+      paths: lrows.map((x) => x.path),
+    });
+    toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${lrows.length} item(s)`);
+    updateCommandState();
+  }
 }
 
-function cutSelection() {
-  const r = grid.selectedRows();
-  if (!r.length) return;
-  clipboard.mode = 'cut';
-  clipboard.bucket = nav.current?.bucket;
-  clipboard.keys = r.map((x) => x.key);
-  toast(`Cut ${r.length} item(s)`);
-  updateCommandState();
-}
+// copySelection/cutSelection: shared by Ctrl+C/X and the Edit menu.
+function copySelection() { setClip('copy'); }
+
+function cutSelection() { setClip('cut'); }
 
 function wireKeys() {
   document.addEventListener('keydown', (e) => {
@@ -1625,8 +1857,13 @@ function wireEvents() {
     if (loc.kind === 'buckets' || data?.bucket === loc.bucket) refreshCurrent();
   });
   onEvent('transfer:update', (j) => {
-    if (j.status === 'running') showTransfersBadge();
-    else showTransfersBadge();
+    showTransfersBadge();
+    // Cross-source jobs mutate remote/local sides too (s3:changed only
+    // covers S3) — refresh the open views when one finishes.
+    if (j?.status && j.status !== 'running' && String(j.id || '').startsWith('transfer')) {
+      refreshCurrent();
+      if (localPane.visible) localPane.refresh();
+    }
   });
   onEvent('editor:saved', (d) => {
     toast(`Uploaded ${d?.key ? basename(d.key) : 'edited file'}`, 'ok');

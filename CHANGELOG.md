@@ -26,9 +26,21 @@ follow [Semantic Versioning](https://semver.org/).
   deleted only when every file under it verifiably transferred — a
   skipped file is not a success, so the source keeps it. New transfer
   package exports: `UploadReader` (streaming upload) and
-  `NewProgressReader` (progress + throttle wrapper for engine streams).
-  Frontend wiring lands next; the backend is exercised end-to-end by
-  hermetic tests over the local engine.
+  `NewProgressReader` (progress + throttle wrapper for engine streams),
+  exercised end-to-end by hermetic tests over the local engine.
+- Cross-source transfers (M10 GUI): the full matrix is wired into the
+  UI — the clipboard records its origin (S3 bucket, remote source or
+  local-pane paths) so Copy/Cut/Paste (Ctrl+C/X/V, Edit menu, row and
+  tree menus) work from and to any side; drag & drop carries the origin
+  in its payload, so rows drop onto S3 folders, remote folders (grid and
+  sidebar tree) and the local pane with Explorer modifier rules (copy by
+  default, Shift = move, same-source = move with Ctrl to keep a copy);
+  remote views gain Download (Ctrl+D), Upload (Ctrl+U, OS file drop,
+  empty-area and tree menus) and Paste; the local pane gains a row menu
+  (Open/Copy/Cut/Properties) and Paste in its empty-area menu; opening a
+  remote file downloads it. Jobs surface in the existing transfer
+  manager (⇄ icon) and the open views refresh when a job finishes. Two
+  stale "ships next" hints were made honest along the way.
 - Remote-native file operations (M9): the grid, empty-area and sidebar
   tree context menus on remote sources now offer New folder, Rename
   (F2) and count-then-act Delete (Del) — a new `remotefs.Walk` powers

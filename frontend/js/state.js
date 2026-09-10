@@ -61,11 +61,24 @@ export function parentOf(loc) {
   return { kind: 'objects', bucket: loc.bucket, prefix: i >= 0 ? p.slice(0, i + 1) : '' };
 }
 
+// Clipboard for the cross-source matrix. kind records the ORIGIN so paste
+// can build the right TransferCross payload: 's3' (default-profile bucket),
+// 'remote' (a named remote source) or 'local' (local-pane paths). dir is the
+// origin directory (same-dir paste is a no-op and gets refused).
 export const clipboard = {
   mode: null,      // 'copy' | 'cut'
-  bucket: null,
-  keys: [],        // selected entry keys (folders end with '/')
+  kind: null,      // 's3' | 'remote' | 'local'
+  bucket: null,    // s3 origin
+  source: null,    // remote origin (source name)
+  dir: null,       // origin prefix/path/dir
+  keys: [],        // s3/remote: selected entry keys (folders end with '/')
+  paths: [],       // local origin: absolute paths
 };
+
+// clipHasItems: whether any origin's payload is present.
+export function clipHasItems() {
+  return clipboard.keys.length > 0 || clipboard.paths.length > 0;
+}
 
 export const view = {
   sortKey: 'name',

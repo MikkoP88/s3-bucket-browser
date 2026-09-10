@@ -268,10 +268,8 @@ export class Tree {
     row.dataset.bucket = n.bucket;
     row.dataset.prefix = n.prefix;
 
-    // S3 nodes keep their drop target + context menu (internal copy/move
-    // and the bucket/folder menus are S3 operations); remote directory
-    // nodes get the engine-native ops (drop targets land with the
-    // cross-source transfer matrix).
+    // S3 nodes and remote directory nodes are both drop targets and carry
+    // full context menus (the cross-source matrix treats them uniformly).
     if (n.bucket !== undefined) {
       row.addEventListener('dragover', (e) => {
         if (!e.dataTransfer.types.includes('application/x-s3b')) return;
@@ -284,7 +282,7 @@ export class Tree {
         const data = e.dataTransfer.getData('application/x-s3b');
         if (!data) return;
         e.preventDefault();
-        this.onDropTo({ bucket: n.bucket, prefix: n.prefix }, JSON.parse(data), e);
+        this.onDropTo({ kind: 's3', bucket: n.bucket, dir: n.prefix }, JSON.parse(data), e);
       });
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -292,6 +290,19 @@ export class Tree {
         this.onContext?.(e, n);
       });
     } else if (n.kind === 'rdir') {
+      row.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer.types.includes('application/x-s3b')) return;
+        e.preventDefault();
+        row.classList.add('drop-target');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+      row.addEventListener('drop', (e) => {
+        row.classList.remove('drop-target');
+        const data = e.dataTransfer.getData('application/x-s3b');
+        if (!data) return;
+        e.preventDefault();
+        this.onDropTo({ kind: 'remote', source: n.source, dir: n.path }, JSON.parse(data), e);
+      });
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();

@@ -2,7 +2,7 @@
 // currently available and greys out the toolbar buttons accordingly.
 // main.js injects the live sources (grid selection, profile presence) via
 // setCommandContext; nav/clipboard come from state.js directly.
-import { nav, parentOf, clipboard } from './state.js';
+import { nav, parentOf, clipboard, clipHasItems } from './state.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -10,6 +10,8 @@ const $ = (id) => document.getElementById(id);
 let ctx = {
   selectionCount: () => 0,
   hasProfile: () => false,
+  localSelectionCount: () => 0,
+  localPaneOpen: () => false,
 };
 
 export function setCommandContext(sources) {
@@ -24,22 +26,23 @@ export function commandState() {
   const inRemote = loc?.kind === 'remote'; // remote-native ops need no S3 profile
   const hasProfile = ctx.hasProfile();
   const sel = ctx.selectionCount();
-  const hasClipboard = clipboard.keys.length > 0;
+  const localSel = ctx.localSelectionCount();
+  const hasClipboard = clipHasItems();
 
   return {
     hasProfile,
     canBack: nav.canBack(),
     canForward: nav.canForward(),
     canUp: (inObjects || inRemote) && !!parentOf(loc),
-    canUpload: inObjects && hasProfile,
-    canDownload: inObjects && hasProfile && sel >= 1,
+    canUpload: (inObjects && hasProfile) || inRemote,
+    canDownload: ((inObjects && hasProfile) || inRemote) && sel >= 1,
     canNewFolder: (inObjects && hasProfile) || inRemote,
     canCreateBucket: inBuckets && hasProfile,
     canDelete: ((inObjects && hasProfile) || inRemote) && sel >= 1,
     canRename: ((inObjects && hasProfile) || inRemote) && sel === 1,
-    canCopy: inObjects && hasProfile && sel >= 1,
-    canCut: inObjects && hasProfile && sel >= 1,
-    canPaste: inObjects && hasProfile && hasClipboard,
+    canCopy: (((inObjects && hasProfile) || inRemote) && sel >= 1) || localSel >= 1,
+    canCut: (((inObjects && hasProfile) || inRemote) && sel >= 1) || localSel >= 1,
+    canPaste: hasClipboard && ((inObjects && hasProfile) || inRemote || ctx.localPaneOpen()),
     hasSelection: sel >= 1,
     selectionCount: sel,
     canFind: hasProfile,

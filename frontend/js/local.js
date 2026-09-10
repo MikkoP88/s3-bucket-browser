@@ -67,8 +67,8 @@ export class LocalPane {
     body.addEventListener('mousedown', (e) => {
       if (e.target === body || e.target === this.grid.canvas) this.grid.clearSelection();
     });
-    // empty-area right-click (rows keep the grid's row menu off — the local
-    // pane has no per-row menu yet; main wires contextEmpty)
+    // empty-area right-click (per-row menus are wired by main through
+    // grid.on.context; main wires contextEmpty here)
     body.addEventListener('contextmenu', (e) => {
       if (e.target.closest('.grid-row')) return;
       e.preventDefault();
