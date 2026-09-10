@@ -171,6 +171,7 @@ jobs:
     needs: [linux, windows, darwin, sbom]
     runs-on: ubuntu-latest
     steps:
+      # No checkout needed — gh only requires an explicit --repo without one.
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -184,4 +185,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          gh release create "$TAG" dist/* --title "s3b $TAG" --generate-notes
+          gh release create "$TAG" dist/* --repo "${GITHUB_REPOSITORY}" \
+            --title "s3b $TAG" --generate-notes
