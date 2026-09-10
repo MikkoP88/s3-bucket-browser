@@ -31,6 +31,13 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # release.yml only runs on tags — lint every workflow here so a bad
+      # edit can't wait silently for the next release to explode.
+      - name: Workflow lint (actionlint)
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+          actionlint
+
       # docs/cli.md is generated (tools/gendocs); fail when it no longer
       # matches the command tree so help-text drift can't ship silently.
       - name: Docs freshness
