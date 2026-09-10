@@ -34,6 +34,14 @@ follow [Semantic Versioning](https://semver.org/).
   hidden; the interval shows in the status bar and persists. The menu
   bar gained one-level submenus and checkmark items to support this.
 
+### Changed
+
+- One Upload command: the separate "Upload folder" toolbar button is gone.
+  A single "Upload ▾" button opens a small menu (Files / Folder); Ctrl+U
+  still opens the file picker directly, and File ▸ Upload files/folder
+  mirror both pickers. The backend walks directories either way, and
+  drag & drop was never affected.
+
 ### Fixed
 
 - Windows: launching the GUI no longer opens an empty console window behind

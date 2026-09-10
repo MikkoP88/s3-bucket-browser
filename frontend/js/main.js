@@ -281,7 +281,7 @@ async function loadObjectsStream(loc) {
       grid.apply(); // canonical folders-first ordering + active sort/filter
       if (!currentEntries.length && !view.filter) {
         showEmpty(t('emptyFolder'), t('dropToUpload'), [
-          el('button', { class: 'btn primary', text: '\u2191 Upload files', onclick: uploadFiles }),
+          el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: showUploadMenu }),
         ]);
       }
       consumePendingSelect();
@@ -485,6 +485,26 @@ async function uploadFiles() {
 async function uploadFolder() {
   const dir = await api.PickFolder('Choose a folder to upload');
   if (dir) uploadPaths([dir]);
+}
+
+// showUploadMenu is the single Upload command: a small menu under the button
+// offering the native file picker (Ctrl+U) and the folder picker. The backend
+// walks directories either way; drag & drop needs no picker at all.
+function showUploadMenu(e) {
+  const menu = $('ctxmenu');
+  const items = [
+    ['Files\u2026', 'Ctrl+U', uploadFiles],
+    ['Folder\u2026', '', uploadFolder],
+  ];
+  menu.replaceChildren(...items.map(([label, kbd, fn]) => el('div', {
+    class: 'item', onclick: () => { hideContextMenu(); fn(); },
+  }, el('span', { text: label }), kbd ? el('span', { class: 'kbd', text: kbd }) : null)));
+  menu.classList.remove('hidden');
+  const r = e.currentTarget?.getBoundingClientRect?.();
+  const x = r ? r.left : e.clientX;
+  const y = r ? r.bottom + 4 : e.clientY;
+  menu.style.left = `${Math.min(x, innerWidth - 220)}px`;
+  menu.style.top = `${Math.min(y, innerHeight - menu.offsetHeight - 10)}px`;
 }
 
 async function downloadSelection(overrideRows) {
@@ -830,8 +850,7 @@ function wireToolbar() {
   $('btn-forward').onclick = () => { if (nav.canForward()) nav.forwardGo(); };
   $('btn-up').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
   $('btn-refresh').onclick = refreshCurrent;
-  $('btn-upload').onclick = uploadFiles;
-  $('btn-upload-dir').onclick = uploadFolder;
+  $('btn-upload').onclick = showUploadMenu;
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = togglePanes;
   $('btn-find').onclick = findFromHere;
@@ -913,6 +932,9 @@ function mountMenubar() {
     {
       label: t('menu.file'),
       items: [
+        { label: t('menu.uploadFiles'), kbd: 'Ctrl+U', action: uploadFiles, enabled: () => st().canUpload },
+        { label: t('menu.uploadFolder'), action: uploadFolder, enabled: () => st().canUpload },
+        null,
         { label: t('menu.importAws'), action: importAws },
         null,
         { label: t('menu.exit'), action: () => api.ExitApp() },

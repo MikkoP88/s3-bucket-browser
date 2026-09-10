@@ -52,7 +52,6 @@ const BUTTONS = {
   'btn-forward': 'canForward',
   'btn-up': 'canUp',
   'btn-upload': 'canUpload',
-  'btn-upload-dir': 'canUpload',
   'btn-download': 'canDownload',
   'btn-newfolder': 'canNewFolder',
   'btn-find': 'canFind',
