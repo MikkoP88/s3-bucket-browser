@@ -290,6 +290,26 @@ func (a *App) RunDoctor(bucket string) (*doctor.Report, error) {
 	return doctor.Run(a.ctx, c, bucket, c.Profile.Insecure), nil
 }
 
+// DoctorChecks returns the available doctor check names in execution order,
+// so the GUI can render the per-check list before running anything.
+func (a *App) DoctorChecks() []string {
+	return doctor.CheckNames()
+}
+
+// RunDoctorCheck runs a single doctor check by name for a bucket and returns
+// the result (same shape as each entry of a full Report).
+func (a *App) RunDoctorCheck(bucket, name string) (*doctor.CheckResult, error) {
+	c, err := a.client("")
+	if err != nil {
+		return nil, err
+	}
+	res, err := doctor.RunCheck(a.ctx, c, bucket, name, c.Profile.Insecure)
+	if err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
 // ListVersions reports whether a bucket has versioning enabled (used by the
 // object grid's version badge; full version browsing is M4).
 func (a *App) BucketVersioning(bucket string) (string, error) {

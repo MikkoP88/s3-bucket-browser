@@ -39,13 +39,15 @@ const (
 // CheckResult is one diagnostic result (JSON-friendly, mirroring the
 // s3-bucket-tester report contract).
 type CheckResult struct {
-	Check    string          `json:"check"`
-	Status   Status          `json:"status"`
-	Duration int64           `json:"durationMs"`
-	Detail   string          `json:"detail,omitempty"`
-	Error    string          `json:"error,omitempty"`
-	Advice   *errhelp.Advice `json:"advice,omitempty"`
-	Info     json.RawMessage `json:"info,omitempty"`
+	Check      string          `json:"check"`
+	Status     Status          `json:"status"`
+	Duration   int64           `json:"durationMs"`
+	StartedAt  time.Time       `json:"started_at"`
+	FinishedAt time.Time       `json:"finished_at"`
+	Detail     string          `json:"detail,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Advice     *errhelp.Advice `json:"advice,omitempty"`
+	Info       json.RawMessage `json:"info,omitempty"`
 }
 
 // Report is the full doctor output.
@@ -92,29 +94,31 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 		port = provider.Port(c.Endpoint)
 	}
 
-	r.Checks = append(r.Checks, checkDNS(host))
+	r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkDNS(host) }))
 	if last(r.Checks).Status == StatusFail && net.ParseIP(host) == nil {
 		// DNS failed for a hostname: TCP/TLS cannot succeed either.
 		r.Checks = append(r.Checks,
-			skip("TCP Connectivity Check", "DNS resolution failed"),
-			skip("TLS Certificate Check", "DNS resolution failed"))
+			timedCheck(func() CheckResult { return skip("TCP Connectivity Check", "DNS resolution failed") }),
+			timedCheck(func() CheckResult { return skip("TLS Certificate Check", "DNS resolution failed") }))
 	} else {
-		r.Checks = append(r.Checks, checkTCP(host, port))
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkTCP(host, port) }))
 		if provider.InsecureEndpoint(c.Endpoint) {
-			r.Checks = append(r.Checks, skip("TLS Certificate Check", "endpoint uses plain HTTP"))
+			r.Checks = append(r.Checks, timedCheck(func() CheckResult { return skip("TLS Certificate Check", "endpoint uses plain HTTP") }))
 		} else {
-			r.Checks = append(r.Checks, checkTLS(host, port, insecureTLS))
+			r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkTLS(host, port, insecureTLS) }))
 		}
 	}
 
 	if bucket != "" {
-		r.Checks = append(r.Checks, checkAuth(ctx, c, bucket))
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkAuth(ctx, c, bucket) }))
 		if last(r.Checks).Status != StatusFail {
-			r.Checks = append(r.Checks, checkPolicyAndACL(ctx, c, bucket)...)
+			r.Checks = append(r.Checks,
+				timedCheck(func() CheckResult { return checkPolicy(ctx, c, bucket) }),
+				timedCheck(func() CheckResult { return checkACL(ctx, c, bucket) }))
 		} else {
 			r.Checks = append(r.Checks,
-				skip("Bucket Policy Check", "authentication failed"),
-				skip("Bucket ACL Check", "authentication failed"))
+				timedCheck(func() CheckResult { return skip("Bucket Policy Check", "authentication failed") }),
+				timedCheck(func() CheckResult { return skip("Bucket ACL Check", "authentication failed") }))
 		}
 	}
 
@@ -134,6 +138,15 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 }
 
 func last(checks []CheckResult) CheckResult { return checks[len(checks)-1] }
+
+func timedCheck(fn func() CheckResult) CheckResult {
+	started := time.Now()
+	res := fn()
+	res.StartedAt = started
+	res.FinishedAt = time.Now()
+	res.Duration = res.FinishedAt.Sub(res.StartedAt).Milliseconds()
+	return res
+}
 
 func skip(name, reason string) CheckResult {
 	return CheckResult{Check: name, Status: StatusSkip, Detail: reason}
@@ -274,78 +287,139 @@ func checkAuth(ctx context.Context, c *s3client.Client, bucket string) CheckResu
 	return res
 }
 
-func checkPolicyAndACL(ctx context.Context, c *s3client.Client, bucket string) []CheckResult {
-	var out []CheckResult
-
-	// Policy check.
+func checkPolicy(ctx context.Context, c *s3client.Client, bucket string) CheckResult {
 	start := time.Now()
 	pres := CheckResult{Check: "Bucket Policy Check", Status: StatusPass}
 	if !provider.SupportsPolicy(c.ProviderKey) {
 		pres.Status = StatusSkip
 		pres.Detail = fmt.Sprintf("%s policy support: %s", c.ProviderCaps.Name, c.ProviderCaps.PolicySupport)
 		pres.Duration = ms(time.Since(start))
-	} else {
-		pout, err := c.S3.GetBucketPolicy(ctx, &s3.GetBucketPolicyInput{Bucket: aws.String(bucket)})
-		switch {
-		case err == nil && pout.Policy != nil:
-			doc, perr := policy.ParsePolicy([]byte(*pout.Policy))
-			if perr != nil {
-				pres.Status = StatusWarn
-				pres.Error = perr.Error()
-			} else {
-				summary := policy.Analyze(doc)
-				info, _ := json.Marshal(summary)
-				pres.Info = info
-				pres.Detail = fmt.Sprintf("%d statement(s)", summary.StatementCount)
-				if summary.HasPublicRead || summary.HasPublicWrite {
-					pres.Status = StatusWarn
-					pres.Detail += "; " + strings.Join(summary.Warnings, "; ")
-				}
-			}
-		case isNoSuchPolicyError(err):
-			pres.Detail = "no bucket policy set"
-		default:
-			pres.Status = StatusWarn
-			pres.Error = "could not read policy: " + err.Error()
-			pres.Advice = errhelp.ForError(err)
-		}
-		pres.Duration = ms(time.Since(start))
+		return pres
 	}
-	out = append(out, pres)
+	pout, err := c.S3.GetBucketPolicy(ctx, &s3.GetBucketPolicyInput{Bucket: aws.String(bucket)})
+	switch {
+	case err == nil && pout.Policy != nil:
+		doc, perr := policy.ParsePolicy([]byte(*pout.Policy))
+		if perr != nil {
+			pres.Status = StatusWarn
+			pres.Error = perr.Error()
+		} else {
+			summary := policy.Analyze(doc)
+			info, _ := json.Marshal(summary)
+			pres.Info = info
+			pres.Detail = fmt.Sprintf("%d statement(s)", summary.StatementCount)
+			if summary.HasPublicRead || summary.HasPublicWrite {
+				pres.Status = StatusWarn
+				pres.Detail += "; " + strings.Join(summary.Warnings, "; ")
+			}
+		}
+	case isNoSuchPolicyError(err):
+		pres.Detail = "no bucket policy set"
+	default:
+		pres.Status = StatusWarn
+		pres.Error = "could not read policy: " + err.Error()
+		pres.Advice = errhelp.ForError(err)
+	}
+	pres.Duration = ms(time.Since(start))
+	return pres
+}
 
-	// ACL check.
-	start = time.Now()
+func checkACL(ctx context.Context, c *s3client.Client, bucket string) CheckResult {
+	start := time.Now()
 	ares := CheckResult{Check: "Bucket ACL Check", Status: StatusPass}
 	if !provider.SupportsACL(c.ProviderKey) {
 		ares.Status = StatusSkip
 		ares.Detail = fmt.Sprintf("%s ACL support: %s", c.ProviderCaps.Name, c.ProviderCaps.ACLSupport)
+		ares.Duration = ms(time.Since(start))
+		return ares
+	}
+	aout, err := c.S3.GetBucketAcl(ctx, &s3.GetBucketAclInput{Bucket: aws.String(bucket)})
+	if err != nil {
+		ares.Status = StatusWarn
+		ares.Error = "could not read ACL: " + err.Error()
+		ares.Advice = errhelp.ForError(err)
 	} else {
-		aout, err := c.S3.GetBucketAcl(ctx, &s3.GetBucketAclInput{Bucket: aws.String(bucket)})
-		if err != nil {
+		owner := s3types.Owner{}
+		if aout.Owner != nil {
+			owner = *aout.Owner
+		}
+		summary := policy.AnalyzeACL(owner, aout.Grants)
+		info, _ := json.Marshal(summary)
+		ares.Info = info
+		ares.Detail = fmt.Sprintf("%d grant(s)", len(aout.Grants))
+		if summary.PublicRead || summary.AuthenticatedRead {
 			ares.Status = StatusWarn
-			ares.Error = "could not read ACL: " + err.Error()
-			ares.Advice = errhelp.ForError(err)
-		} else {
-			owner := s3types.Owner{}
-			if aout.Owner != nil {
-				owner = *aout.Owner
-			}
-			summary := policy.AnalyzeACL(owner, aout.Grants)
-			info, _ := json.Marshal(summary)
-			ares.Info = info
-			ares.Detail = fmt.Sprintf("%d grant(s)", len(aout.Grants))
-			if summary.PublicRead || summary.AuthenticatedRead {
-				ares.Status = StatusWarn
-				ares.Detail += "; " + strings.Join(summary.Warnings, "; ")
-			}
-			if c.ProviderKey == "minio" {
-				ares.Detail += " (MinIO ACLs are synthetic compatibility data)"
-			}
+			ares.Detail += "; " + strings.Join(summary.Warnings, "; ")
+		}
+		if c.ProviderKey == "minio" {
+			ares.Detail += " (MinIO ACLs are synthetic compatibility data)"
 		}
 	}
 	ares.Duration = ms(time.Since(start))
-	out = append(out, ares)
-	return out
+	return ares
+}
+
+// CheckNames returns the full list of check names in execution order (stable).
+// The GUI uses this to render the available checks before running them.
+func CheckNames() []string {
+	return []string{
+		"DNS Resolution Check",
+		"TCP Connectivity Check",
+		"TLS Certificate Check",
+		"Bucket Authentication Check",
+		"Bucket Policy Check",
+		"Bucket ACL Check",
+	}
+}
+
+// RunCheck runs a single doctor check by name for the given bucket.
+// Returns an error if the check name is unknown.
+func RunCheck(ctx context.Context, c *s3client.Client, bucket, name string, insecureTLS bool) (CheckResult, error) {
+	// Validate name before any client dereference.
+	if !knownCheck(name) {
+		return CheckResult{}, fmt.Errorf("unknown check: %s", name)
+	}
+	if c == nil {
+		return CheckResult{}, fmt.Errorf("client is nil")
+	}
+
+	host := "s3." + c.Region + ".amazonaws.com"
+	port := 443
+	if c.Endpoint != "" {
+		host = provider.Hostname(c.Endpoint)
+		port = provider.Port(c.Endpoint)
+	}
+
+	switch name {
+	case "DNS Resolution Check":
+		return timedCheck(func() CheckResult { return checkDNS(host) }), nil
+	case "TCP Connectivity Check":
+		return timedCheck(func() CheckResult { return checkTCP(host, port) }), nil
+	case "TLS Certificate Check":
+		if provider.InsecureEndpoint(c.Endpoint) {
+			return timedCheck(func() CheckResult { return skip("TLS Certificate Check", "endpoint uses plain HTTP") }), nil
+		}
+		return timedCheck(func() CheckResult { return checkTLS(host, port, insecureTLS) }), nil
+	case "Bucket Authentication Check":
+		return timedCheck(func() CheckResult { return checkAuth(ctx, c, bucket) }), nil
+	case "Bucket Policy Check":
+		return timedCheck(func() CheckResult { return checkPolicy(ctx, c, bucket) }), nil
+	case "Bucket ACL Check":
+		return timedCheck(func() CheckResult { return checkACL(ctx, c, bucket) }), nil
+	default:
+		// Unreachable (name was validated above), but satisfy the compiler.
+		return CheckResult{}, fmt.Errorf("unknown check: %s", name)
+	}
+}
+
+// knownCheck reports whether name is a check RunCheck can run.
+func knownCheck(name string) bool {
+	for _, n := range CheckNames() {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // isNoSuchPolicyError matches the NoSuchBucketPolicy response.
