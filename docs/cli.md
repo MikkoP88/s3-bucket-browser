@@ -75,14 +75,19 @@ described here. The same engine backs both.
 - [s3b mv](#s3b-mv) — Move files (copy, then delete sources on success)
 - [s3b presign](#s3b-presign) — Generate a pre-signed GET URL for an object
 - [s3b profile](#s3b-profile) — Manage connection profiles
-  - [s3b profile add](#s3b-profile-add) — Add or update a profile
   - [s3b profile list](#s3b-profile-list) — List profiles (secrets masked)
-  - [s3b profile remove](#s3b-profile-remove) — Remove a profile
   - [s3b profile test](#s3b-profile-test) — Test connectivity for a profile (lightweight doctor)
-  - [s3b profile use](#s3b-profile-use) — Set the default profile
 - [s3b rb](#s3b-rb) — Remove a bucket (must be empty, or pass --force)
 - [s3b rm](#s3b-rm) — Delete objects (prefix delete needs --recursive; large batches need --force)
 - [s3b sc](#s3b-sc) — Convert objects to another storage class (server-side copy)
+- [s3b source](#s3b-source) — Manage data sources (any connection type)
+  - [s3b source add](#s3b-source-add) — Add or update a data source
+  - [s3b source export](#s3b-source-export) — Export all sources into an encrypted profile file (*.s3bprofile)
+  - [s3b source import](#s3b-source-import) — Import sources from an encrypted profile file
+  - [s3b source list](#s3b-source-list) — List data sources (secrets masked)
+  - [s3b source remove](#s3b-source-remove) — Remove a data source
+  - [s3b source test](#s3b-source-test) — Test connectivity for a source
+  - [s3b source use](#s3b-source-use) — Set the default source
 - [s3b stat](#s3b-stat) — Show bucket or object metadata
 - [s3b sync](#s3b-sync) — Sync a local folder with an S3 prefix (either direction)
 - [s3b tree](#s3b-tree) — Show a bucket subtree as an ASCII tree
@@ -144,6 +149,7 @@ Documentation: https://github.com/MikkoP88/s3-bucket-browser
 * [s3b rb](#s3b-rb)
 * [s3b rm](#s3b-rm)
 * [s3b sc](#s3b-sc)
+* [s3b source](#s3b-source)
 * [s3b stat](#s3b-stat)
 * [s3b sync](#s3b-sync)
 * [s3b tree](#s3b-tree)
@@ -1957,50 +1963,8 @@ Manage connection profiles
 ### SEE ALSO
 
 * [s3b](#s3b)
-* [s3b profile add](#s3b-profile-add)
 * [s3b profile list](#s3b-profile-list)
-* [s3b profile remove](#s3b-profile-remove)
 * [s3b profile test](#s3b-profile-test)
-* [s3b profile use](#s3b-profile-use)
-
-## s3b profile add
-
-Add or update a profile
-
-```
-s3b profile add NAME [flags]
-```
-
-### Options
-
-```
-      --access-key string      access key ID ($S3B_ACCESS_KEY)
-      --default                make this the default profile
-      --endpoint string        endpoint URL (empty = AWS)
-      --insecure               skip TLS verification (labs only)
-      --path-style             path-style addressing
-      --region string          region (default us-east-1)
-      --secret-key string      secret access key ($S3B_SECRET_KEY)
-      --session-token string   STS session token
-      --virtual-hosted         virtual-hosted addressing
-
-```
-
-### Options inherited from parent commands
-
-```
-      --endpoint-url string   override the profile endpoint URL
-      --json                  machine-readable JSON output
-      --no-color              disable colors (also honors $NO_COLOR)
-      --profile string        profile name (default: $S3B_PROFILE, then the default profile)
-      --timeout duration      per-request timeout (default 5m0s)
-      --verbose               verbose output
-
-```
-
-### SEE ALSO
-
-* [s3b profile](#s3b-profile)
 
 ## s3b profile list
 
@@ -2032,72 +1996,12 @@ s3b profile list
 
 * [s3b profile](#s3b-profile)
 
-## s3b profile remove
-
-Remove a profile
-
-```
-s3b profile remove NAME
-```
-
-### Options inherited from parent commands
-
-```
-      --access-key string      access key override ($S3B_ACCESS_KEY)
-      --endpoint-url string    override the profile endpoint URL
-      --json                   machine-readable JSON output
-      --no-color               disable colors (also honors $NO_COLOR)
-      --path-style             force path-style addressing
-      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
-      --region string          override the region
-      --secret-key string      secret key override ($S3B_SECRET_KEY)
-      --session-token string   session token override
-      --timeout duration       per-request timeout (default 5m0s)
-      --verbose                verbose output
-      --virtual-hosted         force virtual-hosted addressing
-
-```
-
-### SEE ALSO
-
-* [s3b profile](#s3b-profile)
-
 ## s3b profile test
 
 Test connectivity for a profile (lightweight doctor)
 
 ```
 s3b profile test [NAME]
-```
-
-### Options inherited from parent commands
-
-```
-      --access-key string      access key override ($S3B_ACCESS_KEY)
-      --endpoint-url string    override the profile endpoint URL
-      --json                   machine-readable JSON output
-      --no-color               disable colors (also honors $NO_COLOR)
-      --path-style             force path-style addressing
-      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
-      --region string          override the region
-      --secret-key string      secret key override ($S3B_SECRET_KEY)
-      --session-token string   session token override
-      --timeout duration       per-request timeout (default 5m0s)
-      --verbose                verbose output
-      --virtual-hosted         force virtual-hosted addressing
-
-```
-
-### SEE ALSO
-
-* [s3b profile](#s3b-profile)
-
-## s3b profile use
-
-Set the default profile
-
-```
-s3b profile use NAME
 ```
 
 ### Options inherited from parent commands
@@ -2242,6 +2146,295 @@ s3b sc s3://bucket[/key] CLASS [flags]
 ### SEE ALSO
 
 * [s3b](#s3b)
+
+## s3b source
+
+Manage data sources (any connection type)
+
+### Synopsis
+
+s3b source manages data sources: S3 endpoints today, with
+sftp/scp/ftp/ftps/local schemas already fixed for the upcoming
+remote-filesystem engines. Sources of type s3 are mirrored as
+legacy profiles, so --profile keeps resolving them by name.
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b](#s3b)
+* [s3b source add](#s3b-source-add)
+* [s3b source export](#s3b-source-export)
+* [s3b source import](#s3b-source-import)
+* [s3b source list](#s3b-source-list)
+* [s3b source remove](#s3b-source-remove)
+* [s3b source test](#s3b-source-test)
+* [s3b source use](#s3b-source-use)
+
+## s3b source add
+
+Add or update a data source
+
+### Synopsis
+
+Add or update a data source of any type:
+  s3    --endpoint --region --access-key --secret-key --session-token
+        --path-style/--virtual-hosted --insecure
+  sftp/scp/ftp/ftps  --host --port --username --password --root
+        (engines ship next; the connection is saved as configured)
+  local --root PATH
+
+```
+s3b source add NAME --type TYPE [flags]
+```
+
+### Options
+
+```
+      --access-key string      access key ID ($S3B_ACCESS_KEY)
+      --default                make this the default source (s3)
+      --endpoint string        endpoint URL (empty = AWS)
+      --host string            remote host (sftp/scp/ftp/ftps)
+      --insecure               skip TLS verification (labs only)
+      --password string        remote password ($S3B_PASSWORD)
+      --path-style             path-style addressing (s3)
+      --port int               port (0 = per-type default at dial time)
+      --region string          region (default us-east-1)
+      --root string            starting directory (remote) or directory root (local)
+      --secret-key string      secret access key ($S3B_SECRET_KEY)
+      --session-token string   STS session token
+      --type string            source type: s3, sftp, scp, ftp, ftps, local (default "s3")
+      --username string        remote username
+      --virtual-hosted         virtual-hosted addressing (s3)
+
+```
+
+### Options inherited from parent commands
+
+```
+      --endpoint-url string   override the profile endpoint URL
+      --json                  machine-readable JSON output
+      --no-color              disable colors (also honors $NO_COLOR)
+      --profile string        profile name (default: $S3B_PROFILE, then the default profile)
+      --timeout duration      per-request timeout (default 5m0s)
+      --verbose               verbose output
+
+```
+
+### SEE ALSO
+
+* [s3b source](#s3b-source)
+
+## s3b source export
+
+Export all sources into an encrypted profile file (*.s3bprofile)
+
+```
+s3b source export FILE [flags]
+```
+
+### Options
+
+```
+      --name string       container display name (default: file base name)
+      --password string   encryption password ($S3B_PASSWORD, else prompted)
+
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b source](#s3b-source)
+
+## s3b source import
+
+Import sources from an encrypted profile file
+
+```
+s3b source import FILE [flags]
+```
+
+### Options
+
+```
+      --password string   container password ($S3B_PASSWORD, else prompted)
+
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b source](#s3b-source)
+
+## s3b source list
+
+List data sources (secrets masked)
+
+```
+s3b source list
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b source](#s3b-source)
+
+## s3b source remove
+
+Remove a data source
+
+```
+s3b source remove NAME|ID
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b source](#s3b-source)
+
+## s3b source test
+
+Test connectivity for a source
+
+```
+s3b source test [NAME|ID]
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b source](#s3b-source)
+
+## s3b source use
+
+Set the default source
+
+```
+s3b source use NAME
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b source](#s3b-source)
 
 ## s3b stat
 

@@ -27,9 +27,10 @@ func profileAddCmd() *cobra.Command {
 		pathStyle, virtualHosted, insecure, makeDefault      bool
 	)
 	cmd := &cobra.Command{
-		Use:   "add NAME",
-		Short: "Add or update a profile",
-		Args:  cobra.ExactArgs(1),
+		Use:        "add NAME",
+		Short:      "Add or update a profile",
+		Deprecated: "use 's3b source add NAME' instead (any connection type)",
+		Args:       cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := store()
 			if err != nil {
@@ -59,15 +60,13 @@ func profileAddCmd() *cobra.Command {
 					p.PathStyle = true
 				}
 			}
-			if err := s.Upsert(p); err != nil {
+			if err := s.UpsertS3Profile(p); err != nil {
 				return usageErr("%v", err)
 			}
-			if makeDefault {
-				if err := s.SetDefault(name); err != nil {
+			if makeDefault || len(s.Profiles) == 1 {
+				if err := s.SetDefaultS3(name); err != nil {
 					return usageErr("%v", err)
 				}
-			} else if len(s.Profiles) == 1 {
-				s.Profiles[0].Default = true
 			}
 			if err := s.Save(); err != nil {
 				return opErr(err)
@@ -143,15 +142,16 @@ func profileListCmd() *cobra.Command {
 
 func profileUseCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "use NAME",
-		Short: "Set the default profile",
-		Args:  cobra.ExactArgs(1),
+		Use:        "use NAME",
+		Short:      "Set the default profile",
+		Deprecated: "use 's3b source use NAME' instead",
+		Args:       cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := store()
 			if err != nil {
 				return err
 			}
-			if err := s.SetDefault(args[0]); err != nil {
+			if err := s.SetDefaultS3(args[0]); err != nil {
 				return usageErr("%v", err)
 			}
 			if err := s.Save(); err != nil {
@@ -167,15 +167,16 @@ func profileUseCmd() *cobra.Command {
 
 func profileRemoveCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "remove NAME",
-		Short: "Remove a profile",
-		Args:  cobra.ExactArgs(1),
+		Use:        "remove NAME",
+		Short:      "Remove a profile",
+		Deprecated: "use 's3b source remove NAME' instead",
+		Args:       cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := store()
 			if err != nil {
 				return err
 			}
-			if err := s.Remove(args[0]); err != nil {
+			if err := s.RemoveS3Profile(args[0]); err != nil {
 				return usageErr("%v", err)
 			}
 			if err := s.Save(); err != nil {

@@ -113,6 +113,7 @@ func NewRoot() *cobra.Command {
 	pf.DurationVar(&flagTimeout, "timeout", 5*time.Minute, "per-request timeout")
 
 	root.AddCommand(
+		sourceCmd(),
 		profileCmd(),
 		lsCmd(),
 		treeCmd(),
@@ -160,11 +161,21 @@ func Execute(args []string) int {
 	return exitOK
 }
 
-// store loads the profile store.
+// store loads the profile store, running the one-way M8 migration (legacy
+// profiles become s3 data sources) so the CLI and GUI see the same set.
 func store() (*profile.Store, error) {
 	s, err := profile.Load()
 	if err != nil {
 		return nil, opErr(err)
+	}
+	changed, err := s.SeedFromProfiles()
+	if err != nil {
+		return nil, opErr(err)
+	}
+	if changed {
+		if err := s.Save(); err != nil {
+			return nil, opErr(err)
+		}
 	}
 	return s, nil
 }

@@ -230,3 +230,87 @@ func (s *Store) SortedSources() []Source {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
+
+// SeedFromProfiles is the one-way M8 migration: when no sources exist yet,
+// every legacy profile becomes an s3 source. Returns true when the store
+// changed (the caller persists).
+func (s *Store) SeedFromProfiles() (bool, error) {
+	if len(s.Sources) > 0 || len(s.Profiles) == 0 {
+		return false, nil
+	}
+	now := time.Now().UTC()
+	srcs := make([]Source, 0, len(s.Profiles))
+	for _, p := range s.Profiles {
+		src := FromProfile(p)
+		src.CreatedAt, src.UpdatedAt = now, now
+		srcs = append(srcs, src)
+	}
+	norm, err := NormalizeSources(srcs)
+	if err != nil {
+		return false, fmt.Errorf("migrating profiles to data sources: %w", err)
+	}
+	s.Sources = norm
+	return true, nil
+}
+
+// --- profile ↔ source mirroring (M8) -------------------------------
+//
+// S3 sources are mirrored as same-named legacy profiles so browsing and
+// the CLI keep resolving them. These helpers run the mirror in reverse
+// (profile-first writes) so every legacy write path — the old profile
+// editor, AWS credential import, `s3b profile add` — leaves the two
+// lists consistent instead of growing invisible profiles.
+
+// UpsertS3Profile upserts a profile and keeps its s3 source mirror in
+// sync (new name creates the source, existing name updates it while
+// preserving source-only fields: ID, color, default flag, timestamps).
+func (s *Store) UpsertS3Profile(p Profile) error {
+	if err := s.Upsert(p); err != nil {
+		return err
+	}
+	return s.mirrorProfileToSource(p)
+}
+
+// mirrorProfileToSource upserts the s3 source matching a profile by name.
+func (s *Store) mirrorProfileToSource(p Profile) error {
+	src := FromProfile(p)
+	for _, existing := range s.Sources {
+		if existing.Type == TypeS3 && existing.Name == p.Name {
+			src.ID = existing.ID
+			src.CreatedAt = existing.CreatedAt
+			if existing.Default {
+				src.Default = true
+			}
+			if src.Color == "" {
+				src.Color = existing.Color
+			}
+			break
+		}
+	}
+	return s.UpsertSource(src)
+}
+
+// RemoveS3Profile removes a profile and its same-named s3 source — they
+// are the same connection.
+func (s *Store) RemoveS3Profile(name string) error {
+	if err := s.Remove(name); err != nil {
+		return err
+	}
+	if src, err := s.GetSource(name); err == nil && src.Type == TypeS3 && src.Name == name {
+		_ = s.RemoveSource(src.ID)
+	}
+	return nil
+}
+
+// SetDefaultS3 flags one profile as the default connection and mirrors
+// the flag onto its source (other defaults clear on both sides).
+func (s *Store) SetDefaultS3(name string) error {
+	if err := s.SetDefault(name); err != nil {
+		return err
+	}
+	p, err := s.Get(name)
+	if err != nil {
+		return err // unreachable after a successful SetDefault
+	}
+	return s.mirrorProfileToSource(p)
+}

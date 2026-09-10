@@ -14,6 +14,7 @@ require (
 	github.com/wailsapp/wails/v2 v2.15.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.53.0
+	golang.org/x/term v0.44.0
 )
 
 require (

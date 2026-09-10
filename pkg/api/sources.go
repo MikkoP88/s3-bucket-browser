@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -104,21 +103,13 @@ func publicSources(srcs []profile.Source) []profile.Source {
 // seedSources is the one-way M8 migration: legacy S3 profiles become s3
 // data sources once, then the two lists evolve independently.
 func (a *App) seedSources(s *profile.Store) error {
-	if len(s.Sources) > 0 || len(s.Profiles) == 0 {
+	changed, err := s.SeedFromProfiles()
+	if err != nil {
+		return err
+	}
+	if !changed {
 		return nil
 	}
-	now := time.Now().UTC()
-	srcs := make([]profile.Source, 0, len(s.Profiles))
-	for _, p := range s.Profiles {
-		src := profile.FromProfile(p)
-		src.CreatedAt, src.UpdatedAt = now, now
-		srcs = append(srcs, src)
-	}
-	norm, err := profile.NormalizeSources(srcs)
-	if err != nil {
-		return fmt.Errorf("migrating profiles to data sources: %w", err)
-	}
-	s.Sources = norm
 	return s.Save()
 }
 

@@ -30,6 +30,15 @@ follow [Semantic Versioning](https://semver.org/).
 - Source-scoped keyring accounts (`sources/<id>/…`): source secrets get
   the same OS-keyring treatment as profile secrets, with an independent
   lifecycle so removing a source cleans up after itself.
+- `s3b source` CLI family: add/list/use/remove/test/export/import for
+  data sources of any type. `source export FILE` / `source import FILE`
+  re-encrypt the full source set into a portable `*.s3bprofile`
+  (`--password`, `$S3B_PASSWORD`, or a masked interactive prompt). The
+  legacy `s3b profile add/use/remove` are deprecated in its favor, and
+  every profile-first write path — the old GUI profile editor, AWS
+  credential import, the legacy CLI — now keeps its s3 source mirror in
+  sync, so nothing written the old way is invisible to the new sources
+  UI and the CLI store runs the one-way migration just like the GUI.
 
 - Publisher metadata everywhere Windows and macOS surface it: the
   binaries now carry a proper VERSIONINFO resource (CompanyName,

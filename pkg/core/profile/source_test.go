@@ -123,3 +123,112 @@ func TestNormalizeSources(t *testing.T) {
 		t.Error("invalid type must be rejected")
 	}
 }
+
+func TestSeedFromProfiles(t *testing.T) {
+	s := newTestStore(t)
+	s.Profiles = []Profile{{Name: "a"}, {Name: "b", Default: true}}
+
+	changed, err := s.SeedFromProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("first seed must report changed=true")
+	}
+	if len(s.Sources) != 2 {
+		t.Fatalf("want 2 sources, got %d", len(s.Sources))
+	}
+	b, err := s.GetSource("b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b.Default {
+		t.Error("profile default flag must carry into the seeded source")
+	}
+
+	// Idempotent: sources exist, nothing changes.
+	if changed, err := s.SeedFromProfiles(); err != nil || changed {
+		t.Fatalf("second seed: changed=%v err=%v", changed, err)
+	}
+	// Empty store: nothing to do.
+	if changed, _ := (&Store{}).SeedFromProfiles(); changed {
+		t.Error("empty store must not change")
+	}
+}
+
+func TestUpsertS3ProfileMirror(t *testing.T) {
+	s := newTestStore(t)
+	p := Profile{Name: "prod", Endpoint: "http://minio:9000", AccessKeyID: "a", SecretKey: "b"}
+	if err := s.UpsertS3Profile(p); err != nil {
+		t.Fatal(err)
+	}
+	src, err := s.GetSource("prod")
+	if err != nil {
+		t.Fatalf("mirror source missing: %v", err)
+	}
+	if src.Type != TypeS3 || src.S3 == nil || src.S3.Endpoint != "http://minio:9000" {
+		t.Errorf("mirror source wrong: %+v", src)
+	}
+	id, created := src.ID, src.CreatedAt
+
+	// Update through the profile path: ID and CreatedAt survive, the new
+	// endpoint flows through.
+	p.Endpoint = "http://minio:9001"
+	if err := s.UpsertS3Profile(p); err != nil {
+		t.Fatal(err)
+	}
+	src2, err := s.GetSource("prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src2.ID != id {
+		t.Errorf("mirror ID must be stable, %q -> %q", id, src2.ID)
+	}
+	if !src2.CreatedAt.Equal(created) {
+		t.Error("mirror CreatedAt must be preserved across profile updates")
+	}
+	if src2.S3 == nil || src2.S3.Endpoint != "http://minio:9001" {
+		t.Errorf("endpoint did not flow to the mirror: %+v", src2.S3)
+	}
+}
+
+func TestSetDefaultS3SyncsBothSides(t *testing.T) {
+	s := newTestStore(t)
+	for _, n := range []string{"a", "b"} {
+		if err := s.UpsertS3Profile(Profile{Name: n, AccessKeyID: "x", SecretKey: "y"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetDefaultS3("b"); err != nil {
+		t.Fatal(err)
+	}
+	pa, _ := s.Get("a")
+	pb, _ := s.Get("b")
+	if pa.Default || !pb.Default {
+		t.Error("profile defaults out of sync after SetDefaultS3")
+	}
+	sa, _ := s.GetSource("a")
+	sb, _ := s.GetSource("b")
+	if sa.Default || !sb.Default {
+		t.Error("source defaults out of sync after SetDefaultS3")
+	}
+}
+
+func TestRemoveS3ProfileRemovesBothSides(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertS3Profile(Profile{Name: "gone", AccessKeyID: "x", SecretKey: "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveS3Profile("gone"); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Profiles) != 0 {
+		t.Error("profile still present after RemoveS3Profile")
+	}
+	if len(s.Sources) != 0 {
+		t.Error("mirror source still present after RemoveS3Profile")
+	}
+	if err := s.RemoveS3Profile("nope"); err == nil {
+		t.Error("removing an unknown name must error")
+	}
+}

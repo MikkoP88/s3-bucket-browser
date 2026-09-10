@@ -99,11 +99,11 @@ func (a *App) SaveProfile(in ProfileInput) error {
 			p.SessionToken = existing.SessionToken
 		}
 	}
-	if err := s.Upsert(p); err != nil {
+	if err := s.UpsertS3Profile(p); err != nil {
 		return err
 	}
 	if in.SetDefault || len(s.Profiles) == 1 {
-		if err := s.SetDefault(p.Name); err != nil {
+		if err := s.SetDefaultS3(p.Name); err != nil {
 			return err
 		}
 	}
@@ -119,13 +119,14 @@ func isMasked(s string) bool {
 	return s == "" || strings.Contains(s, "…") || strings.Contains(s, "****")
 }
 
-// RemoveProfile deletes a profile by name.
+// RemoveProfile deletes a profile by name (and its mirrored s3 source —
+// they are the same connection).
 func (a *App) RemoveProfile(name string) error {
 	s, err := a.loadStore()
 	if err != nil {
 		return err
 	}
-	if err := s.Remove(name); err != nil {
+	if err := s.RemoveS3Profile(name); err != nil {
 		return err
 	}
 	if err := s.Save(); err != nil {
@@ -135,13 +136,14 @@ func (a *App) RemoveProfile(name string) error {
 	return nil
 }
 
-// SetDefaultProfile marks one profile as the default connection.
+// SetDefaultProfile marks one profile as the default connection and keeps
+// its s3 source mirror in sync.
 func (a *App) SetDefaultProfile(name string) error {
 	s, err := a.loadStore()
 	if err != nil {
 		return err
 	}
-	if err := s.SetDefault(name); err != nil {
+	if err := s.SetDefaultS3(name); err != nil {
 		return err
 	}
 	if err := s.Save(); err != nil {
@@ -244,7 +246,7 @@ func (a *App) ImportAwsCredentials() (ImportResult, error) {
 			res.Skipped = append(res.Skipped, name+" (already exists)")
 			continue
 		}
-		if err := s.Upsert(profile.Profile{
+		if err := s.UpsertS3Profile(profile.Profile{
 			Name:        name,
 			AccessKeyID: pair[0],
 			SecretKey:   pair[1],
