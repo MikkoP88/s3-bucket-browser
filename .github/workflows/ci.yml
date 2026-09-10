@@ -49,17 +49,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux GUI builds need cgo + webkit natively; arm64 ships as the
-          # headless CLI (-tags s3b_headless, no GTK deps). GUI builds carry
-          # Wails' tags — without them the binary shows Wails' build-tag
-          # error instead of the app.
-          - { os: ubuntu-latest, goos: linux, goarch: amd64, tags: desktop,production, artifact: s3b-linux-amd64 }
-          - { os: ubuntu-latest, goos: linux, goarch: arm64, tags: s3b_headless, artifact: s3b-linux-arm64-cli }
-          - { os: ubuntu-latest, goos: windows, goarch: amd64, tags: desktop,production, artifact: s3b-windows-amd64.exe }
-          - { os: ubuntu-latest, goos: windows, goarch: arm64, tags: desktop,production, artifact: s3b-windows-arm64.exe }
+          # Tags MUST be quoted: YAML flow mappings split at commas, and an
+          # unquoted `desktop,production` once built with `-tags desktop`
+          # only — which compiles Wails' stub frontend (internal/app/
+          # app_default_unix.go) instead of the real GUI and hides every
+          # production-only build failure. The `production` tag is what
+          # selects Wails' real desktop frontend.
+          # Linux GUI: cgo + webkit natively; ubuntu-latest (24.04) ships
+          # webkit2gtk 4.1 only, so pass Wails' webkit2_41 tag. arm64 ships
+          # as the headless CLI (-tags s3b_headless, no GTK deps).
           # darwin GUI needs Cocoa/WebKit: build on a macOS runner.
-          - { os: macos-latest, goos: darwin, goarch: amd64, tags: desktop,production, artifact: s3b-darwin-amd64 }
-          - { os: macos-latest, goos: darwin, goarch: arm64, tags: desktop,production, artifact: s3b-darwin-arm64 }
+          - { os: ubuntu-latest, goos: linux, goarch: amd64, tags: "desktop,production,webkit2_41", artifact: s3b-linux-amd64 }
+          - { os: ubuntu-latest, goos: linux, goarch: arm64, tags: "s3b_headless", artifact: s3b-linux-arm64-cli }
+          - { os: ubuntu-latest, goos: windows, goarch: amd64, tags: "desktop,production", artifact: s3b-windows-amd64.exe }
+          - { os: ubuntu-latest, goos: windows, goarch: arm64, tags: "desktop,production", artifact: s3b-windows-arm64.exe }
+          - { os: macos-latest, goos: darwin, goarch: amd64, tags: "desktop,production", artifact: s3b-darwin-amd64 }
+          - { os: macos-latest, goos: darwin, goarch: arm64, tags: "desktop,production", artifact: s3b-darwin-arm64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +86,13 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           BUILD_TAGS: ${{ matrix.tags != '' && format('-tags {0}', matrix.tags) || '' }}
+          # darwin cross-arch (amd64 on arm64 runners) disables cgo by
+          # default, but Wails' darwin frontend is cgo — force it on. The
+          # macOS 26 SDK also no longer auto-links UniformTypeIdentifiers
+          # (WailsContext.m uses UTType), so link the framework explicitly.
+          # Empty string elsewhere = unset = Go's native defaults.
+          CGO_ENABLED: ${{ matrix.goos == 'darwin' && '1' || '' }}
+          CGO_LDFLAGS: ${{ matrix.goos == 'darwin' && '-framework UniformTypeIdentifiers' || '' }}
 
       - uses: actions/upload-artifact@v4
         with:

@@ -75,6 +75,23 @@ MIT-licensed, zero telemetry.
 
 ### Fixed
 
+- **CI was silently building Wails' stub frontend, not the GUI.** The build
+  matrix passed tags unquoted (`tags: desktop,production`); YAML flow
+  mappings split at the comma, so CI built with `-tags desktop` only. The
+  `production` tag is what selects Wails' real desktop frontend — without
+  it, `internal/app/app_default_unix.go` compiles a stub that imports no
+  GUI code at all, so every platform "built" without cgo, GTK or Cocoa and
+  the artifacts were CLI-only binaries with a build-tag error for a GUI.
+  Matrix tags are now quoted; CI builds the same binaries the release
+  pipeline does.
+- **Release pipeline: linux/darwin GUI builds.** Real production builds
+  surfaced three platform requirements, now fixed in CI and release
+  workflows: linux needs Wails' `webkit2_41` tag on Ubuntu 24.04 (which
+  ships webkit2gtk 4.1 only); darwin cross-arch builds (amd64 on arm64
+  runners) need `CGO_ENABLED=1` (Go disables cgo when cross-compiling);
+  and the macOS 26 SDK needs `-framework UniformTypeIdentifiers` linked
+  explicitly (WailsContext.m uses UTType, which the SDK no longer
+  auto-links).
 - **GUI builds required Wails' build tags all along.** A plain
   `go build` produced a binary whose GUI face only showed Wails' "will not
   build without the correct build tags" error (the CLI face worked, which

@@ -10,6 +10,8 @@
 # Wails needs its build tags for a working GUI — see
 # https://wails.io/docs/guides/manual-builds
 go build -tags desktop,production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop app
+# Ubuntu 24.04+ ships webkit2gtk 4.1 only — add Wails' webkit2_41 tag there:
+# go build -tags desktop,production,webkit2_41 -o s3b ./cmd/s3b
 ```
 
 - **Deep search** (Ctrl+Shift+F): filter every object under a bucket/folder by name glob, size, age or storage class — results stream in and are cancelable; click a result to jump straight to the object.

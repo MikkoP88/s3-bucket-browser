@@ -14,6 +14,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # amd64 ships the full GUI: needs the webkit/GTK headers (same as CI).
+      # webkit2_41: ubuntu-latest (24.04) ships webkit2gtk 4.1 only, and
+      # Wails defaults to the 4.0 pkg-config name without this tag.
       - name: Install GUI build deps
         run: |
           sudo apt-get update
@@ -28,7 +30,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg
-          go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b ./cmd/s3b
+          go build -tags desktop,production,webkit2_41 -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b ./cmd/s3b
           cp LICENSE README.md dist/pkg/
           tar -C dist/pkg -czf "dist/s3b-${VERSION}-linux-amd64.tar.gz" s3b LICENSE README.md
         env:
@@ -115,6 +117,10 @@ jobs:
 
       # The frontend is embedded, so go build with Wails' tags suffices
       # (no wails CLI toolchain); hand-roll a minimal .app bundle and dmg.
+      # CGO_ENABLED: Wails' darwin frontend is cgo and cross-arch builds
+      # (amd64 on arm64 runners) disable it by default. CGO_LDFLAGS: the
+      # macOS 26 SDK no longer auto-links UniformTypeIdentifiers, which
+      # WailsContext.m's UTType usage needs.
       - name: Build app bundle and dmg
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -126,6 +132,8 @@ jobs:
         env:
           GOOS: darwin
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+          CGO_LDFLAGS: "-framework UniformTypeIdentifiers"
 
       - uses: actions/upload-artifact@v4
         with:
