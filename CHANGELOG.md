@@ -8,6 +8,27 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Cross-source transfers (M10 backend): `TransferCross` streams copies
+  between any two sides — S3 (the default profile or a named S3 source),
+  the remote-filesystem sources (sftp/scp/ftp/ftps/local-dir) and the
+  local pane — into an S3 bucket/prefix, a remote directory or a local
+  folder. One synchronous planner expands mixed item lists (directories
+  via remotefs.Walk / listing.Walk / WalkDir, empty folders collected on
+  the way; S3 folder markers are recreated as real directories, never as
+  marker objects) and the background job streams reader→writer under the
+  per-source engine locks (acquired in sorted-ID order, so multi-source
+  jobs can never deadlock) with the conflict policies
+  (overwrite/skip/rename), byte-level progress and the bandwidth
+  throttle. Fast paths: same-profile S3→S3 is a server-side copy,
+  local→S3 reuses the multipart uploader, and a same-engine remote copy
+  drains through a temp file first (FTP engines allow exactly one data
+  connection). move is copy-then-delete per item and a source item is
+  deleted only when every file under it verifiably transferred — a
+  skipped file is not a success, so the source keeps it. New transfer
+  package exports: `UploadReader` (streaming upload) and
+  `NewProgressReader` (progress + throttle wrapper for engine streams).
+  Frontend wiring lands next; the backend is exercised end-to-end by
+  hermetic tests over the local engine.
 - Remote-native file operations (M9): the grid, empty-area and sidebar
   tree context menus on remote sources now offer New folder, Rename
   (F2) and count-then-act Delete (Del) — a new `remotefs.Walk` powers

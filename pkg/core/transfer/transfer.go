@@ -152,6 +152,53 @@ func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key s
 	return err
 }
 
+// UploadReader uploads size bytes from r to bucket/key — the streaming
+// counterpart of UploadFile, used by cross-source transfers where the
+// body is an open remote/S3 stream rather than a local file.
+func UploadReader(ctx context.Context, client *s3.Client, r io.Reader, size int64, bucket, key string, opts UploadOptions) error {
+	var body io.Reader = r
+	if opts.Progress != nil || opts.MaxBPS > 0 {
+		body = &progressReader{
+			r: r, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
+			total: size, reportOn: true,
+		}
+	}
+	uploader := manager.NewUploader(client, func(u *manager.Uploader) {
+		if opts.PartSize > 0 {
+			u.PartSize = opts.PartSize
+		}
+		if opts.Concurrency > 0 {
+			u.Concurrency = opts.Concurrency
+		}
+	})
+	input := &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   body,
+	}
+	if opts.StorageClass != "" {
+		input.StorageClass = s3types.StorageClass(opts.StorageClass)
+	}
+	if opts.SSE == "AES256" {
+		input.ServerSideEncryption = s3types.ServerSideEncryptionAes256
+	}
+	_, err := uploader.Upload(ctx, input)
+	return err
+}
+
+// NewProgressReader wraps r with progress reporting and optional rate
+// limiting — the building block for streaming between engines that have
+// no native progress hook (remote readers into remote/local writers).
+func NewProgressReader(r io.Reader, fn ProgressFn, total, maxBPS int64) io.Reader {
+	if fn == nil && maxBPS <= 0 {
+		return r
+	}
+	return &progressReader{
+		r: r, fn: fn, limiter: newRateLimiter(maxBPS),
+		total: total, reportOn: true,
+	}
+}
+
 // DownloadOptions controls a download.
 type DownloadOptions struct {
 	PartSize    int64
