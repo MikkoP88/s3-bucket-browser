@@ -86,11 +86,11 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg dist/pkg-arm
-          GOOS= GOARCH= go run ./tools/versioninfo -version "${VERSION}" -arch amd64
+          env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch amd64
           go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg/
-          (cd dist/pkg && zip -q "../s3b-${VERSION}-windows-amd64.zip" *)
+          (cd dist/pkg && zip -q "../s3b-${VERSION}-windows-amd64.zip" -- *)
           cp dist/pkg/s3b.exe dist/  # staging for the NSIS installer
         env:
           GOOS: windows
@@ -99,11 +99,11 @@ jobs:
       - name: Build windows-arm64 zip
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          GOOS= GOARCH= go run ./tools/versioninfo -version "${VERSION}" -arch arm64
+          env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch arm64
           go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg-arm/
-          (cd dist/pkg-arm && zip -q "../s3b-${VERSION}-windows-arm64.zip" *)
+          (cd dist/pkg-arm && zip -q "../s3b-${VERSION}-windows-arm64.zip" -- *)
         env:
           GOOS: windows
           GOARCH: arm64
@@ -115,10 +115,10 @@ jobs:
           mkdir -p dist/port dist/port-arm
           cp dist/pkg/s3b.exe LICENSE NOTICE README-portable.md dist/port/
           touch dist/port/s3b-portable
-          (cd dist/port && zip -q "../s3b-${VERSION}-windows-amd64-portable.zip" *)
+          (cd dist/port && zip -q "../s3b-${VERSION}-windows-amd64-portable.zip" -- *)
           cp dist/pkg-arm/s3b.exe LICENSE NOTICE README-portable.md dist/port-arm/
           touch dist/port-arm/s3b-portable
-          (cd dist/port-arm && zip -q "../s3b-${VERSION}-windows-arm64-portable.zip" *)
+          (cd dist/port-arm && zip -q "../s3b-${VERSION}-windows-arm64-portable.zip" -- *)
 
       - name: Build NSIS installer
         run: |
@@ -216,7 +216,7 @@ jobs:
           merge-multiple: true
 
       - name: Checksums
-        run: (cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS)
+        run: (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
 
       - name: Create GitHub release
         env:

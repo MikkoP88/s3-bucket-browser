@@ -91,11 +91,15 @@ jobs:
         run: |
           # Windows builds embed publisher metadata (VERSIONINFO) via a
           # generated .syso; it must be removed afterwards so it can never
-          # leak into another matrix job's (cross-arch) build.
+          # leak into another matrix job's (cross-arch) build. env -u runs
+          # the generator natively regardless of the matrix GOOS/GOARCH.
           if [ "$GOOS" = "windows" ]; then
-            GOOS= GOARCH= go run ./tools/versioninfo -version 0.0.0-ci -arch "$GOARCH"
+            env -u GOOS -u GOARCH go run ./tools/versioninfo -version 0.0.0-ci -arch "$GOARCH"
           fi
-          go build -ldflags "-s -w" $BUILD_TAGS -o dist/${{ matrix.artifact }} ./cmd/s3b
+          # BUILD_TAGS is "-tags a,b" (two words) or empty — split it so an
+          # empty value adds no argument instead of an empty "" one.
+          read -ra tags <<< "${BUILD_TAGS:-}"
+          go build -ldflags "-s -w" "${tags[@]}" -o dist/${{ matrix.artifact }} ./cmd/s3b
           rm -f cmd/s3b/*.syso
         env:
           GOOS: ${{ matrix.goos }}
