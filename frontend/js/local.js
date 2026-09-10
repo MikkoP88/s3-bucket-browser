@@ -67,6 +67,13 @@ export class LocalPane {
     body.addEventListener('mousedown', (e) => {
       if (e.target === body || e.target === this.grid.canvas) this.grid.clearSelection();
     });
+    // empty-area right-click (rows keep the grid's row menu off — the local
+    // pane has no per-row menu yet; main wires contextEmpty)
+    body.addEventListener('contextmenu', (e) => {
+      if (e.target.closest('.grid-row')) return;
+      e.preventDefault();
+      this.on.contextEmpty?.(e, this.dir);
+    });
     body.addEventListener('keydown', (e) => {
       if (e.key === 'Backspace') { e.preventDefault(); this.up(); return; }
       if (this.grid.keydown(e)) e.preventDefault();

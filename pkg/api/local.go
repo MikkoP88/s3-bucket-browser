@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,6 +122,49 @@ func (a *App) OpenLocal(path string) error {
 		cmd = exec.Command("xdg-open", path)
 	}
 	return cmd.Start()
+}
+
+// OpenTerminal opens a new terminal window at dir (local-pane context
+// menu). The GUI process has no console of its own (Windows: detached at
+// startup), so a console child gets a fresh window of its own.
+func (a *App) OpenTerminal(dir string) error {
+	st, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		dir = filepath.Dir(dir)
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		// /k keeps the window open; the quotes survive Go's argument
+		// escaping and handle paths with spaces.
+		cmd = exec.Command("cmd", "/k", `cd /d "`+dir+`"`)
+	case "darwin":
+		cmd = exec.Command("open", "-a", "Terminal", dir)
+	default:
+		cmd = linuxTerminal(dir)
+		if cmd == nil {
+			return fmt.Errorf("no terminal emulator found (tried x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal)")
+		}
+	}
+	return cmd.Start()
+}
+
+// linuxTerminal picks the first available common terminal emulator.
+func linuxTerminal(dir string) *exec.Cmd {
+	for _, spec := range [][2]string{
+		{"x-terminal-emulator", "--working-directory"},
+		{"gnome-terminal", "--working-directory"},
+		{"konsole", "--workdir"},
+		{"xfce4-terminal", "--working-directory"},
+	} {
+		if _, err := exec.LookPath(spec[0]); err == nil {
+			return exec.Command(spec[0], spec[1], dir)
+		}
+	}
+	return nil
 }
 
 // ---------------- directory compare (WinSCP-style keep in sync) ----------------

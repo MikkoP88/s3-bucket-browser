@@ -95,6 +95,11 @@ export class Tree {
     if (n) { n.expanded = false; this.render(); }
   }
 
+  collapseAll() {
+    for (const n of this.nodes.values()) n.expanded = false;
+    this.render();
+  }
+
   markCurrent(loc) {
     this.currentId = loc.kind === 'buckets' ? null : this.nodeKey(loc.bucket, loc.prefix || '');
     this.render();

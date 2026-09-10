@@ -377,12 +377,42 @@ function wireGrid() {
       startMarquee(e);
     }
   });
+  // empty-area right-click: folder/bucket-level menu
+  grid.body.addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.grid-row')) return; // row menu handles it
+    e.preventDefault();
+    showEmptyAreaMenu(e);
+  });
+  // sidebar background right-click: profile + tree management
+  $('tree').addEventListener('contextmenu', (e) => {
+    if (e.target.closest('.tnode')) return; // node menu lands with sidebar parity (M7.9)
+    e.preventDefault();
+    openMenu(e, [
+      [t('addProfile'), '', () => profileEditor(null, afterProfileSaved)],
+      null,
+      [t('importAws'), '', () => importAws()],
+      null,
+      ['Collapse all', '', () => tree.collapseAll()],
+      ['Refresh', 'F5', () => refreshCurrent()],
+    ]);
+  });
 }
 
 function wireLocalPane() {
   localPane.on.openFail = (e) => toast(`Local: ${e}`, 'error');
   localPane.on.dropFolder = (folder, payload) => downloadRefs(payload.entries, folder.path);
   localPane.on.dropBody = (payload) => downloadRefs(payload.entries, localPane.dir);
+  localPane.on.contextEmpty = (e, dir) => {
+    openMenu(e, [
+      ['Select all', 'Ctrl+A', () => localPane.grid.selectAll()],
+      ['Refresh', '', () => localPane.refresh()],
+      null,
+      ['Open terminal here\u2026', '', async () => {
+        if (!dir) { toast('Open a folder first'); return; }
+        try { await api.OpenTerminal(dir); } catch (err) { toast(`Terminal failed: ${err}`, 'error'); }
+      }, !dir],
+    ]);
+  };
   localPane.on.compare = compareDirs;
   localPane.on.syncBase = () => {
     const loc = nav.current;
@@ -398,9 +428,29 @@ function wireLocalPane() {
   };
 }
 
+// openMenu renders items in the shared #ctxmenu popup. An item is
+// [label, kbd, fn, disabled?] or null for a separator. The anchor is a mouse
+// event (menu at the pointer) or an element (menu below its rect).
+function openMenu(anchor, items) {
+  const menu = $('ctxmenu');
+  menu.replaceChildren(...items.map((it) => {
+    if (!it) return el('div', { class: 'sep' });
+    const [label, kbd, fn, disabled] = it;
+    return el('div', {
+      class: `item${disabled ? ' disabled' : ''}`,
+      onclick: () => { hideContextMenu(); fn(); },
+    }, el('span', { text: label }), kbd ? el('span', { class: 'kbd', text: kbd }) : null);
+  }));
+  menu.classList.remove('hidden');
+  const r = anchor?.getBoundingClientRect?.();
+  const x = r ? r.left : anchor.clientX;
+  const y = r ? r.bottom + 4 : anchor.clientY;
+  menu.style.left = `${Math.min(x, innerWidth - 220)}px`;
+  menu.style.top = `${Math.min(y, innerHeight - menu.offsetHeight - 10)}px`;
+}
+
 // ============================ context menu ============================
 function showContextMenu(e, rows) {
-  const menu = $('ctxmenu');
   const loc = nav.current;
   const items = [];
   const inObjects = loc.kind === 'objects';
@@ -439,20 +489,52 @@ function showContextMenu(e, rows) {
     items.push(['Delete permanently\u2026', 'Shift+Del', () => deletePermanentSelection(), !sel]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties()]);
   }
+  openMenu(e, items);
+}
 
-  menu.replaceChildren(...items.map((it) => {
-    if (!it) return el('div', { class: 'sep' });
-    const [label, kbd, fn, disabled] = it;
-    return el('div', {
-      class: `item${disabled ? ' disabled' : ''}`,
-      onclick: () => { hideContextMenu(); fn(); },
-    }, el('span', { text: label }), kbd ? el('span', { class: 'kbd', text: kbd }) : null);
-  }));
-  menu.classList.remove('hidden');
-  const x = Math.min(e.clientX, innerWidth - 220);
-  const y = Math.min(e.clientY, innerHeight - menu.offsetHeight - 10);
-  menu.style.left = `${x}px`;
-  menu.style.top = `${y}px`;
+// showEmptyAreaMenu covers right-clicks on grid background (no row under the
+// pointer): the folder/bucket-level commands instead of selection commands.
+function showEmptyAreaMenu(e) {
+  const loc = nav.current;
+  const st = commandState();
+  if (loc.kind === 'buckets') {
+    openMenu(e, [
+      ['New bucket\u2026', '', () => createBucket(), !st.canCreateBucket],
+      null,
+      ['Import ~/.aws/credentials\u2026', '', () => importAws()],
+      null,
+      ['Refresh', 'F5', () => refreshCurrent()],
+    ]);
+    return;
+  }
+  openMenu(e, [
+    ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
+    null,
+    ['Upload files\u2026', 'Ctrl+U', () => uploadFiles(), !st.canUpload],
+    ['Upload folder\u2026', '', () => uploadFolder(), !st.canUpload],
+    ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
+    null,
+    ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
+    ['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, loc.prefix || '', openSearchResult), !st.canFind],
+    null,
+    ['Refresh', 'F5', () => refreshCurrent()],
+    ['Properties', '', () => folderProperties()],
+  ]);
+}
+
+// folderProperties summarizes the current folder view (from the live grid).
+function folderProperties() {
+  const loc = nav.current;
+  if (loc?.kind !== 'objects') return;
+  const rows = grid.rows;
+  const files = rows.filter((r) => !r.isDir);
+  const bytes = files.reduce((s, r) => s + (r.size || 0), 0);
+  properties(`Properties — s3://${loc.bucket}/${loc.prefix || ''}`, [
+    ['Folders', rows.length - files.length],
+    ['Files', files.length],
+    ['Total size', fmtBytes(bytes)],
+    ...(view.filter ? [['Name filter', view.filter]] : []),
+  ]);
 }
 
 function hideContextMenu() { $('ctxmenu').classList.add('hidden'); }
@@ -491,20 +573,10 @@ async function uploadFolder() {
 // offering the native file picker (Ctrl+U) and the folder picker. The backend
 // walks directories either way; drag & drop needs no picker at all.
 function showUploadMenu(e) {
-  const menu = $('ctxmenu');
-  const items = [
+  openMenu(e.currentTarget || e, [
     ['Files\u2026', 'Ctrl+U', uploadFiles],
     ['Folder\u2026', '', uploadFolder],
-  ];
-  menu.replaceChildren(...items.map(([label, kbd, fn]) => el('div', {
-    class: 'item', onclick: () => { hideContextMenu(); fn(); },
-  }, el('span', { text: label }), kbd ? el('span', { class: 'kbd', text: kbd }) : null)));
-  menu.classList.remove('hidden');
-  const r = e.currentTarget?.getBoundingClientRect?.();
-  const x = r ? r.left : e.clientX;
-  const y = r ? r.bottom + 4 : e.clientY;
-  menu.style.left = `${Math.min(x, innerWidth - 220)}px`;
-  menu.style.top = `${Math.min(y, innerHeight - menu.offsetHeight - 10)}px`;
+  ]);
 }
 
 async function downloadSelection(overrideRows) {

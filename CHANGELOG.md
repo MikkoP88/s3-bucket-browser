@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Empty-area context menus: right-click on the grid background (Paste,
+  Upload files/folder, New folder, Download all…, Find, Refresh,
+  Properties — folder stats from the live view; New bucket / Import AWS /
+  Refresh in the buckets view), on the local pane (Select all, Refresh,
+  Open terminal here… — new cross-platform `OpenTerminal` binding), and on
+  the sidebar background (Add profile, Import AWS credentials, Collapse
+  all, Refresh). All popup menus now share one anchored menu helper.
 - Top menu bar (File / Edit / View / Help): dropdown menus with shortcut
   hints, separators and greyed-out unavailable actions; minimal About
   dialog (version, MIT license, project URL).
