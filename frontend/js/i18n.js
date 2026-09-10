@@ -74,6 +74,13 @@ const dict = {
     'menu.aboutTitle': 'About s3b',
     'menu.aboutLicense': 'License',
     'menu.aboutUrl': 'Project',
+    'menu.log': 'Log area',
+    // log drawer
+    'log.title': 'Log',
+    'log.all': 'All',
+    'log.copy': 'Copy',
+    'log.clear': 'Clear',
+    'log.autoscroll': 'Auto-scroll',
   },
   fi: {
     buckets: 'Bucketit',
@@ -146,6 +153,13 @@ const dict = {
     'menu.aboutTitle': 'Tietoja s3b:st\u00e4',
     'menu.aboutLicense': 'Lisenssi',
     'menu.aboutUrl': 'Projekti',
+    'menu.log': 'Lokialue',
+    // log drawer
+    'log.title': 'Loki',
+    'log.all': 'Kaikki',
+    'log.copy': 'Kopioi',
+    'log.clear': 'Tyhjenn\u00e4',
+    'log.autoscroll': 'Autovieritys',
   },
 };
 

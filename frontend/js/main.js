@@ -13,12 +13,14 @@ import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang } from './i18n.js';
 import { setCommandContext, updateCommandState, commandState } from './commands.js';
 import { createMenubar } from './menubar.js';
+import { createLogArea } from './logarea.js';
 
 const $ = (id) => document.getElementById(id);
 
 const grid = new Grid();
 const localPane = new LocalPane();
 const tree = new Tree({ onNavigate: (loc) => nav.to(loc), onDropTo: dropToTarget });
+const logArea = createLogArea();
 
 setCommandContext({
   selectionCount: () => grid.selectedRows().length,
@@ -46,10 +48,23 @@ async function boot() {
   wireDrop();
   wireEvents();
 
+  // Log drawer: mount (subscription is wired in wireEvents) and restore
+  // visibility from the last session.
+  $('logarea').replaceChildren(logArea.root);
+  if (localStorage.getItem('s3b-log') === '1') $('logarea').classList.remove('hidden');
+
   const ok = await refreshProfiles();
   if (ok) nav.to({ kind: 'buckets' });
   if (localStorage.getItem('s3b-panes') === '1') localPane.show();
   updateCommandState();
+}
+
+// toggleLogArea shows/hides the bottom log drawer (View menu, Ctrl+L,
+// status-bar button) and remembers the choice.
+function toggleLogArea() {
+  const elx = $('logarea');
+  const open = elx.classList.toggle('hidden') === false;
+  localStorage.setItem('s3b-log', open ? '1' : '0');
 }
 
 function initTheme() {
@@ -879,6 +894,7 @@ function mountMenubar() {
         null,
         { label: t('menu.theme'), action: toggleTheme },
         { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
+        { label: t('menu.log'), kbd: 'Ctrl+L', action: toggleLogArea },
         { label: t('menu.filter'), kbd: 'Ctrl+F', action: () => { $('filter').focus(); $('filter').select(); } },
       ],
     },
@@ -959,6 +975,7 @@ function wireKeys() {
     if (ctrl && e.key.toLowerCase() === 'v') { e.preventDefault(); paste(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); findFromHere(); return; }
     if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); $('filter').focus(); $('filter').select(); return; }
+    if (ctrl && e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLogArea(); return; }
     if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); uploadFiles(); return; }
     if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); downloadSelection(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newFolder(); return; }
@@ -984,7 +1001,9 @@ function wireEvents() {
     toast(`Uploaded ${d?.key ? basename(d.key) : 'edited file'}`, 'ok');
     updateEditingStatus();
   });
+  onEvent('log:line', (l) => logArea.append(l));
   $('status-editing').onclick = () => editingDialog(updateEditingStatus);
+  $('status-log').onclick = toggleLogArea;
   window.addEventListener('focus', updateEditingStatus);
 }
 

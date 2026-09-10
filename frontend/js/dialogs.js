@@ -438,6 +438,7 @@ export function helpSheet() {
     ['Ctrl+Shift+N', 'New folder'],
     ['Ctrl+U / Ctrl+D', 'Upload files / download selection'],
     ['F9', 'Toggle dual-pane local browser'],
+    ['Ctrl+L', 'Toggle log area'],
     ['Esc', 'Clear selection / close'],
     ['F1', 'This sheet'],
   ];

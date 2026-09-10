@@ -24,6 +24,10 @@ follow [Semantic Versioning](https://semver.org/).
   batch operations (delete/copy/move/rename/mkdir/storage-class) and
   listing failures emit timestamped, scoped, leveled log lines for the
   upcoming log drawer; no secrets are ever logged.
+- Optional bottom log drawer (View menu / Ctrl+L / status-bar "Log"):
+  timestamp + level + scope + message per line, level filter, copy,
+  clear, auto-scroll toggle, 2000-line ring buffer; hidden by default
+  and remembered across sessions.
 
 ### Fixed
 
