@@ -11,12 +11,18 @@ import {
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang } from './i18n.js';
+import { setCommandContext, updateCommandState } from './commands.js';
 
 const $ = (id) => document.getElementById(id);
 
 const grid = new Grid();
 const localPane = new LocalPane();
 const tree = new Tree({ onNavigate: (loc) => nav.to(loc), onDropTo: dropToTarget });
+
+setCommandContext({
+  selectionCount: () => grid.selectedRows().length,
+  hasProfile: () => profiles.length > 0,
+});
 
 let profiles = [];
 let currentEntries = []; // unfiltered rows of the active view
@@ -41,6 +47,7 @@ async function boot() {
   const ok = await refreshProfiles();
   if (ok) nav.to({ kind: 'buckets' });
   if (localStorage.getItem('s3b-panes') === '1') localPane.show();
+  updateCommandState();
 }
 
 function initTheme() {
@@ -73,6 +80,7 @@ async function refreshProfiles(selectAfter = true) {
     showOnboarding();
     return false;
   }
+  updateCommandState();
   return true;
 }
 
@@ -352,8 +360,8 @@ function showContextMenu(e, rows) {
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
     items.push([`Download${sel ? ` (${sel})` : ''}`, 'Ctrl+D', () => downloadSelection()]);
     items.push(null);
-    items.push(['Cut', 'Ctrl+X', () => { clipboard.mode = 'cut'; clipboard.bucket = loc.bucket; clipboard.keys = rows.map((r) => r.key); toast(`Cut ${rows.length} item(s)`); }]);
-    items.push(['Copy', 'Ctrl+C', () => { clipboard.mode = 'copy'; clipboard.bucket = loc.bucket; clipboard.keys = rows.map((r) => r.key); toast(`Copied ${rows.length} item(s)`); }]);
+    items.push(['Cut', 'Ctrl+X', () => { clipboard.mode = 'cut'; clipboard.bucket = loc.bucket; clipboard.keys = rows.map((r) => r.key); toast(`Cut ${rows.length} item(s)`); updateCommandState(); }]);
+    items.push(['Copy', 'Ctrl+C', () => { clipboard.mode = 'copy'; clipboard.bucket = loc.bucket; clipboard.keys = rows.map((r) => r.key); toast(`Copied ${rows.length} item(s)`); updateCommandState(); }]);
     items.push(['Paste', 'Ctrl+V', () => paste(), !clipboard.keys.length || !inObjects]);
     items.push(null);
     items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
@@ -635,6 +643,7 @@ async function paste() {
     if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
     else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} item(s)`, 'ok');
     if (move) clipboard.keys = [];
+    updateCommandState();
     refreshCurrent();
   } catch (err) {
     toast(`Paste failed: ${err}`, 'error');
@@ -856,8 +865,8 @@ function wireKeys() {
     if (e.key === 'Delete') { e.preventDefault(); if (e.shiftKey) deletePermanentSelection(); else deleteSelection(); return; }
     if (e.key === 'F9') { e.preventDefault(); togglePanes(); return; }
     if (ctrl && e.key.toLowerCase() === 'a') { e.preventDefault(); grid.selectAll(); return; }
-    if (ctrl && e.key.toLowerCase() === 'c') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'copy'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Copied ${r.length} item(s)`); } return; }
-    if (ctrl && e.key.toLowerCase() === 'x') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'cut'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Cut ${r.length} item(s)`); } return; }
+    if (ctrl && e.key.toLowerCase() === 'c') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'copy'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Copied ${r.length} item(s)`); updateCommandState(); } return; }
+    if (ctrl && e.key.toLowerCase() === 'x') { const r = grid.selectedRows(); if (r.length) { clipboard.mode = 'cut'; clipboard.bucket = nav.current?.bucket; clipboard.keys = r.map((x) => x.key); toast(`Cut ${r.length} item(s)`); updateCommandState(); } return; }
     if (ctrl && e.key.toLowerCase() === 'v') { e.preventDefault(); paste(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); findFromHere(); return; }
     if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); $('filter').focus(); $('filter').select(); return; }
@@ -913,6 +922,7 @@ function updateStatus() {
   $('status-selection').textContent = sel
     ? `${sel} of ${total} ${t('items')} ${t('selected')}`
     : `${total} ${total === 1 ? t('item') : t('items')}`;
+  updateCommandState();
 }
 
 function showEmpty(title, sub, actions = []) {
