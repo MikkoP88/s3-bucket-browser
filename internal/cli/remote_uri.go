@@ -464,18 +464,18 @@ func copyViaTemp(ctx context.Context, src io.Reader, r *remoteRef, dst string) e
 	return writeRemoteFile(ctx, r, dst, f)
 }
 
-// remoteDstTarget decides the remote destination path semantics:
-// a folder batch lands under target; a single file goes to the leaf
-// unless the URI names an existing folder or ends with "/".
+// remoteDstTarget decides the remote destination semantics: folder mode
+// lands every file under the target (rel appended by the caller); a
+// single file without folder markers is an exact file destination.
 func remoteDstTarget(ctx context.Context, r *remoteRef, uri string, files []copyFile, isDir bool) (string, bool /*folder mode*/, error) {
 	if isDir || len(files) > 1 {
 		return r.path, true, nil
 	}
 	if strings.HasSuffix(uri, "/") {
-		return remotefs.CleanPath(r.path + "/" + files[0].rel), true, nil
+		return r.path, true, nil
 	}
 	if st, err := r.fs.Stat(ctx, r.path); err == nil && st.IsDir {
-		return remotefs.CleanPath(r.path + "/" + files[0].rel), true, nil
+		return r.path, true, nil
 	}
 	return r.path, false, nil // exact file destination
 }

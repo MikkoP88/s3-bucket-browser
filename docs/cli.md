@@ -2208,10 +2208,10 @@ Manage data sources (any connection type)
 
 ### Synopsis
 
-s3b source manages data sources: S3 endpoints today, with
-sftp/scp/ftp/ftps/local schemas already fixed for the upcoming
-remote-filesystem engines. Sources of type s3 are mirrored as
-legacy profiles, so --profile keeps resolving them by name.
+s3b source manages data sources of any type: s3, sftp, scp,
+ftp, ftps and local (remote commands address them as NAME://path).
+Sources of type s3 are mirrored as legacy profiles, so --profile
+keeps resolving them by name.
 
 ### Options inherited from parent commands
 
@@ -2252,7 +2252,8 @@ Add or update a data source of any type:
   s3    --endpoint --region --access-key --secret-key --session-token
         --path-style/--virtual-hosted --insecure
   sftp/scp/ftp/ftps  --host --port --username --password --root
-        (engines ship next; the connection is saved as configured)
+        shorthand URL: add [NAME] sftp://user:pass@host:port/root
+        (port and root optional; without NAME the hostname is the name)
   local --root PATH
 
 ```

@@ -1,16 +1,18 @@
-// source_cmd.go is the M8 CLI surface for data sources: any-type
-// connections (s3 today; sftp/scp/ftp/ftps/local schemas fixed) plus the
-// password-encrypted Profile file container (export/import). The legacy
-// `s3b profile` family remains as the S3 specialization and stays in sync
-// through the profile ↔ source mirroring in the store.
+// source_cmd.go is the CLI surface for data sources: any-type connections
+// (s3/sftp/scp/ftp/ftps/local — remote engines live in pkg/core/remotefs)
+// plus the password-encrypted Profile file container (export/import). The
+// legacy `s3b profile` family remains as the S3 specialization and stays in
+// sync through the profile ↔ source mirroring in the store.
 package cli
 
 import (
 	"bufio"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
@@ -25,10 +27,10 @@ func sourceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "source",
 		Short: "Manage data sources (any connection type)",
-		Long: "s3b source manages data sources: S3 endpoints today, with\n" +
-			"sftp/scp/ftp/ftps/local schemas already fixed for the upcoming\n" +
-			"remote-filesystem engines. Sources of type s3 are mirrored as\n" +
-			"legacy profiles, so --profile keeps resolving them by name.",
+		Long: "s3b source manages data sources of any type: s3, sftp, scp,\n" +
+			"ftp, ftps and local (remote commands address them as NAME://path).\n" +
+			"Sources of type s3 are mirrored as legacy profiles, so --profile\n" +
+			"keeps resolving them by name.",
 	}
 	cmd.AddCommand(
 		sourceAddCmd(),
@@ -120,15 +122,44 @@ func sourceAddCmd() *cobra.Command {
 			"  s3    --endpoint --region --access-key --secret-key --session-token\n" +
 			"        --path-style/--virtual-hosted --insecure\n" +
 			"  sftp/scp/ftp/ftps  --host --port --username --password --root\n" +
-			"        (engines ship next; the connection is saved as configured)\n" +
+			"        shorthand URL: add [NAME] sftp://user:pass@host:port/root\n" +
+			"        (port and root optional; without NAME the hostname is the name)\n" +
 			"  local --root PATH",
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := store()
 			if err != nil {
 				return err
 			}
 			name := args[0]
+			var u sourceURL
+			if len(args) == 2 {
+				parsed, ok, perr := parseSourceURL(args[1])
+				if !ok {
+					return usageErr("second argument must be a sftp:// scp:// ftp:// or ftps:// URL")
+				}
+				if perr != nil {
+					return usageErr("%v", perr)
+				}
+				u = parsed
+			} else if parsed, ok, perr := parseSourceURL(args[0]); ok {
+				if perr != nil {
+					return usageErr("%v", perr)
+				}
+				u, name = parsed, parsed.host
+			}
+			if u.typ != "" {
+				if cmd.Flags().Changed("type") && typ != u.typ {
+					return usageErr("--type %s conflicts with the URL (its scheme implies --type %s)", typ, u.typ)
+				}
+				for _, f := range []string{"host", "port", "username", "password", "root"} {
+					if cmd.Flags().Changed(f) {
+						return usageErr("--%s cannot be combined with a URL argument (the URL sets it)", f)
+					}
+				}
+				typ, host, port = u.typ, u.host, u.port
+				username, password, root = u.username, u.password, u.root
+			}
 			var src profile.Source
 			switch typ {
 			case profile.TypeS3:
@@ -235,9 +266,6 @@ func sourceAddCmd() *cobra.Command {
 			case profile.TypeLocal:
 				fmt.Printf("  root:     %s\n", src.LocalRoot)
 			}
-			if src.Type != profile.TypeS3 && src.Type != profile.TypeLocal {
-				col.dim.Println("  note:     remote-filesystem engines ship next; the connection is saved as configured")
-			}
 			return nil
 		},
 	}
@@ -258,6 +286,58 @@ func sourceAddCmd() *cobra.Command {
 	f.BoolVar(&insecure, "insecure", false, "skip TLS verification (labs only)")
 	f.BoolVar(&makeDefault, "default", false, "make this the default source (s3)")
 	return cmd
+}
+
+// sourceURL is a parsed sftp:// scp:// ftp:// ftps:// connection URL —
+// the `source add [NAME] URL` shorthand.
+type sourceURL struct {
+	typ      string
+	host     string
+	port     int
+	username string
+	password string
+	root     string
+}
+
+// parseSourceURL parses a scheme://user:pass@host:port/root connection
+// URL. ok=false for anything that is not one of the four remote schemes
+// (plain names, s3:// URIs); err carries malformed-URL detail when ok=true.
+func parseSourceURL(raw string) (u sourceURL, ok bool, err error) {
+	i := strings.Index(raw, "://")
+	if i <= 0 {
+		return sourceURL{}, false, nil
+	}
+	typ, known := map[string]string{
+		"sftp": profile.TypeSFTP,
+		"scp":  profile.TypeSCP,
+		"ftp":  profile.TypeFTP,
+		"ftps": profile.TypeFTPS,
+	}[strings.ToLower(raw[:i])]
+	if !known {
+		return sourceURL{}, false, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return sourceURL{}, true, fmt.Errorf("malformed URL %q: %v", raw, err)
+	}
+	if parsed.Hostname() == "" {
+		return sourceURL{}, true, fmt.Errorf("URL %q has no host", raw)
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return sourceURL{}, true, fmt.Errorf("URL %q: query strings and fragments are not valid here", raw)
+	}
+	u = sourceURL{typ: typ, host: parsed.Hostname(), username: parsed.User.Username()}
+	u.password, _ = parsed.User.Password()
+	if p := parsed.Port(); p != "" {
+		u.port, err = strconv.Atoi(p)
+		if err != nil || u.port < 1 || u.port > 65535 {
+			return sourceURL{}, true, fmt.Errorf("URL %q: invalid port %q", raw, p)
+		}
+	}
+	// Root keeps the URL's leading slash: both engines anchor "/" at
+	// Root ("/srv/data"), and an empty path stays the login directory.
+	u.root = strings.TrimSuffix(parsed.Path, "/")
+	return u, true, nil
 }
 
 // sourceDetail is the one-line human summary per source type.

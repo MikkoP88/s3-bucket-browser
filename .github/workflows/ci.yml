@@ -157,7 +157,9 @@ jobs:
 
       - name: Start SFTP + FTP servers
         run: |
-          docker run -d --name sftp -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100
+          # The trailing :upload field gives e2e a writable /home/e2e/upload
+          # inside the chroot (the transfer matrix writes there).
+          docker run -d --name sftp -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100:upload
           # PASV_ADDRESS + mapped passive port range make PASV data
           # connections work through Docker NAT.
           docker run -d --name ftp -p 2121:21 -p 21000-21002:21000-21002 \

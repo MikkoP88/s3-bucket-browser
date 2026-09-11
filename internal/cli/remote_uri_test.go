@@ -147,6 +147,31 @@ func TestRemoteCopyLocal(t *testing.T) {
 	}
 }
 
+func TestRemoteCopySingleFileFolderDestinations(t *testing.T) {
+	// Regression: a single file onto a folder-style remote destination
+	// (trailing slash, or a URI naming an existing folder) must land at
+	// dir/file.txt — not dir/file.txt/file.txt.
+	srcEnv(t)
+	root := reloadStoreRoot(t)
+
+	if code := Execute([]string{"cp", filepath.Join(root, "a.txt"), "lab://docs/"}); code != 0 {
+		t.Fatalf("cp file -> trailing-slash dir: exit %d", code)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "docs", "a.txt")); err != nil || string(b) != "alpha" {
+		t.Fatalf("trailing-slash dst: %q %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "docs", "a.txt", "a.txt")); !os.IsNotExist(err) {
+		t.Fatal("trailing-slash dst nested the file inside a directory")
+	}
+
+	if code := Execute([]string{"cp", filepath.Join(root, "a.txt"), "lab://docs"}); code != 0 {
+		t.Fatalf("cp file -> existing dir: exit %d", code)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, "docs", "a.txt")); err != nil || string(b) != "alpha" {
+		t.Fatalf("existing-dir dst: %q %v", b, err)
+	}
+}
+
 func TestRemoteCopyRemoteSameEngine(t *testing.T) {
 	srcEnv(t)
 

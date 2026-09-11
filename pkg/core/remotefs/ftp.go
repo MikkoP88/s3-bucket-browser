@@ -11,9 +11,12 @@ package remotefs
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
+	"net/textproto"
 	"path"
 	"strconv"
 	"strings"
@@ -125,11 +128,43 @@ func (f *FTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 	return entries, nil
 }
 
+// ftpGetEntry stats one path. jlaffaye's GetEntry needs server-side MLST
+// support; vsftpd (the common Linux FTP server) implements neither MLST
+// nor MLSD and answers 502 — so fall back to listing the parent and
+// matching the basename, which works everywhere LIST does.
+func ftpGetEntry(c *ftp.ServerConn, absPath string) (*ftp.Entry, error) {
+	if strings.TrimSuffix(absPath, "/") == "" {
+		return &ftp.Entry{Type: ftp.EntryTypeFolder, Name: "/"}, nil // the root
+	}
+	e, err := c.GetEntry(absPath)
+	if err == nil {
+		return e, nil
+	}
+	dir, name := path.Split(strings.TrimSuffix(absPath, "/"))
+	entries, lerr := c.List(strings.TrimSuffix(dir, "/"))
+	if lerr != nil {
+		// A 550 on the parent listing means the parent is gone, so the
+		// path cannot exist — surface that, not the MLST 502, or
+		// callers can't recognize a missing file.
+		var l550 *textproto.Error
+		if errors.As(lerr, &l550) && l550.Code == 550 {
+			return nil, l550
+		}
+		return nil, err // the original error is the honest one
+	}
+	for _, e := range entries {
+		if e.Name == name {
+			return e, nil
+		}
+	}
+	return nil, &textproto.Error{Code: 550, Msg: "no such file"}
+}
+
 func (f *FTP) Stat(ctx context.Context, p string) (listing.Entry, error) {
 	cleaned := CleanPath(p)
-	e, err := f.c.GetEntry(f.abs(cleaned))
+	e, err := ftpGetEntry(f.c, f.abs(cleaned))
 	if err != nil {
-		return listing.Entry{}, err
+		return listing.Entry{}, ftpNotExist(p, err)
 	}
 	name := path.Base(strings.TrimSuffix(cleaned, "/"))
 	entry := ftpEntry(path.Dir(cleaned), e)
@@ -137,14 +172,30 @@ func (f *FTP) Stat(ctx context.Context, p string) (listing.Entry, error) {
 	return entry, nil
 }
 
-func (f *FTP) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) {
-	resp, err := f.c.Retr(f.abs(p))
-	if err != nil {
-		return nil, 0, err
+// ftpNotExist maps the FTP 550 "unavailable" reply to a PathError over
+// fs.ErrNotExist, so both os.IsNotExist and errors.Is guards behave like
+// the local/sftp engines (os.IsNotExist only unwraps PathError-style
+// errors, not arbitrary %w chains).
+func ftpNotExist(p string, err error) error {
+	var tpErr *textproto.Error
+	if errors.As(err, &tpErr) && tpErr.Code == 550 {
+		return &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
 	}
+	return err
+}
+
+func (f *FTP) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) {
+	// SIZE must precede RETR: the server sends the transfer-complete
+	// reply (226) right after the data connection closes, and that reply
+	// would still sit unread on the control channel when SIZE is issued,
+	// desyncing it (the size would silently come back 0).
 	size, err := f.c.FileSize(f.abs(p))
 	if err != nil {
 		size = 0 // server refused SIZE (ASCII mode); stream without it
+	}
+	resp, err := f.c.Retr(f.abs(p))
+	if err != nil {
+		return nil, 0, err
 	}
 	return resp, size, nil
 }
@@ -164,8 +215,10 @@ func (f *FTP) MkdirAll(ctx context.Context, dir string) error {
 	cur := ""
 	for _, seg := range strings.Split(strings.Trim(cleaned, "/"), "/") {
 		cur += "/" + seg
-		if err := f.c.MakeDir(cur); err != nil {
-			e, statErr := f.c.GetEntry(cur)
+		// Every segment is anchored at the source root — a bare path
+		// would create the tree at the server root instead.
+		if err := f.c.MakeDir(f.abs(cur)); err != nil {
+			e, statErr := ftpGetEntry(f.c, f.abs(cur))
 			if statErr != nil || e.Type != ftp.EntryTypeFolder {
 				return fmt.Errorf("mkdir %s: %w", cur, err)
 			}
@@ -179,7 +232,7 @@ func (f *FTP) Remove(ctx context.Context, p string) error {
 	if cleaned == "/" {
 		return fmt.Errorf("refusing to remove the source root")
 	}
-	e, err := f.c.GetEntry(f.abs(cleaned))
+	e, err := ftpGetEntry(f.c, f.abs(cleaned))
 	if err != nil {
 		return err
 	}

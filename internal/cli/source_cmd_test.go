@@ -147,6 +147,58 @@ func TestSourceAddRemoteAndGuards(t *testing.T) {
 	}
 }
 
+func TestSourceAddURLShorthand(t *testing.T) {
+	cliEnv(t)
+
+	// NAME + URL: every component lands in the saved source.
+	if code := Execute([]string{"source", "add", "vault", "sftp://deploy:hunter2@files.example.com:2222/srv/data"}); code != 0 {
+		t.Fatalf("add NAME URL: exit %d", code)
+	}
+	src, err := reloadStore(t).GetSource("vault")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Type != profile.TypeSFTP || src.Host != "files.example.com" || src.Port != 2222 ||
+		src.Username != "deploy" || src.Password != "hunter2" || src.Root != "/srv/data" {
+		t.Fatalf("URL components not stored: %+v", src)
+	}
+
+	// URL only: hostname becomes the name; port 0 keeps the per-type
+	// default at dial time; empty path keeps the login directory.
+	if code := Execute([]string{"source", "add", "ftp://e2e@127.0.0.1"}); code != 0 {
+		t.Fatalf("add URL only: exit %d", code)
+	}
+	src, err = reloadStore(t).GetSource("127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.Type != profile.TypeFTP || src.Port != 0 || src.Username != "e2e" || src.Root != "" {
+		t.Fatalf("URL-only form wrong: %+v", src)
+	}
+
+	// Percent-encoding carries special characters in the password.
+	if code := Execute([]string{"source", "add", "enc", "ftps://u:p%40ss@box.example.com:990"}); code != 0 {
+		t.Fatalf("add encoded URL: exit %d", code)
+	}
+	if src, err = reloadStore(t).GetSource("enc"); err != nil || src.Password != "p@ss" {
+		t.Fatalf("percent-decoded password wrong: %+v %v", src, err)
+	}
+
+	// Guards: URL wins, conflicting flags are usage errors.
+	if code := Execute([]string{"source", "add", "x", "sftp://h.example.com", "--host", "other"}); code != exitUsage {
+		t.Errorf("URL + --host: exit %d, want %d", code, exitUsage)
+	}
+	if code := Execute([]string{"source", "add", "x", "--type", "ftp", "sftp://h.example.com"}); code != exitUsage {
+		t.Errorf("conflicting --type: exit %d, want %d", code, exitUsage)
+	}
+	if code := Execute([]string{"source", "add", "x", "not-a-url"}); code != exitUsage {
+		t.Errorf("non-URL second arg: exit %d, want %d", code, exitUsage)
+	}
+	if code := Execute([]string{"source", "add", "sftp://host:99999"}); code != exitUsage {
+		t.Errorf("invalid port: exit %d, want %d", code, exitUsage)
+	}
+}
+
 func TestProfileCommandsMirrorSources(t *testing.T) {
 	cliEnv(t)
 

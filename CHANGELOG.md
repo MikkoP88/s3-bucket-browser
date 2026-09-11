@@ -8,6 +8,23 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `source add` URL shorthand: `s3b source add [NAME] sftp://user:pass@host:port/root`
+  (scp:// ftp:// ftps:// too) sets type, host, port, credentials and root
+  from one URL — percent-encoded special characters in passwords are
+  decoded, the name defaults to the hostname, and combining a URL with
+  `--type/--host/--port/--username/--password/--root` is a usage error.
+- FTP engine unit suite: a minimal but real in-process FTP server (RFC 959
+  control protocol, RFC 3659 MLST/MLSD facts, EPSV/PASV data connections)
+  serves the local filesystem and anchors the client at a temp root,
+  mirroring the SFTP suite. The full FS contract — List/Stat/Open/Create/
+  MkdirAll/Rename/Remove, root-escape guards, auth and dial errors — runs
+  twice: against an MLSD-capable server and against a vsftpd-style one
+  (no MLST: unix `ls` listings, no single-entry stat).
+- The remote e2e script now drives the whole M10.5 command matrix against
+  the live Docker servers: mkdir/cp/ls/tree/du/stat through `NAME://`
+  URIs (the sftp:// URL shorthand included), byte-verified
+  local→remote→local round trips with space/unicode names, same-engine
+  spool copies, mv, cross-engine sftp↔ftp transfers, and rm tree guards.
 - Portable release builds (M10.6): every release now ships portable
   editions next to the installers — `s3b-<ver>-linux-amd64-portable.tar.gz`,
   `s3b-<ver>-linux-arm64-cli-portable.tar.gz` and
@@ -256,6 +273,30 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- FTP engine against vsftpd and other no-MLST servers: single-entry stat
+  (Stat, MkdirAll's segment verification, Remove) fell over the client
+  library's synthetic 502 when the server implements neither MLST nor
+  MLSD — vsftpd, the common Linux FTP server, does not. Stat now falls
+  back to listing the parent and matching the basename, works everywhere
+  LIST does, and reports a missing path as a proper not-exist error.
+- FTP engine: `Open` issued RETR before SIZE; the transfer-complete
+  reply still pending on the control channel desynced the SIZE that
+  followed, so downloads silently reported size 0. SIZE now precedes RETR.
+- FTP engine: `MkdirAll` sent unanchored paths, creating the tree at the
+  server root instead of inside the source root. Every segment is now
+  anchored like every other engine operation.
+- FTP engine: 550 replies surfaced as raw protocol errors, so neither
+  `os.IsNotExist` nor `errors.Is(err, fs.ErrNotExist)` recognized a
+  missing path; they now map to a PathError over `fs.ErrNotExist`,
+  matching the local and SFTP engines.
+- CLI: copying a single file onto a folder-style remote destination
+  (`cp file.txt name://dir/` or a URI naming an existing folder) nested
+  the file as `dir/file.txt/file.txt` — the destination resolver
+  appended the filename while still flagging folder mode, so the copy
+  loop appended it a second time. Folder destinations now always land
+  `dir/file.txt`.
+- `source add` help no longer claims the remote-filesystem engines "ship
+  next" — they shipped; the shorthand URL form is documented instead.
 - Generated source IDs re-roll on nanosecond-clock collisions (observed
   on Windows), which could silently replace a just-added source with the
   next one.

@@ -2,15 +2,16 @@
 # End-to-end test of the s3b remote-source engines against real servers:
 # OpenSSH/SFTP on localhost:2222 and vsftpd/FTP on localhost:2121 (see the
 # e2e-remote CI job, or locally:
-#   docker run -d -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100
+#   docker run -d -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100:upload
 #   docker run -d -p 2121:21 -p 21000-21002:21000-21002 \
 #     -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
 #     -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 fauria/vsftpd)
 #
-# The M9 CLI surface is source add/test/list: `source test` performs a real
-# dial + root listing, so this suite exercises the actual SSH and FTP
-# handshakes, auth success and failure, and the local engine. Remote
-# ls/cp commands extend this script when they land (CLI parity slice).
+# The M9 source surface (add/test/list) and the M10.5 remote commands
+# (ls/tree/du/stat/mkdir/cp/mv/rm through NAME:// URIs) run against the
+# real servers: SSH and FTP handshakes, auth, PASV data connections, and
+# the transfer matrix — local<->remote, same-engine spool copies, and
+# cross-engine sftp<->ftp, including special-character filenames.
 #
 # The test never touches the user's profile store: S3B_CONFIG is pointed at a
 # throwaway directory for the whole run.
@@ -97,11 +98,78 @@ step "unknown host fails fast"
 expect_fail "$BIN" source test dead
 pass "unreachable host rejected"
 
+step "remote command matrix: writable sources (URL shorthand live)"
+# atmoz/sftp gives e2e a writable /upload inside the chroot; the sftp
+# source is added with the sftp:// URL shorthand to prove it against a
+# real server. The ftp source roots at the vsftpd login directory.
+"$BIN" source add sftpw "sftp://e2e:e2epass@127.0.0.1:${SFTP_PORT}/upload" >/dev/null
+"$BIN" source add ftpw --type ftp --host 127.0.0.1 --port "$FTP_PORT" \
+  --username e2e --password e2epass >/dev/null
+"$BIN" source test sftpw | grep -q 'OK' || fail "sftpw (URL shorthand) test"
+"$BIN" source test ftpw | grep -q 'OK' || fail "ftpw test"
+pass "writable sources online (sftp:// URL shorthand included)"
+
+step "matrix: mkdir + cp local->remote + inspect (ls/tree/du/stat)"
+mkdir -p "$WORK/seed/docs"
+printf 'alpha contents\n' > "$WORK/seed/a.txt"
+printf 'beta body\n' > "$WORK/seed/docs/b with space.txt"
+printf 'unicode åäö\n' > "$WORK/seed/docs/uni-å.txt"
+
+"$BIN" mkdir sftpw://e2e-matrix >/dev/null
+"$BIN" cp "$WORK/seed/a.txt" sftpw://e2e-matrix/ >/dev/null
+"$BIN" cp "$WORK/seed" sftpw://e2e-matrix/seed -r >/dev/null
+"$BIN" ls sftpw://e2e-matrix | grep -q 'a.txt' || fail "ls: pushed file"
+"$BIN" ls sftpw://e2e-matrix/seed -r | grep -q 'b with space.txt' || fail "ls -r: special chars"
+"$BIN" tree sftpw://e2e-matrix | grep -q 'docs' || fail "tree"
+"$BIN" du sftpw://e2e-matrix | grep -q '4 object(s)' || fail "du count"
+"$BIN" stat sftpw://e2e-matrix/seed/docs/uni-å.txt | grep -q 'File' || fail "stat"
+"$BIN" ls sftpw://e2e-matrix --json | grep -q '"name": "a.txt"' || fail "ls --json"
+pass "mkdir/cp/ls/tree/du/stat over SFTP with special-char names"
+
+step "matrix: cp remote->local round trip verifies bytes"
+"$BIN" cp sftpw://e2e-matrix/seed "$WORK/out" -r >/dev/null
+cmp -s "$WORK/seed/docs/b with space.txt" "$WORK/out/docs/b with space.txt" \
+  || fail "round trip: special-char file differs"
+cmp -s "$WORK/seed/docs/uni-å.txt" "$WORK/out/docs/uni-å.txt" \
+  || fail "round trip: unicode file differs"
+pass "bytes survive the local->remote->local round trip"
+
+step "matrix: same-engine copy (temp spool) and mv"
+"$BIN" cp sftpw://e2e-matrix/seed sftpw://e2e-matrix/mirror -r >/dev/null
+"$BIN" ls sftpw://e2e-matrix/mirror -r | grep -q 'uni-å.txt' || fail "same-engine copy"
+"$BIN" mv sftpw://e2e-matrix/a.txt sftpw://e2e-matrix/renamed.txt >/dev/null
+"$BIN" stat sftpw://e2e-matrix/renamed.txt | grep -q 'renamed' || fail "mv stat"
+expect_fail "$BIN" stat sftpw://e2e-matrix/a.txt
+pass "same-engine copy + mv over one SFTP connection"
+
+step "matrix: cross-engine transfer sftp <-> ftp"
+# cp -r SRC DST lands the *contents* of SRC in DST (rsync-style), so
+# seed's tree arrives directly under ftpw://matrix.
+"$BIN" cp sftpw://e2e-matrix/seed ftpw://matrix -r >/dev/null
+"$BIN" ls ftpw://matrix -r | grep -q 'docs/b with space.txt' || fail "ftp: special chars"
+"$BIN" cp ftpw://matrix sftpw://e2e-matrix/back -r >/dev/null
+"$BIN" ls sftpw://e2e-matrix/back -r | grep -q 'uni-å.txt' || fail "ftp->sftp copy"
+pass "cross-engine transfers stream between engines"
+
+step "matrix: rm guards and tree removal"
+expect_fail "$BIN" rm sftpw://e2e-matrix/seed
+"$BIN" rm sftpw://e2e-matrix/renamed.txt >/dev/null
+expect_fail "$BIN" stat sftpw://e2e-matrix/renamed.txt
+"$BIN" rm sftpw://e2e-matrix -r >/dev/null
+expect_fail "$BIN" stat sftpw://e2e-matrix
+"$BIN" rm ftpw://matrix -r >/dev/null
+# (vsftpd's LIST of a missing dir succeeds with an empty listing, so
+# absence is asserted through stat's not-exist mapping, not ls.)
+expect_fail "$BIN" stat ftpw://matrix
+pass "rm refuses folders without -r, removes trees on both engines"
+
 step "cleanup"
 "$BIN" source remove sftpbox >/dev/null
 "$BIN" source remove ftpbox >/dev/null
 "$BIN" source remove disk >/dev/null
 "$BIN" source remove dead >/dev/null
+"$BIN" source remove sftpw >/dev/null
+"$BIN" source remove ftpw >/dev/null
 if "$BIN" source list --json | grep -q '"name"'; then fail "sources left behind"; fi
 pass "all sources removed"
 
