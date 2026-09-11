@@ -415,7 +415,7 @@ func sourceUseCmd() *cobra.Command {
 				return usageErr("%v", err)
 			}
 			if src.Type != profile.TypeS3 {
-				return usageErr("only S3 sources can be the default connection (remote engines ship next)")
+				return usageErr("only S3 sources can be the default connection")
 			}
 			if err := s.SetDefaultS3(src.Name); err != nil {
 				return usageErr("%v", err)

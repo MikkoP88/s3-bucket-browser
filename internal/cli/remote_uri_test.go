@@ -160,7 +160,7 @@ func TestRemoteCopySingleFileFolderDestinations(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(root, "docs", "a.txt")); err != nil || string(b) != "alpha" {
 		t.Fatalf("trailing-slash dst: %q %v", b, err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "docs", "a.txt", "a.txt")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "docs", "a.txt", "a.txt")); err == nil {
 		t.Fatal("trailing-slash dst nested the file inside a directory")
 	}
 

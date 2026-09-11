@@ -61,8 +61,8 @@ pass "SFTP and FTP servers reachable"
 step "sftp source: add + real connectivity test"
 "$BIN" source add sftpbox --type sftp --host 127.0.0.1 --port "$SFTP_PORT" \
   --username e2e --password e2epass >/dev/null
-"$BIN" source test sftpbox | grep -q 'OK' || fail "sftp source test"
-"$BIN" source list | grep -q 'sftpbox' || fail "sftp source not listed"
+"$BIN" source test sftpbox | grep 'OK' >/dev/null || fail "sftp source test"
+"$BIN" source list | grep 'sftpbox' >/dev/null || fail "sftp source not listed"
 pass "SFTP handshake + auth against real OpenSSH"
 
 step "sftp source: wrong password is an honest failure"
@@ -75,7 +75,7 @@ pass "wrong credentials rejected"
 step "ftp source: add + real connectivity test"
 "$BIN" source add ftpbox --type ftp --host 127.0.0.1 --port "$FTP_PORT" \
   --username e2e --password e2epass >/dev/null
-"$BIN" source test ftpbox | grep -q 'OK' || fail "ftp source test"
+"$BIN" source test ftpbox | grep 'OK' >/dev/null || fail "ftp source test"
 pass "FTP handshake + auth + PASV data connection against real vsftpd"
 
 step "ftp source: wrong password is an honest failure"
@@ -89,7 +89,7 @@ step "local source: add + test over a real directory"
 mkdir -p "$WORK/localroot/docs"
 printf 'hello\n' > "$WORK/localroot/readme.md"
 "$BIN" source add disk --type local --root "$WORK/localroot" >/dev/null
-"$BIN" source test disk | grep -q 'OK' || fail "local source test"
+"$BIN" source test disk | grep 'OK' >/dev/null || fail "local source test"
 pass "local engine lists a real directory"
 
 step "unknown host fails fast"
@@ -105,8 +105,8 @@ step "remote command matrix: writable sources (URL shorthand live)"
 "$BIN" source add sftpw "sftp://e2e:e2epass@127.0.0.1:${SFTP_PORT}/upload" >/dev/null
 "$BIN" source add ftpw --type ftp --host 127.0.0.1 --port "$FTP_PORT" \
   --username e2e --password e2epass >/dev/null
-"$BIN" source test sftpw | grep -q 'OK' || fail "sftpw (URL shorthand) test"
-"$BIN" source test ftpw | grep -q 'OK' || fail "ftpw test"
+"$BIN" source test sftpw | grep 'OK' >/dev/null || fail "sftpw (URL shorthand) test"
+"$BIN" source test ftpw | grep 'OK' >/dev/null || fail "ftpw test"
 pass "writable sources online (sftp:// URL shorthand included)"
 
 step "matrix: mkdir + cp local->remote + inspect (ls/tree/du/stat)"
@@ -118,12 +118,12 @@ printf 'unicode åäö\n' > "$WORK/seed/docs/uni-å.txt"
 "$BIN" mkdir sftpw://e2e-matrix >/dev/null
 "$BIN" cp "$WORK/seed/a.txt" sftpw://e2e-matrix/ >/dev/null
 "$BIN" cp "$WORK/seed" sftpw://e2e-matrix/seed -r >/dev/null
-"$BIN" ls sftpw://e2e-matrix | grep -q 'a.txt' || fail "ls: pushed file"
-"$BIN" ls sftpw://e2e-matrix/seed -r | grep -q 'b with space.txt' || fail "ls -r: special chars"
-"$BIN" tree sftpw://e2e-matrix | grep -q 'docs' || fail "tree"
-"$BIN" du sftpw://e2e-matrix | grep -q '4 object(s)' || fail "du count"
-"$BIN" stat sftpw://e2e-matrix/seed/docs/uni-å.txt | grep -q 'File' || fail "stat"
-"$BIN" ls sftpw://e2e-matrix --json | grep -q '"name": "a.txt"' || fail "ls --json"
+"$BIN" ls sftpw://e2e-matrix | grep 'a.txt' >/dev/null || fail "ls: pushed file"
+"$BIN" ls sftpw://e2e-matrix/seed -r | grep 'b with space.txt' >/dev/null || fail "ls -r: special chars"
+"$BIN" tree sftpw://e2e-matrix | grep 'docs' >/dev/null || fail "tree"
+"$BIN" du sftpw://e2e-matrix | grep '4 object(s)' >/dev/null || fail "du count"
+"$BIN" stat sftpw://e2e-matrix/seed/docs/uni-å.txt | grep 'File' >/dev/null || fail "stat"
+"$BIN" ls sftpw://e2e-matrix --json | grep '"name": "a.txt"' >/dev/null || fail "ls --json"
 pass "mkdir/cp/ls/tree/du/stat over SFTP with special-char names"
 
 step "matrix: cp remote->local round trip verifies bytes"
@@ -136,9 +136,9 @@ pass "bytes survive the local->remote->local round trip"
 
 step "matrix: same-engine copy (temp spool) and mv"
 "$BIN" cp sftpw://e2e-matrix/seed sftpw://e2e-matrix/mirror -r >/dev/null
-"$BIN" ls sftpw://e2e-matrix/mirror -r | grep -q 'uni-å.txt' || fail "same-engine copy"
+"$BIN" ls sftpw://e2e-matrix/mirror -r | grep 'uni-å.txt' >/dev/null || fail "same-engine copy"
 "$BIN" mv sftpw://e2e-matrix/a.txt sftpw://e2e-matrix/renamed.txt >/dev/null
-"$BIN" stat sftpw://e2e-matrix/renamed.txt | grep -q 'renamed' || fail "mv stat"
+"$BIN" stat sftpw://e2e-matrix/renamed.txt | grep 'renamed' >/dev/null || fail "mv stat"
 expect_fail "$BIN" stat sftpw://e2e-matrix/a.txt
 pass "same-engine copy + mv over one SFTP connection"
 
@@ -146,9 +146,9 @@ step "matrix: cross-engine transfer sftp <-> ftp"
 # cp -r SRC DST lands the *contents* of SRC in DST (rsync-style), so
 # seed's tree arrives directly under ftpw://matrix.
 "$BIN" cp sftpw://e2e-matrix/seed ftpw://matrix -r >/dev/null
-"$BIN" ls ftpw://matrix -r | grep -q 'docs/b with space.txt' || fail "ftp: special chars"
+"$BIN" ls ftpw://matrix -r | grep 'docs/b with space.txt' >/dev/null || fail "ftp: special chars"
 "$BIN" cp ftpw://matrix sftpw://e2e-matrix/back -r >/dev/null
-"$BIN" ls sftpw://e2e-matrix/back -r | grep -q 'uni-å.txt' || fail "ftp->sftp copy"
+"$BIN" ls sftpw://e2e-matrix/back -r | grep 'uni-å.txt' >/dev/null || fail "ftp->sftp copy"
 pass "cross-engine transfers stream between engines"
 
 step "matrix: rm guards and tree removal"
@@ -170,7 +170,7 @@ step "cleanup"
 "$BIN" source remove dead >/dev/null
 "$BIN" source remove sftpw >/dev/null
 "$BIN" source remove ftpw >/dev/null
-if "$BIN" source list --json | grep -q '"name"'; then fail "sources left behind"; fi
+if "$BIN" source list --json | grep '"name"'; then fail "sources left behind"; fi
 pass "all sources removed"
 
 printf '\nALL REMOTE E2E CHECKS PASSED\n'
