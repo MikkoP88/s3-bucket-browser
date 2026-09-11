@@ -10,10 +10,11 @@ import {
   versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
-import { t, detectLang, setLang } from './i18n.js';
+import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
 import { setCommandContext, updateCommandState, commandState } from './commands.js';
 import { createMenubar } from './menubar.js';
 import { createLogArea } from './logarea.js';
+import { settingsDialog } from './settings.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -69,9 +70,10 @@ async function boot() {
 
 // toggleLogArea shows/hides the bottom log drawer (View menu, Ctrl+L,
 // status-bar button) and remembers the choice.
-function toggleLogArea() {
-  const elx = $('logarea');
-  const open = elx.classList.toggle('hidden') === false;
+function toggleLogArea() { setLogArea($('logarea').classList.contains('hidden')); }
+
+function setLogArea(open) {
+  $('logarea').classList.toggle('hidden', !open);
   localStorage.setItem('s3b-log', open ? '1' : '0');
 }
 
@@ -1210,8 +1212,9 @@ function updateEditingStatus() {
   }).catch(() => {});
 }
 
-function togglePanes() {
-  const on = !localPane.visible;
+function togglePanes() { setPanes(!localPane.visible); }
+
+function setPanes(on) {
   localStorage.setItem('s3b-panes', on ? '1' : '0');
   if (on) localPane.show();
   else localPane.hide();
@@ -1950,6 +1953,45 @@ async function closeProfileFileUi() {
   if (sources.some((s) => s.type === 's3')) nav.to({ kind: 'buckets' });
 }
 
+// ============================ settings ============================
+// savedLang: the persisted language choice ('auto' follows the browser).
+const savedLang = () => localStorage.getItem('s3b-lang') || 'auto';
+
+// setLanguage persists the choice and reloads — strings render once at
+// construction, and a reload is the honest way to re-render them all.
+function setLanguage(v) {
+  if (v === 'auto') localStorage.removeItem('s3b-lang');
+  else localStorage.setItem('s3b-lang', v);
+  window.location.reload();
+}
+
+// openSettings mounts the Settings dialog over the persisted knobs; rows
+// apply immediately through the same setters the menus use.
+function openSettings() {
+  settingsDialog({
+    state: {
+      theme: () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'),
+      lang: savedLang,
+      autoRefreshMs: () => autoRefreshMs,
+      refreshOnFocus: () => refreshOnFocus,
+      panes: () => localPane.visible,
+      log: () => !$('logarea').classList.contains('hidden'),
+      conflict: () => localStorage.getItem('s3b-conflict') || 'ask',
+      throttle: () => localStorage.getItem('s3b-throttle') || '0',
+    },
+    apply: {
+      theme: (v) => { document.documentElement.dataset.theme = v; localStorage.setItem('s3b-theme', v); },
+      lang: setLanguage,
+      autoRefresh: setAutoRefresh,
+      refreshOnFocus: setRefreshOnFocus,
+      panes: setPanes,
+      log: setLogArea,
+      conflict: (v) => localStorage.setItem('s3b-conflict', v),
+      throttle: (v) => localStorage.setItem('s3b-throttle', String(v)),
+    },
+  });
+}
+
 // ============================ menu bar ============================
 // enabled flags are re-evaluated on every dropdown open (menubar.js
 // re-renders), reading live state through commandState().
@@ -2006,6 +2048,27 @@ function mountMenubar() {
           })),
         },
         { label: t('ar.focus'), checked: () => refreshOnFocus, action: () => setRefreshOnFocus(!refreshOnFocus) },
+      ],
+    },
+    {
+      label: t('menu.settings'),
+      items: [
+        { label: t('settings.open'), action: openSettings },
+        null,
+        {
+          label: t('settings.language'),
+          items: [
+            { label: t('settings.langAuto'), checked: () => savedLang() === 'auto', action: () => setLanguage('auto') },
+            ...languages().map((code) => ({
+              label: LANG_NAMES[code] || code,
+              checked: () => savedLang() === code,
+              action: () => setLanguage(code),
+            })),
+          ],
+        },
+        { label: t('menu.panes'), kbd: 'F9', checked: () => localPane.visible, action: togglePanes },
+        { label: t('menu.log'), kbd: 'Ctrl+L', checked: () => !$('logarea').classList.contains('hidden'), action: toggleLogArea },
+        { label: t('menu.theme'), action: toggleTheme },
       ],
     },
     {

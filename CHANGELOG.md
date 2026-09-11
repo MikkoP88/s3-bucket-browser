@@ -8,6 +8,21 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Localized UI in 15 languages: English, Finnish, Swedish, German, French,
+  Spanish, Portuguese, Italian, Dutch, Polish, Russian, Turkish, Chinese
+  (Simplified), Japanese and Korean — all selectable from Settings → Language
+  or the Settings menu, shown under their native names, auto-detected from the
+  browser locale when set to Auto. `scripts/i18n-check.mjs` (now part of
+  `scripts/js-check.sh`) deep-validates every dictionary on each run: full key
+  parity with en, non-empty values, matching `{placeholder}` tokens and
+  LANG_NAMES coverage in both directions.
+- Settings menu in the top bar (between View and Help) with a full Settings
+  dialog: theme, language (Auto plus every supported language — switching
+  reloads the window), panels and log-area visibility, auto-refresh interval
+  and refresh-on-focus, plus transfer defaults — a conflict policy that can
+  skip the per-transfer dialog entirely (overwrite / skip / rename) and the
+  remembered speed limit. Every row applies immediately and persists across
+  restarts; the same keys the shell already read, so nothing migrates.
 - Native single-process launch on Windows: release binaries (and the README
   quickstart) link with `-H windowsgui` — the app starts with no console
   flash and no lingering console window, as one native process. The CLI in

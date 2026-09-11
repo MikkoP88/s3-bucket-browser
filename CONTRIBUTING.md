@@ -66,7 +66,8 @@ against a local MinIO — it never touches your real profile store.
 - **Frontend:** ES modules, no framework, no transpile step; keep
   frontend logic in testable modules (see `scripts/js-check.sh`).
 - **i18n:** user-visible frontend strings go through the i18n table
-  (English + Finnish are built in; other languages via PR).
+  (15 languages are built in; more via PR — `scripts/i18n-check.mjs`
+  enforces key parity, placeholders and native names per language).
 
 ## Reporting bugs
 

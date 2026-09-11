@@ -553,7 +553,16 @@ const RATE_LIMITS = [
 
 // conflictPolicy resolves null (canceled) or { policy, maxBps }. The speed
 // limit choice is remembered across transfers (localStorage s3b-throttle).
+// A saved conflict default (Settings, s3b-conflict: overwrite|skip|rename)
+// skips the dialog entirely and starts with the remembered speed limit.
 export function conflictPolicy(kind, target) {
+  const preset = localStorage.getItem('s3b-conflict') || 'ask';
+  if (preset !== 'ask') {
+    return Promise.resolve({
+      policy: preset,
+      maxBps: parseInt(localStorage.getItem('s3b-throttle') || '0', 10) || 0,
+    });
+  }
   let settled = false;
   return new Promise((resolve) => {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };

@@ -34,7 +34,7 @@ go build -tags desktop,production -o s3b ./cmd/s3b && ./s3b   # no arguments -> 
 - **Safety ladder**: deletes count first and act second; large selections demand typed confirmation, bucket removal demands typing the bucket name; removing a versioned bucket with `--force` purges the whole version history, markers included.
 - **Profiles**: color-coded connections, `~/.aws/credentials` import, built-in connectivity test, connection doctor.
 - **Light/dark theme**, conflict policies (overwrite / skip / rename) on upload and download, pre-signed URLs, server-side copy/move, rename, new folder.
-- **i18n ready** (English + Finnish built in), accessibility pass on the grid and dialogs (ARIA roles, focus trap), portable mode (drop a `s3b-portable` marker file next to the binary to keep config beside it).
+- **i18n ready** (15 languages built in — English, Suomi, Svenska, Deutsch, Français, Español, Português, Italiano, Nederlands, Polski, Русский, Türkçe, 中文， 日本語， 한국어; auto-detected, switchable in Settings), accessibility pass on the grid and dialogs (ARIA roles, focus trap), portable mode (drop a `s3b-portable` marker file next to the binary to keep config beside it).
 
 Headless Linux servers can build a pure-Go CLI without GTK dependencies:
 

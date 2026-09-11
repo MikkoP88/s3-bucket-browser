@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Syntax-check every frontend JS module (node --check, ESM mode).
+# Syntax-check every frontend JS module (node --check, ESM mode),
+# then deep-validate the i18n dictionaries (key parity + placeholders).
 set -u
 fail=0
 for f in frontend/js/*.js; do
@@ -12,4 +13,5 @@ for f in frontend/js/*.js; do
     fail=1
   fi
 done
+node scripts/i18n-check.mjs || fail=1
 exit $fail
