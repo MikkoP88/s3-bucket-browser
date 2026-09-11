@@ -142,9 +142,10 @@ jobs:
       - name: E2E against MinIO
         run: bash scripts/e2e-minio.sh
 
-  # Real OpenSSH (atmoz/sftp) and vsftpd (fauria/vsftpd) containers: the
-  # remote engines' handshakes, auth success/failure and PASV data
-  # connections, exercised through `s3b source test` (M9).
+  # Real OpenSSH (atmoz/sftp), vsftpd (fauria/vsftpd) and rclone/WebDAV
+  # containers: the remote engines' handshakes, auth success/failure, PASV
+  # data connections and PROPFIND plumbing, exercised through
+  # `s3b source test` (M9) and the transfer matrix.
   e2e-remote:
     runs-on: ubuntu-latest
     steps:
@@ -155,7 +156,7 @@ jobs:
           go-version: "1.25"
           cache: true
 
-      - name: Start SFTP + FTP servers
+      - name: Start SFTP + FTP + WebDAV servers
         run: |
           # The trailing :upload field gives e2e a writable /home/e2e/upload
           # inside the chroot (the transfer matrix writes there).
@@ -165,6 +166,12 @@ jobs:
           docker run -d --name ftp -p 2121:21 -p 21000-21002:21000-21002 \
             -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
             -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 fauria/vsftpd
+          # rclone serve webdav twice: once at the root, once under the
+          # /dav baseurl prefix (the anchored-root contract).
+          docker run -d --name webdav -p 7070:80 rclone/rclone:latest \
+            serve webdav --addr :80 --user e2e --pass e2epass /srv
+          docker run -d --name webdav-dav -p 7071:80 rclone/rclone:latest \
+            serve webdav --addr :80 --user e2e --pass e2epass --baseurl /dav /srv
 
       - name: E2E remote engines
         run: bash scripts/e2e-remote.sh

@@ -1,8 +1,9 @@
 // source_cmd.go is the CLI surface for data sources: any-type connections
-// (s3/sftp/scp/ftp/ftps/local — remote engines live in pkg/core/remotefs)
-// plus the password-encrypted Profile file container (export/import). The
-// legacy `s3b profile` family remains as the S3 specialization and stays in
-// sync through the profile ↔ source mirroring in the store.
+// (s3/sftp/scp/ftp/ftps/webdav/webdavs/local — remote engines live in
+// pkg/core/remotefs) plus the password-encrypted Profile file container
+// (export/import). The legacy `s3b profile` family remains as the S3
+// specialization and stays in sync through the profile ↔ source mirroring
+// in the store.
 package cli
 
 import (
@@ -28,7 +29,8 @@ func sourceCmd() *cobra.Command {
 		Use:   "source",
 		Short: "Manage data sources (any connection type)",
 		Long: "s3b source manages data sources of any type: s3, sftp, scp,\n" +
-			"ftp, ftps and local (remote commands address them as NAME://path).\n" +
+			"ftp, ftps, webdav, webdavs and local (remote commands address them\n" +
+			"as NAME://path).\n" +
 			"Sources of type s3 are mirrored as legacy profiles, so --profile\n" +
 			"keeps resolving them by name.",
 	}
@@ -121,9 +123,11 @@ func sourceAddCmd() *cobra.Command {
 		Long: "Add or update a data source of any type:\n" +
 			"  s3    --endpoint --region --access-key --secret-key --session-token\n" +
 			"        --path-style/--virtual-hosted --insecure\n" +
-			"  sftp/scp/ftp/ftps  --host --port --username --password --root\n" +
+			"  sftp/scp/ftp/ftps/webdav/webdavs\n" +
+			"        --host --port --username --password --root\n" +
 			"        shorthand URL: add [NAME] sftp://user:pass@host:port/root\n" +
-			"        (port and root optional; without NAME the hostname is the name)\n" +
+			"        (port and root optional; without NAME the hostname is the name;\n" +
+			"        webdavs:// is WebDAV over TLS)\n" +
 			"  local --root PATH",
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -136,7 +140,7 @@ func sourceAddCmd() *cobra.Command {
 			if len(args) == 2 {
 				parsed, ok, perr := parseSourceURL(args[1])
 				if !ok {
-					return usageErr("second argument must be a sftp:// scp:// ftp:// or ftps:// URL")
+					return usageErr("second argument must be a sftp:// scp:// ftp:// ftps:// webdav:// or webdavs:// URL")
 				}
 				if perr != nil {
 					return usageErr("%v", perr)
@@ -206,7 +210,7 @@ func sourceAddCmd() *cobra.Command {
 				}
 				return nil
 
-			case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS:
+			case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS, profile.TypeWebDAV, profile.TypeWebDAVS:
 				if strings.TrimSpace(host) == "" {
 					return usageErr("--host is required for %s sources", typ)
 				}
@@ -233,7 +237,7 @@ func sourceAddCmd() *cobra.Command {
 					LocalRoot: root,
 				}
 			default:
-				return usageErr("unsupported source type %q (want s3, sftp, scp, ftp, ftps or local)", typ)
+				return usageErr("unsupported source type %q (want s3, sftp, scp, ftp, ftps, webdav, webdavs or local)", typ)
 			}
 
 			if src.Type != profile.TypeS3 {
@@ -253,7 +257,7 @@ func sourceAddCmd() *cobra.Command {
 			}
 			col.hi.Printf("source %q saved (%s)\n", name, typ)
 			switch src.Type {
-			case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS:
+			case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS, profile.TypeWebDAV, profile.TypeWebDAVS:
 				portStr := fmt.Sprintf("%d", src.Port)
 				if src.Port == 0 {
 					portStr = fmt.Sprintf("(default %d)", src.DefaultPort())
@@ -261,7 +265,11 @@ func sourceAddCmd() *cobra.Command {
 				fmt.Printf("  host:     %s port: %s\n", src.Host, portStr)
 				fmt.Printf("  user:     %s\n", orDefault(src.Username, "(none)"))
 				if src.Password == "" {
-					fmt.Println("  password: (none — key auth at dial time for sftp/scp)")
+					if src.Type == profile.TypeSFTP || src.Type == profile.TypeSCP {
+						fmt.Println("  password: (none — key auth at dial time)")
+					} else {
+						fmt.Println("  password: (none — anonymous)")
+					}
 				}
 			case profile.TypeLocal:
 				fmt.Printf("  root:     %s\n", src.LocalRoot)
@@ -270,13 +278,13 @@ func sourceAddCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&typ, "type", "s3", "source type: s3, sftp, scp, ftp, ftps, local")
+	f.StringVar(&typ, "type", "s3", "source type: s3, sftp, scp, ftp, ftps, webdav, webdavs, local")
 	f.StringVar(&endpoint, "endpoint", "", "endpoint URL (empty = AWS)")
 	f.StringVar(&region, "region", "", "region (default us-east-1)")
 	f.StringVar(&accessKey, "access-key", "", "access key ID ($S3B_ACCESS_KEY)")
 	f.StringVar(&secretKey, "secret-key", "", "secret access key ($S3B_SECRET_KEY)")
 	f.StringVar(&sessionToken, "session-token", "", "STS session token")
-	f.StringVar(&host, "host", "", "remote host (sftp/scp/ftp/ftps)")
+	f.StringVar(&host, "host", "", "remote host (sftp/scp/ftp/ftps/webdav/webdavs)")
 	f.IntVar(&port, "port", 0, "port (0 = per-type default at dial time)")
 	f.StringVar(&username, "username", "", "remote username")
 	f.StringVar(&password, "password", "", "remote password ($S3B_PASSWORD)")
@@ -288,8 +296,8 @@ func sourceAddCmd() *cobra.Command {
 	return cmd
 }
 
-// sourceURL is a parsed sftp:// scp:// ftp:// ftps:// connection URL —
-// the `source add [NAME] URL` shorthand.
+// sourceURL is a parsed sftp:// scp:// ftp:// ftps:// webdav://
+// webdavs:// connection URL — the `source add [NAME] URL` shorthand.
 type sourceURL struct {
 	typ      string
 	host     string
@@ -300,7 +308,7 @@ type sourceURL struct {
 }
 
 // parseSourceURL parses a scheme://user:pass@host:port/root connection
-// URL. ok=false for anything that is not one of the four remote schemes
+// URL. ok=false for anything that is not one of the six remote schemes
 // (plain names, s3:// URIs); err carries malformed-URL detail when ok=true.
 func parseSourceURL(raw string) (u sourceURL, ok bool, err error) {
 	i := strings.Index(raw, "://")
@@ -308,10 +316,12 @@ func parseSourceURL(raw string) (u sourceURL, ok bool, err error) {
 		return sourceURL{}, false, nil
 	}
 	typ, known := map[string]string{
-		"sftp": profile.TypeSFTP,
-		"scp":  profile.TypeSCP,
-		"ftp":  profile.TypeFTP,
-		"ftps": profile.TypeFTPS,
+		"sftp":    profile.TypeSFTP,
+		"scp":     profile.TypeSCP,
+		"ftp":     profile.TypeFTP,
+		"ftps":    profile.TypeFTPS,
+		"webdav":  profile.TypeWebDAV,
+		"webdavs": profile.TypeWebDAVS,
 	}[strings.ToLower(raw[:i])]
 	if !known {
 		return sourceURL{}, false, nil
@@ -348,7 +358,7 @@ func sourceDetail(s profile.Source) string {
 			return ""
 		}
 		return orDefault(s.S3.Endpoint, "(AWS default)")
-	case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS:
+	case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS, profile.TypeWebDAV, profile.TypeWebDAVS:
 		port := s.Port
 		if port == 0 {
 			port = s.DefaultPort()

@@ -56,6 +56,8 @@ func Dial(ctx context.Context, src profile.Source) (FS, error) {
 		return DialSFTP(ctx, src)
 	case profile.TypeFTP, profile.TypeFTPS:
 		return DialFTP(ctx, src)
+	case profile.TypeWebDAV, profile.TypeWebDAVS:
+		return DialWebDAV(ctx, src)
 	default:
 		return nil, fmt.Errorf("source %q: no filesystem engine for type %q", src.Name, src.Type)
 	}

@@ -10,6 +10,8 @@ const SRC_ICON = {
   scp: '\u{1F5DD}',
   ftp: '\u{1F517}',
   ftps: '\u{1F517}',
+  webdav: '\u{1F310}',
+  webdavs: '\u{1F310}',
   local: '\u{1F4BB}',
 };
 

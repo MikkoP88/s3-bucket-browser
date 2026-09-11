@@ -13,12 +13,14 @@ import (
 
 // Source types.
 const (
-	TypeS3    = "s3"
-	TypeSFTP  = "sftp"
-	TypeSCP   = "scp" // sftp engine, scp:// URIs
-	TypeFTP   = "ftp"
-	TypeFTPS  = "ftps"
-	TypeLocal = "local"
+	TypeS3      = "s3"
+	TypeSFTP    = "sftp"
+	TypeSCP     = "scp" // sftp engine, scp:// URIs
+	TypeFTP     = "ftp"
+	TypeFTPS    = "ftps"
+	TypeWebDAV  = "webdav"
+	TypeWebDAVS = "webdavs" // TLS, webdavs:// URIs
+	TypeLocal   = "local"
 )
 
 // Source is one data source: an S3 endpoint, a remote filesystem host or a
@@ -59,6 +61,10 @@ func (s Source) DefaultPort() int {
 		return 21
 	case TypeFTPS:
 		return 990
+	case TypeWebDAV:
+		return 80
+	case TypeWebDAVS:
+		return 443
 	default:
 		return 0
 	}
@@ -75,7 +81,7 @@ func (s Source) Validate() error {
 		if s.S3 == nil {
 			return fmt.Errorf("source %q: s3 source needs connection details", s.Name)
 		}
-	case TypeSFTP, TypeSCP, TypeFTP, TypeFTPS:
+	case TypeSFTP, TypeSCP, TypeFTP, TypeFTPS, TypeWebDAV, TypeWebDAVS:
 		if strings.TrimSpace(s.Host) == "" {
 			return fmt.Errorf("source %q: host is required for %s sources", s.Name, s.Type)
 		}

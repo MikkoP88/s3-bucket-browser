@@ -2209,7 +2209,8 @@ Manage data sources (any connection type)
 ### Synopsis
 
 s3b source manages data sources of any type: s3, sftp, scp,
-ftp, ftps and local (remote commands address them as NAME://path).
+ftp, ftps, webdav, webdavs and local (remote commands address them
+as NAME://path).
 Sources of type s3 are mirrored as legacy profiles, so --profile
 keeps resolving them by name.
 
@@ -2251,9 +2252,11 @@ Add or update a data source
 Add or update a data source of any type:
   s3    --endpoint --region --access-key --secret-key --session-token
         --path-style/--virtual-hosted --insecure
-  sftp/scp/ftp/ftps  --host --port --username --password --root
+  sftp/scp/ftp/ftps/webdav/webdavs
+        --host --port --username --password --root
         shorthand URL: add [NAME] sftp://user:pass@host:port/root
-        (port and root optional; without NAME the hostname is the name)
+        (port and root optional; without NAME the hostname is the name;
+        webdavs:// is WebDAV over TLS)
   local --root PATH
 
 ```
@@ -2266,7 +2269,7 @@ s3b source add NAME --type TYPE [flags]
       --access-key string      access key ID ($S3B_ACCESS_KEY)
       --default                make this the default source (s3)
       --endpoint string        endpoint URL (empty = AWS)
-      --host string            remote host (sftp/scp/ftp/ftps)
+      --host string            remote host (sftp/scp/ftp/ftps/webdav/webdavs)
       --insecure               skip TLS verification (labs only)
       --password string        remote password ($S3B_PASSWORD)
       --path-style             path-style addressing (s3)
@@ -2275,7 +2278,7 @@ s3b source add NAME --type TYPE [flags]
       --root string            starting directory (remote) or directory root (local)
       --secret-key string      secret access key ($S3B_SECRET_KEY)
       --session-token string   STS session token
-      --type string            source type: s3, sftp, scp, ftp, ftps, local (default "s3")
+      --type string            source type: s3, sftp, scp, ftp, ftps, webdav, webdavs, local (default "s3")
       --username string        remote username
       --virtual-hosted         virtual-hosted addressing (s3)
 

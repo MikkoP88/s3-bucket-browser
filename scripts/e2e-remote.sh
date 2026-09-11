@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # End-to-end test of the s3b remote-source engines against real servers:
-# OpenSSH/SFTP on localhost:2222 and vsftpd/FTP on localhost:2121 (see the
-# e2e-remote CI job, or locally:
+# OpenSSH/SFTP on localhost:2222, vsftpd/FTP on localhost:2121 and
+# rclone/WebDAV on localhost:7070 (+ prefixed :7071, see the e2e-remote CI
+# job, or locally:
 #   docker run -d -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100:upload
 #   docker run -d -p 2121:21 -p 21000-21002:21000-21002 \
 #     -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
-#     -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 fauria/vsftpd)
+#     -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 fauria/vsftpd
+#   docker run -d -p 7070:80 rclone/rclone:latest \
+#     serve webdav --addr :80 --user e2e --pass e2epass /srv
+#   docker run -d -p 7071:80 rclone/rclone:latest \
+#     serve webdav --addr :80 --user e2e --pass e2epass --baseurl dav /srv)
 #
 # The M9 source surface (add/test/list) and the M10.5 remote commands
 # (ls/tree/du/stat/mkdir/cp/mv/rm through NAME:// URIs) run against the
 # real servers: SSH and FTP handshakes, auth, PASV data connections, and
 # the transfer matrix — local<->remote, same-engine spool copies, and
-# cross-engine sftp<->ftp, including special-character filenames.
+# cross-engine sftp<->ftp<->webdav, including special-character filenames.
 #
 # The test never touches the user's profile store: S3B_CONFIG is pointed at a
 # throwaway directory for the whole run.
@@ -25,6 +30,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 SFTP_PORT="${S3B_SFTP_PORT:-2222}"
 FTP_PORT="${S3B_FTP_PORT:-2121}"
+WEBDAV_PORT="${S3B_WEBDAV_PORT:-7070}"
+WEBDAV_DAV_PORT="${S3B_WEBDAV_DAV_PORT:-7071}"
 
 if [ -z "${S3B_BIN:-}" ]; then
   BIN="$WORK/s3b"
@@ -56,7 +63,9 @@ wait_tcp() {
 # Servers must be reachable before any assertion makes sense.
 wait_tcp 127.0.0.1 "$SFTP_PORT" || fail "no SFTP server on port $SFTP_PORT"
 wait_tcp 127.0.0.1 "$FTP_PORT" || fail "no FTP server on port $FTP_PORT"
-pass "SFTP and FTP servers reachable"
+wait_tcp 127.0.0.1 "$WEBDAV_PORT" || fail "no WebDAV server on port $WEBDAV_PORT"
+wait_tcp 127.0.0.1 "$WEBDAV_DAV_PORT" || fail "no prefixed WebDAV server on port $WEBDAV_DAV_PORT"
+pass "SFTP, FTP and WebDAV servers reachable"
 
 step "sftp source: add + real connectivity test"
 "$BIN" source add sftpbox --type sftp --host 127.0.0.1 --port "$SFTP_PORT" \
@@ -85,6 +94,19 @@ expect_fail "$BIN" source test ftpbad
 "$BIN" source remove ftpbad >/dev/null
 pass "wrong credentials rejected"
 
+step "webdav source: add + real connectivity test"
+"$BIN" source add davbox --type webdav --host 127.0.0.1 --port "$WEBDAV_PORT" \
+  --username e2e --password e2epass >/dev/null
+"$BIN" source test davbox | grep 'OK' >/dev/null || fail "webdav source test"
+pass "WebDAV PROPFIND + Basic auth against real rclone"
+
+step "webdav source: wrong password is an honest failure"
+"$BIN" source add davbad --type webdav --host 127.0.0.1 --port "$WEBDAV_PORT" \
+  --username e2e --password nope >/dev/null
+expect_fail "$BIN" source test davbad
+"$BIN" source remove davbad >/dev/null
+pass "wrong credentials rejected"
+
 step "local source: add + test over a real directory"
 mkdir -p "$WORK/localroot/docs"
 printf 'hello\n' > "$WORK/localroot/readme.md"
@@ -102,12 +124,22 @@ step "remote command matrix: writable sources (URL shorthand live)"
 # atmoz/sftp gives e2e a writable /upload inside the chroot; the sftp
 # source is added with the sftp:// URL shorthand to prove it against a
 # real server. The ftp source roots at the vsftpd login directory.
+# davw uses the webdav:// shorthand; davp anchors at the /dav baseurl
+# prefix of the second rclone instance (same server software, rooted
+# deeper — the anchored-root contract). The root is written //dav so the
+# literal survives Git-Bash's MSYS path conversion on Windows dev boxes
+# (the engine normalizes it back to /dav; Linux CI is unaffected).
 "$BIN" source add sftpw "sftp://e2e:e2epass@127.0.0.1:${SFTP_PORT}/upload" >/dev/null
 "$BIN" source add ftpw --type ftp --host 127.0.0.1 --port "$FTP_PORT" \
   --username e2e --password e2epass >/dev/null
+"$BIN" source add davw "webdav://e2e:e2epass@127.0.0.1:${WEBDAV_PORT}/" >/dev/null
+"$BIN" source add davp --type webdav --host 127.0.0.1 --port "$WEBDAV_DAV_PORT" \
+  --username e2e --password e2epass --root //dav >/dev/null
 "$BIN" source test sftpw | grep 'OK' >/dev/null || fail "sftpw (URL shorthand) test"
 "$BIN" source test ftpw | grep 'OK' >/dev/null || fail "ftpw test"
-pass "writable sources online (sftp:// URL shorthand included)"
+"$BIN" source test davw | grep 'OK' >/dev/null || fail "davw (URL shorthand) test"
+"$BIN" source test davp | grep 'OK' >/dev/null || fail "davp (prefixed root) test"
+pass "writable sources online (sftp:// and webdav:// URL shorthand included)"
 
 step "matrix: mkdir + cp local->remote + inspect (ls/tree/du/stat)"
 mkdir -p "$WORK/seed/docs"
@@ -151,6 +183,23 @@ step "matrix: cross-engine transfer sftp <-> ftp"
 "$BIN" ls sftpw://e2e-matrix/back -r | grep 'uni-å.txt' >/dev/null || fail "ftp->sftp copy"
 pass "cross-engine transfers stream between engines"
 
+step "matrix: webdav ops and cross-engine transfers both ways"
+"$BIN" mkdir davw://wmat >/dev/null
+"$BIN" cp "$WORK/seed/a.txt" davw://wmat/ >/dev/null
+"$BIN" cp "$WORK/seed" davw://wmat/seed -r >/dev/null
+"$BIN" ls davw://wmat -r | grep 'b with space.txt' >/dev/null || fail "webdav ls -r: special chars"
+"$BIN" du davw://wmat | grep '4 object(s)' >/dev/null || fail "webdav du count"
+"$BIN" mv davw://wmat/a.txt davw://wmat/renamed.txt >/dev/null
+"$BIN" stat davw://wmat/renamed.txt | grep 'renamed' >/dev/null || fail "webdav mv stat"
+expect_fail "$BIN" stat davw://wmat/a.txt
+"$BIN" cp davw://wmat/seed ftpw://fromdav -r >/dev/null
+"$BIN" ls ftpw://fromdav -r | grep 'uni-å.txt' >/dev/null || fail "dav->ftp copy"
+"$BIN" cp sftpw://e2e-matrix/seed davp://back -r >/dev/null
+"$BIN" ls davp://back -r | grep 'docs' >/dev/null || fail "sftp->prefixed-dav copy"
+"$BIN" rm davw://wmat -r >/dev/null
+expect_fail "$BIN" stat davw://wmat
+pass "webdav engine full matrix incl. cross-engine both ways and a prefixed root"
+
 step "matrix: rm guards and tree removal"
 expect_fail "$BIN" rm sftpw://e2e-matrix/seed
 "$BIN" rm sftpw://e2e-matrix/renamed.txt >/dev/null
@@ -166,10 +215,13 @@ pass "rm refuses folders without -r, removes trees on both engines"
 step "cleanup"
 "$BIN" source remove sftpbox >/dev/null
 "$BIN" source remove ftpbox >/dev/null
+"$BIN" source remove davbox >/dev/null
 "$BIN" source remove disk >/dev/null
 "$BIN" source remove dead >/dev/null
 "$BIN" source remove sftpw >/dev/null
 "$BIN" source remove ftpw >/dev/null
+"$BIN" source remove davw >/dev/null
+"$BIN" source remove davp >/dev/null
 if "$BIN" source list --json | grep '"name"'; then fail "sources left behind"; fi
 pass "all sources removed"
 

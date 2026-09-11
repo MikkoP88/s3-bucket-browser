@@ -8,6 +8,22 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **WebDAV engine.** Two new source types, `webdav` (HTTP, default port
+  80) and `webdavs` (HTTPS, 443), speak RFC 4918 with a stdlib-only
+  HTTP client — PROPFIND for listings/metadata, GET/PUT for content,
+  MKCOL/MOVE/DELETE for structure — with HTTP Basic auth and an anchored
+  root path, so any compliant server (Apache, nginx, rclone serve webdav,
+  Nextcloud, IIS) works with no third-party runtime dependencies
+  (`golang.org/x/net` moves to a direct dependency for its WebDAV test
+  server only). Browsing, the transfer matrix, directory compare and the
+  remote CLI commands (`ls`, `tree`, `du`, `stat`, `mkdir`, `cp`, `mv`,
+  `rm`) treat WebDAV sources like any other remote engine; `s3b source
+  add` accepts `--type webdav|webdavs` or the `webdav://user:pass@host:
+  port/root` URL shorthand. A contract test suite pins the full
+  filesystem guarantees against a live x/net WebDAV server (root and
+  prefixed mounts, auth accept/reject), and the e2e-remote matrix runs
+  against real `rclone serve webdav` instances (root and `/dav`-prefixed)
+  including cross-engine transfers both ways.
 - **S3 sources in the dual-pane side view.** The side pane's source
   dropdown no longer skips S3 sources: binding it to one browses that
   source's buckets and prefixes (streamed, one-page memory like the main

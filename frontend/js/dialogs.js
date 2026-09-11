@@ -339,6 +339,8 @@ const SOURCE_TYPES = [
   ['scp', 'SCP (SFTP engine)'],
   ['ftp', 'FTP'],
   ['ftps', 'FTPS'],
+  ['webdav', 'WebDAV'],
+  ['webdavs', 'WebDAVS (HTTPS)'],
   ['local', 'Local folder'],
 ];
 
