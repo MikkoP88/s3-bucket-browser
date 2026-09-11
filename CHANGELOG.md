@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Context menus on data-source root nodes in the sidebar tree: Open
+  (buckets for S3, root directory for remote/local sources), Refresh,
+  Reconnect (drops cached connections/engines and re-lists the node),
+  Test connection (S3 probe or a root listing through the live engine),
+  Set default (non-default S3 sources), Edit source and Remove source —
+  parity with the grid's source management, no detour through the Data
+  sources dialog. Remote/local source roots are now also drag-and-drop
+  targets (drop = transfer into the source's root directory), and the
+  empty sidebar carries a persistent "+" button next to the DATA SOURCES
+  header to add the first source.
+
 ### Changed
 
 - **Strict session-only data sources (GUI).** The GUI workspace is now

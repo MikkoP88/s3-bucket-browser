@@ -161,7 +161,14 @@ body {
 .sidebar-head {
   padding: 6px 10px; font-weight: 600; font-size: 12px;
   color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em;
+  display: flex; align-items: center; justify-content: space-between;
 }
+.side-add {
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  border-radius: 4px; font-size: 13px; line-height: 1; padding: 2px 8px;
+  cursor: pointer;
+}
+.side-add:hover { color: var(--accent); border-color: var(--accent); }
 .tree { flex: 1; overflow: auto; padding: 2px 0 20px; }
 
 /* Favorites section (M5): pinned buckets above the tree */

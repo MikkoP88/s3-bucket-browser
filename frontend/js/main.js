@@ -187,7 +187,14 @@ async function refreshSources() {
 
 function showOnboarding() {
   nav.replace({ kind: 'onboarding' });
-  $('sidebar-head').textContent = t('sourcesTitle');
+  const head = $('sidebar-head');
+  head.replaceChildren(
+    document.createTextNode(t('sourcesTitle')),
+    el('button', {
+      class: 'side-add', text: '+', title: t('addSource'),
+      onclick: () => sourceEditor(null, afterSourceSaved),
+    }),
+  );
   tree.container.replaceChildren();
   renderBreadcrumb();
   showEmpty(t('noSources'), t('noSourcesSub'), [
@@ -759,11 +766,73 @@ function folderProperties() {
   ]);
 }
 
-// showTreeMenu gives sidebar nodes (buckets and folders) context-menu parity
-// with grid rows. node = {bucket, prefix, label} from the Tree, or a
-// {kind:'rdir', source, path, label} remote directory node.
+// showTreeMenu gives sidebar nodes (sources, buckets and folders)
+// context-menu parity with grid rows. node = {kind:'source',…} source root,
+// {bucket, prefix, label} bucket/folder, or {kind:'rdir', source, path,
+// label} remote directory — from the Tree.
 function showTreeMenu(e, node) {
   const st = commandState();
+  if (node.kind === 'source') {
+    const src = sources.find((s) => s.name === node.source);
+    if (!src) return;
+    const open = () => {
+      if (node.stype !== 's3') nav.to({ kind: 'remote', source: node.source, path: '' });
+      else nav.to(node.source === tree.defaultS3
+        ? { kind: 'buckets' }
+        : { kind: 'srcroot', source: node.source });
+    };
+    openMenu(e, [
+      [node.stype === 's3' ? 'Open buckets' : 'Open root', '', open],
+      null,
+      ['Refresh', 'F5', () => tree.reload(node.id)],
+      ['Reconnect', '', async () => {
+        // A no-op save round-trip: masked secrets inherit stored values,
+        // and SaveSource drops cached engines/clients (re-dial on next use).
+        try {
+          await api.SaveSource(src);
+          tree.reload(node.id);
+          toast(`Reconnected ${node.source}`, 'ok');
+        } catch (err) { toast(`${err}`, 'error'); }
+      }],
+      ['Test connection\u2026', '', async () => {
+        // S3 sources have a dedicated probe; remote/local engines are
+        // probed by listing their root through the live engine.
+        if (node.stype === 's3') {
+          const res = await api.TestProfile(node.source);
+          toast(res.ok ? `\u2705 ${res.message}` : `\u274C ${res.message}`, res.ok ? 'ok' : 'error');
+        } else {
+          try {
+            await api.RemoteList(node.source, '/');
+            toast(`\u2705 ${node.source} reachable`, 'ok');
+          } catch (err) { toast(`\u274C ${err}`, 'error'); }
+        }
+      }],
+      null,
+      ...(node.stype === 's3' && !src.default
+        ? [['Set default', '', async () => {
+            try {
+              await makeDefaultSource(node.source);
+              await refreshSources();
+            } catch (err) { toast(`${err}`, 'error'); }
+          }], null]
+        : []),
+      ['Edit source\u2026', '', () => sourceEditor(src, afterSourceSaved)],
+      ['Remove source\u2026', '', async () => {
+        if (await confirm({
+          title: `Remove source ${node.source}?`,
+          message: 'The connection is removed from the workspace.\nStored credentials will be deleted.',
+          danger: true, okLabel: 'Remove',
+        })) {
+          try {
+            await api.RemoveSource(src.id || src.name);
+            await refreshSources();
+            refreshPfState();
+          } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
+        }
+      }],
+    ]);
+    return;
+  }
   if (node.kind === 'rdir') {
     openMenu(e, [
       ['Open', '', () => nav.to({ kind: 'remote', source: node.source, path: node.path })],

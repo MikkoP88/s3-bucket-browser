@@ -196,6 +196,15 @@ export class Tree {
     if (n) { n.expanded = false; this.render(); }
   }
 
+  // reload drops a node's children and re-expands it (context Refresh).
+  reload(id) {
+    const n = this.nodes.get(id);
+    if (!n) return;
+    n.loaded = false;
+    n.children = [];
+    this.expand(id);
+  }
+
   collapseAll() {
     for (const n of this.nodes.values()) n.expanded = false;
     this.render();
@@ -303,6 +312,29 @@ export class Tree {
         e.preventDefault();
         this.onDropTo({ kind: 'remote', source: n.source, dir: n.path }, JSON.parse(data), e);
       });
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.onContext?.(e, n);
+      });
+    } else if (n.kind === 'source') {
+      // Source roots: full context menu; non-S3 roots also accept drops
+      // into their root directory (S3 roots need a bucket — no drop).
+      if (n.stype !== 's3') {
+        row.addEventListener('dragover', (e) => {
+          if (!e.dataTransfer.types.includes('application/x-s3b')) return;
+          e.preventDefault();
+          row.classList.add('drop-target');
+        });
+        row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+        row.addEventListener('drop', (e) => {
+          row.classList.remove('drop-target');
+          const data = e.dataTransfer.getData('application/x-s3b');
+          if (!data) return;
+          e.preventDefault();
+          this.onDropTo({ kind: 'remote', source: n.source, dir: '/' }, JSON.parse(data), e);
+        });
+      }
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
