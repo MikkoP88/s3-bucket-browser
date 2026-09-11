@@ -166,7 +166,9 @@ export class LocalPane {
     if (!src) return;
     if (src.type === 's3') {
       this.cancelS3Stream();
-      this.binding = { kind: 's3', source: src.id || src.name };
+      // source stays the id (backend resolves id-or-name, localStorage too);
+      // name is what the user sees in the crumb and prompts
+      this.binding = { kind: 's3', source: src.id || src.name, name: src.name };
       localStorage.setItem('s3b-side-src', this.binding.source);
       this.applyDragPayload();
       this.updateSyncUi();
@@ -175,7 +177,7 @@ export class LocalPane {
       this.navigateS3({ bucket: '', prefix: '' });
       return;
     }
-    this.binding = { kind: 'remote', source: src.id || src.name };
+    this.binding = { kind: 'remote', source: src.id || src.name, name: src.name };
     localStorage.setItem('s3b-side-src', this.binding.source);
     this.applyDragPayload();
     this.updateSyncUi();
@@ -380,12 +382,12 @@ export class LocalPane {
 
   async promptPath() {
     if (this.binding.kind === 'remote') {
-      const p = await prompt({ title: `Folder on ${this.binding.source}`, label: 'Path', value: this.dir || '/' });
+      const p = await prompt({ title: `Folder on ${this.binding.name || this.binding.source}`, label: 'Path', value: this.dir || '/' });
       if (p) this.navigate(p);
       return;
     }
     if (this.binding.kind === 's3') {
-      const p = await prompt({ title: `Path on ${this.binding.source}`, label: 'bucket or bucket/prefix/', value: this.bucket ? `${this.bucket}/${this.dir || ''}` : '' });
+      const p = await prompt({ title: `Path on ${this.binding.name || this.binding.source}`, label: 'bucket or bucket/prefix/', value: this.bucket ? `${this.bucket}/${this.dir || ''}` : '' });
       if (!p) return;
       const parts = p.replace(/^\/+|\/+$/g, '').split('/');
       const bucket = parts.shift();
@@ -433,16 +435,18 @@ export class LocalPane {
   clearCompare() { this.grid.setCmp(null); }
 
   updateCrumb() {
+    // the display name, not the internal id, is what the user should read
+    const label_ = this.binding.name || this.binding.source || '';
     if (this.binding.kind === 'remote') {
-      const label = `${this.binding.source}:${this.dir || '/'}`;
+      const label = `${label_}:${this.dir || '/'}`;
       $('local-crumb').textContent = label;
       $('local-crumb').title = label;
       return;
     }
     if (this.binding.kind === 's3') {
       const label = this.bucket
-        ? `${this.binding.source}:${this.bucket}/${this.dir || ''}`
-        : `${this.binding.source}: (buckets)`;
+        ? `${label_}:${this.bucket}/${this.dir || ''}`
+        : `${label_}: (buckets)`;
       $('local-crumb').textContent = label;
       $('local-crumb').title = label;
       return;

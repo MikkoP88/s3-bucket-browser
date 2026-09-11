@@ -164,25 +164,30 @@ export function doctorDialog(bucket) {
 
   const fmtDur = (c) => (c && typeof c.durationMs === 'number' ? `${c.durationMs} ms` : '');
 
-  // detail body for one check: advice, error, info (each hidden if absent)
-  const detailOf = (c) => el('div', { class: 'doc-detail' },
-    c.advice ? el('div', { class: 'banner warn' },
-      el('div', { text: `${t('doctor.advice')}: ${c.advice.suggestion || c.advice.cause || c.advice.code}` }),
-      ...(c.advice.commands || []).map((cmd) => el('div', { class: 'mono doc-cmd', text: cmd })),
-    ) : null,
-    c.error ? el('div', { class: 'doc-detail-sec' },
-      el('div', { class: 'doc-detail-k', text: t('doctor.error') }),
-      el('div', { class: 'doc-detail-v', text: c.error }),
-    ) : null,
-    c.info ? el('div', { class: 'doc-detail-sec' },
-      el('div', { class: 'doc-detail-k', text: t('doctor.info') }),
-      el('pre', { class: 'mono doc-pre', text: JSON.stringify(c.info, null, 2) }),
-    ) : null,
-    c.detail && !c.error ? el('div', { class: 'doc-detail-sec' },
-      el('div', { class: 'doc-detail-k', text: t('doctor.info') }),
-      el('div', { class: 'doc-detail-v', text: c.detail }),
-    ) : null,
-  );
+  // detail body for one check: advice, error, info (each hidden if absent).
+  // Rows start unchecked (c === null) and are re-rendered by update(c), so
+  // the null shape must render instead of throwing.
+  const detailOf = (c) => {
+    if (!c) return el('div', { class: 'doc-detail' });
+    return el('div', { class: 'doc-detail' },
+      c.advice ? el('div', { class: 'banner warn' },
+        el('div', { text: `${t('doctor.advice')}: ${c.advice.suggestion || c.advice.cause || c.advice.code}` }),
+        ...(c.advice.commands || []).map((cmd) => el('div', { class: 'mono doc-cmd', text: cmd })),
+      ) : null,
+      c.error ? el('div', { class: 'doc-detail-sec' },
+        el('div', { class: 'doc-detail-k', text: t('doctor.error') }),
+        el('div', { class: 'doc-detail-v', text: c.error }),
+      ) : null,
+      c.info ? el('div', { class: 'doc-detail-sec' },
+        el('div', { class: 'doc-detail-k', text: t('doctor.info') }),
+        el('pre', { class: 'mono doc-pre', text: JSON.stringify(c.info, null, 2) }),
+      ) : null,
+      c.detail && !c.error ? el('div', { class: 'doc-detail-sec' },
+        el('div', { class: 'doc-detail-k', text: t('doctor.info') }),
+        el('div', { class: 'doc-detail-v', text: c.detail }),
+      ) : null,
+    );
+  };
 
   function makeRow(name) {
     let result = null;

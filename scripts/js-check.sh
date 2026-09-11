@@ -14,4 +14,7 @@ for f in frontend/js/*.js; do
   fi
 done
 node scripts/i18n-check.mjs || fail=1
+# the visual harness is Node too (playwright-core drives it; the full run
+# needs a browser and lives in CI's gui-visual job — here we syntax-check it)
+node --check scripts/gui-visual.mjs && echo "OK   scripts/gui-visual.mjs" || fail=1
 exit $fail

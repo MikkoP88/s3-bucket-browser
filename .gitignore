@@ -27,6 +27,9 @@ go.work.sum
 # Node (dev-only tooling; no runtime deps)
 node_modules/
 
+# GUI visual-harness artifacts (screenshots + report)
+/testartifacts/
+
 # IDE / OS
 .idea/
 .vscode/

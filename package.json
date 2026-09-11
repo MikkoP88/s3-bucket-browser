@@ -1,0 +1,12 @@
+{
+  "name": "s3-bucket-browser",
+  "private": true,
+  "description": "Dev-only Node tooling (GUI visual harness); the app itself is Go + Wails with no runtime npm dependencies.",
+  "type": "module",
+  "scripts": {
+    "gui-visual": "node scripts/gui-visual.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.50.0"
+  }
+}

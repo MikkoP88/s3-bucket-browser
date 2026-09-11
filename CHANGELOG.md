@@ -371,9 +371,25 @@ follow [Semantic Versioning](https://semver.org/).
   still opens the file picker directly, and File ▸ Upload files/folder
   mirror both pickers. The backend walks directories either way, and
   drag & drop was never affected.
+- **GUI visual harness** (`npm run gui-visual`, dev-only): a Playwright
+  walk of every GUI surface — boot/onboarding, buckets/objects/remote
+  views, all five menubar dropdowns, every context menu, upload menu,
+  settings/sources/doctor/deep-search/versions+compare dialogs, transfers,
+  dual-pane with local/S3/remote bindings, directory compare, log drawer —
+  against a fake backend injected ahead of the Wails bindings, with
+  synthetic HTML5 drag & drop exercising the full transfer matrix and
+  asserting the exact backend payloads. Screenshots plus a JSON report land
+  in `testartifacts/gui/`; failures dump the last backend calls and the UI
+  state (breadcrumb, tree, rows, selection) for triage. Runs headless on
+  Edge/Chrome/Chromium with per-run `s3b-*` localStorage isolation, and a
+  `gui-visual` CI job runs it on every push; `scripts/js-check.sh`
+  syntax-checks the harness itself.
 
 ### Fixed
 
+- The side pane's breadcrumb showed the internal source id (e.g.
+  `src-abc123:/`) instead of the source's name; the path-prompt titles had
+  the same problem. Both now show the name the user configured.
 - The "[WebView2] Environment created successfully" popup behind the GUI is
   gone: the go-webview2 startup line (an unconditional std-log print) is
   discarded in GUI mode — application events still go to the shared event

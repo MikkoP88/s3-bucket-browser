@@ -201,3 +201,29 @@ jobs:
             -DOUT="$PWD/dist/s3b-setup-0.0.0-ci.exe" \
             scripts/installer/s3b.nsi
           test -f dist/s3b-setup-0.0.0-ci.exe
+
+  # GUI visual harness: serves frontend/ with a Wails-API shim and walks
+  # every surface with a real browser (screenshots + assertions). The
+  # ubuntu image ships Chrome stable; the harness itself falls back across
+  # channels if the image changes.
+  gui-visual:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Run visual harness
+        run: |
+          npm ci
+          node scripts/gui-visual.mjs
+        env:
+          S3B_BROWSER_CHANNEL: chrome
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-visual-artifacts
+          path: testartifacts/gui/
