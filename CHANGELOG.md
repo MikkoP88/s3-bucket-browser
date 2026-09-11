@@ -8,6 +8,31 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **S3 sources in the dual-pane side view.** The side pane's source
+  dropdown no longer skips S3 sources: binding it to one browses that
+  source's buckets and prefixes (streamed, one-page memory like the main
+  view; Up/Home/path prompt follow the buckets-view level), and every
+  combination of the transfer matrix works to and from it — local ↔ S3
+  source, S3 source ↔ S3 source (server-side when both sides are the same
+  source), S3 source ↔ remote engine, S3 source ↔ the main view's default
+  source — via drag & drop (bucket rows take drops as "into the bucket
+  root"), copy/cut/paste, and the pane's context menus (Upload files /
+  folder, Download all). Engine-native operations that address the default
+  client only (Rename, Delete, Properties, New folder) are offered when the
+  pane is bound to the default S3 source and hidden otherwise; bucket rows
+  are navigation-only. Directory compare (Compare Any) understands an
+  S3-source side, so keep-in-sync decorations work against any pane
+  binding.
+- **Body-level drop targets.** The empty area below the rows of both the
+  main grid and the side pane is now a drop target (highlighted): dropping
+  there transfers into the current directory instead of being a dead zone.
+  OS-level file drops (Explorer → app) are hit-tested against the panes:
+  a drop over the side pane uploads/transfers into the pane's current
+  folder (any binding), otherwise the main view takes it as before.
+- New `s3ClientFor` resolution in the backend: named S3 sources (by id or
+  name) for streamed listings (`ListSourceObjectsStream`), bucket lists
+  (`ListSourceBuckets`), directory compare sides, and transfer
+  destinations — non-S3 sources are rejected with a clear error.
 - Context menus on data-source root nodes in the sidebar tree: Open
   (buckets for S3, root directory for remote/local sources), Refresh,
   Reconnect (drops cached connections/engines and re-lists the node),
@@ -20,6 +45,13 @@ follow [Semantic Versioning](https://semver.org/).
   header to add the first source.
 
 ### Changed
+
+- Drag payloads now carry their origin unambiguously (remote sources:
+  `source` without bucket; S3 side pane: `source` + `bucket`; main grid:
+  `bucket` only = default source), so the same-bucket/same-source "move is
+  default" modifier rules and the onto-itself guard apply across the whole
+  matrix, and S3→S3 keeps the synchronous server-side copy path only when
+  both sides are the default source.
 
 - **Strict session-only data sources (GUI).** The GUI workspace is now
   either an open encrypted Profile file or a session-only in-memory

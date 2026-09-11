@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 )
 
 // EventListPage streams listing pages; the final page carries Done=true.
@@ -29,14 +30,29 @@ type ListPage struct {
 }
 
 // ListObjectsStream starts a streaming directory listing of bucket/prefix
-// and returns a token immediately. Entries arrive via EventListPage; the
-// stream always terminates with a Done=true page. Cancel with
-// CancelList(token) — e.g. when navigation moved on.
+// on the default S3 source and returns a token immediately. Entries arrive
+// via EventListPage; the stream always terminates with a Done=true page.
+// Cancel with CancelList(token) — e.g. when navigation moved on.
 func (a *App) ListObjectsStream(bucket, prefix string) (string, error) {
 	c, err := a.client("")
 	if err != nil {
 		return "", err
 	}
+	return a.streamObjects(c, bucket, prefix)
+}
+
+// ListSourceObjectsStream is ListObjectsStream for one named S3 source
+// (the dual-pane side view bound to an S3 source).
+func (a *App) ListSourceObjectsStream(idOrName, bucket, prefix string) (string, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return "", err
+	}
+	return a.streamObjects(c, bucket, prefix)
+}
+
+// streamObjects runs the listing stream over one resolved client.
+func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, error) {
 	if a.ctx == nil {
 		return "", errNoContext
 	}

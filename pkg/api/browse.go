@@ -36,11 +36,13 @@ func (a *App) ListBuckets() ([]BucketView, error) {
 	return a.bucketsOf(c)
 }
 
-// ListSourceBuckets returns the buckets visible to one named S3 source —
-// the per-source root view for non-default S3 sources (their object
-// operations still route through the default profile until multi-source
-// transfers land).
-func (a *App) ListSourceBuckets(idOrName string) ([]BucketView, error) {
+// s3ClientFor resolves the S3 client of a named source ("" = the default
+// S3 source). Accepts the source name or ID, so frontend payloads can carry
+// either. Non-S3 sources are rejected.
+func (a *App) s3ClientFor(idOrName string) (*s3client.Client, error) {
+	if idOrName == "" {
+		return a.client("")
+	}
 	src, err := a.sourceByIDOrName(idOrName)
 	if err != nil {
 		return nil, err
@@ -48,7 +50,13 @@ func (a *App) ListSourceBuckets(idOrName string) ([]BucketView, error) {
 	if src.Type != profile.TypeS3 || src.S3 == nil {
 		return nil, fmt.Errorf("source %q is not an S3 source", src.Name)
 	}
-	c, err := a.client(src.Name)
+	return a.client(src.Name)
+}
+
+// ListSourceBuckets returns the buckets visible to one named S3 source —
+// the per-source root view for non-default S3 sources.
+func (a *App) ListSourceBuckets(idOrName string) ([]BucketView, error) {
+	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return nil, err
 	}

@@ -8,7 +8,9 @@ const OVERSCAN = 8;
 
 // acceptedMimes lists the drag payload types a pane accepts on folder rows:
 // the remote pane takes same-pane moves plus local-pane uploads; the local
-// pane takes remote downloads only (local moves are Explorer's job).
+// pane takes remote downloads only (local moves are Explorer's job). The
+// side pane overrides this per binding (this.accepts) — remote and S3
+// bindings both take local-pane uploads too.
 function acceptedMimes(kind) {
   return kind === 'remote'
     ? ['application/x-s3b', 'application/x-s3b-local']
@@ -46,6 +48,7 @@ export class Grid {
     this.typeTimer = null;
 
     this.pool = [];
+    this.accepts = null; // optional mime list override (side-pane bindings)
     this.on = {}; // callbacks: select, activate, context, dragstart, drop
     this.renderHead();
     this.body.addEventListener('scroll', () => this.render());
@@ -278,7 +281,7 @@ export class Grid {
     });
     row.addEventListener('dragover', (e) => {
       if (!row._model?.isDir) return;
-      if (!acceptedMimes(this.kind).some((t) => e.dataTransfer.types.includes(t))) return;
+      if (!(this.accepts || acceptedMimes(this.kind)).some((t) => e.dataTransfer.types.includes(t))) return;
       e.preventDefault();
       row.classList.add('drop-target');
     });
@@ -287,7 +290,7 @@ export class Grid {
       row.classList.remove('drop-target');
       if (!row._model?.isDir) return;
       let payload = null;
-      for (const t of acceptedMimes(this.kind)) {
+      for (const t of (this.accepts || acceptedMimes(this.kind))) {
         const d = e.dataTransfer.getData(t);
         if (d) { payload = JSON.parse(d); break; }
       }

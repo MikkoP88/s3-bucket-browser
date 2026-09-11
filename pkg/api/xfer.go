@@ -175,7 +175,7 @@ func (a *App) resolveXferDest(dest XferDest) (xferDestSide, error) {
 		if dest.Bucket == "" {
 			return xferDestSide{}, fmt.Errorf("s3 destination needs a bucket")
 		}
-		c, err := a.client(dest.Source) // "" = default profile
+		c, err := a.s3ClientFor(dest.Source) // "" = default profile
 		if err != nil {
 			return xferDestSide{}, err
 		}

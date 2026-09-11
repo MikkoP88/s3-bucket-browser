@@ -170,10 +170,10 @@ async function refreshSources() {
   $('status-profile').textContent = def ? def.name : '';
   tree.setSources(sources, nav.current); // M9: sources are the tree's top level
   // M10 panels v2: the side pane's source dropdown follows the source set
-  localPane.sources = sources.map((s) => ({ id: s.id, name: s.name, type: s.type }));
+  localPane.sources = sources.map((s) => ({ id: s.id, name: s.name, type: s.type, default: !!s.default }));
   localPane.renderSources();
   if (!localPane.bindingApplied) localPane.restoreBinding();
-  else if (localPane.binding.kind === 'remote'
+  else if (localPane.binding.kind !== 'local'
     && !sources.some((s) => (s.id || s.name) === localPane.binding.source)) {
     localPane.rebind('local'); // bound source was removed
   }
@@ -528,6 +528,33 @@ function wireGrid() {
     if (loc.kind === 'objects') dropToTarget({ kind: 's3', bucket: loc.bucket, dir: targetRow.key }, data, e);
     else if (loc.kind === 'remote') dropToTarget({ kind: 'remote', source: loc.source, dir: targetRow.key }, data, e);
   };
+  // Body-level drop target: the empty area below the rows accepts the same
+  // payloads as folder rows and transfers into the current directory.
+  const gridBodyMimes = ['application/x-s3b', 'application/x-s3b-local'];
+  grid.body.addEventListener('dragover', (e) => {
+    if (e.target.closest('.grid-row')) return; // row handlers own it
+    if (xferDestOf(nav.current) && gridBodyMimes.some((t) => e.dataTransfer.types.includes(t))) {
+      e.preventDefault();
+      grid.body.classList.add('drop-target');
+    }
+  });
+  grid.body.addEventListener('dragleave', (e) => {
+    if (e.target === grid.body || e.target === grid.canvas) grid.body.classList.remove('drop-target');
+  });
+  grid.body.addEventListener('drop', (e) => {
+    grid.body.classList.remove('drop-target');
+    if (e.target.closest('.grid-row')) return;
+    const dest = xferDestOf(nav.current);
+    if (!dest) return;
+    let data = null;
+    for (const t of gridBodyMimes) {
+      const d = e.dataTransfer.getData(t);
+      if (d) { data = JSON.parse(d); break; }
+    }
+    if (!data) return;
+    e.preventDefault();
+    dropToTarget(dest, data, e);
+  });
   grid.body.addEventListener('mousedown', (e) => {
     if (e.target === grid.body || e.target === grid.canvas) {
       grid.clearSelection();
@@ -568,6 +595,18 @@ function wireLocalPane() {
       dropToTarget({ kind: 'remote', source: localPane.binding.source, dir: folder.key || localPane.dir || '/' }, payload, e);
       return;
     }
+    if (localPane.binding.kind === 's3') {
+      // bucket rows accept drops as "into the bucket root"; folder rows
+      // inside a bucket as "into that prefix".
+      if (folder.isBucket) {
+        dropToTarget({ kind: 's3', source: localPane.binding.source, bucket: folder.key, dir: '' }, payload, e);
+        return;
+      }
+      if (localPane.bucket) {
+        dropToTarget({ kind: 's3', source: localPane.binding.source, bucket: localPane.bucket, dir: folder.key || localPane.dir || '' }, payload, e);
+      }
+      return;
+    }
     dropToLocal(payload, folder.path);
   };
   localPane.on.dropBody = (payload, e) => {
@@ -575,13 +614,19 @@ function wireLocalPane() {
       dropToTarget({ kind: 'remote', source: localPane.binding.source, dir: localPane.dir || '/' }, payload, e);
       return;
     }
+    if (localPane.binding.kind === 's3' && localPane.bucket) {
+      dropToTarget({ kind: 's3', source: localPane.binding.source, bucket: localPane.bucket, dir: localPane.dir || '' }, payload, e);
+      return;
+    }
     dropToLocal(payload, localPane.dir);
   };
-  // Enter on a file of a remote-bound pane downloads it (WinSCP-style).
+  // Enter on a file of a remote/S3-bound pane downloads it (WinSCP-style).
   localPane.on.activateRemoteFile = (_source, row) => downloadSideRows([row]);
+  localPane.on.activateS3File = (_bucket, row) => downloadSideRows([row]);
   localPane.grid.on.context = (e, rows) => showLocalRowMenu(e, rows);
   localPane.on.contextEmpty = (e, dir) => {
     if (localPane.binding.kind === 'remote') { sideRemoteEmptyMenu(e); return; }
+    if (localPane.binding.kind === 's3') { sideS3EmptyMenu(e); return; }
     const st = commandState();
     openMenu(e, [
       ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
@@ -1081,11 +1126,16 @@ function xferDestLabel(dest) {
 }
 
 // sidePaneDest is the side pane as a transfer destination (remote-bound →
-// its source dir; local binding → its folder; null at filesystem roots /
-// hidden pane).
+// its source dir; S3-bound → its bucket prefix; local binding → its folder;
+// null at filesystem roots / buckets view / hidden pane).
 function sidePaneDest() {
   if (!localPane.visible) return null;
   if (localPane.binding.kind === 'remote') return { kind: 'remote', source: localPane.binding.source, dir: localPane.dir || '/' };
+  if (localPane.binding.kind === 's3') {
+    return localPane.bucket
+      ? { kind: 's3', source: localPane.binding.source, bucket: localPane.bucket, dir: localPane.dir || '' }
+      : null;
+  }
   return localPane.dir ? { kind: 'local', dir: localPane.dir } : null;
 }
 
@@ -1117,7 +1167,12 @@ function clipboardToXfer() {
     };
   }
   return {
-    items: clipboard.keys.map((k) => ({ bucket: clipboard.bucket, key: k, isDir: k.endsWith('/') })),
+    items: clipboard.keys.map((k) => ({
+      source: clipboard.source || '', // "" = default S3 source
+      bucket: clipboard.bucket,
+      key: k,
+      isDir: k.endsWith('/'),
+    })),
     localPaths: [],
   };
 }
@@ -1220,9 +1275,15 @@ async function deletePermanentSelection() {
 }
 
 // sidePaneRef is the side pane's compare reference: a remote-bound pane
-// compares its source dir, the local binding its folder (null at roots).
+// compares its source dir, an S3-bound pane its bucket prefix, the local
+// binding its folder (null at roots / buckets view).
 function sidePaneRef() {
   if (localPane.binding.kind === 'remote') return { kind: 'remote', source: localPane.binding.source, dir: localPane.dir || '/' };
+  if (localPane.binding.kind === 's3') {
+    return localPane.bucket
+      ? { kind: 's3', source: localPane.binding.source, bucket: localPane.bucket, prefix: localPane.dir || '' }
+      : null;
+  }
   return localPane.dir ? { kind: 'local', dir: localPane.dir } : null;
 }
 
@@ -1248,9 +1309,9 @@ async function compareDirs() {
   const x = sidePaneRef();
   const y = mainCompareRef();
   if (!x) {
-    toast(localPane.binding.kind === 'remote'
-      ? 'Open a folder on the source first'
-      : 'Side pane is at filesystem roots — open a folder first');
+    toast(localPane.binding.kind === 'local'
+      ? 'Side pane is at filesystem roots — open a folder first'
+      : 'Open a folder (or bucket folder) on the source first');
     return;
   }
   if (!y) { toast('Open a bucket folder or remote directory to compare against'); return; }
@@ -1410,13 +1471,15 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
 
   // Same-dir paste is a no-op (would spam "(1)" renames).
   const normP = (s) => (s || '').replace(/\/+$/, '');
-  const sameDir = (clipboard.kind === 's3' && dest.kind === 's3' && clipboard.bucket === dest.bucket && normP(clipboard.dir) === normP(dest.dir))
+  const sameDir = (clipboard.kind === 's3' && dest.kind === 's3' && (clipboard.source || '') === (dest.source || '') && clipboard.bucket === dest.bucket && normP(clipboard.dir) === normP(dest.dir))
     || (clipboard.kind === 'remote' && dest.kind === 'remote' && clipboard.source === dest.source && normP(clipboard.dir) === normP(dest.dir));
   if (sameDir) { toast('Source and destination are the same'); return; }
 
   const move = clipboard.mode === 'cut';
-  // S3 → S3 keeps the synchronous server-side copy path.
-  if (clipboard.kind !== 'local' && clipboard.kind !== 'remote' && dest.kind === 's3') {
+  // S3 → S3 on the default source keeps the synchronous server-side copy
+  // path; named sources (side-pane origins/destinations) stream through
+  // TransferCross, which still copies server-side on the same client.
+  if (clipboard.kind === 's3' && dest.kind === 's3' && !clipboard.source && !dest.source) {
     const prefix = prefixOverride !== undefined ? prefixOverride : (loc?.prefix || '');
     try {
       const res = await api.CopySelection(clipboard.bucket, clipboard.keys, dest.bucket, prefix, move);
@@ -1563,6 +1626,24 @@ function wireDrop() {
   onEvent('wails:file-drop', (data) => {
     const paths = data?.paths || [];
     if (!paths.length) return;
+    // OS-level drop: hit-test which pane sits under the cursor. The side
+    // pane accepts when visible and inside a directory (its binding decides
+    // the destination); otherwise the main view takes the drop.
+    const hit = Number.isFinite(data?.x) && Number.isFinite(data?.y)
+      ? document.elementFromPoint(data.x, data.y)
+      : null;
+    if (hit?.closest('#local-pane') && localPane.visible) {
+      const b = localPane.binding;
+      if (b.kind === 'remote' && localPane.dir) { uploadToRemote(paths, b.source, localPane.dir); return; }
+      if (b.kind === 's3' && localPane.bucket) {
+        startTransfer({ localPaths: paths, dest: { kind: 's3', source: b.source, bucket: localPane.bucket, dir: localPane.dir || '' } });
+        return;
+      }
+      if (b.kind === 'local' && localPane.dir) {
+        startTransfer({ localPaths: paths, dest: { kind: 'local', dir: localPane.dir }, label: localPane.dir });
+        return;
+      }
+    }
     const loc = nav.current;
     if (loc?.kind === 'remote') { uploadToRemote(paths, loc.source, loc.path || '/'); return; }
     uploadPaths(paths);
@@ -1570,18 +1651,26 @@ function wireDrop() {
 }
 
 // dropToTarget is the single drop dispatcher: target is
-// {kind:'s3',bucket,dir} | {kind:'remote',source,dir} (legacy {bucket,prefix}
-// call sites are normalized). Modifier rules: copy by default, Shift forces
-// move; within the same S3 bucket or the same remote source, move is the
-// default (Ctrl keeps a copy), matching Explorer.
+// {kind:'s3',bucket,dir[,source]} | {kind:'remote',source,dir} (legacy
+// {bucket,prefix} call sites are normalized; a set `source` addresses a named
+// S3 source, "" or missing = the default). Modifier rules: copy by default,
+// Shift forces move; within the same S3 bucket (of the same source) or the
+// same remote source, move is the default (Ctrl keeps a copy), matching
+// Explorer.
 async function dropToTarget(target, data, e) {
   const dest = target.kind ? target : { kind: 's3', bucket: target.bucket, dir: target.prefix || '' };
   if (data.paths?.length) { // dragged from the local pane
-    if (dest.kind === 's3') { uploadPaths(data.paths, dest.dir, dest.bucket); return; }
+    if (dest.kind === 's3') {
+      // a named S3 destination (side pane) streams through TransferCross;
+      // the default source keeps the plain upload path
+      if (dest.source) await startTransfer({ localPaths: data.paths, dest, move: e.shiftKey });
+      else uploadPaths(data.paths, dest.dir, dest.bucket);
+      return;
+    }
     if (dest.kind === 'remote') { await startTransfer({ localPaths: data.paths, dest, move: e.shiftKey }); return; }
     return;
   }
-  if (data.source) { // dragged from a remote source view
+  if (data.source && !data.bucket) { // dragged from a remote source view
     const items = (data.entries || []).map((en) => ({ source: data.source, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
     if (!items.length) return;
     const sameSource = dest.kind === 'remote' && dest.source === data.source;
@@ -1592,10 +1681,14 @@ async function dropToTarget(target, data, e) {
   }
   const srcBucket = data.bucket;
   if (!srcBucket || !data.keys?.length) return;
-  if (dest.kind === 's3') {
-    const move = srcBucket === dest.bucket
-      ? !e.ctrlKey || e.shiftKey   // same bucket: move (Shift forces)
-      : e.shiftKey;                // cross bucket: copy (Shift forces move)
+  const srcTag = data.source || ''; // "" = default source (main-grid origin)
+  const sameS3 = dest.kind === 's3' && srcBucket === dest.bucket && srcTag === (dest.source || '');
+  if (sameS3 && destDirOf(dest) === data.dir) return; // onto itself
+  if (dest.kind === 's3' && !srcTag && !dest.source) {
+    // default-source S3 → S3 keeps the synchronous server-side copy path
+    const move = sameS3
+      ? !e.ctrlKey || e.shiftKey         // same bucket: move (Shift forces)
+      : e.shiftKey;                      // cross bucket: copy (Shift forces move)
     try {
       const res = await api.CopySelection(srcBucket, data.keys, dest.bucket, dest.dir || '', move);
       if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
@@ -1606,10 +1699,12 @@ async function dropToTarget(target, data, e) {
     }
     return;
   }
-  // S3 → remote/local streams through TransferCross.
-  const items = (data.entries || []).map((en) => ({ bucket: srcBucket, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
+  // S3 origin on a named source (side pane), or S3 → remote/local: stream
+  // through TransferCross (same-client S3→S3 still copies server-side there).
+  const items = (data.entries || []).map((en) => ({ source: srcTag, bucket: srcBucket, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
   if (!items.length) return;
-  await startTransfer({ items, dest, move: e.shiftKey });
+  const move = sameS3 ? (!e.ctrlKey || e.shiftKey) : e.shiftKey;
+  await startTransfer({ items, dest, move });
 }
 
 // destDirOf normalizes a destination dir for comparison.
@@ -1619,22 +1714,31 @@ function destDirOf(dest) {
   return dest.dir;
 }
 
-// dropToLocal handles drops onto the local pane (folder rows and body): S3
-// origin keeps the DownloadRefs fast path, remote origin streams down.
+// dropToLocal handles drops onto the local pane (folder rows and body):
+// default-source S3 origin keeps the DownloadRefs fast path; a named S3
+// source and remote origin stream down through TransferCross.
 async function dropToLocal(payload, dir) {
   if (!dir || payload.paths?.length) return; // local→local is Explorer's job
-  if (payload.source) {
+  if (payload.source && !payload.bucket) { // remote origin
     const items = (payload.entries || []).map((en) => ({ source: payload.source, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
     if (items.length) await startTransfer({ items, dest: { kind: 'local', dir }, label: dir });
     return;
   }
-  if (payload.entries?.length) downloadRefs(payload.entries, dir, payload.bucket);
+  if (payload.entries?.length) {
+    if (payload.source) { // named S3 source (side-pane origin)
+      const items = payload.entries.map((en) => ({ source: payload.source, bucket: payload.bucket, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
+      await startTransfer({ items, dest: { kind: 'local', dir }, label: dir });
+    } else {
+      downloadRefs(payload.entries, dir, payload.bucket);
+    }
+  }
 }
 
 // showLocalRowMenu: the side pane's per-row menu (open/copy/cut feed the
 // cross-source clipboard; local file management stays with Explorer).
 function showLocalRowMenu(e, rows) {
   if (localPane.binding.kind === 'remote') return showSideRemoteRowMenu(e, rows);
+  if (localPane.binding.kind === 's3') return showSideS3RowMenu(e, rows);
   const sel = rows.length;
   if (!sel) return;
   openMenu(e, [
@@ -1723,15 +1827,18 @@ function sideRemoteEmptyMenu(e) {
   ]);
 }
 
-// downloadSideRows downloads rows from a remote-bound side pane into a
-// picked local folder.
+// downloadSideRows downloads rows from a remote- or S3-bound side pane into
+// a picked local folder.
 async function downloadSideRows(rows) {
   const b = localPane.binding;
   if (!rows?.length) return;
   const dest = await api.PickFolder('Choose download folder');
   if (!dest) return;
+  const items = b.kind === 's3'
+    ? rows.map((r) => ({ source: b.source, bucket: localPane.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir }))
+    : rows.map((r) => ({ source: b.source, key: r.key, size: r.size || 0, isDir: !!r.isDir }));
   await startTransfer({
-    items: rows.map((r) => ({ source: b.source, key: r.key, size: r.size || 0, isDir: !!r.isDir })),
+    items,
     dest: { kind: 'local', dir: dest },
     label: dest,
   });
@@ -1751,6 +1858,114 @@ async function sideRemoteProperties(row) {
       ] : []),
       ['Source', b.source],
       ['Path', row.key],
+    ]);
+  } catch (err) {
+    toast(`Properties failed: ${err}`, 'error');
+  }
+}
+
+// sidePaneS3IsDefault: true when the pane's S3 binding is the default
+// source — the one the engine-native APIs (delete/rename/stat/new folder)
+// address. Other S3 sources are browse/transfer-only in the pane.
+function sidePaneS3IsDefault() {
+  const b = localPane.binding;
+  if (b.kind !== 's3') return false;
+  const s = localPane.sources.find((x) => (x.id || x.name) === b.source);
+  return !!s?.default;
+}
+
+// showSideS3RowMenu: per-row menu for an S3-bound side pane. Copy/cut feed
+// the cross-source clipboard (origin source + bucket); destructive
+// operations exist only on the default source (bucket rows never).
+function showSideS3RowMenu(e, rows) {
+  const b = localPane.binding;
+  const sel = rows.length;
+  if (!sel) return;
+  const hasBucketRow = rows.some((r) => r.isBucket);
+  const onDefault = sidePaneS3IsDefault() && !!localPane.bucket;
+  openMenu(e, [
+    ...(sel === 1 && rows[0].isDir
+      ? [['Open', 'Enter', () => localPane.grid.on.activate(rows[0])]]
+      : [['Download\u2026', 'Ctrl+D', () => downloadSideRows(rows.filter((r) => !r.isBucket)), hasBucketRow]]),
+    ...(sel === 1 && rows[0].isDir && !rows[0].isBucket
+      ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 's3', source: b.source, bucket: localPane.bucket, dir: rows[0].key }), !clipHasItems()]]
+      : []),
+    null,
+    ['Copy', 'Ctrl+C', () => copySelection(), hasBucketRow],
+    ['Cut', 'Ctrl+X', () => cutSelection(), hasBucketRow],
+    null,
+    ['Rename', 'F2', async () => {
+      const row = rows[0];
+      const name = await prompt({ title: 'Rename', label: 'New name', value: row.name });
+      if (!name || name === row.name) return;
+      try {
+        await api.RenameObject(localPane.bucket, row.key, name);
+        toast('Renamed', 'ok');
+        localPane.refresh();
+      } catch (err) {
+        toast(`Rename failed: ${err}`, 'error');
+      }
+    }, !onDefault || sel !== 1 || rows[0].isBucket],
+    ['Delete\u2026', 'Del', () => deleteSelection(localPane.bucket, rows.map((r) => r.key)).then(() => localPane.refresh()), !onDefault || hasBucketRow],
+    null,
+    ['Properties', 'Alt+Enter', () => sideS3Properties(rows[0]), !onDefault || sel !== 1],
+  ]);
+}
+
+// sideS3EmptyMenu: empty-area menu of an S3-bound side pane. Writes land in
+// the pane's bucket/prefix; uploads work on every source (TransferCross),
+// folder creation only on the default one.
+function sideS3EmptyMenu(e) {
+  const b = localPane.binding;
+  const dir = localPane.dir || '';
+  const dest = { kind: 's3', source: b.source, bucket: localPane.bucket, dir };
+  const inBucket = !!localPane.bucket;
+  openMenu(e, [
+    ['Paste', 'Ctrl+V', () => paste(null, null, dest), !clipHasItems() || !inBucket],
+    null,
+    ['Upload files\u2026', '', async () => {
+      const paths = await api.PickUploadFiles();
+      if (paths?.length) startTransfer({ localPaths: paths, dest });
+    }, !inBucket],
+    ['Upload folder\u2026', '', async () => {
+      const picked = await api.PickFolder('Choose a folder to upload');
+      if (picked) startTransfer({ localPaths: [picked], dest });
+    }, !inBucket],
+    ['New folder', 'Ctrl+Shift+N', async () => {
+      const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
+      if (!name) return;
+      try {
+        await api.CreateFolder(localPane.bucket, dir, name);
+        toast('Folder created', 'ok');
+        localPane.refresh();
+      } catch (err) {
+        toast(`Create folder failed: ${err}`, 'error');
+      }
+    }, !sidePaneS3IsDefault() || !inBucket],
+    null,
+    ['Download all\u2026', '', () => downloadSideRows(localPane.grid.rows.filter((r) => !r.isBucket)), !localPane.grid.rows.length],
+    ['Select all', 'Ctrl+A', () => localPane.grid.selectAll()],
+    ['Refresh', 'F5', () => localPane.refresh()],
+  ]);
+}
+
+// sideS3Properties shows one object's metadata via the default client
+// (StatObject addresses the default source — gated by sidePaneS3IsDefault).
+async function sideS3Properties(row) {
+  try {
+    const st = await api.StatObject(localPane.bucket, row.key);
+    properties(`Properties — ${row.name}`, [
+      ['Name', row.name],
+      ['Type', row.isDir ? 'Folder' : 'Object'],
+      ...(row.isDir
+        ? [['Objects', st.usage?.objectCount], ['Total size', fmtBytes(st.usage?.totalBytes || 0)]]
+        : [
+          ['Size', fmtBytes(st.size || 0)],
+          ['Last modified', fmtDate(st.lastModified)],
+          ['Storage class', st.storageClass || ''],
+        ]),
+      ['Source', localPane.binding.source],
+      ['s3:// URI', `s3://${localPane.bucket}/${row.key}`],
     ]);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');
@@ -2218,6 +2433,17 @@ function setClip(mode) {
         source: localPane.binding.source,
         dir: localPane.dir || '/',
         keys: lrows.map((x) => x.key),
+        paths: [],
+      });
+    } else if (localPane.binding.kind === 's3') {
+      if (!localPane.bucket) return; // bucket rows are navigation only
+      Object.assign(clipboard, {
+        mode,
+        kind: 's3',
+        bucket: localPane.bucket,
+        source: localPane.binding.source,
+        dir: localPane.dir || '',
+        keys: lrows.filter((x) => !x.isBucket).map((x) => x.key),
         paths: [],
       });
     } else {

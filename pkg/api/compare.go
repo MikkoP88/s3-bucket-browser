@@ -16,14 +16,14 @@ import (
 
 // CompareRef addresses one side of a pane-to-pane comparison: a local
 // directory, a directory on a remote (non-S3) source, or a bucket prefix on
-// the default S3 profile. The wire statuses keep their historical
+// an S3 source ("" = the default). The wire statuses keep their historical
 // local/remote names — "local" means the left (x) side, "remote" the right
 // (y) side — so the grid decorations are unchanged; the summary dialog
 // labels the two sides for the user.
 type CompareRef struct {
 	Kind   string `json:"kind"`   // "local" | "remote" | "s3"
 	Dir    string `json:"dir"`    // local: OS path; remote: anchored ("/" = source root)
-	Source string `json:"source"` // remote: source id or name
+	Source string `json:"source"` // remote: source id or name; s3: "" = default source
 	Bucket string `json:"bucket"` // s3
 	Prefix string `json:"prefix"` // s3
 }
@@ -102,7 +102,7 @@ func (a *App) walkCompareSide(ctx context.Context, r CompareRef) (map[string]loc
 		})
 		return out, err
 	case "s3":
-		c, err := a.client("")
+		c, err := a.s3ClientFor(r.Source)
 		if err != nil {
 			return nil, err
 		}

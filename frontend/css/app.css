@@ -234,6 +234,12 @@ body {
 .grid-row.sel { background: var(--sel); }
 .grid-row.focus { background: var(--sel-focus); }
 .grid-row.drop-target { outline: 1px dashed var(--accent); background: var(--accent-soft); }
+/* body-level drop target (empty area below the rows) in both panes */
+#grid-body.drop-target, #local-grid-body.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
 .gc {
   padding: 0 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   display: flex; align-items: center; gap: 6px; height: 100%;

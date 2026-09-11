@@ -1,12 +1,13 @@
 // Side pane for the dual-pane (WinSCP-style) view: a second, prefixed Grid
-// that binds either to the workstation filesystem or to any remote
-// (non-S3) source, with synchronized browsing (local only), directory
-// compare decorations and cross-pane drag & drop (uploads land on folder
-// rows of the remote pane, downloads on folder rows / the body here).
+// that binds to the workstation filesystem, any remote (non-S3) source, or
+// any S3 source (buckets + prefixes), with synchronized browsing (local
+// only), directory compare decorations and cross-pane drag & drop (uploads
+// land on folder rows of the remote/S3 pane, downloads on folder rows /
+// the body here).
 import { Grid } from './grid.js';
 import { prompt } from './dialogs.js';
 import { el, fmtBytes } from './util.js';
-import { api } from './api.js';
+import { api, onEvent } from './api.js';
 
 const app = () => api;
 const $ = (id) => document.getElementById(id);
@@ -38,34 +39,59 @@ export function aggregateCompare(rows) {
 export class LocalPane {
   constructor() {
     this.grid = new Grid('local-');
-    this.dir = '';        // local: '' = filesystem roots view; remote: anchored path
+    this.dir = '';        // local: '' = filesystem roots view; remote: anchored path; s3: prefix
+    this.bucket = '';     // s3 binding: the listed bucket ('' = buckets view)
+    this.s3Seq = 0;       // s3 listing stream generation
+    this.s3Off = null;    // s3 listing page-event unsubscribe
     this.roots = [];
     this.binding = { kind: 'local', source: '' }; // what the pane is bound to
-    this.sources = [];    // [{id,name,type}] fed by main after ListSources
+    this.sources = [];    // [{id,name,type,default}] fed by main after ListSources
     this.sync = localStorage.getItem('s3b-local-sync') === '1';
     this.syncBase = null; // {dir, prefix} captured when sync is enabled
-    this.on = {};         // callbacks: dropFolder, dropBody, compare, syncBase, syncUp, openFail, activateRemoteFile
+    this.on = {};         // callbacks: dropFolder, dropBody, compare, syncBase, syncUp, openFail, activateRemoteFile, activateS3File
 
     this.grid.on.activate = (m) => {
+      if (this.binding.kind === 's3') {
+        if (m.isBucket) { this.navigateS3({ bucket: m.key, prefix: '' }); return; }
+        if (m.isDir) { this.navigateS3({ bucket: this.bucket, prefix: m.key }); return; }
+        this.on.activateS3File?.(this.bucket, m);
+        return;
+      }
       if (m.isDir) { this.navigate(this.binding.kind === 'remote' ? m.key : m.path); return; }
       if (this.binding.kind === 'remote') { this.on.activateRemoteFile?.(this.binding.source, m); return; }
       app().OpenLocal(m.path).catch((e) => this.on.openFail?.(e));
     };
     this.grid.on.select = () => this.updateStatus();
-    // dropping a remote selection onto a local folder row = download into it
+    // dropping a remote/S3 selection onto a local folder row = download into it
     this.grid.on.drop = (folder, payload, e) => this.on.dropFolder?.(folder, payload, e);
 
-    // dropping onto the pane body = download into the current directory
+    // dropping onto the pane body = transfer into the current directory.
+    // Local bindings take remote/S3 downloads only; remote and S3 bindings
+    // also take local-pane uploads (the body is one big drop target).
     const body = this.grid.body;
+    const bodyMimes = () => (this.binding.kind === 'local'
+      ? ['application/x-s3b']
+      : ['application/x-s3b', 'application/x-s3b-local']);
     body.addEventListener('dragover', (e) => {
-      if (this.dir && e.dataTransfer.types.includes('application/x-s3b')) e.preventDefault();
+      if (this.dir && bodyMimes().some((t) => e.dataTransfer.types.includes(t))) {
+        e.preventDefault();
+        body.classList.add('drop-target');
+      }
+    });
+    body.addEventListener('dragleave', (e) => {
+      if (e.target === body || e.target === this.grid.canvas) body.classList.remove('drop-target');
     });
     body.addEventListener('drop', (e) => {
+      body.classList.remove('drop-target');
       if (!this.dir) return;
-      const data = e.dataTransfer.getData('application/x-s3b');
+      let data = null;
+      for (const t of bodyMimes()) {
+        const d = e.dataTransfer.getData(t);
+        if (d) { data = JSON.parse(d); break; }
+      }
       if (!data) return;
       e.preventDefault();
-      this.on.dropBody?.(JSON.parse(data), e);
+      this.on.dropBody?.(data, e);
     });
 
     body.addEventListener('mousedown', (e) => {
@@ -94,20 +120,20 @@ export class LocalPane {
     $('local-src').onchange = () => this.rebind($('local-src').value);
   }
 
-  // ---------- source binding (M10 panels v2) ----------
+  // ---------- source binding (M10 panels v2, M11 S3 sources) ----------
 
   // renderSources fills the header dropdown: the workstation filesystem
-  // plus every remote source (S3 sources browse in the main view — their
-  // object operations route through the default profile).
+  // plus every configured source — remote engines and S3 sources alike
+  // (S3 sources browse their buckets/prefixes; transfers route through
+  // the cross-source engine with the source pinned).
   renderSources() {
     const sel = $('local-src');
     const opts = [el('option', { value: 'local', text: 'Local' })];
     for (const s of this.sources) {
-      if (s.type === 's3') continue;
       opts.push(el('option', { value: s.id || s.name, text: `${s.name} (${s.type})` }));
     }
     sel.replaceChildren(...opts);
-    const cur = this.binding.kind === 'remote' ? this.binding.source : 'local';
+    const cur = this.binding.kind !== 'local' ? this.binding.source : 'local';
     if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
   }
 
@@ -118,24 +144,37 @@ export class LocalPane {
     this.bindingApplied = true;
     const saved = localStorage.getItem('s3b-side-src');
     const ok = saved && saved !== 'local'
-      && this.sources.some((s) => (s.id || s.name) === saved && s.type !== 's3');
+      && this.sources.some((s) => (s.id || s.name) === saved);
     this.rebind(ok ? saved : 'local');
   }
 
-  // rebind switches the pane to the workstation filesystem or a remote
-  // source and navigates to its root.
+  // rebind switches the pane to the workstation filesystem, a remote
+  // source, or an S3 source and navigates to its root.
   rebind(value) {
     if (value === 'local') {
+      this.cancelS3Stream();
       this.binding = { kind: 'local', source: '' };
       localStorage.setItem('s3b-side-src', 'local');
       this.applyDragPayload();
       this.updateSyncUi();
       this.dir = '';
+      this.bucket = '';
       this.start();
       return;
     }
-    const src = this.sources.find((s) => (s.id || s.name) === value && s.type !== 's3');
+    const src = this.sources.find((s) => (s.id || s.name) === value);
     if (!src) return;
+    if (src.type === 's3') {
+      this.cancelS3Stream();
+      this.binding = { kind: 's3', source: src.id || src.name };
+      localStorage.setItem('s3b-side-src', this.binding.source);
+      this.applyDragPayload();
+      this.updateSyncUi();
+      this.bucket = '';
+      this.dir = '';
+      this.navigateS3({ bucket: '', prefix: '' });
+      return;
+    }
     this.binding = { kind: 'remote', source: src.id || src.name };
     localStorage.setItem('s3b-side-src', this.binding.source);
     this.applyDragPayload();
@@ -144,22 +183,30 @@ export class LocalPane {
     this.navigateRemote('/');
   }
 
-  // applyDragPayload: a remote-bound pane drags remote-origin payloads
-  // (source + dir + keys/entries) so every drop target of the transfer
-  // matrix accepts them; the local binding keeps the prototype payload
-  // ({paths}).
+  // applyDragPayload: remote and S3 bindings drag origin-tagged payloads
+  // (source[/bucket] + dir + keys/entries) so every drop target of the
+  // transfer matrix accepts them; the local binding keeps the prototype
+  // payload ({paths}).
   applyDragPayload() {
-    if (this.binding.kind === 'remote') {
+    if (this.binding.kind === 'remote' || this.binding.kind === 's3') {
       const b = this.binding;
+      const s3 = b.kind === 's3';
+      this.grid.accepts = ['application/x-s3b', 'application/x-s3b-local'];
       this.grid.dragPayload = () => {
-        const rows = this.grid.selectedRows();
+        // bucket rows in the S3 buckets view are navigation only — a
+        // dragged bucket would mean "transfer the entire bucket".
+        const rows = this.grid.selectedRows().filter((r) => !r.isBucket);
+        const base = s3
+          ? { source: b.source, bucket: this.bucket, dir: this.dir || '' }
+          : { source: b.source, dir: this.dir || '/' };
         return {
-          source: b.source, dir: this.dir || '/',
+          ...base,
           keys: rows.map((r) => r.key),
           entries: rows.map((r) => ({ key: r.key, size: r.size || 0, isDir: !!r.isDir })),
         };
       };
     } else {
+      this.grid.accepts = null;
       delete this.grid.dragPayload;
     }
   }
@@ -175,6 +222,7 @@ export class LocalPane {
 
   async start() {
     if (this.binding.kind === 'remote') return this.navigateRemote(this.dir || '/');
+    if (this.binding.kind === 's3') return this.navigateS3({ bucket: '', prefix: '' });
     try {
       this.roots = await app().LocalRoots();
       if (this.sync && !this.syncBase) this.syncBase = this.on.syncBase?.() || null;
@@ -185,7 +233,9 @@ export class LocalPane {
   }
 
   home() {
-    this.navigate(this.binding.kind === 'remote' ? '/' : '');
+    if (this.binding.kind === 'remote') return this.navigate('/');
+    if (this.binding.kind === 's3') return this.navigateS3({ bucket: '', prefix: '' });
+    this.navigate('');
   }
 
   show() {
@@ -197,6 +247,7 @@ export class LocalPane {
 
   async navigate(dir, fromSync = false) {
     if (this.binding.kind === 'remote') return this.navigateRemote(dir, fromSync);
+    if (this.binding.kind === 's3') return this.navigateS3({ bucket: this.bucket, prefix: dir || '' });
     try {
       const target = dir === '' || dir === '~' ? await app().LocalHome() : dir;
       const ents = await app().ListLocal(target);
@@ -240,6 +291,58 @@ export class LocalPane {
     }
   }
 
+  // cancelS3Stream invalidates the running S3 listing (navigation moved on).
+  cancelS3Stream() {
+    this.s3Seq++;
+    this.s3Off?.();
+    this.s3Off = null;
+  }
+
+  // navigateS3 lists the bound S3 source: the buckets view at the root,
+  // one streamed prefix inside a bucket. Same one-page memory contract as
+  // the main view (PLAN.md §13).
+  async navigateS3({ bucket, prefix }) {
+    this.cancelS3Stream();
+    const seq = this.s3Seq;
+    if (!bucket) {
+      try {
+        const buckets = await app().ListSourceBuckets(this.binding.source);
+        if (seq !== this.s3Seq) return;
+        this.bucket = '';
+        this.dir = '';
+        this.grid.setRows(buckets.map((b) => ({
+          name: b.name, key: b.name, bucket: b.name, isDir: true, isBucket: true,
+          lastModified: b.createdAt,
+        })));
+        this.updateCrumb();
+        this.updateStatus();
+      } catch (e) {
+        this.on.openFail?.(e);
+      }
+      return;
+    }
+    let token;
+    try {
+      token = await app().ListSourceObjectsStream(this.binding.source, bucket, prefix || '');
+    } catch (e) {
+      this.on.openFail?.(e);
+      return;
+    }
+    if (seq !== this.s3Seq) { app().CancelList(token).catch(() => {}); return; }
+    this.bucket = bucket;
+    this.dir = prefix || '';
+    this.grid.setRows([]);
+    this.updateCrumb();
+    this.s3Off = onEvent('list:page', (p) => {
+      if (seq !== this.s3Seq || p.token !== token) return;
+      if (p.error) { this.on.openFail?.(p.error); this.cancelS3Stream(); return; }
+      this.grid.appendRows((p.entries || []).map((e) => ({ ...e, bucket })));
+      this.updateStatus();
+      if (p.done) this.cancelS3Stream();
+    });
+    this.updateStatus();
+  }
+
   async refresh() {
     if (this.dir) await this.navigate(this.dir, true);
     else await this.start();
@@ -251,6 +354,14 @@ export class LocalPane {
       if (p === '' || p === '/') return; // already at the source root
       const i = p.lastIndexOf('/');
       this.navigate(i <= 0 ? '/' : p.slice(0, i + 1));
+      return;
+    }
+    if (this.binding.kind === 's3') {
+      if (!this.bucket) return; // already at the buckets view
+      const p = (this.dir || '').replace(/\/+$/, '');
+      if (!p) { this.navigateS3({ bucket: '', prefix: '' }); return; }
+      const i = p.lastIndexOf('/');
+      this.navigateS3({ bucket: this.bucket, prefix: i <= 0 ? '' : p.slice(0, i + 1) });
       return;
     }
     if (!this.dir) return;
@@ -271,6 +382,14 @@ export class LocalPane {
     if (this.binding.kind === 'remote') {
       const p = await prompt({ title: `Folder on ${this.binding.source}`, label: 'Path', value: this.dir || '/' });
       if (p) this.navigate(p);
+      return;
+    }
+    if (this.binding.kind === 's3') {
+      const p = await prompt({ title: `Path on ${this.binding.source}`, label: 'bucket or bucket/prefix/', value: this.bucket ? `${this.bucket}/${this.dir || ''}` : '' });
+      if (!p) return;
+      const parts = p.replace(/^\/+|\/+$/g, '').split('/');
+      const bucket = parts.shift();
+      if (bucket) this.navigateS3({ bucket, prefix: parts.length ? `${parts.join('/')}/` : '' });
       return;
     }
     const p = await prompt({ title: 'Local folder', label: 'Path', value: this.dir || '' });
@@ -316,6 +435,14 @@ export class LocalPane {
   updateCrumb() {
     if (this.binding.kind === 'remote') {
       const label = `${this.binding.source}:${this.dir || '/'}`;
+      $('local-crumb').textContent = label;
+      $('local-crumb').title = label;
+      return;
+    }
+    if (this.binding.kind === 's3') {
+      const label = this.bucket
+        ? `${this.binding.source}:${this.bucket}/${this.dir || ''}`
+        : `${this.binding.source}: (buckets)`;
       $('local-crumb').textContent = label;
       $('local-crumb').title = label;
       return;
