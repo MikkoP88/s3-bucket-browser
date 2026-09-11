@@ -387,6 +387,14 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `s3b versions undo` (CLI and GUI) trusted any `--version-id`: S3 honors a
+  delete of any version id as an idempotent success, so a typo'd id printed
+  "object is back" while the real delete marker stayed current and the object
+  stayed hidden — and the id of a *real* version destroyed that version
+  permanently under the same success message. Undo now verifies the id is a
+  delete marker of that key's timeline before deleting and fails with an
+  explicit error otherwise (found in live validation against a versioned
+  Hetzner bucket).
 - The side pane's breadcrumb showed the internal source id (e.g.
   `src-abc123:/`) instead of the source's name; the path-prompt titles had
   the same problem. Both now show the name the user configured.

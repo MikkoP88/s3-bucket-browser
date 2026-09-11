@@ -2,8 +2,10 @@
 // version timelines, restore-as-latest, permanent deletes, bulk purges and
 // force-emptying of versioned buckets. Deleting a specific version ID is
 // permanent (safety ladder L3, §9) — callers must gate it behind typed
-// confirmation; nothing here double-checks, the count-then-act contract is
-// the caller's responsibility (mirrored by the API layer).
+// confirmation; nothing here gates permanence, the count-then-act contract is
+// the caller's responsibility (mirrored by the API layer). The one exception
+// is RemoveDeleteMarker, which verifies its target is really a delete marker
+// before deleting.
 package versioning
 
 import (
@@ -220,12 +222,29 @@ func RestoreVersion(ctx context.Context, client *s3.Client, bucket, key, version
 // RemoveDeleteMarker removes one delete marker ("undo delete": the object
 // becomes visible again with its previous current version).
 func RemoveDeleteMarker(ctx context.Context, client *s3.Client, bucket, key, versionID string) error {
-	_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket:    aws.String(bucket),
-		Key:       aws.String(key),
-		VersionId: aws.String(versionID),
-	})
-	return err
+	// S3 accepts DeleteObject(versionId=X) for ANY X: an unknown id is an
+	// idempotent success, and the id of a REAL version destroys that version
+	// — either way the caller would report "the object is back" while it
+	// isn't. Verify the id is actually one of the key's delete markers.
+	vers, err := ListForObject(ctx, client, bucket, key)
+	if err != nil {
+		return err
+	}
+	for _, v := range vers {
+		if v.VersionID != versionID {
+			continue
+		}
+		if !v.IsDeleteMarker {
+			return fmt.Errorf("version %s of s3://%s/%s is a real version, not a delete marker — undo would destroy it; pass the marker's id from the version timeline", versionID, bucket, key)
+		}
+		_, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket:    aws.String(bucket),
+			Key:       aws.String(key),
+			VersionId: aws.String(versionID),
+		})
+		return err
+	}
+	return fmt.Errorf("version %s not found in the timeline of s3://%s/%s", versionID, bucket, key)
 }
 
 // DeleteVersion permanently deletes one specific version (L3).
