@@ -136,7 +136,7 @@ jobs:
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
             -v /tmp/s3b-minio-data:/data \
-            minio/minio:latest server /data
+            quay.io/minio/minio:latest server /data
           bash scripts/wait-http.sh http://localhost:9000/minio/health/live
 
       - name: E2E against MinIO

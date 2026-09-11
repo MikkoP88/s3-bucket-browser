@@ -4,7 +4,7 @@
 # Prerequisite: MinIO listening on localhost:9000 with minioadmin/minioadmin
 # credentials (see the e2e-minio CI job, or:
 #   docker run -d -p 9000:9000 -e MINIO_ROOT_USER=minioadmin \
-#     -e MINIO_ROOT_PASSWORD=minioadmin minio/minio:latest server /data)
+#     -e MINIO_ROOT_PASSWORD=minioadmin quay.io/minio/minio:latest server /data)
 #
 # The test never touches the user's profile store: S3B_CONFIG is pointed at a
 # throwaway directory for the whole run.

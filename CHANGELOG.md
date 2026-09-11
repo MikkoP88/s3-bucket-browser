@@ -470,6 +470,9 @@ follow [Semantic Versioning](https://semver.org/).
   GUI mode now detaches the console at startup (`FreeConsole`), so
   double-click / Start-menu launches are popup-free; CLI behavior and
   launching from a terminal are unchanged.
+- CI: the e2e-minio job pulls MinIO from `quay.io/minio/minio` — the
+  `minio/minio` Docker Hub repository is gone (pulls fail with "repository
+  does not exist"), which broke the job outright.
 
 ## [1.0.0] — 2026-09-09
 
