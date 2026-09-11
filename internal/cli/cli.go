@@ -142,6 +142,7 @@ func NewRoot() *cobra.Command {
 
 // Execute runs the CLI and returns the process exit code.
 func Execute(args []string) int {
+	attachParentConsole() // windowsgui builds: reattach the parent terminal
 	if !colorEnabled() {
 		color.NoColor = true
 	}

@@ -11,7 +11,9 @@ package gui
 
 import (
 	"embed"
+	"io"
 	"io/fs"
+	"log"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/api"
 	"github.com/wailsapp/wails/v2"
@@ -25,6 +27,12 @@ var frontendFS embed.FS
 // Run starts the desktop GUI and blocks until the window closes.
 func Run(version string) error {
 	detachConsole()
+	// The embedded WebView2 bindings log one unconditional line at startup
+	// ("[WebView2] Environment created successfully", go-webview2
+	// chromium.go) straight to the std logger; a GUI has no console to
+	// earn it — drop the whole default logger. Application events use the
+	// separate eventlog package and are unaffected.
+	log.SetOutput(io.Discard)
 	app := api.New(version)
 	assets, err := fs.Sub(frontendFS, "frontend")
 	if err != nil {

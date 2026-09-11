@@ -87,7 +87,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg dist/pkg-arm
           env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch amd64
-          go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
+          go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg/
           (cd dist/pkg && zip -q "../s3b-${VERSION}-windows-amd64.zip" -- *)
@@ -100,7 +100,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch arm64
-          go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
+          go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg-arm/
           (cd dist/pkg-arm && zip -q "../s3b-${VERSION}-windows-arm64.zip" -- *)

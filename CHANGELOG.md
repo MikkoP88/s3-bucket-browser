@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Native single-process launch on Windows: release binaries (and the README
+  quickstart) link with `-H windowsgui` — the app starts with no console
+  flash and no lingering console window, as one native process. The CLI in
+  the same binary re-attaches the parent terminal on demand: cmd.exe and
+  PowerShell get output through `AttachConsole` + `CONOUT$`, while
+  Git-Bash/mintty pipes and redirections (`> file`, `| grep`) keep using
+  their inherited handles untouched.
 - `source add` URL shorthand: `s3b source add [NAME] sftp://user:pass@host:port/root`
   (scp:// ftp:// ftps:// too) sets type, host, port, credentials and root
   from one URL — percent-encoded special characters in passwords are
@@ -273,6 +280,10 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The "[WebView2] Environment created successfully" popup behind the GUI is
+  gone: the go-webview2 startup line (an unconditional std-log print) is
+  discarded in GUI mode — application events still go to the shared event
+  log shown by `s3b log` and the in-app log area.
 - FTP engine against vsftpd and other no-MLST servers: single-entry stat
   (Stat, MkdirAll's segment verification, Remove) fell over the client
   library's synthetic 502 when the server implements neither MLST nor
