@@ -10,6 +10,7 @@ import (
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 )
 
 // profiles.go carries the connectivity probe (TestProfile) and the
@@ -41,11 +42,17 @@ func (a *App) TestProfile(name string) TestResult {
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 	defer cancel()
-	buckets, err := listing.ListBuckets(ctx, c.S3)
+	return probeBuckets(ctx, c)
+}
+
+// probeBuckets is the shared Test tail: list buckets with the caller's
+// deadline and shape the verdict.
+func probeBuckets(ctx context.Context, c *s3client.Client) TestResult {
 	res := TestResult{
 		Provider: c.ProviderKey,
 		Endpoint: c.Endpoint,
 	}
+	buckets, err := listing.ListBuckets(ctx, c.S3)
 	if err != nil {
 		res.Message = err.Error()
 		return res

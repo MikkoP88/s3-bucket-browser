@@ -9,19 +9,41 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
+// profileDialogs, when set, answers the profile-file pickers in place of
+// the native dialogs. There are no native dialogs outside wails.Run, and
+// tools/gui-live (the live GUI harness) scripts them this way. Must be set
+// before Startup; the desktop app never sets it.
+var profileDialogs struct {
+	open func() (string, error)
+	save func(defaultName string) (string, error)
+}
+
+// SetProfileDialogs scripts the open/save profile-file pickers (nil members
+// restore the native dialogs). Only tools/gui-live sets this.
+func SetProfileDialogs(open func() (string, error), save func(string) (string, error)) {
+	profileDialogs.open = open
+	profileDialogs.save = save
+}
+
 // PickOpenProfileFile opens the native file dialog for *.s3bprofile.
 func (a *App) PickOpenProfileFile() (string, error) {
+	if profileDialogs.open != nil {
+		return profileDialogs.open()
+	}
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Open profile file",
 		Filters: []runtime.FileFilter{{
@@ -33,6 +55,9 @@ func (a *App) PickOpenProfileFile() (string, error) {
 
 // PickSaveProfileFile opens the native save dialog for *.s3bprofile.
 func (a *App) PickSaveProfileFile(defaultName string) (string, error) {
+	if profileDialogs.save != nil {
+		return profileDialogs.save(defaultName)
+	}
 	if defaultName == "" {
 		defaultName = "profile.s3bprofile"
 	}
@@ -194,6 +219,37 @@ func (a *App) TestSource(idOrName string) TestResult {
 		return a.testRemoteSource(src)
 	}
 	return a.TestProfile(src.Name)
+}
+
+// TestS3Draft dials the s3 connection described by in WITHOUT saving it, so
+// the add-source editor's Test button validates credentials before anything
+// is stored — and, when editing, dials the form's values rather than the
+// stored ones. Masked or empty secrets are inherited from the stored source
+// matched by ID or name (the same rule SaveSource uses), so editor
+// round-trips never test against placeholder strings.
+func (a *App) TestS3Draft(in profile.Source) TestResult {
+	if in.S3 == nil {
+		return TestResult{OK: false, Message: "no s3 configuration given"}
+	}
+	idOrName := in.ID
+	if idOrName == "" {
+		idOrName = in.Name
+	}
+	if idOrName != "" {
+		if existing, err := a.sourceByIDOrName(idOrName); err == nil {
+			inheritSourceSecrets(&in, existing)
+		}
+	}
+	if a.ctx == nil {
+		return TestResult{OK: false, Message: errNoContext.Error()}
+	}
+	c, err := s3client.New(a.ctx, *in.S3, s3client.Options{Timeout: 0})
+	if err != nil {
+		return TestResult{OK: false, Message: err.Error()}
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	return probeBuckets(ctx, c)
 }
 
 // sourceByIDOrName resolves a source from the workspace (open Profile

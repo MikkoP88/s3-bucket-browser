@@ -2510,11 +2510,18 @@ function wireEvents() {
   });
   onEvent('transfer:update', (j) => {
     showTransfersBadge();
-    // Cross-source jobs mutate remote/local sides too (s3:changed only
-    // covers S3) — refresh the open views when one finishes.
-    if (j?.status && j.status !== 'running' && String(j.id || '').startsWith('transfer')) {
-      refreshCurrent();
-      if (localPane.visible) localPane.refresh();
+    // A finished job may have mutated the open views. Cross-source jobs
+    // touch both sides; downloads write the local pane — s3:changed only
+    // covers S3, so nothing else would refresh it; uploads arrive via
+    // s3:changed.
+    if (j?.status && j.status !== 'running') {
+      const op = String(j.op || j.id || '');
+      if (op.startsWith('transfer')) {
+        refreshCurrent();
+        if (localPane.visible) localPane.refresh();
+      } else if (op.startsWith('download') && localPane.visible) {
+        localPane.refresh();
+      }
     }
   });
   onEvent('editor:saved', (d) => {

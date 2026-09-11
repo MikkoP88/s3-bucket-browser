@@ -463,7 +463,23 @@ export function sourceEditor(existing, onSaved) {
           }
           status.textContent = 'Testing\u2026';
           try {
-            const res = await api.TestProfile(f.name.value.trim());
+            // Dial the FORM values, saved or not (masked secrets are
+            // re-attached server-side from the stored source).
+            const res = await api.TestS3Draft({
+              id: existing?.id || '',
+              name: f.name.value.trim(),
+              type: 's3',
+              s3: {
+                name: f.name.value.trim(),
+                endpoint: f.endpoint.value.trim(),
+                region: f.region.value.trim(),
+                accessKeyId: f.accessKey.value.trim(),
+                secretKey: f.secretKey.value,
+                sessionToken: f.token.value,
+                pathStyle: f.pathStyle.checked,
+                insecure: f.insecure.checked,
+              },
+            });
             status.textContent = res.ok ? `\u2705 ${res.message}` : `\u274C ${res.message}`;
             status.style.color = res.ok ? 'var(--ok)' : 'var(--danger)';
           } catch (err) {

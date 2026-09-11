@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -56,10 +57,12 @@ type JobInfo struct {
 }
 
 // DownloadItem pairs an object key with its size (sizes come from the grid,
-// avoiding one HeadObject per file).
+// avoiding one HeadObject per file). Local optionally overrides the relative
+// path under destDir (slash-separated; "" = derive from Key).
 type DownloadItem struct {
-	Key  string `json:"key"`
-	Size int64  `json:"size"`
+	Key   string `json:"key"`
+	Size  int64  `json:"size"`
+	Local string `json:"local,omitempty"`
 }
 
 // jobHandle is one running/finished transfer.
@@ -480,7 +483,11 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 		j.mu.Unlock()
 		j.emit(a.jobs, true)
 
-		local := filepath.Join(destDir, filepath.FromSlash(strings.TrimPrefix(it.Key, "/")))
+		rel := it.Local
+		if rel == "" {
+			rel = strings.TrimPrefix(it.Key, "/")
+		}
+		local := filepath.Join(destDir, filepath.FromSlash(rel))
 		switch policy {
 		case PolicySkip:
 			if _, err := os.Stat(local); err == nil {
@@ -530,7 +537,9 @@ type DownloadRef struct {
 
 // DownloadRefs starts a download job from mixed file/folder references:
 // folders are walked recursively (sizes from listing), files use the size
-// shipped by the grid.
+// shipped by the grid. Dragged files land flat in destDir (the basename —
+// dragging zz-live/live-b.txt onto a pane yields live-b.txt, not a nested
+// zz-live/), folders keep their structure.
 func (a *App) DownloadRefs(bucket string, refs []DownloadRef, destDir, policy string, maxBPS int64) (string, error) {
 	c, err := a.client("")
 	if err != nil {
@@ -541,7 +550,7 @@ func (a *App) DownloadRefs(bucket string, refs []DownloadRef, destDir, policy st
 	var items []DownloadItem
 	for _, r := range refs {
 		if !r.IsDir {
-			items = append(items, DownloadItem{Key: r.Key, Size: r.Size})
+			items = append(items, DownloadItem{Key: r.Key, Size: r.Size, Local: path.Base(r.Key)})
 			continue
 		}
 		err := listing.Walk(ctx, c.S3, bucket, dirPrefix(r.Key), func(o s3types.Object) error {

@@ -17,4 +17,6 @@ node scripts/i18n-check.mjs || fail=1
 # the visual harness is Node too (playwright-core drives it; the full run
 # needs a browser and lives in CI's gui-visual job — here we syntax-check it)
 node --check scripts/gui-visual.mjs && echo "OK   scripts/gui-visual.mjs" || fail=1
+# same for the live harness (its full run needs credentials + a real bucket)
+node --check scripts/gui-live.mjs && echo "OK   scripts/gui-live.mjs" || fail=1
 exit $fail

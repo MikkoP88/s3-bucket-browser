@@ -8,6 +8,22 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Live GUI harness** (`npm run gui-live`, dev-only): a real-backend live
+  walk of the GUI. `tools/gui-live` serves the production `frontend/` over
+  local HTTP with the actual `pkg/api` app behind a reflection-dispatched
+  bridge (`POST /__live/call`) and backend events streamed over SSE into
+  the frontend's `EventsOn`, so Playwright drives the real UI against real
+  S3 (two small seams were added for this: `SetEventSink` for the event
+  bus and `SetProfileDialogs` for scripted pickers). `scripts/gui-live.mjs`
+  runs ~61 checks — onboarding, source add/edit/Test, tree navigation,
+  uploads via drag & drop (plain, overwrite, rename), versioning (list,
+  A/B pick, text diff), downloads to the dual-pane local side, cross-pane
+  transfers, the transfers manager, restart persistence through an
+  encrypted profile file, and cleanup — asserting DOM state, on-disk
+  bytes, version counts and the transfers log. `scripts/js-check.sh`
+  syntax-checks the harness; the full run needs credentials and a real
+  bucket, so it lives on the dev machine, not in CI. It found three real
+  bugs, fixed below.
 - **WebDAV engine.** Two new source types, `webdav` (HTTP, default port
   80) and `webdavs` (HTTPS, 443), speak RFC 4918 with a stdlib-only
   HTTP client — PROPFIND for listings/metadata, GET/PUT for content,
@@ -387,6 +403,26 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Finished downloads never refreshed the dual-pane local view: the
+  `transfer:update` handler refreshed only jobs whose id started with
+  "transfer" (cross-source transfers), so a completed download job left
+  the local pane stale until the next manual refresh. The refresh now
+  keys off the job's `op` — cross-source transfers refresh both sides,
+  downloads refresh the local pane; uploads still arrive via `s3:changed`
+  (found by the live GUI harness).
+- Flat-file downloads nested under their object prefix: dragging
+  `zz-live/live-b.txt` onto the side pane produced
+  `downloads/zz-live/live-b.txt` instead of `downloads/live-b.txt`, for
+  every download whose items came from the grid. `DownloadItem` gains an
+  optional `Local` override for the path under the destination folder and
+  `DownloadRefs` sets the basename for dragged files — folder references
+  keep their structure (found by the live GUI harness).
+- The source editor's Test button dialed the saved source, not the form:
+  with an existing source loaded, Test probed the stored
+  endpoint/credentials even with unsaved edits in the dialog (and saved
+  sources only — a brand-new unsaved source could not be tested at all).
+  A new `TestS3Draft` binding tests exactly what is in the form, before
+  you save (found by the live GUI harness).
 - `s3b versions undo` (CLI and GUI) trusted any `--version-id`: S3 honors a
   delete of any version id as an idempotent success, so a typo'd id printed
   "object is back" while the real delete marker stayed current and the object
