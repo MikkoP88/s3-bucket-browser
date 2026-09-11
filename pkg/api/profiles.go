@@ -12,145 +12,15 @@ import (
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
-// ProfileDTO is a profile as shown in the GUI: secrets masked.
-type ProfileDTO struct {
-	Name         string `json:"name"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	Region       string `json:"region,omitempty"`
-	AccessKeyID  string `json:"accessKeyId,omitempty"`
-	SecretMasked string `json:"secretMasked,omitempty"`
-	PathStyle    bool   `json:"pathStyle"`
-	Insecure     bool   `json:"insecure"`
-	Default      bool   `json:"default,omitempty"`
-	Provider     string `json:"provider"`
-	Color        string `json:"color,omitempty"`
-}
-
-// ProfileInput carries a profile editor submission. Empty/masked secrets keep
-// the stored values so the round-trip through the UI never wipes credentials.
-type ProfileInput struct {
-	Name         string `json:"name"`
-	Endpoint     string `json:"endpoint"`
-	Region       string `json:"region"`
-	AccessKeyID  string `json:"accessKeyId"`
-	SecretKey    string `json:"secretKey"`
-	SessionToken string `json:"sessionToken"`
-	PathStyle    bool   `json:"pathStyle"`
-	Insecure     bool   `json:"insecure"`
-	Color        string `json:"color"`
-	SetDefault   bool   `json:"setDefault"`
-}
-
-// ListProfiles returns all profiles (masked), sorted by name.
-func (a *App) ListProfiles() ([]ProfileDTO, error) {
-	s, err := a.loadStore()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]ProfileDTO, 0, len(s.Profiles))
-	for _, p := range s.Sorted() {
-		out = append(out, ProfileDTO{
-			Name:         p.Name,
-			Endpoint:     p.Endpoint,
-			Region:       p.Region,
-			AccessKeyID:  p.AccessKeyID,
-			SecretMasked: profile.Mask(p.SecretKey),
-			PathStyle:    p.PathStyle,
-			Insecure:     p.Insecure,
-			Default:      p.Default,
-			Provider:     p.Provider(),
-			Color:        p.Color,
-		})
-	}
-	return out, nil
-}
-
-// SaveProfile creates or updates a profile (Upsert by name).
-func (a *App) SaveProfile(in ProfileInput) error {
-	s, err := a.loadStore()
-	if err != nil {
-		return err
-	}
-	in.Name = strings.TrimSpace(in.Name)
-	if in.Name == "" {
-		return fmt.Errorf("profile name is required")
-	}
-	if strings.ContainsAny(in.Name, " /\t") {
-		return fmt.Errorf("profile name must not contain spaces or slashes")
-	}
-
-	p := profile.Profile{
-		Name:         in.Name,
-		Endpoint:     strings.TrimSpace(in.Endpoint),
-		Region:       strings.TrimSpace(in.Region),
-		AccessKeyID:  strings.TrimSpace(in.AccessKeyID),
-		SecretKey:    in.SecretKey,
-		SessionToken: in.SessionToken,
-		PathStyle:    in.PathStyle,
-		Insecure:     in.Insecure,
-		Color:        in.Color,
-	}
-	// Editor round-trip: masked or empty secrets preserve stored values.
-	if existing, err := s.Get(in.Name); err == nil {
-		if isMasked(in.SecretKey) {
-			p.SecretKey = existing.SecretKey
-		}
-		if isMasked(in.SessionToken) {
-			p.SessionToken = existing.SessionToken
-		}
-	}
-	if err := s.UpsertS3Profile(p); err != nil {
-		return err
-	}
-	if in.SetDefault || len(s.Profiles) == 1 {
-		if err := s.SetDefaultS3(p.Name); err != nil {
-			return err
-		}
-	}
-	if err := s.Save(); err != nil {
-		return err
-	}
-	a.invalidateClients()
-	return nil
-}
+// profiles.go carries the connectivity probe (TestProfile) and the
+// ~/.aws/credentials import. The legacy profile-mirror API (ListProfiles,
+// SaveProfile, RemoveProfile, SetDefaultProfile) is gone with the strict
+// sources model — the GUI workspace is sources-only and never touches the
+// CLI's profile store.
 
 // isMasked reports whether s is a masked secret or empty placeholder.
 func isMasked(s string) bool {
 	return s == "" || strings.Contains(s, "…") || strings.Contains(s, "****")
-}
-
-// RemoveProfile deletes a profile by name (and its mirrored s3 source —
-// they are the same connection).
-func (a *App) RemoveProfile(name string) error {
-	s, err := a.loadStore()
-	if err != nil {
-		return err
-	}
-	if err := s.RemoveS3Profile(name); err != nil {
-		return err
-	}
-	if err := s.Save(); err != nil {
-		return err
-	}
-	a.invalidateClients()
-	return nil
-}
-
-// SetDefaultProfile marks one profile as the default connection and keeps
-// its s3 source mirror in sync.
-func (a *App) SetDefaultProfile(name string) error {
-	s, err := a.loadStore()
-	if err != nil {
-		return err
-	}
-	if err := s.SetDefaultS3(name); err != nil {
-		return err
-	}
-	if err := s.Save(); err != nil {
-		return err
-	}
-	a.invalidateClients()
-	return nil
 }
 
 // TestResult is the outcome of a lightweight connectivity probe.
@@ -192,14 +62,11 @@ type ImportResult struct {
 	Skipped  []string `json:"skipped"`
 }
 
-// ImportAwsCredentials imports profiles from ~/.aws/credentials (INI), the
-// M2 onboarding shortcut (PLAN.md §8). Existing profile names are skipped.
+// ImportAwsCredentials imports connections from ~/.aws/credentials (INI)
+// as s3 data sources in the workspace (open Profile file, else the session
+// registry), the onboarding shortcut. Existing source names are skipped.
 func (a *App) ImportAwsCredentials() (ImportResult, error) {
 	var res ImportResult
-	s, err := a.loadStore()
-	if err != nil {
-		return res, err
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return res, err
@@ -237,19 +104,36 @@ func (a *App) ImportAwsCredentials() (ImportResult, error) {
 		creds[cur] = pair
 	}
 
+	a.pfMu.Lock()
+	defer a.pfMu.Unlock()
+	dst := &a.session
+	if a.pf != nil {
+		dst = &a.pf.sources
+	}
 	for name, pair := range creds {
 		if pair[0] == "" || pair[1] == "" {
 			res.Skipped = append(res.Skipped, name+" (incomplete)")
 			continue
 		}
-		if _, err := s.Get(name); err == nil {
+		exists := false
+		for _, s := range *dst {
+			if s.Name == name {
+				exists = true
+				break
+			}
+		}
+		if exists {
 			res.Skipped = append(res.Skipped, name+" (already exists)")
 			continue
 		}
-		if err := s.UpsertS3Profile(profile.Profile{
-			Name:        name,
-			AccessKeyID: pair[0],
-			SecretKey:   pair[1],
+		if err := profile.UpsertSourceIn(dst, profile.Source{
+			Name: name,
+			Type: profile.TypeS3,
+			S3: &profile.Profile{
+				Name:        name,
+				AccessKeyID: pair[0],
+				SecretKey:   pair[1],
+			},
 		}); err != nil {
 			return res, err
 		}
@@ -257,8 +141,8 @@ func (a *App) ImportAwsCredentials() (ImportResult, error) {
 		imported++
 	}
 	if imported > 0 {
-		if err := s.Save(); err != nil {
-			return res, err
+		if a.pf != nil {
+			a.pf.dirty = true
 		}
 		a.invalidateClients()
 	}

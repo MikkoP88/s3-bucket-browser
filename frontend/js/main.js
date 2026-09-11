@@ -151,9 +151,9 @@ function providerLabel(endpoint) {
   }
 }
 
-// refreshSources reloads all data sources (an open Profile file wins over
-// the local store), rebuilds the s3 dropdown, and shows onboarding when
-// there is nothing to browse with yet.
+// refreshSources reloads the workspace's data sources (open Profile file,
+// else the session-only registry), rebuilds the s3 dropdown, and shows
+// onboarding when there is nothing to browse with yet.
 async function refreshSources() {
   try {
     sources = await api.ListSources();
@@ -187,7 +187,7 @@ async function refreshSources() {
 
 function showOnboarding() {
   nav.replace({ kind: 'onboarding' });
-  $('sidebar-head').textContent = t('buckets');
+  $('sidebar-head').textContent = t('sourcesTitle');
   tree.container.replaceChildren();
   renderBreadcrumb();
   showEmpty(t('noSources'), t('noSourcesSub'), [
@@ -205,6 +205,7 @@ async function importAws() {
     toast(msg, res.imported.length ? 'ok' : '');
     if (res.imported.length) {
       await refreshSources();
+      refreshPfState(); // imports land in the session (or open file)
       nav.to({ kind: 'buckets' });
     }
   } catch (err) {
@@ -1850,20 +1851,22 @@ async function refreshPfState() {
     sp.title = pfState.path
       ? `${pfState.path}${pfState.dirty ? ' — unsaved changes (Ctrl+S)' : ''}`
       : 'unsaved profile file — use File \u2192 Save profile file as\u2026';
+  } else if (pfState.sourceCount > 0) {
+    // Session-only sources: live in memory, gone on close (strict model).
+    sp.classList.remove('hidden');
+    sp.textContent = `\u25CF ${pfState.sourceCount} unsaved source${pfState.sourceCount === 1 ? '' : 's'}`;
+    sp.title = 'These sources live in memory only and vanish on close.\nUse File \u2192 Save profile file as\u2026 to store them in an encrypted profile file.';
   } else {
     sp.classList.add('hidden');
   }
 }
 
 // makeDefaultSource flips the default flag in one place: the source record
-// via SaveSource (works in store and Profile-file mode) and, in store mode,
-// the legacy mirror via SetDefaultProfile so browsing and the CLI agree.
+// via SaveSource (works in Profile-file and session mode alike).
 async function makeDefaultSource(name) {
-  await refreshPfState();
   const src = sources.find((s) => s.type === 's3' && s.name === name);
   if (!src) return;
   await api.SaveSource({ ...src, default: true, s3: { ...src.s3, default: true } });
-  if (!pfState.open) await api.SetDefaultProfile(name);
 }
 
 async function newProfileFileUi() {
@@ -1902,7 +1905,12 @@ async function openProfileFileUi() {
 
 async function saveProfileFileUi() {
   await refreshPfState();
-  if (!pfState.open) return; // Ctrl+S is global; silently ignore without a session
+  if (!pfState.open) {
+    // Session-only sources: Ctrl+S runs Save As so they become a Profile
+    // file (the fix for "cannot save without creating New Profile first").
+    if (pfState.sourceCount > 0) return saveAsProfileFileUi();
+    return; // Ctrl+S is global; silently ignore with nothing to save
+  }
   if (!pfState.path) return saveAsProfileFileUi(); // never saved yet
   try {
     await api.SaveProfileFile();
@@ -1913,7 +1921,7 @@ async function saveProfileFileUi() {
 
 async function saveAsProfileFileUi() {
   await refreshPfState();
-  if (!pfState.open) return;
+  if (!pfState.open && !pfState.sourceCount) return;
   let path;
   try {
     path = await api.PickSaveProfileFile(pfState.name || 'profile');
@@ -1931,14 +1939,16 @@ async function saveAsProfileFileUi() {
 
 async function closeProfileFileUi() {
   await refreshPfState();
-  if (!pfState.open) return;
+  if (!pfState.open && !pfState.sourceCount) return;
   try {
     await api.CloseProfileFile(false);
   } catch (err) {
-    // Dirty: offer a forced close that discards the container edits.
+    // Dirty container or unsaved session sources: offer a discard.
     const ok = await confirm({
       title: t('pf.close'),
-      message: 'The profile file has unsaved changes.\nClose anyway and discard them?',
+      message: pfState.open
+        ? 'The profile file has unsaved changes.\nClose anyway and discard them?'
+        : `There are ${pfState.sourceCount} unsaved session source(s).\nClose anyway and discard them?`,
       okLabel: 'Discard & close',
       danger: true,
     });
@@ -2010,9 +2020,9 @@ function mountMenubar() {
         null,
         { label: t('pf.new'), action: newProfileFileUi },
         { label: t('pf.open'), action: openProfileFileUi },
-        { label: t('pf.save'), kbd: 'Ctrl+S', action: saveProfileFileUi, enabled: () => pfState.open },
-        { label: t('pf.saveAs'), action: saveAsProfileFileUi, enabled: () => pfState.open },
-        { label: t('pf.close'), action: closeProfileFileUi, enabled: () => pfState.open },
+        { label: t('pf.save'), kbd: 'Ctrl+S', action: saveProfileFileUi, enabled: () => pfState.open || pfState.sourceCount > 0 },
+        { label: t('pf.saveAs'), action: saveAsProfileFileUi, enabled: () => pfState.open || pfState.sourceCount > 0 },
+        { label: t('pf.close'), action: closeProfileFileUi, enabled: () => pfState.open || pfState.sourceCount > 0 },
         null,
         { label: t('menu.exit'), action: () => api.ExitApp() },
       ],

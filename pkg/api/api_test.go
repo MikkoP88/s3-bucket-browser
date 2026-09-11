@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
 // Hermetic tests: no S3 backend required (MinIO stays an optional, CI-side
@@ -65,55 +67,6 @@ func newTestApp(t *testing.T) *App {
 	return New("test")
 }
 
-func TestSaveProfilePreservesMaskedSecrets(t *testing.T) {
-	a := newTestApp(t)
-
-	if err := a.SaveProfile(ProfileInput{
-		Name: "lab", AccessKeyID: "AKIA1", SecretKey: "supersecret",
-		SetDefault: true,
-	}); err != nil {
-		t.Fatalf("initial save: %v", err)
-	}
-
-	// Editor round-trip: masked secret (or empty) must keep stored value.
-	if err := a.SaveProfile(ProfileInput{
-		Name: "lab", AccessKeyID: "AKIA1", SecretKey: "su…et",
-	}); err != nil {
-		t.Fatalf("masked save: %v", err)
-	}
-	s, err := a.loadStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := s.Get("lab")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.SecretKey != "supersecret" {
-		t.Errorf("secret = %q, want preserved %q", p.SecretKey, "supersecret")
-	}
-
-	// Explicit new secret overwrites.
-	if err := a.SaveProfile(ProfileInput{Name: "lab", SecretKey: "rotated"}); err != nil {
-		t.Fatal(err)
-	}
-	s, _ = a.loadStore()
-	p, _ = s.Get("lab")
-	if p.SecretKey != "rotated" {
-		t.Errorf("secret = %q, want rotated", p.SecretKey)
-	}
-}
-
-func TestSaveProfileValidation(t *testing.T) {
-	a := newTestApp(t)
-	if err := a.SaveProfile(ProfileInput{Name: "  "}); err == nil {
-		t.Error("empty name accepted")
-	}
-	if err := a.SaveProfile(ProfileInput{Name: "my profile"}); err == nil {
-		t.Error("name with space accepted")
-	}
-}
-
 func TestImportAwsCredentials(t *testing.T) {
 	a := newTestApp(t)
 	home := t.TempDir()
@@ -160,10 +113,29 @@ aws_access_key_id = AKIAONLY
 		t.Errorf("re-import: imported=%v skipped=%v, want 0/3", res2.Imported, res2.Skipped)
 	}
 
-	s, _ := a.loadStore()
-	p, err := s.Get("work")
-	if err != nil || p.AccessKeyID != "AKIAWORK" || p.SecretKey != "secretwork" {
-		t.Errorf("imported profile work = %+v err=%v", p, err)
+	// Imports are session sources, not store profiles.
+	s, err := profile.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("work"); err == nil {
+		t.Error("import must not write the CLI store")
+	}
+	srcs, err := a.ListSources()
+	if err != nil || len(srcs) != 2 {
+		t.Fatalf("want 2 session sources, got %+v (%v)", srcs, err)
+	}
+	full, err := a.sourceByIDOrName("work")
+	if err != nil || full.S3 == nil {
+		t.Fatalf("imported source work: %+v (%v)", full, err)
+	}
+	if full.S3.AccessKeyID != "AKIAWORK" || full.S3.SecretKey != "secretwork" {
+		t.Errorf("imported source work = %+v", full.S3)
+	}
+	for _, src := range srcs {
+		if src.S3 != nil && src.S3.SecretKey == "secretwork" {
+			t.Error("listings must mask imported secrets")
+		}
 	}
 }
 

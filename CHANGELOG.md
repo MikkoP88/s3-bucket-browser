@@ -6,6 +6,24 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Strict session-only data sources (GUI).** The GUI workspace is now
+  either an open encrypted Profile file or a session-only in-memory
+  registry — the GUI never reads or writes the CLI's `profiles.json`
+  anymore (the CLI store is untouched and keeps working). Sources added
+  without an open Profile file live in memory only and vanish on close:
+  the status bar shows "● N unsaved sources" with the escape hatch spelled
+  out. Ctrl+S / File → Save with no file open runs Save As directly, so
+  session sources become an encrypted `.s3bprofile` wherever the user
+  picks — the "cannot save without creating a New Profile file first"
+  dead end is gone. New/Open Profile file guard against shadowing unsaved
+  session sources; Close offers a discard confirmation. `~/.aws/credentials`
+  import lands in the workspace too. The legacy GUI profile-mirror API
+  (ListProfiles/SaveProfile/RemoveProfile/SetDefaultProfile) was removed
+  along with the store fallback in `client()` — S3 browsing resolves from
+  the open file or session, nowhere else.
+
 ### Added
 
 - Localized UI in 15 languages: English, Finnish, Swedish, German, French,

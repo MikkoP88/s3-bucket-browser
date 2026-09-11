@@ -67,11 +67,7 @@ func TestRemoteListLocalEngine(t *testing.T) {
 
 	// SaveSource invalidates: the cache survives only until a source edit
 	// (updates carry the source ID, like the editor does).
-	st, err := a.loadStore()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cur, err := st.GetSource("lab")
+	cur, err := a.sourceByIDOrName("lab")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,15 +1,11 @@
 // sources.go is the M8 API surface: data sources (connections of any type)
 // and the password-encrypted Profile file (*.s3bprofile) that bundles them.
 //
-// Two modes govern where source edits land:
-//
-//   - store mode (default): sources live in profiles.json next to the
-//     legacy profiles; S3 sources are mirrored as profiles so browsing and
-//     the CLI keep resolving them by name.
-//   - Profile file mode: an open container is the single source of truth;
-//     edits stay in memory (dirty flag) until Save/Save As re-encrypts.
-//     Nothing leaks into the local store, so a colleague's Profile file
-//     leaves no trace after Close.
+// Strict sources model: the workspace is either an open Profile file or a
+// session-only in-memory registry. The GUI never reads or writes the CLI's
+// profiles.json — sources added without an open file live only until the
+// app closes (File → Save profile file as… turns them into an encrypted
+// Profile file; Close discards them after a confirmation).
 package api
 
 import (
@@ -17,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
@@ -75,21 +72,12 @@ type openProfileFile struct {
 	dirty    bool
 }
 
-// ListSources returns all configured data sources, secrets masked. When a
-// Profile file is open it wins; otherwise the local store is used, seeded
-// once from the legacy S3 profiles (M8 migration).
+// ListSources returns the workspace's data sources, secrets masked: the
+// open Profile file's, else the session-only registry's.
 func (a *App) ListSources() ([]profile.Source, error) {
-	if srcs := a.containerSources(); srcs != nil {
-		return publicSources(srcs), nil
-	}
-	s, err := a.loadStore()
-	if err != nil {
-		return nil, err
-	}
-	if err := a.seedSources(s); err != nil {
-		return nil, err
-	}
-	return publicSources(s.SortedSources()), nil
+	srcs := a.workspaceSources()
+	sort.Slice(srcs, func(i, j int) bool { return srcs[i].Name < srcs[j].Name })
+	return publicSources(srcs), nil
 }
 
 func publicSources(srcs []profile.Source) []profile.Source {
@@ -100,62 +88,32 @@ func publicSources(srcs []profile.Source) []profile.Source {
 	return out
 }
 
-// seedSources is the one-way M8 migration: legacy S3 profiles become s3
-// data sources once, then the two lists evolve independently.
-func (a *App) seedSources(s *profile.Store) error {
-	changed, err := s.SeedFromProfiles()
-	if err != nil {
-		return err
-	}
-	if !changed {
-		return nil
-	}
-	return s.Save()
-}
-
-// SaveSource creates or updates a data source (matched by ID, else name).
-// Masked or empty secrets inherit the stored values, so editor round-trips
-// never wipe credentials. S3 sources in store mode are mirrored into the
-// legacy profile store so browsing and the CLI keep working.
+// SaveSource creates or updates a data source in the workspace (matched
+// by ID, else name). Masked or empty secrets inherit the stored values, so
+// editor round-trips never wipe credentials.
 func (a *App) SaveSource(in profile.Source) error {
 	if a.profileFileOpen() {
 		return a.saveSourceInContainer(in)
 	}
-	s, err := a.loadStore()
-	if err != nil {
-		return err
-	}
-	if existing, err := s.GetSource(sourceKey(in)); err == nil {
-		inheritSourceSecrets(&in, existing)
-		// A renamed s3 source leaves its old mirror profile behind.
-		if in.Type == profile.TypeS3 && existing.Type == profile.TypeS3 && existing.Name != in.Name {
-			_ = s.Remove(existing.Name)
+	return a.saveSessionSource(in)
+}
+
+// saveSessionSource upserts into the session-only registry (no Profile
+// file open): in-memory only, nothing touches disk.
+func (a *App) saveSessionSource(in profile.Source) error {
+	a.pfMu.Lock()
+	defer a.pfMu.Unlock()
+	for i := range a.session {
+		if a.session[i].ID == in.ID || (in.ID == "" && a.session[i].Name == in.Name) {
+			inheritSourceSecrets(&in, a.session[i])
+			break
 		}
 	}
-	if in.Type == profile.TypeS3 && in.S3 != nil {
-		p := *in.S3
-		p.Name = in.Name
-		if err := s.Upsert(p); err != nil {
-			return err
-		}
-	}
-	if err := s.UpsertSource(in); err != nil {
-		return err
-	}
-	if err := s.Save(); err != nil {
+	if err := profile.UpsertSourceIn(&a.session, in); err != nil {
 		return err
 	}
 	a.invalidateClients()
 	return nil
-}
-
-// sourceKey returns the match key for an incoming source: the ID when set,
-// else the name.
-func sourceKey(in profile.Source) string {
-	if in.ID != "" {
-		return in.ID
-	}
-	return in.Name
 }
 
 // inheritSourceSecrets copies stored secrets over masked/empty incoming
@@ -196,8 +154,7 @@ func (a *App) saveSourceInContainer(in profile.Source) error {
 	return nil
 }
 
-// RemoveSource deletes a data source by ID or name. In store mode an s3
-// source takes its mirrored profile with it (they are the same connection).
+// RemoveSource deletes a data source by ID or name from the workspace.
 func (a *App) RemoveSource(idOrName string) error {
 	a.pfMu.Lock()
 	pf := a.pf
@@ -214,26 +171,16 @@ func (a *App) RemoveSource(idOrName string) error {
 		a.pfMu.Unlock()
 		return fmt.Errorf("%w: source %q", profile.ErrNotFound, idOrName)
 	}
+	for i, src := range a.session {
+		if src.ID == idOrName || src.Name == idOrName {
+			a.session = append(a.session[:i], a.session[i+1:]...)
+			a.pfMu.Unlock()
+			a.invalidateClients()
+			return nil
+		}
+	}
 	a.pfMu.Unlock()
-	s, err := a.loadStore()
-	if err != nil {
-		return err
-	}
-	src, err := s.GetSource(idOrName)
-	if err != nil {
-		return err
-	}
-	if err := s.RemoveSource(src.ID); err != nil {
-		return err
-	}
-	if src.Type == profile.TypeS3 {
-		_ = s.Remove(src.Name) // mirror cleanup; absent mirror is fine
-	}
-	if err := s.Save(); err != nil {
-		return err
-	}
-	a.invalidateClients()
-	return nil
+	return fmt.Errorf("%w: source %q", profile.ErrNotFound, idOrName)
 }
 
 // TestSource probes a data source. S3 sources get the real bucket-listing
@@ -249,27 +196,27 @@ func (a *App) TestSource(idOrName string) TestResult {
 	return a.TestProfile(src.Name)
 }
 
-// sourceByIDOrName resolves a source: open Profile file first, then store.
+// sourceByIDOrName resolves a source from the workspace (open Profile
+// file, else the session registry). The embedded S3 profile is deep-copied
+// so callers may edit their result without corrupting the workspace.
 func (a *App) sourceByIDOrName(idOrName string) (profile.Source, error) {
-	if srcs := a.containerSources(); srcs != nil {
-		for _, src := range srcs {
-			if (idOrName != "" && src.ID == idOrName) || src.Name == idOrName {
-				return src, nil
+	for _, src := range a.workspaceSources() {
+		if (idOrName != "" && src.ID == idOrName) || src.Name == idOrName {
+			if src.S3 != nil {
+				p := *src.S3
+				src.S3 = &p
 			}
+			return src, nil
 		}
-		return profile.Source{}, fmt.Errorf("%w: source %q", profile.ErrNotFound, idOrName)
 	}
-	s, err := a.loadStore()
-	if err != nil {
-		return profile.Source{}, err
-	}
-	return s.GetSource(idOrName)
+	return profile.Source{}, fmt.Errorf("%w: source %q", profile.ErrNotFound, idOrName)
 }
 
 // --- Profile file (container) session -------------------------------
 
 // NewProfileFile starts a fresh Profile file session (Save As to give it a
-// file). Refuses to replace an open file with unsaved changes.
+// file). Refuses to replace an open file with unsaved changes, or to
+// shadow unsaved session sources (save or close them first).
 func (a *App) NewProfileFile(name, password string) error {
 	if password == "" {
 		return fmt.Errorf("a password is required to encrypt the profile file")
@@ -279,18 +226,26 @@ func (a *App) NewProfileFile(name, password string) error {
 	if a.pf != nil && a.pf.dirty {
 		return errors.New("the open profile file has unsaved changes — save or close it first")
 	}
+	if n := len(a.session); n > 0 {
+		return fmt.Errorf("%d unsaved session source(s) exist — save them first (Save profile file as…) or close the session", n)
+	}
 	a.pf = &openProfileFile{name: strings.TrimSpace(name), password: password}
 	a.invalidateClients()
 	return nil
 }
 
 // OpenProfileFile decrypts a *.s3bprofile into a session. A wrong password
-// and a corrupted file are indistinguishable by design.
+// and a corrupted file are indistinguishable by design. Refuses while the
+// open file is dirty or unsaved session sources exist (no silent merges).
 func (a *App) OpenProfileFile(path, password string) error {
 	a.pfMu.Lock()
 	if a.pf != nil && a.pf.dirty {
 		a.pfMu.Unlock()
 		return errors.New("the open profile file has unsaved changes — save or close it first")
+	}
+	if n := len(a.session); n > 0 {
+		a.pfMu.Unlock()
+		return fmt.Errorf("%d unsaved session source(s) exist — save them first (Save profile file as…) or close the session", n)
 	}
 	a.pfMu.Unlock()
 
@@ -335,13 +290,24 @@ func (a *App) SaveProfileFile() error {
 }
 
 // SaveProfileFileAs re-encrypts the session under a new path (and optional
-// new password; empty keeps the current one).
+// new password; empty keeps the current one). Without an open Profile file
+// it adopts the session-only sources — this is how unsaved session sources
+// become a Profile file (no "New Profile file" prerequisite).
 func (a *App) SaveProfileFileAs(path, password string) error {
 	a.pfMu.Lock()
 	defer a.pfMu.Unlock()
 	pf := a.pf
 	if pf == nil {
-		return errNoProfileFile
+		if len(a.session) == 0 {
+			return errNoProfileFile
+		}
+		name := strings.TrimSuffix(filepath.Base(path), ".s3bprofile")
+		if name == "" {
+			name = "profile"
+		}
+		pf = &openProfileFile{name: name, sources: a.session}
+		a.pf = pf
+		a.session = nil
 	}
 	if password == "" {
 		password = pf.password
@@ -360,30 +326,43 @@ func (a *App) SaveProfileFileAs(path, password string) error {
 	return nil
 }
 
-// CloseProfileFile ends the session. Refuses while dirty unless force.
+// CloseProfileFile ends the session. Refuses while the container is dirty
+// or session-only sources exist, unless force (discard). Closing always
+// means a clean slate: the container AND any session remainder go away.
 func (a *App) CloseProfileFile(force bool) error {
 	a.pfMu.Lock()
 	defer a.pfMu.Unlock()
 	pf := a.pf
 	if pf == nil {
-		return nil // idempotent
+		if len(a.session) == 0 {
+			return nil // idempotent
+		}
+		if !force {
+			return fmt.Errorf("%d unsaved session source(s) exist — save them first or force close", len(a.session))
+		}
+		a.session = nil
+		a.invalidateClients()
+		return nil
 	}
 	if pf.dirty && !force {
 		return errors.New("the profile file has unsaved changes — save first or force close")
 	}
 	pf.password = "" // best-effort wipe
 	a.pf = nil
+	a.session = nil
 	a.invalidateClients()
 	return nil
 }
 
 // GetProfileFileState reports the session for the File menu / title bar.
+// When no file is open, SourceCount is the number of unsaved session
+// sources (shown as "● unsaved session" in the status bar).
 func (a *App) GetProfileFileState() ProfileFileState {
 	a.pfMu.Lock()
 	defer a.pfMu.Unlock()
 	pf := a.pf
 	if pf == nil {
-		return ProfileFileState{}
+		return ProfileFileState{SourceCount: len(a.session)}
 	}
 	return ProfileFileState{
 		Open:        true,
@@ -414,21 +393,30 @@ func (a *App) containerSources() []profile.Source {
 	return out
 }
 
-// containerS3Source resolves an s3 source for client() lookups: the named
-// source in the open file, or (name == "") the file's default/single s3
-// source. ok is false when no file is open or nothing matches.
-func (a *App) containerS3Source(name string) (src profile.Source, ok bool) {
+// workspaceSources returns a copy of the workspace's sources: the open
+// Profile file's, else the session-only registry's. Shallow: embedded S3
+// profiles are shared read-only.
+func (a *App) workspaceSources() []profile.Source {
 	a.pfMu.Lock()
 	defer a.pfMu.Unlock()
-	pf := a.pf
-	if pf == nil {
-		return profile.Source{}, false
+	srcs := a.session
+	if a.pf != nil {
+		srcs = a.pf.sources
 	}
+	out := make([]profile.Source, len(srcs))
+	copy(out, srcs)
+	return out
+}
+
+// s3SourceNamed resolves an s3 source for client() lookups: the named
+// source, or (name == "") the default/single s3 source. ok is false when
+// nothing matches.
+func s3SourceNamed(srcs []profile.Source, name string) (src profile.Source, ok bool) {
 	isS3 := func(s profile.Source) bool { return s.Type == profile.TypeS3 && s.S3 != nil }
 	if name == "" {
 		var only profile.Source
 		n := 0
-		for _, s := range pf.sources {
+		for _, s := range srcs {
 			if !isS3(s) {
 				continue
 			}
@@ -443,10 +431,28 @@ func (a *App) containerS3Source(name string) (src profile.Source, ok bool) {
 		}
 		return profile.Source{}, false
 	}
-	for _, s := range pf.sources {
+	for _, s := range srcs {
 		if s.Name == name && isS3(s) {
 			return s, true
 		}
 	}
 	return profile.Source{}, false
+}
+
+// containerS3Source resolves an s3 source from the open Profile file for
+// client() lookups.
+func (a *App) containerS3Source(name string) (src profile.Source, ok bool) {
+	a.pfMu.Lock()
+	defer a.pfMu.Unlock()
+	if a.pf == nil {
+		return profile.Source{}, false
+	}
+	return s3SourceNamed(a.pf.sources, name)
+}
+
+// sessionS3Source is containerS3Source's twin over the session registry.
+func (a *App) sessionS3Source(name string) (profile.Source, bool) {
+	a.pfMu.Lock()
+	defer a.pfMu.Unlock()
+	return s3SourceNamed(a.session, name)
 }

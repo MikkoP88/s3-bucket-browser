@@ -5,6 +5,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -30,18 +32,18 @@ const quickOpTimeout = 30 * time.Second
 type App struct {
 	version string
 
-	ctx   context.Context
-	store *profile.Store
+	ctx context.Context
 
 	mu      sync.Mutex
-	clients map[string]*s3client.Client // cache: profile name -> client
+	clients map[string]*s3client.Client // cache: source name -> client
 
 	engMu   sync.Mutex             // guards engines + srcOps
 	engines map[string]remotefs.FS // cache: source ID -> live engine (M9)
 	srcOps  map[string]*sync.Mutex // per-source engine-op locks (FTP: one data connection)
 
-	pfMu sync.Mutex
-	pf   *openProfileFile // open encrypted Profile file session (nil = none)
+	pfMu    sync.Mutex
+	pf      *openProfileFile // open encrypted Profile file session (nil = none)
+	session []profile.Source // session-only sources (strict model): visible, never persisted
 
 	jobs *jobManager
 
@@ -109,54 +111,34 @@ func (a *App) quickCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(a.ctx, quickOpTimeout)
 }
 
-// loadStore (re)reads the profile store from disk so changes made by the
-// CLI or another instance become visible without a restart.
-func (a *App) loadStore() (*profile.Store, error) {
-	s, err := profile.Load()
-	if err != nil {
-		return nil, err
-	}
-	a.mu.Lock()
-	a.store = s
-	a.mu.Unlock()
-	return s, nil
-}
-
 // client resolves (and caches) an S3 client. An empty name selects the
-// default profile. When a Profile file is open, its s3 sources win over the
-// local store (source name == profile name). The cache is dropped whenever
-// profiles or the open file change. Locking: pfMu is only ever taken
-// OUTSIDE a.mu, so the container snapshot is resolved before locking.
+// default s3 source. Sources come from the workspace only — the open
+// Profile file, else the session registry (strict sources model: the GUI
+// never resolves from the CLI's profile store). The cache is dropped
+// whenever sources change. Locking: pfMu is only ever taken OUTSIDE a.mu,
+// so the source snapshot is resolved before locking.
 func (a *App) client(name string) (*s3client.Client, error) {
 	if a.ctx == nil {
 		return nil, errNoContext
 	}
 	cSrc, haveSrc := a.containerS3Source(name)
+	if !haveSrc {
+		cSrc, haveSrc = a.sessionS3Source(name)
+	}
+	if !haveSrc {
+		if name == "" {
+			return nil, errors.New("no S3 data source configured — add one or open a profile file")
+		}
+		return nil, fmt.Errorf("%w: S3 data source %q", profile.ErrNotFound, name)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if c, ok := a.clients[name]; ok && name != "" {
 		return c, nil
 	}
-	s := a.store
-	if s == nil {
-		var err error
-		if s, err = profile.Load(); err != nil {
-			return nil, err
-		}
-		a.store = s
-	}
-	var p profile.Profile
-	if haveSrc {
-		p = *cSrc.S3
-	} else {
-		var err error
-		if p, err = a.profileByName(s, name); err != nil {
-			return nil, err
-		}
-	}
 	// Timeout 0: no whole-request deadline — large uploads/downloads are
 	// bounded by the per-job cancellation instead (quick ops use quickCtx).
-	c, err := s3client.New(a.ctx, p, s3client.Options{Timeout: 0})
+	c, err := s3client.New(a.ctx, *cSrc.S3, s3client.Options{Timeout: 0})
 	if err != nil {
 		return nil, err
 	}
@@ -165,14 +147,6 @@ func (a *App) client(name string) (*s3client.Client, error) {
 	}
 	a.clients[""] = c // remember last default resolution
 	return c, nil
-}
-
-// profileByName returns the named profile, or the default when name == "".
-func (a *App) profileByName(s *profile.Store, name string) (profile.Profile, error) {
-	if name == "" {
-		return s.DefaultProfile()
-	}
-	return s.Get(name)
 }
 
 // invalidateClients drops cached clients after a profile mutation. Remote
