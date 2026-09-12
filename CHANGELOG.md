@@ -403,6 +403,11 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Settings dialog controls were squeezed to a fixed 200px track:
+  `.set-ctl` used `min-width` without `width: auto`, so selects and
+  inputs rendered at the minimum instead of their natural size and
+  longer labels/units wrapped inside the control. The control now sizes
+  to content (found in the manual GUI pass).
 - Finished downloads never refreshed the dual-pane local view: the
   `transfer:update` handler refreshed only jobs whose id started with
   "transfer" (cross-source transfers), so a completed download job left
