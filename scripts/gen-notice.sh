@@ -19,10 +19,10 @@ license_for() {
     github.com/aws/*)           echo "Apache-2.0" ;;
     github.com/spf13/cobra)     echo "Apache-2.0" ;;
     github.com/fatih/color)     echo "MIT" ;;
-    github.com/jlaffaye/ftp)    echo "MIT" ;;
+    github.com/jlaffaye/ftp)    echo "ISC" ;;
     github.com/wailsapp/*)      echo "MIT" ;;
     github.com/zalando/go-keyring) echo "MIT" ;;
-    github.com/pkg/sftp)        echo "BSD-3-Clause" ;;
+    github.com/pkg/sftp)        echo "BSD-2-Clause" ;;
     golang.org/x/*)             echo "BSD-3-Clause" ;;
     *)                          return 1 ;;
   esac

@@ -66,11 +66,13 @@ Additional rules:
 
 ## Supply chain
 
-- **Small, audited dependency set.** Runtime dependencies are Go modules
-  under MIT/Apache-2.0 only (Wails, aws-sdk-go-v2, cobra/pflag,
-  go-keyring, fatih/color — PLAN.md §6 budget). **Zero npm runtime
-  dependencies.** The full graph is reviewed at each release and attached
-  to releases (`go mod graph` report + SBOM).
+- **Small, audited dependency set.** Runtime dependencies are permissive
+  Go modules only: MIT/Apache-2.0 (Wails, aws-sdk-go-v2, cobra/pflag,
+  go-keyring, fatih/color) plus, since the remote engines (M9), ISC
+  (`jlaffaye/ftp`), BSD-2-Clause (`pkg/sftp`) and BSD-3-Clause
+  (`golang.org/x/{crypto,net,term}`) — PLAN.md §6 budget. **Zero npm
+  runtime dependencies.** The full graph is reviewed at each release and
+  attached to releases (`go mod graph` report + SBOM).
 - **Reproducible artifacts.** Release binaries are built by CI from the
   tagged commit with stripped, version-stamped flags; every artifact's
   SHA-256 is published in `SHA256SUMS`, and each release carries a

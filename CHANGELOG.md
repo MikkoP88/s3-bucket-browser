@@ -76,6 +76,16 @@ follow [Semantic Versioning](https://semver.org/).
   empty sidebar carries a persistent "+" button next to the DATA SOURCES
   header to add the first source.
 
+### Fixed
+
+- License audit corrections: `gen-notice.sh` mislabeled two direct
+  dependencies' SPDX ids in release NOTICE files — `jlaffaye/ftp` is ISC
+  (was "MIT") and `pkg/sftp` is BSD-2-Clause (was "BSD-3-Clause"),
+  verified against the modules' own LICENSE files. `docs/security.md`
+  still claimed a "MIT/Apache-2.0 only" dependency set and
+  `docs/comparison.md` still said "no SBOM yet" — both updated to match
+  the post-M9 dependency reality (SBOM + SHA256SUMS ship per release).
+
 ### Changed
 
 - Drag payloads now carry their origin unambiguously (remote sources:

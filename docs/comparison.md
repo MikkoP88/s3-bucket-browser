@@ -9,7 +9,7 @@
 
 | Tool | Platforms | License | S3 admin depth | Versioning UX | CLI | Main weakness |
 |---|---|---|---|---|---|---|
-| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock) | First-class (timeline, restore, undo delete, purge, force-empty versioned buckets) | Yes — same binary, same engine | 1.0: no code signing or SBOM yet; no CloudFront/KMS consoles; single maintainer |
+| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock) | First-class (timeline, restore, undo delete, purge, force-empty versioned buckets) | Yes — same binary, same engine | 1.0: no code signing yet (SBOM + SHA256SUMS ship per release); no CloudFront/KMS consoles; single maintainer |
 | **S3 Browser / "CS Browser" 13.x** (s3browser.com) | Windows only | Freeware; Pro paid | Deep (policy, ACL, CORS, lifecycle, CloudFront) | Yes, incl. delete versions | No | Windows-only, closed-source, dated UI |
 | **Cyberduck** | Win, macOS | GPL-3.0 (copyleft) | Medium (versioning, lifecycle, logging, storage class, SSE) | Partial | `duck` (separate) | GPL, Java footprint, no Linux desktop, generic multi-protocol (S3 not first-class) |
 | **MSP360 (CloudBerry) Explorer** | Win, macOS | Freemium (1 account free) | Medium-deep | Yes | No (separate paid) | Paywalls for sync/encryption/multi-account |
