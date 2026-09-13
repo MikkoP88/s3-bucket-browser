@@ -39,11 +39,78 @@ func Path() (string, error) {
 	return filepath.Join(dir, "events.jsonl"), nil
 }
 
+// Settings is the persisted save-logs-to-file preference (logsettings.json
+// in the config dir, written by the GUI Settings dialog). Mode:
+// "" / "default" = events.jsonl beside profiles.json (what `s3b log`
+// tails), "off" = no file logging, "custom" = the user-picked Dir.
+type Settings struct {
+	Mode string `json:"logFileMode"`
+	Dir  string `json:"logFileDir"`
+}
+
+func settingsPath() (string, error) {
+	dir, err := profile.DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "logsettings.json"), nil
+}
+
+// LoadSettings reads the preference; the zero value (default mode) is
+// returned when the file is missing or unreadable — logging must never
+// be taken down by a torn settings file.
+func LoadSettings() Settings {
+	p, err := settingsPath()
+	if err != nil {
+		return Settings{}
+	}
+	var s Settings
+	b, err := os.ReadFile(p)
+	if err != nil || json.Unmarshal(b, &s) != nil {
+		return Settings{}
+	}
+	return s
+}
+
+// SaveSettings persists the preference (0600, like profiles.json).
+func SaveSettings(s Settings) error {
+	p, err := settingsPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, b, 0o600)
+}
+
+// sinkPath resolves where events.jsonl is written; ok=false means file
+// logging is off. Read per call (no cache) so tests with isolated config
+// dirs and live GUI changes take effect immediately.
+func sinkPath() (string, bool) {
+	s := LoadSettings()
+	if s.Mode == "off" {
+		return "", false
+	}
+	if s.Mode == "custom" && s.Dir != "" {
+		return filepath.Join(s.Dir, "events.jsonl"), true
+	}
+	p, err := Path()
+	if err != nil {
+		return "", false
+	}
+	return p, true
+}
+
 // Append writes one line, rotating first when the file outgrew the cap.
 // Best effort: logging must never take the app down, errors are dropped.
 func Append(level, scope, msg string) {
-	p, err := Path()
-	if err != nil {
+	p, ok := sinkPath()
+	if !ok {
 		return
 	}
 	mu.Lock()
@@ -132,11 +199,12 @@ func readLines(p string, n int, level, scope string) ([]Line, error) {
 }
 
 // Tail returns the last n lines (all when n <= 0), filtered by level and
-// scope. A missing file is an empty log, not an error.
+// scope, from the configured log location. A missing file (or logging
+// turned off) is an empty log, not an error.
 func Tail(n int, level, scope string) ([]Line, error) {
-	p, err := Path()
-	if err != nil {
-		return nil, err
+	p, ok := sinkPath()
+	if !ok {
+		return nil, nil
 	}
 	mu.Lock()
 	defer mu.Unlock()

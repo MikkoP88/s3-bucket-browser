@@ -1,6 +1,6 @@
 // S3 Bucket Browser — application shell (Explorer layout, PLAN.md §11).
 import { api, onEvent } from './api.js';
-import { el, fmtBytes, basename, debounce } from './util.js';
+import { el, fmtBytes, fmtDate, basename, debounce } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid } from './grid.js';
 import { Tree } from './tree.js';
@@ -8,6 +8,7 @@ import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
   sourceEditor, helpSheet, conflictPolicy, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
+  usageGuideDialog, sourcesInfoDialog,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
@@ -20,7 +21,14 @@ const $ = (id) => document.getElementById(id);
 
 const grid = new Grid();
 const localPane = new LocalPane();
-const tree = new Tree({ onNavigate: (loc) => nav.to(loc), onDropTo: dropToTarget, onContext: showTreeMenu });
+const tree = new Tree({
+  onNavigate: (loc) => nav.to(loc),
+  onDropTo: dropToTarget,
+  onContext: showTreeMenu,
+  guardOf: (bucket) => guardCache.get(bucket) || null,
+  onGuardClick: (bucket) => adminDialog(bucket, refreshCurrent),
+  onBuckets: (names) => ensureGuards(names),
+});
 const logArea = createLogArea();
 
 setCommandContext({
@@ -84,12 +92,12 @@ let refreshOnFocus = false;
 
 // autoRefreshBlocked: conditions under which a background refresh must not
 // fire — a modal or context menu is open, or transfers are running (the
-// transfer badge is visible exactly then; uploads also refresh views via
-// s3:changed on their own).
+// status-bar jobs indicator is visible exactly then; uploads also refresh
+// views via s3:changed on their own).
 function autoRefreshBlocked() {
   if (!$('modal-root').classList.contains('hidden')) return true;
   if (!$('ctxmenu').classList.contains('hidden')) return true;
-  if (!$('transfer-badge').classList.contains('hidden')) return true;
+  if (!$('status-jobs').classList.contains('hidden')) return true;
   return false;
 }
 
@@ -152,8 +160,10 @@ function providerLabel(endpoint) {
 }
 
 // refreshSources reloads the workspace's data sources (open Profile file,
-// else the session-only registry), rebuilds the s3 dropdown, and shows
-// onboarding when there is nothing to browse with yet.
+// else the session-only registry) and shows onboarding when there is
+// nothing to browse with yet. Switching the default S3 source happens from
+// the tree's source context menu ("Set default"); the active one shows in
+// the status bar.
 async function refreshSources() {
   try {
     sources = await api.ListSources();
@@ -162,11 +172,7 @@ async function refreshSources() {
     sources = [];
   }
   const s3srcs = sources.filter((s) => s.type === 's3');
-  const sel = $('profile-select');
-  sel.replaceChildren(...s3srcs.map((s) =>
-    el('option', { value: s.name }, `${s.default ? '\u2605 ' : ''}${s.name} (${providerLabel(s.s3?.endpoint)})`)));
   const def = s3srcs.find((s) => s.default) || s3srcs[0];
-  if (def) sel.value = def.name;
   $('status-profile').textContent = def ? def.name : '';
   renderSidebarHead();
   tree.setSources(sources, nav.current); // M9: sources are the tree's top level
@@ -221,8 +227,8 @@ function showOnboarding() {
   );
   renderBreadcrumb();
   showEmpty(t('noSources'), t('noSourcesSub'), [
-    el('button', { class: 'btn primary', text: t('addSource'), onclick: () => sourceEditor(null, afterSourceSaved) }),
-    el('button', { class: 'btn', text: t('importAws'), onclick: importAws }),
+    el('button', { class: 'btn primary', text: `+ ${t('addSource')}`, onclick: () => sourceEditor(null, afterSourceSaved) }),
+    el('button', { class: 'btn', text: `\u{1F4E5} ${t('importAws')}`, onclick: importAws }),
   ]);
 }
 
@@ -231,7 +237,7 @@ async function importAws() {
     const res = await api.ImportAwsCredentials();
     const msg = res.imported.length
       ? `Imported: ${res.imported.join(', ')}${res.skipped.length ? ` — skipped: ${res.skipped.join(', ')}` : ''}`
-      : res.skipped.length ? `Skipped: ${res.skipped.join(', ')}` : 'Nothing found in ~/.aws/credentials';
+      : res.skipped.length ? `Skipped: ${res.skipped.join(', ')}` : 'Nothing found in ~/.aws/credentials or ~/.aws/config';
     toast(msg, res.imported.length ? 'ok' : '');
     if (res.imported.length) {
       await refreshSources();
@@ -454,7 +460,7 @@ function renderBreadcrumb() {
     }
     return;
   }
-  const root = el('span', { class: `crumb${loc.kind === 'buckets' ? ' current' : ''}`, text: '\u{1F5C2} S3' });
+  const root = el('span', { class: `crumb${loc.kind === 'buckets' ? ' current' : ''}`, text: `\u{1F5C2} ${defaultSourceName()}` });
   root.onclick = () => nav.to({ kind: 'buckets' });
   bc.appendChild(root);
   if (loc.kind !== 'objects') return;
@@ -473,50 +479,144 @@ function renderBreadcrumb() {
     bc.appendChild(c);
   }
   bc.lastChild?.classList.add('current');
-  updateGuardChips(loc);
 }
 
-// ====================== bucket guard chips (M10.4) ======================
-// guardCache memoizes one GetBucketGuard per bucket per session; chips next
-// to the breadcrumb show versioning + object-lock state (cached value draws
-// immediately, a fresh fetch updates it) and open the admin panel on click.
+// ====================== canonical path bar ======================
+// Every location has ONE path format across all source kinds — the same
+// NAME:// URIs the CLI takes: "s3://bucket/prefix/" for the default S3
+// source, "NAME://" for a named source's root and "NAME:///dir/" for the
+// remote engines. Clicking the navbar's empty area swaps the breadcrumb
+// for an editable field with that string, so a path can be copied out or
+// pasted in from anywhere and navigated with Enter.
+function defaultSourceName() {
+  const def = sources.find((s) => s.type === 's3' && s.default)
+    || sources.find((s) => s.type === 's3');
+  return def ? def.name : 'S3';
+}
+
+function canonicalPath(loc) {
+  if (!loc) return '';
+  if (loc.kind === 'buckets') return 's3://';
+  if (loc.kind === 'objects') return `s3://${loc.bucket}/${loc.prefix || ''}`;
+  if (loc.kind === 'srcroot') return `${loc.source}://`;
+  if (loc.kind === 'remote') return `${loc.source}://${loc.path || '/'}`;
+  return '';
+}
+
+// parsePath maps a pasted path back to a location. "s3" addresses the
+// default S3 source; any other scheme must match a source's name or id.
+// Returns { loc, hint? } or null when nothing matches.
+function parsePath(str) {
+  const m = String(str || '').trim().match(/^([A-Za-z0-9._-]+):\/\/(.*)$/);
+  if (!m) return null;
+  const scheme = m[1].toLowerCase();
+  const rest = m[2].replace(/\\/g, '/').replace(/^\/+/, '');
+  let src = null;
+  if (scheme === 's3') {
+    src = sources.find((s) => s.type === 's3' && s.default)
+      || sources.find((s) => s.type === 's3');
+  } else {
+    src = sources.find((s) => s.name.toLowerCase() === scheme
+      || String(s.id || '').toLowerCase() === scheme);
+  }
+  if (!src) return null;
+  if (src.type === 's3') {
+    if (!rest) return { loc: { kind: 'buckets' } };
+    const parts = rest.replace(/\/+$/g, '').split('/');
+    const bucket = parts.shift();
+    if (!bucket) return null;
+    const prefix = parts.length ? `${parts.join('/')}/` : '';
+    // the default source browses objects in the main view; a named one
+    // lists its buckets here and browses objects in the side pane
+    if (src.default || scheme === 's3') return { loc: { kind: 'objects', bucket, prefix } };
+    return { loc: { kind: 'srcroot', source: src.name }, hint: true };
+  }
+  const path = rest ? `/${rest.replace(/\/+$/g, '')}/` : '/';
+  return { loc: { kind: 'remote', source: src.name, path } };
+}
+
+// editPath swaps the breadcrumb for a one-line editable field holding the
+// canonical path: copy out, paste in, Enter navigates, Esc cancels.
+function editPath() {
+  const bc = $('breadcrumb');
+  const cur = canonicalPath(nav.current);
+  if (!cur || bc.querySelector('input.path-edit')) return;
+  const restore = () => renderBreadcrumb();
+  const inp = el('input', { type: 'text', class: 'filter path-edit', spellcheck: 'false' });
+  inp.value = cur;
+  bc.replaceChildren(inp);
+  inp.focus();
+  inp.select();
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const parsed = parsePath(inp.value);
+      if (parsed) {
+        if (parsed.hint) toast(t('pathNamedS3Hint'));
+        nav.to(parsed.loc);
+      } else {
+        toast(t('pathInvalid', { p: inp.value.trim() || '?' }), 'error');
+        inp.focus();
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      restore();
+    }
+  });
+  inp.addEventListener('blur', restore);
+}
+
+// ====================== bucket guard state (M10.4) ======================
+// guardCache memoizes one GetBucketGuard per bucket per session. The state
+// shows as small icons after the bucket's name in the Data Sources tree
+// (🔄 versioning, 🔒 object lock) — clicking an icon opens the admin panel —
+// and feeds the bucket properties dialog.
 const guardCache = new Map();
 
-function updateGuardChips(loc) {
-  const box = $('guard-chips');
-  if (loc?.kind !== 'objects') { box.classList.add('hidden'); box.replaceChildren(); return; }
-  const { bucket } = loc;
-  const cached = guardCache.get(bucket);
-  if (cached) drawGuardChips(bucket, cached);
-  else { box.classList.add('hidden'); box.replaceChildren(); }
-  api.GetBucketGuard(bucket)
-    .then((g) => {
-      if (nav.current?.kind === 'objects' && nav.current.bucket === bucket) {
-        guardCache.set(bucket, g);
-        drawGuardChips(bucket, g);
-      }
-    })
-    .catch(() => {});
+// ensureGuards fetches the guard state of buckets the tree just drew (skips
+// cached ones), then re-renders the tree once so the icons appear. One
+// GetBucketGuard = two quick API calls; a failure caches the zero guard so
+// it is not retried every render.
+function ensureGuards(names) {
+  const missing = names.filter((b) => !guardCache.has(b));
+  if (!missing.length) return;
+  let pending = missing.length;
+  for (const b of missing) {
+    api.GetBucketGuard(b)
+      .then((g) => guardCache.set(b, g))
+      .catch(() => guardCache.set(b, { versioning: '', lockEnabled: false }))
+      .finally(() => {
+        pending -= 1;
+        if (pending === 0) tree.render();
+      });
+  }
 }
 
-function drawGuardChips(bucket, g) {
-  const box = $('guard-chips');
-  const chips = [];
-  if (g.versioning === 'Enabled') {
-    chips.push(['Versions on', 'Versioning is enabled — every write keeps previous versions (see "Previous versions" on a row)', true]);
-  } else if (g.versioning === 'Suspended') {
-    chips.push(['Versions suspended', 'Versioning is suspended — new writes replace the current version; existing versions are kept', false]);
+// ensureGuard returns one bucket's guard state, fetching it once when the
+// cache is cold (properties dialogs use it; the tree batch-fetches via
+// ensureGuards on its own).
+async function ensureGuard(bucket) {
+  if (!guardCache.has(bucket)) {
+    try {
+      guardCache.set(bucket, await api.GetBucketGuard(bucket));
+    } catch {
+      guardCache.set(bucket, { versioning: '', lockEnabled: false });
+    }
   }
-  if (g.lockEnabled) {
-    chips.push([`Lock: ${g.lockMode || 'on'}${g.lockDays ? ` ${g.lockDays}d` : ''}`, 'Object Lock is enabled — WORM protection (see "Object lock" on a row)', true]);
-  }
-  if (!chips.length) { box.classList.add('hidden'); box.replaceChildren(); return; }
-  box.classList.remove('hidden');
-  box.replaceChildren(...chips.map(([text, title, on]) => {
-    const c = el('span', { class: `guard-chip${on ? ' on' : ''}`, text, title });
-    c.onclick = () => adminDialog(bucket, refreshCurrent);
-    return c;
-  }));
+  return guardCache.get(bucket);
+}
+
+// guardRows renders the versioning / object-lock rows shared by the bucket
+// and folder properties dialogs (a folder inherits its bucket's guard).
+function guardRows(g) {
+  return [
+    ['Versioning', g.versioning === 'Enabled' ? 'Enabled'
+      : g.versioning === 'Suspended' ? 'Suspended (existing versions kept)' : 'Off'],
+    ['Object Lock', g.lockEnabled
+      ? `Enabled — ${g.lockMode || 'on'}${g.lockDays ? `, ${g.lockDays}d default retention` : ''}`
+      : 'Disabled'],
+  ];
 }
 
 // ============================ grid wiring ============================
@@ -803,7 +903,7 @@ function showEmptyAreaMenu(e) {
 }
 
 // folderProperties summarizes the current folder view (from the live grid).
-function folderProperties() {
+async function folderProperties() {
   const loc = nav.current;
   if (loc?.kind === 'remote') {
     const rows = grid.rows;
@@ -822,10 +922,12 @@ function folderProperties() {
   const rows = grid.rows;
   const files = rows.filter((r) => !r.isDir);
   const bytes = files.reduce((s, r) => s + (r.size || 0), 0);
+  const g = await ensureGuard(loc.bucket);
   properties(`Properties — s3://${loc.bucket}/${loc.prefix || ''}`, [
     ['Folders', rows.length - files.length],
     ['Files', files.length],
     ['Total size', fmtBytes(bytes)],
+    ...guardRows(g),
     ...(view.filter ? [['Name filter', view.filter]] : []),
   ]);
 }
@@ -1028,11 +1130,15 @@ async function renameRemoteTreeFolder(node) {
 
 async function treeProperties(node) {
   try {
-    const st = await api.StatObject(node.bucket, node.prefix);
+    const [st, g] = await Promise.all([
+      api.StatObject(node.bucket, node.prefix),
+      ensureGuard(node.bucket),
+    ]);
     properties(`Properties — ${node.label}`, [
       ['Type', 'Folder'],
       ['Objects', st.usage.objectCount],
       ['Total size', fmtBytes(st.usage.totalBytes)],
+      ...guardRows(g),
       ['s3:// URI', `s3://${node.bucket}/${node.prefix}`],
     ]);
   } catch (err) {
@@ -1488,11 +1594,17 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
   else dest = xferDestOf(loc) || sidePaneDest();
   if (!dest) return;
 
-  // Same-dir paste is a no-op (would spam "(1)" renames).
-  const normP = (s) => (s || '').replace(/\/+$/, '');
-  const sameDir = (clipboard.kind === 's3' && dest.kind === 's3' && (clipboard.source || '') === (dest.source || '') && clipboard.bucket === dest.bucket && normP(clipboard.dir) === normP(dest.dir))
-    || (clipboard.kind === 'remote' && dest.kind === 'remote' && clipboard.source === dest.source && normP(clipboard.dir) === normP(dest.dir));
-  if (sameDir) { toast('Source and destination are the same'); return; }
+  // Same-dir paste is a no-op (would spam "(1)" renames), and pasting a
+  // folder into itself / its own subtree is refused (Explorer rules).
+  const normP = (s) => (s || '').replace(/[\/\\]+$/, '');
+  const sameOrigin = (clipboard.kind === 's3' && dest.kind === 's3' && (clipboard.source || '') === (dest.source || '') && clipboard.bucket === dest.bucket)
+    || (clipboard.kind === 'remote' && dest.kind === 'remote' && clipboard.source === dest.source)
+    || (clipboard.kind === 'local' && dest.kind === 'local');
+  if (sameOrigin && normP(clipboard.dir) === normP(dest.dir)) { toast('Source and destination are the same'); return; }
+  if (sameOrigin && intoItself(dest.dir, clipboard.kind === 'local' ? clipboard.paths : clipboard.keys)) {
+    toast('A folder cannot be moved or copied into itself', 'error');
+    return;
+  }
 
   const move = clipboard.mode === 'cut';
   // S3 → S3 on the default source keeps the synchronous server-side copy
@@ -1627,10 +1739,56 @@ function multiProperties(loc, rows) {
   properties(`Properties — ${rows.length} item(s)`, props);
 }
 
+// bucketProperties is the S3 bucket Properties dialog (Data Sources tree +
+// buckets view): identity, versioning / object-lock state and a per-section
+// summary of the admin panel in one view. One GetBucketAdmin round trip;
+// every section degrades on its own error.
 async function bucketProperties(bucket) {
   try {
-    const st = await api.StatBucket(bucket);
-    properties(`Properties — ${bucket}`, [['Name', bucket], ['Region', st.region], ['s3:// URI', `s3://${bucket}`]]);
+    const [st, panel] = await Promise.all([
+      api.StatBucket(bucket).catch(() => null),
+      api.GetBucketAdmin(bucket).catch(() => null),
+    ]);
+    const def = sources.find((s) => s.type === 's3' && s.default)
+      || sources.find((s) => s.type === 's3');
+    // keep the tree icons in sync with what the panel just told us
+    if (panel) guardCache.set(bucket, {
+      versioning: panel.versions || '',
+      lockEnabled: !!panel.lock?.enabled,
+      lockMode: panel.lock?.mode || '',
+      lockDays: panel.lock?.days || 0,
+    });
+    const g = guardCache.get(bucket) || {};
+    const pabOn = panel?.pab
+      ? ['blockPublicAcls', 'ignorePublicAcls', 'blockPublicPolicy', 'restrictPublicBuckets']
+        .filter((k) => panel.pab[k]).length
+      : null;
+    properties(`Properties — ${bucket}`, [
+      ['Name', bucket],
+      ['Provider', def ? providerLabel(def.s3?.endpoint) : '—'],
+      ['Region', st?.region || panel?.region || '—'],
+      ['s3:// URI', `s3://${bucket}`],
+      ['Versioning', g.versioning === 'Enabled' ? 'Enabled'
+        : g.versioning === 'Suspended' ? 'Suspended (existing versions kept)' : 'Off'],
+      ['Object Lock', g.lockEnabled
+        ? `Enabled — ${g.lockMode || 'on'}${g.lockDays ? `, ${g.lockDays}d default retention` : ''}`
+        : 'Disabled'],
+      ...(panel ? [
+        ['Default encryption', panel.encryption?.algorithm
+          ? `${panel.encryption.algorithm}${panel.encryption.kmsKeyId ? ` (${panel.encryption.kmsKeyId})` : ''}`
+          : 'none set'],
+        ['Public access', panel.publicWarning ? '\u26A0 allowed (see Admin panel)' : 'no public access'],
+        ['Bucket policy', panel.policyErr ? 'unavailable'
+          : panel.policy?.summary ? `${panel.policy.summary.statementCount} statement(s)` : 'none'],
+        ['Public access block', panel.pabErr ? 'unavailable'
+          : pabOn === 4 ? 'all on (recommended)' : `${pabOn} of 4 on`],
+        ['CORS rules', panel.corsErr ? 'unavailable' : String(panel.cors?.length || 0)],
+        ['Lifecycle rules', panel.lifecycleErr ? 'unavailable' : String(panel.lifecycle?.length || 0)],
+        ['Bucket tags', panel.tagsErr ? 'unavailable' : String(panel.tags?.length || 0)],
+        ['Static website', panel.websiteErr ? 'unavailable'
+          : panel.website?.indexSuffix || panel.website?.redirectHost ? 'enabled' : 'not configured'],
+      ] : []),
+    ]);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');
   }
@@ -1694,6 +1852,10 @@ async function dropToTarget(target, data, e) {
     if (!items.length) return;
     const sameSource = dest.kind === 'remote' && dest.source === data.source;
     if (sameSource && destDirOf(dest) === data.dir) return; // onto itself
+    if (sameSource && intoItself(destDirOf(dest), data.keys)) {
+      toast('A folder cannot be moved or copied into itself', 'error');
+      return;
+    }
     const move = sameSource ? (!e.ctrlKey || e.shiftKey) : e.shiftKey;
     await startTransfer({ items, dest, move });
     return;
@@ -1703,6 +1865,10 @@ async function dropToTarget(target, data, e) {
   const srcTag = data.source || ''; // "" = default source (main-grid origin)
   const sameS3 = dest.kind === 's3' && srcBucket === dest.bucket && srcTag === (dest.source || '');
   if (sameS3 && destDirOf(dest) === data.dir) return; // onto itself
+  if (sameS3 && intoItself(destDirOf(dest), data.keys)) {
+    toast('A folder cannot be moved or copied into itself', 'error');
+    return;
+  }
   if (dest.kind === 's3' && !srcTag && !dest.source) {
     // default-source S3 → S3 keeps the synchronous server-side copy path
     const move = sameS3
@@ -1731,6 +1897,19 @@ function destDirOf(dest) {
   if (dest.kind === 'remote') return (dest.dir || '/').replace(/\/+$/, '') || '/';
   if (dest.kind === 's3') return dest.dir || '';
   return dest.dir;
+}
+
+// intoItself reports whether destDir is one of the listed folder items or
+// lives beneath one (same-source moves/copies only) — Explorer refuses
+// that transfer, and so do we.
+function intoItself(destDir, keys) {
+  const d = String(destDir || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  for (const k of keys || []) {
+    let p = String(k || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!String(k || '').endsWith('/') && !String(k || '').endsWith('\\')) continue; // files contain nothing
+    if (d === p || (d + '/').startsWith(p + '/')) return true;
+  }
+  return false;
 }
 
 // dropToLocal handles drops onto the local pane (folder rows and body):
@@ -2044,31 +2223,21 @@ function wireToolbar() {
   $('btn-panes').onclick = togglePanes;
   $('btn-find').onclick = findFromHere;
   $('btn-newfolder').onclick = newFolder;
-  $('btn-doctor').onclick = () => runDoctor(nav.current?.kind === 'objects' ? nav.current.bucket : '');
-  $('btn-transfers').onclick = () => transferManager();
-  $('btn-profiles').onclick = () => sourcesDialog();
   $('btn-theme').onclick = toggleTheme;
   $('btn-help').onclick = helpSheet;
-  // Switching the dropdown makes another s3 source the default. The source
-  // flag travels through SaveSource (store and Profile-file mode alike); in
-  // store mode the legacy mirror is re-flagged too so browsing and the CLI
-  // agree. Masked secrets ride along and are re-attached server-side by ID.
-  $('profile-select').onchange = async () => {
-    const name = $('profile-select').value;
-    try {
-      await makeDefaultSource(name);
-      await refreshSources();
-      nav.to({ kind: 'buckets' });
-      toast('Source switched', 'ok');
-    } catch (err) {
-      toast(`Switch failed: ${err}`, 'error');
-      await refreshSources();
-    }
-  };
   $('filter').addEventListener('input', debounce(() => {
     view.filter = $('filter').value;
     grid.setFilter(view.filter);
   }, 120));
+
+  // Path bar: clicking the navbar's empty area (not a crumb or the filter
+  // box) opens the inline path editor for copy/paste navigation.
+  const navbar = document.querySelector('.navbar');
+  navbar.title = t('pathClickHint');
+  navbar.addEventListener('click', (e) => {
+    if (e.target.closest('.crumb, .crumb-sep, input, button')) return;
+    editPath();
+  });
 }
 
 // findFromHere opens the deep-search dialog for the current folder, the
@@ -2083,57 +2252,6 @@ function findFromHere() {
   const row = grid.selectedRows()[0];
   if (row) findDialog(row.key, '', openSearchResult);
   else toast('Open a bucket first — or select one');
-}
-
-// sourceDetail is the secondary line in the sources dialog.
-function sourceDetail(s) {
-  if (s.type === 's3') return `${providerLabel(s.s3?.endpoint)}${s.s3?.endpoint ? ` — ${s.s3.endpoint}` : ''}`;
-  if (s.type === 'local') return `local — ${s.localRoot || ''}`;
-  return `${s.type} — ${s.host || ''}${s.port ? `:${s.port}` : ''}`;
-}
-
-function sourcesDialog() {
-  const list = el('div', {});
-  const draw = () => {
-    list.replaceChildren(...sources.map((s) => el('div', { class: 'tr-job' },
-      el('div', { class: 'tr-top' },
-        el('span', { class: 'tr-name' },
-          el('span', { style: `color:${s.color || 'var(--accent)'};margin-right:6px`, text: '\u25CF' }),
-          `${s.name} ${s.default ? '(\u2605 default)' : ''}`),
-        el('span', { class: 'tr-status', text: sourceDetail(s) }),
-        el('button', { class: 'btn', text: 'Edit', onclick: () => { sourceEditor(s, async () => { await refreshSources(); draw(); }); } }),
-        ...(s.type === 's3' ? [el('button', { class: 'btn', text: 'Default', onclick: async () => {
-          try {
-            await makeDefaultSource(s.name);
-            await refreshSources();
-            draw();
-          } catch (err) { toast(`Default failed: ${err}`, 'error'); }
-        } })] : []),
-        el('button', { class: 'btn', text: 'Remove', onclick: async () => {
-          if (await confirm({ title: `Remove source ${s.name}?`, message: 'Stored credentials will be deleted.', danger: true, okLabel: 'Remove' })) {
-            try {
-              await api.RemoveSource(s.id || s.name);
-              await refreshSources();
-              refreshPfState();
-              draw();
-            } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
-          }
-        } }),
-      ),
-    )));
-    list.appendChild(el('div', {}, '\u00A0'));
-  };
-  draw();
-  openModal({
-    title: t('sourcesTitle'),
-    body: list,
-    wide: true,
-    buttons: [
-      { label: t('importAws'), onclick: async (c) => { c(); importAws(); } },
-      { label: t('addSource'), class: 'primary', onclick: (c) => { c(); sourceEditor(null, afterSourceSaved); } },
-      { label: 'Close' },
-    ],
-  });
 }
 
 // ============================ profile file session (M8) ============================
@@ -2279,8 +2397,12 @@ function setLanguage(v) {
 }
 
 // openSettings mounts the Settings dialog over the persisted knobs; rows
-// apply immediately through the same setters the menus use.
-function openSettings() {
+// apply immediately through the same setters the menus use. The log-file
+// preference lives Go-side (logsettings.json) so the writer honors it —
+// fetched before the dialog opens and pushed back on change.
+async function openSettings() {
+  let logSet = { mode: 'default', dir: '' };
+  try { logSet = await api.GetLogSettings(); } catch { /* binding missing pre-Startup */ }
   settingsDialog({
     state: {
       theme: () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'),
@@ -2301,6 +2423,17 @@ function openSettings() {
       log: setLogArea,
       conflict: (v) => localStorage.setItem('s3b-conflict', v),
       throttle: (v) => localStorage.setItem('s3b-throttle', String(v)),
+    },
+    log: {
+      get: () => logSet,
+      set: async (mode, dir) => {
+        try { logSet = await api.SetLogSettings(mode, dir); }
+        catch (e) { toast(String(e), 'error'); }
+        return logSet;
+      },
+      browse: async () => {
+        try { return await api.PickFolder('Choose the log folder'); } catch { return ''; }
+      },
     },
   });
 }
@@ -2350,6 +2483,7 @@ function mountMenubar() {
         { label: t('menu.theme'), action: toggleTheme },
         { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
         { label: t('menu.log'), kbd: 'Ctrl+L', action: toggleLogArea },
+        { label: t('menu.transfers'), action: () => transferManager() },
         { label: t('menu.filter'), kbd: 'Ctrl+F', action: () => { $('filter').focus(); $('filter').select(); } },
         null,
         {
@@ -2387,6 +2521,8 @@ function mountMenubar() {
     {
       label: t('menu.help'),
       items: [
+        { label: t('menu.guide'), action: usageGuideDialog },
+        { label: t('menu.sources'), action: sourcesInfoDialog },
         { label: t('menu.keys'), kbd: 'F1', action: helpSheet },
         null,
         { label: t('menu.doctor'), action: () => runDoctor(nav.current?.kind === 'objects' ? nav.current.bucket : ''), enabled: () => st().canDoctor },
@@ -2550,6 +2686,10 @@ function wireEvents() {
   onEvent('log:line', (l) => logArea.append(l));
   $('status-editing').onclick = () => editingDialog(updateEditingStatus);
   $('status-log').onclick = toggleLogArea;
+  // The status-bar jobs indicator opens the transfer manager (the toolbar
+  // Transfers button is gone; View menu carries it too).
+  $('status-jobs').title = 'Open the transfer manager';
+  $('status-jobs').onclick = () => transferManager();
   window.addEventListener('focus', updateEditingStatus);
   window.addEventListener('focus', () => {
     if (refreshOnFocus && !autoRefreshBlocked()) refreshCurrent();
@@ -2559,14 +2699,11 @@ function wireEvents() {
 function showTransfersBadge() {
   api.ActiveTransfers().then((jobs) => {
     const running = jobs.filter((j) => j.status === 'running');
-    const badge = $('transfer-badge');
-    badge.classList.toggle('hidden', running.length === 0);
-    badge.textContent = running.length;
     const sb = $('status-jobs');
     if (running.length) {
       sb.classList.remove('hidden');
       const j = running[0];
-      sb.textContent = `\u21C5 ${j.doneFiles}/${j.totalFiles} ${j.currentFile ? basename(j.currentFile) : ''} ${fmtBytes(j.sentBytes)}${j.totalBytes ? '/' + fmtBytes(j.totalBytes) : ''}`;
+      sb.textContent = `\u21C5 ${running.length > 1 ? `${running.length} jobs — ` : ''}${j.doneFiles}/${j.totalFiles} ${j.currentFile ? basename(j.currentFile) : ''} ${fmtBytes(j.sentBytes)}${j.totalBytes ? '/' + fmtBytes(j.totalBytes) : ''}`;
     } else {
       sb.classList.add('hidden');
     }

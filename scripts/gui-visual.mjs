@@ -277,9 +277,9 @@ function shim() {
     ],
     admin: {
       publicWarning: '', region: 'eu-central', versions: 'Enabled',
-      pab: { BlockPublicAcls: false, IgnorePublicAcls: false, BlockPublicPolicy: true, RestrictPublicBuckets: true },
+      pab: { blockPublicAcls: false, ignorePublicAcls: false, blockPublicPolicy: true, restrictPublicBuckets: true },
       policy: { raw: '{\n  "Version": "2012-10-17",\n  "Statement": []\n}', summary: { statements: 0, public: false } },
-      acl: { owner: 'demo', summary: { grants: 1 } },
+      acl: { owner: 'demo', summary: { grants: ['demo — FULL_CONTROL'] } },
       cors: [{ allowedMethods: 'GET', allowedOrigins: 'https://demo.example', allowedHeaders: '*', maxAgeSeconds: 3000 }],
       lifecycle: [{ id: 'archive-old', status: 'Enabled', days: 90, storageClass: 'GLACIER' }],
       encryption: { algorithm: 'AES256', kmsKeyId: '' },
@@ -446,7 +446,9 @@ function shim() {
     PreviewDelete: (bucket, keys) => ({ requiresL2: false, objects: keys.length, bytes: 1234 }),
     RemoteDeletePreview: () => ({ n: 1 }),
     PresignObject: (bucket, key) => `https://${bucket}.s3.visual.shim/${key}?X-Amz-Signature=visual`,
-    StatObject: (bucket, key) => ({ key, size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD' }),
+    StatObject: (bucket, key) => (key.endsWith('/')
+      ? { key, isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
+      : { key, size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD' }),
     StatBucket: (bucket) => ({ name: bucket, region: 'eu-central', objects: 7, bytes: 224975891, createdAt: daysAgo(220) }),
     RemoteStat: (source, key) => ({ key, isDir: false, size: 4096, lastModified: daysAgo(3) }),
     CopySelection: (src, keys, dst, prefix, move) => ({ copied: keys.length, errors: [] }),
@@ -493,7 +495,11 @@ function shim() {
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
 context.setDefaultTimeout(8000); // fail fast: a stuck overlay must not stall the walk
 const page = await context.newPage();
-page.on('pageerror', (e) => { pageErrors.push(String(e)); console.log(`  PAGEERROR ${String(e).split('\n')[0]}`); });
+page.on('pageerror', (e) => {
+  const s = (e && e.stack) ? `${e.stack}`.split('\n').slice(0, 4).join(' | ') : String(e);
+  pageErrors.push(String(e));
+  console.log(`  PAGEERROR ${s}`);
+});
 await page.addInitScript(shim);
 
 // ---------- page helpers ----------
@@ -559,6 +565,33 @@ async function closeModal() {
 async function modalVisible() {
   return evalPage(() => !document.getElementById('modal-root').classList.contains('hidden'));
 }
+// Layout-artifact audit for whatever is currently on screen: page must not
+// scroll horizontally, an open modal must sit fully inside the viewport,
+// dialog action buttons must not clip their labels, and a tab strip's tabs
+// must not overflow the strip. Returns { ok, bad } for the ok() helper.
+async function layoutAudit() {
+  return evalPage(() => {
+    const bad = [];
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (document.documentElement.scrollWidth > vw + 1) bad.push('page-hscroll');
+    const m = document.querySelector('#modal-root:not(.hidden) .modal');
+    if (m) {
+      const r = m.getBoundingClientRect();
+      if (r.left < -0.5 || r.top < -0.5 || r.right > vw + 0.5 || r.bottom > vh + 0.5) bad.push('modal-outside-viewport');
+      for (const b of m.querySelectorAll('.modal-foot .btn')) {
+        if (b.scrollWidth > b.clientWidth + 1) bad.push('foot-btn-clipped');
+      }
+    }
+    for (const s of document.querySelectorAll('.tabstrip')) {
+      const r = s.getBoundingClientRect();
+      for (const t of s.querySelectorAll('.tab')) {
+        const tr = t.getBoundingClientRect();
+        if (tr.width > 0 && (tr.left < r.left - 0.5 || tr.right > r.right + 0.5)) bad.push('tab-outside-strip');
+      }
+    }
+    return { ok: bad.length === 0, bad: bad.join(',') };
+  });
+}
 // synthetic HTML5 drag & drop: real dragstart on the source row lets the app
 // build its own payload; dragover+drop on the target exercise the handlers.
 async function dnd(fromH, toH, { shift = false, ctrl = false } = {}) {
@@ -606,8 +639,9 @@ await step('objects-view', async () => {
   await dblClickRow('testijotain');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects of testijotain');
   await ok('breadcrumb shows bucket', (await txt('#breadcrumb')).includes('testijotain'));
-  await ok('guard chips visible', evalPage(() => !document.getElementById('guard-chips').classList.contains('hidden')));
-  await ok('versioning chip says Versions on', (await txt('#guard-chips')).toLowerCase().includes('versions on'));
+  // guard state lives as icons after the bucket name in the tree now
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .tguard').length)) > 0, 6000, 'tree guard icons');
+  await ok('tree shows versioning icon', (await evalPage(() => Array.from(document.querySelectorAll('#tree .tguard')).map((i) => i.title).join(' '))).toLowerCase().includes('versioning enabled'));
   await ok('toolbar upload enabled', evalPage(() => !document.getElementById('btn-upload').disabled));
   await ok('toolbar download disabled without selection', evalPage(() => document.getElementById('btn-download').disabled));
   await shot('objects');
@@ -743,6 +777,70 @@ await step('menubar-walk', async () => {
   await page.keyboard.press('Escape');
 });
 
+await step('help-guide', async () => {
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  const guide = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /user guide/i.test(i.textContent)) || null);
+  await ok('Help→User guide present', !!guide);
+  if (guide) {
+    await guide.asElement().click();
+    await waitFor(modalVisible, 4000, 'guide modal');
+    await ok('guide has six section tabs', waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .tabstrip .tab').length)) === 6, 4000, 'guide tabs'));
+    await ok('getting-started content rendered', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Import S3 credentials'));
+    await shot('guide');
+    const tab = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))
+      .find((t) => /^transfers$/i.test(t.textContent.trim())) || null);
+    if (tab) { await tab.asElement().click(); await sleep(80); }
+    await ok('guide tab switch works', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('multipart'));
+    await closeModal();
+  }
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  const src = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /supported data sources/i.test(i.textContent)) || null);
+  await ok('Help→Supported data sources present', !!src);
+  if (src) {
+    await src.asElement().click();
+    await waitFor(modalVisible, 4000, 'sources modal');
+    const txt = await evalPage(() => document.getElementById('modal-root').textContent);
+    await ok('sources list covers engines', ['SFTP', 'FTP', 'WebDAV', 'MinIO', 'Cloudflare R2'].every((s) => txt.includes(s)));
+    await shot('sources-info');
+    await closeModal();
+  }
+});
+
+await step('about-keysheet', async () => {
+  // Help → About
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  const about = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /about/i.test(i.textContent)) || null);
+  await ok('Help→About present', !!about);
+  if (about) {
+    await about.asElement().click();
+    await waitFor(modalVisible, 4000, 'about modal');
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .kv .k').length)) >= 3, 4000, 'about rows');
+    await ok('about shows version/license rows', evalPage(() => {
+      const ks = Array.from(document.querySelectorAll('#modal-root .kv .k')).map((k) => k.textContent);
+      const hasLicense = ks.some((k) => /licen[cs]e/i.test(k));
+      const hasVersion = /v\d|^v\?/m.test(Array.from(document.querySelectorAll('#modal-root .kv .v'))[0]?.textContent || '');
+      return ks.includes('s3b') && hasLicense && hasVersion;
+    }));
+    await ok('about layout clean', (await layoutAudit()).ok);
+    await shot('about');
+    await closeModal();
+  }
+  // F1 keyboard shortcuts sheet
+  await page.keyboard.press('F1');
+  await waitFor(modalVisible, 4000, 'keysheet');
+  await ok('keysheet lists shortcuts', waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .help-grid .row').length)) >= 18, 4000, 'keys rows'));
+  await ok('keysheet uses the wide size class', evalPage(() => document.querySelector('#modal-root .modal.wide') !== null));
+  await ok('keysheet layout clean', (await layoutAudit()).ok);
+  await shot('keysheet');
+  await closeModal();
+});
+
 await step('settings-dialog', async () => {
   await page.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
   await sleep(80);
@@ -775,16 +873,21 @@ await step('upload-menu', async () => {
   await closeCtx();
 });
 
-await step('sources-dialog', async () => {
-  await page.click('#btn-profiles');
-  await waitFor(modalVisible, 4000, 'sources modal');
-  await ok('sources listed in dialog', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('backup-box'));
-  await shot('sources-dialog');
-  await closeModal();
+await step('sources-in-tree', async () => {
+  await ok('source listed in sidebar tree', (await txt('#tree')).includes('backup-box'));
+  await ok('sidebar header says Data sources', (await txt('#sidebar-head')).toLowerCase().includes('data sources'));
+  await shot('sources-tree');
 });
 
 await step('doctor', async () => {
-  await page.click('#btn-doctor');
+  // the toolbar Doctor button is gone — Help menu carries it
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  const docItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /doctor/i.test(i.textContent)) || null);
+  await ok('Help→Doctor present', !!docItem);
+  if (!docItem) return;
+  await docItem.asElement().click();
   await waitFor(modalVisible, 4000, 'doctor modal');
   await ok('doctor checks listed', waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Connectivity'), 4000, 'checks'));
   const run = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
@@ -795,6 +898,52 @@ await step('doctor', async () => {
     await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('warn'), 4000, 'report');
   }
   await shot('doctor');
+  await closeModal();
+});
+
+await step('admin-panel', async () => {
+  // deterministic: the default S3 source's tree node lands on its buckets view
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view');
+  const n = await openCtx('testijotain');
+  await ok('bucket menu has items', n >= 5);
+  await ctxItem(/admin panel/i);
+  await waitFor(modalVisible, 4000, 'admin modal');
+  await ok('title names the bucket', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).startsWith('Admin panel — testijotain'));
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('.tabstrip .tab').length)) === 11, 4000, 'admin tabs');
+  await ok('admin modal uses the wide size class', evalPage(() => document.querySelector('#modal-root .modal.admin-modal') !== null));
+  await ok('full tab strip fits without clipping', evalPage(() => {
+    const s = document.querySelector('.tabstrip');
+    if (!s) return false;
+    const r = s.getBoundingClientRect();
+    return Array.from(s.querySelectorAll('.tab')).every((t) => {
+      const tr = t.getBoundingClientRect();
+      return tr.width > 0 && tr.left >= r.left - 0.5 && tr.right <= r.right + 0.5;
+    });
+  }));
+  await shot('admin-panel');
+  // walk ALL 11 tabs: each must render real content (not stuck on Loading…)
+  // and keep the geometry audit clean — tabs render synchronously from the
+  // already-loaded panel, so the strip handles stay valid across clicks.
+  const tabNames = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).map((t) => t.textContent.trim()));
+  for (const name of tabNames) {
+    const tab = await elOrNull((want) => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))
+      .find((t) => t.textContent.trim() === want) || null, name);
+    if (!tab) { await ok(`tab "${name}" clickable`, false); continue; }
+    await tab.asElement().click();
+    await sleep(90);
+    await ok(`tab "${name}" renders content`, waitFor(async () => {
+      const t = await evalPage(() => document.querySelector('#modal-root .tabbody')?.textContent || '');
+      return t.length > 0 && !t.trimStart().startsWith('Loading');
+    }, 3000, `tab ${name} content`));
+    await ok(`tab "${name}" layout clean`, (await layoutAudit()).ok);
+  }
+  // shots of two denser tabs (policy JSON, lifecycle rules)
+  for (const [name, shotName] of [['Policy', 'admin-policy'], ['Lifecycle', 'admin-lifecycle']]) {
+    const tab = await elOrNull((want) => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))
+      .find((t) => t.textContent.trim() === want) || null, name);
+    if (tab) { await tab.asElement().click(); await sleep(90); await shot(shotName); }
+  }
   await closeModal();
 });
 
@@ -855,9 +1004,112 @@ await step('versions-diff', async () => {
   await closeModal();
 });
 
+await step('presign-class-lock', async () => {
+  await navObjects('testijotain');
+  // Pre-sign URL
+  await clickRow('readme.md');
+  await openCtx('readme.md');
+  await ctxItem(/pre-sign/i);
+  await waitFor(modalVisible, 4000, 'presign modal');
+  await ok('presign shows a signed URL', waitFor(async () => (await evalPage(() => document.querySelector('#modal-root input')?.value || '')).includes('X-Amz-Signature'), 4000, 'signature'));
+  await ok('presign layout clean', (await layoutAudit()).ok);
+  await shot('presign');
+  await closeModal();
+  // Storage class
+  await openCtx('readme.md');
+  await ctxItem(/storage class/i);
+  await waitFor(modalVisible, 4000, 'class modal');
+  await ok('class dialog offers target classes', evalPage(() => document.querySelectorAll('#modal-root select option').length >= 3));
+  await ok('class layout clean', (await layoutAudit()).ok);
+  await shot('storage-class');
+  await closeModal();
+  // Object lock (single object → lockDialogOne)
+  await openCtx('readme.md');
+  await ctxItem(/object lock/i);
+  await waitFor(modalVisible, 4000, 'lock modal');
+  await ok('lock dialog opens for the object', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('Object lock'));
+  await ok('lock layout clean', (await layoutAudit()).ok);
+  await shot('object-lock');
+  await closeModal();
+});
+
+await step('props-dialogs', async () => {
+  await navObjects('testijotain');
+  // folder properties (grid row — the tree node handle can go stale when
+  // guard icons re-render the tree mid-step; the grid row is stable)
+  const n = await openCtx('docs');
+  await ok('folder row menu has items', n >= 5);
+  await ctxItem(/properties/i);
+  await waitFor(modalVisible, 4000, 'folder props');
+  await ok('folder props rows', evalPage(() => document.querySelectorAll('#modal-root .kv .k').length >= 3));
+  await ok('folder props layout clean', (await layoutAudit()).ok);
+  await shot('props-folder');
+  await closeModal();
+  // object properties
+  await openCtx('readme.md');
+  await ctxItem(/properties/i);
+  await waitFor(modalVisible, 4000, 'object props');
+  await ok('object props rows', evalPage(() => document.querySelectorAll('#modal-root .kv .k').length >= 4));
+  await ok('object props layout clean', (await layoutAudit()).ok);
+  await shot('props-object');
+  await closeModal();
+  // bucket properties (buckets view)
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view');
+  await openCtx('testijotain');
+  await ctxItem(/properties/i);
+  await waitFor(modalVisible, 4000, 'bucket props');
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .kv .k').length)) >= 6, 4000, 'bucket props rows');
+  await ok('bucket props are comprehensive', evalPage(() => {
+    const ks = Array.from(document.querySelectorAll('#modal-root .kv .k')).map((k) => k.textContent);
+    return ['Provider', 'Versioning'].every((w) => ks.some((k) => k.includes(w)));
+  }));
+  await ok('bucket props layout clean', (await layoutAudit()).ok);
+  await shot('props-bucket');
+  await closeModal();
+});
+
+await step('prompts-and-delete-gates', async () => {
+  await navObjects('testijotain');
+  // Rename prompt comes pre-filled; cancel without changing anything
+  await clickRow('readme.md');
+  await page.keyboard.press('F2');
+  await waitFor(modalVisible, 4000, 'rename prompt');
+  await ok('rename prefilled with current name', evalPage(() => {
+    const i = document.querySelector('#modal-root input');
+    return i && i.value === 'readme.md';
+  }));
+  await ok('rename layout clean', (await layoutAudit()).ok);
+  await shot('prompt-rename');
+  await closeModal();
+  // New folder prompt
+  await page.keyboard.press('Control+Shift+N');
+  await waitFor(modalVisible, 4000, 'newfolder prompt');
+  await ok('new folder prompt defaults', evalPage(() => {
+    const i = document.querySelector('#modal-root input');
+    return i && i.value === 'new-folder';
+  }));
+  await closeModal();
+  // Delete gate: counts first, acts second — cancel
+  await clickRow('readme.md');
+  await page.keyboard.press('Delete');
+  await waitFor(modalVisible, 4000, 'delete confirm');
+  await ok('delete confirm shows object count', (await evalPage(() => document.getElementById('modal-root').textContent)).length > 10);
+  await ok('delete layout clean', (await layoutAudit()).ok);
+  await shot('delete-confirm');
+  await closeModal();
+});
+
 await step('transfers', async () => {
   await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'running', totalFiles: 3, doneFiles: 1 }));
-  await page.click('#btn-transfers');
+  // the toolbar Transfers button is gone — View menu (and the status-bar
+  // jobs indicator) carry it
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  const trItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /transfers/i.test(i.textContent)) || null);
+  await ok('View→Transfers present', !!trItem);
+  if (trItem) await trItem.asElement().click();
   await waitFor(modalVisible, 4000, 'transfers modal');
   await ok('job rendered with its current file', waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('video-final.mp4'), 4000, 'jobs'));
   await shot('transfers');
@@ -942,9 +1194,11 @@ await step('onboarding-empty', async () => {
   await p2.goto(BASE + '?empty=1');
   await p2.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
   await ok('empty state visible', p2.evaluate(() => !document.getElementById('empty-state').classList.contains('hidden')));
+  await ok('simplified onboarding copy', p2.evaluate(() => document.getElementById('empty-state').textContent.includes('Amazon S3 or any S3-compatible storage')));
+  await ok('import button renamed to S3 credentials', p2.evaluate(() => document.getElementById('empty-actions').textContent.toLowerCase().includes('import s3 credentials')));
   await ok('empty actions offer add-source', p2.evaluate(() => document.getElementById('empty-actions').textContent.length > 0));
   await ok('upload greyed without sources', p2.evaluate(() => document.getElementById('btn-upload').disabled));
-  await ok('doctor greyed without sources', p2.evaluate(() => document.getElementById('btn-doctor').disabled));
+  await ok('doctor greyed without sources', p2.evaluate(() => window.__s3bCmdState?.canDoctor === false));
   await p2.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-onboarding-empty.png') });
   await p2.close();
 });
@@ -1106,6 +1360,50 @@ await step('paste-parity', async () => {
   await sleep(200);
   c = await findCall('TransferCross');
   await ok('remote paste routes through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[2].bucket === 'testijotain');
+});
+
+await step('layout-audit', async () => {
+  // chrome alignment: menubar/toolbar/statusbar children must stay inside
+  // their bar (no vertical bleed, no horizontal overflow)
+  const align = await evalPage(() => {
+    const bad = [];
+    for (const bar of [document.getElementById('menubar'), document.getElementById('toolbar'),
+      document.querySelector('footer.statusbar')].filter(Boolean)) {
+      const r = bar.getBoundingClientRect();
+      if (bar.scrollWidth > bar.clientWidth + 1) bad.push(`${bar.id || 'bar'}-hscroll`);
+      for (const c of bar.querySelectorAll('*')) {
+        const cr = c.getBoundingClientRect();
+        if (cr.height > 0 && (cr.top < r.top - 1.5 || cr.bottom > r.bottom + 1.5)) {
+          bad.push(`${bar.id || 'bar'}-child-bleed`); break;
+        }
+      }
+    }
+    return { ok: bad.length === 0, bad: bad.join(',') };
+  });
+  await ok('menubar/toolbar/statusbar aligned', align.ok);
+  await shot('final-light');
+  // dark theme main view
+  await evalPage(() => { document.documentElement.dataset.theme = 'dark'; });
+  await sleep(150);
+  await ok('no artifacts in dark theme', evalPage(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
+  await shot('final-dark');
+  await evalPage(() => { document.documentElement.dataset.theme = 'light'; });
+  await sleep(80);
+  // small window: the widest dialog (bucket admin, 11 tabs) must still fit
+  await page.setViewportSize({ width: 1024, height: 640 });
+  await sleep(150);
+  await ok('main view fits at 1024×640', evalPage(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view');
+  await openCtx('testijotain');
+  await ctxItem(/admin panel/i);
+  await waitFor(modalVisible, 4000, 'admin modal');
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('.tabstrip .tab').length)) === 11, 4000, 'admin tabs');
+  await ok('admin modal fits at 1024×640', (await layoutAudit()).ok);
+  await shot('admin-small-viewport');
+  await closeModal();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await sleep(120);
 });
 
 await step('toasts-cleanup', async () => {

@@ -56,6 +56,56 @@ func TestTailMissingFileIsEmpty(t *testing.T) {
 	}
 }
 
+func TestSettingsOffAndCustom(t *testing.T) {
+	cfg := eventEnv(t)
+
+	// off: nothing is written anywhere
+	if err := SaveSettings(Settings{Mode: "off"}); err != nil {
+		t.Fatal(err)
+	}
+	Append("info", "test", "must not land")
+	if _, err := os.Stat(filepath.Join(cfg, "events.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("off mode still wrote the default log")
+	}
+	if lines, _ := Tail(0, "", ""); len(lines) != 0 {
+		t.Fatal("off mode tail is not empty")
+	}
+
+	// custom: events.jsonl lands in the picked folder instead
+	custom := t.TempDir()
+	if err := SaveSettings(Settings{Mode: "custom", Dir: custom}); err != nil {
+		t.Fatal(err)
+	}
+	Append("warn", "test", "custom sink")
+	lines, err := Tail(0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0].Message != "custom sink" {
+		t.Fatalf("custom sink not used: %+v", lines)
+	}
+	if _, err := os.Stat(filepath.Join(cfg, "events.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("custom mode still wrote the default log")
+	}
+
+	// custom without a dir falls back to the default location
+	if err := SaveSettings(Settings{Mode: "custom"}); err != nil {
+		t.Fatal(err)
+	}
+	Append("info", "test", "fallback")
+	if _, err := os.Stat(filepath.Join(cfg, "events.jsonl")); err != nil {
+		t.Fatal("custom-without-dir did not fall back to the default log")
+	}
+
+	// a torn settings file reads as the default mode
+	if err := os.WriteFile(filepath.Join(cfg, "logsettings.json"), []byte("{torn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := LoadSettings(); s.Mode != "" || s.Dir != "" {
+		t.Fatalf("torn settings not ignored: %+v", s)
+	}
+}
+
 func TestRotationKeepsNewestHalf(t *testing.T) {
 	eventEnv(t)
 	// Blow past the cap with fat messages, then verify the log shrank and

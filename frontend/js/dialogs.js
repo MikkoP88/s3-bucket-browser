@@ -6,7 +6,7 @@ import { t } from './i18n.js';
 
 const root = () => document.getElementById('modal-root');
 
-export function openModal({ title, body, buttons = [], wide = false, onClose }) {
+export function openModal({ title, body, buttons = [], wide = false, cls = '', onClose }) {
   const r = root();
   const prevFocus = document.activeElement;
   r.classList.remove('hidden');
@@ -43,7 +43,7 @@ export function openModal({ title, body, buttons = [], wide = false, onClose }) 
   );
 
   const box = el('div', {
-    class: `modal${wide ? ' wide' : ''}`,
+    class: `modal${wide ? ' wide' : ''}${cls ? ' ' + cls : ''}`,
     role: 'dialog',
     'aria-modal': 'true',
     'aria-label': title,
@@ -561,7 +561,106 @@ export function helpSheet() {
   const body = el('div', { class: 'help-grid' },
     rows.map(([k, v]) => el('div', { class: 'row' }, el('kbd', { text: k }), el('span', { text: v }))),
   );
-  openModal({ title: 'Keyboard shortcuts', body, buttons: [{ label: 'Close' }] });
+  openModal({ title: 'Keyboard shortcuts', body, wide: true, buttons: [{ label: 'Close' }] });
+}
+
+// ---------- usage guide + supported data sources (Help menu) ----------
+
+// Guide sections rendered as tabs. Content stays English (like the admin
+// panel and the keyboard map): the menu labels are localized, the prose
+// is stable documentation.
+const GUIDE_SECTIONS = [
+  ['Getting started', [
+    ['Add a data source', 'Click the + button next to DATA SOURCES on the left (or the button on the empty state). Every connection is a data source; the bold one with the star is the default S3 source the main view browses.'],
+    ['Import existing credentials', '"Import S3 credentials" (File menu or the empty state) reads the AWS shared files ~/.aws/credentials and ~/.aws/config. Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3.'],
+    ['Save your workspace', 'Data sources live in the session until saved. Ctrl+S / File → Save As writes an encrypted .s3bprofile you can reopen, keep or share; the status bar counts unsaved sources.'],
+    ['Secrets', 'Keys and passwords are stored in the OS keyring (Windows Credential Manager, macOS Keychain, Linux SecretService) when available, with a 0600-permission file fallback on headless hosts.'],
+  ]],
+  ['Browsing', [
+    ['Sidebar tree', 'Sources → buckets → folders. Click to navigate; right-click a node for Properties, Set default, Admin panel and more.'],
+    ['Grid', 'Click, Ctrl+click and Shift+click to select, Ctrl+A for all, drag a marquee, or just type to jump to an item. The funnel row under the header filters per column; Ctrl+F focuses the quick filter.'],
+    ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and type a path like s3://bucket/folder/ to jump directly. Back / forward / up history works like Explorer.'],
+    ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here.'],
+  ]],
+  ['Transfers', [
+    ['Upload', 'Toolbar ▲, Ctrl+U, the context menu — or just drag files/folders from the OS anywhere onto the window.'],
+    ['Download', 'Toolbar ▼, Ctrl+D, Enter, or the context menu. Multistep downloads/uploads are multipart and resumable per file.'],
+    ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move.'],
+    ['Conflicts & speed', 'Every transfer asks for a conflict policy (overwrite / skip / rename) unless a default is set in Settings, and can be throttled (256 kB/s … 10 MB/s).'],
+    ['Transfer manager', 'View → Transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel.'],
+  ]],
+  ['Versions & safety', [
+    ['Versioning', 'Buckets with versioning show a 🔄 icon in the tree. Open an object\u2019s context menu → Versions for the timeline: restore a previous version as latest, view text diffs, or purge old versions.'],
+    ['Undo delete', 'Deleted objects leave a delete marker — "Versions → undo delete" brings the object back in one click. Shift+Del destroys all versions permanently.'],
+    ['Object Lock', 'Locked buckets show a 🔒 icon; retention (GOVERNANCE/COMPLIANCE) and legal hold are per version, with the same confirm gates as the CLI.'],
+    ['Safety ladder', 'Deletes count first and act second; large selections require a typed confirmation; removing a bucket means typing its name.'],
+  ]],
+  ['Administration', [
+    ['Admin panel', 'Right-click a bucket → Admin panel: versioning, policy, ACL, CORS, lifecycle, encryption, public-access block, website, tags, versions and lock — one tabbed dialog.'],
+    ['Doctor', 'Help → Doctor runs a guided diagnosis: DNS → TCP → TLS → auth → permissions, with one-click re-runs of individual checks.'],
+    ['Presign & storage class', 'The context menu creates time-limited pre-signed URLs and converts objects between storage classes (server-side copy).'],
+    ['Properties', 'Context menu → Properties shows full metadata for buckets, folders, objects and sources — provider, region, versioning, lock, encryption, policy state.'],
+  ]],
+  ['Tips & tricks', [
+    ['Find anything', 'Ctrl+Shift+F deep-searches every object under the open bucket/folder by name glob, size, age or storage class; results stream in and are cancelable.'],
+    ['Local log', 'Ctrl+L toggles the event log; Settings can mirror it to a file.'],
+    ['Portable mode', 'Drop an empty s3b-portable marker file next to the binary and all settings stay beside it — perfect for USB sticks.'],
+    ['Same binary, full CLI', 's3b on the terminal drives the same engine: ls, cp, sync, find, doctor, bucket admin and more — see `s3b --help`.'],
+  ]],
+];
+
+export function usageGuideDialog() {
+  const strip = el('div', { class: 'tabstrip' });
+  const content = el('div', { class: 'tabbody' });
+  const select = (name) => {
+    strip.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    const [, entries] = GUIDE_SECTIONS.find(([n]) => n === name);
+    content.replaceChildren(el('div', { class: 'guide' },
+      entries.map(([h, text]) => el('div', { class: 'guide-item' },
+        el('div', { class: 'guide-h', text: h }),
+        el('div', { class: 'guide-p', text }),
+      )),
+    ));
+  };
+  strip.replaceChildren(...GUIDE_SECTIONS.map(([name]) =>
+    el('div', { class: 'tab', 'data-tab': name, text: name, onclick: () => select(name) })));
+  openModal({
+    title: 'User guide',
+    body: el('div', { class: 'admin' }, strip, content),
+    cls: 'admin-modal',
+    buttons: [{ label: 'Close' }],
+  });
+  select(GUIDE_SECTIONS[0][0]);
+}
+
+const SOURCE_KINDS = [
+  ['S3 — Amazon S3 and any S3-compatible endpoint', [
+    'Access key + secret key, optional region and path-style addressing; custom endpoints are typed as a URL (https://…).',
+    'Well-known providers are detected automatically and their capabilities shown in the Admin panel:',
+    'MinIO / AIStor — full S3, synthetic ACLs · Wasabi — very AWS-compatible · Cloudflare R2 — IAM-only policies, no path-style · Backblaze B2 — IAM-only policies, no ACL APIs · DigitalOcean Spaces — AWS-like · IBM Cloud Object Storage — full · Hetzner Storage Boxes — basic S3 · Ceph RGW — complete S3 · Dell ECS · NetApp StorageGRID',
+  ]],
+  ['Remote filesystems', [
+    'SFTP and SCP (ssh) — host, port 22 default, username/password, anchored root path.',
+    'FTP and FTPS — plain and TLS, port 21/990 defaults.',
+    'WebDAV and WebDAVs — RFC 4918 over HTTP(S), port 80/443 defaults; works with Apache, nginx, rclone serve webdav, Nextcloud, IIS.',
+    'All of them browse, upload, download, rename and delete like any other source — and join the transfer matrix (drag & drop, copy/paste, compare) with S3 and the local pane.',
+  ]],
+  ['Local filesystem', [
+    'The dual-pane side (F9) browses local drives and folders, and any source type can be bound to it.',
+  ]],
+  ['CLI parity', [
+    'The CLI accepts the same connections as URIs: s3://, sftp://, scp://, ftp://, ftps://, webdav://, webdavs:// — see `s3b source add --help`.',
+  ]],
+];
+
+export function sourcesInfoDialog() {
+  const body = el('div', { class: 'guide' },
+    SOURCE_KINDS.map(([name, lines]) => el('div', { class: 'guide-item' },
+      el('div', { class: 'guide-h', text: name }),
+      ...lines.map((l) => el('div', { class: 'guide-p', text: l })),
+    )),
+  );
+  openModal({ title: 'Supported data sources', body, wide: true, buttons: [{ label: 'Close' }] });
 }
 
 // ---------- conflict policy + transfer throttle ----------
@@ -942,8 +1041,16 @@ export function adminDialog(bucket, onChanged) {
         content.replaceChildren(
           panel.publicWarning ? el('div', { class: 'banner danger', text: `\u26A0 ${panel.publicWarning}` }) : null,
           el('div', { class: 'kv' },
+            el('div', { class: 'k', text: 'Bucket' }), el('div', { class: 'v mono', text: bucket }),
             el('div', { class: 'k', text: 'Region' }), el('div', { class: 'v mono', text: panel.region || '—' }),
             el('div', { class: 'k', text: 'Versioning' }), el('div', { class: 'v', text: panel.versions || 'off (never configured)' }),
+            el('div', { class: 'k', text: 'Object Lock' }), el('div', { class: 'v', text: panel.lock?.enabled
+              ? `enabled — ${panel.lock.mode || 'on'}${panel.lock.days ? `, ${panel.lock.days}d default retention` : ''}` : 'off' }),
+            el('div', { class: 'k', text: 'Default encryption' }), el('div', { class: 'v', text: panel.encryption?.algorithm
+              ? `${panel.encryption.algorithm}${panel.encryption.kmsKeyId ? ` (${panel.encryption.kmsKeyId})` : ''}` : 'none set' }),
+            el('div', { class: 'k', text: 'Public access block' }), el('div', { class: 'v', text: panel.pab
+              ? `${['blockPublicAcls', 'ignorePublicAcls', 'blockPublicPolicy', 'restrictPublicBuckets'].filter((k) => panel.pab[k]).length} of 4 on`
+              : '—' }),
             el('div', { class: 'k', text: 's3:// URI' }), el('div', { class: 'v mono', text: `s3://${bucket}` }),
           ),
           el('div', { style: 'margin-top:12px' },
@@ -1017,7 +1124,7 @@ export function adminDialog(bucket, onChanged) {
             el('div', { class: 'k', text: 'Public read' }), el('div', { class: 'v', text: s.publicRead ? 'YES' : 'no' }),
             el('div', { class: 'k', text: 'Authenticated read' }), el('div', { class: 'v', text: s.authenticatedRead ? 'YES' : 'no' }),
           ),
-          ...(s.grants || []).length ? el('div', { class: 'field', style: 'margin-top:8px', text: `Grants: ${(s.grants || []).join(', ')}` }) : null,
+          (s.grants || []).length ? el('div', { class: 'field', style: 'margin-top:8px', text: `Grants: ${(s.grants || []).join(', ')}` }) : null,
           ...(s.warnings || []).map((w) => el('div', { class: 'banner warn', text: w })),
           el('div', { class: 'field', style: 'margin-top:10px;color:var(--text-dim)', text: 'ACLs are read-only here — manage access through the bucket policy (most providers deprecated bucket ACLs).' }),
         );
@@ -1311,9 +1418,9 @@ export function adminDialog(bucket, onChanged) {
 
   strip.replaceChildren(...TABS.map((t) => el('div', { class: 'tab', 'data-tab': t, text: t, onclick: () => select(t) })));
   openModal({
-    title: `Bucket administration — ${bucket}`,
+    title: `Admin panel — ${bucket}`,
     body: el('div', { class: 'admin' }, strip, content),
-    wide: true,
+    cls: 'admin-modal',
     buttons: [{ label: 'Close' }],
   });
   reload().catch((e) => content.replaceChildren(errBox(e)));

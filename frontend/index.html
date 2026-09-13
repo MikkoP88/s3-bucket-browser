@@ -26,20 +26,15 @@
       <button class="tb-btn" id="btn-find" title="Deep search (Ctrl+Shift+F)">&#128269; Find</button>
       <span class="tb-sep"></span>
       <button class="tb-btn" id="btn-newfolder" title="New folder (Ctrl+Shift+N)">&#128193;+</button>
-      <button class="tb-btn" id="btn-doctor" title="Connection doctor">&#129658; Doctor</button>
       <span class="tb-spacer"></span>
-      <button class="tb-btn" id="btn-transfers" title="Transfer manager">&#8646; Transfers <span id="transfer-badge" class="badge hidden">0</span></button>
-      <select id="profile-select" title="Data source (S3)"></select>
-      <button class="tb-btn" id="btn-profiles" title="Manage data sources">&#9881; Sources</button>
       <button class="tb-btn" id="btn-theme" title="Light / dark theme">&#9681;</button>
       <button class="tb-btn" id="btn-help" title="Keyboard shortcuts (F1)">?</button>
     </header>
 
-    <!-- ============ Nav bar: breadcrumb + bucket guard chips + filter ============ -->
+    <!-- ============ Nav bar: breadcrumb + filter ============ -->
     <nav class="navbar">
       <div id="breadcrumb" class="breadcrumb"></div>
-      <span id="guard-chips" class="guard-chips hidden" aria-label="Bucket versioning and object-lock state"></span>
-      <input id="filter" class="filter" type="text" placeholder="Filter (Ctrl+F)" spellcheck="false">
+      <input id="filter" class="filter" type="text" placeholder="Filter all columns (Ctrl+F)" spellcheck="false">
     </nav>
 
     <!-- ============ Main split: tree | grid ============ -->

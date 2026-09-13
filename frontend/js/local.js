@@ -435,18 +435,20 @@ export class LocalPane {
   clearCompare() { this.grid.setCmp(null); }
 
   updateCrumb() {
-    // the display name, not the internal id, is what the user should read
+    // the display name, not the internal id, is what the user should read;
+    // remote and S3 bindings use the same NAME:// canonical format as the
+    // main view's path bar (the local binding shows the filesystem path)
     const label_ = this.binding.name || this.binding.source || '';
     if (this.binding.kind === 'remote') {
-      const label = `${label_}:${this.dir || '/'}`;
+      const label = `${label_}://${this.dir || '/'}`;
       $('local-crumb').textContent = label;
       $('local-crumb').title = label;
       return;
     }
     if (this.binding.kind === 's3') {
       const label = this.bucket
-        ? `${label_}:${this.bucket}/${this.dir || ''}`
-        : `${label_}: (buckets)`;
+        ? `${label_}://${this.bucket}/${this.dir || ''}`
+        : `${label_}://`;
       $('local-crumb').textContent = label;
       $('local-crumb').title = label;
       return;

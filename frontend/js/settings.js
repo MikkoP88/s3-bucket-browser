@@ -41,6 +41,49 @@ function checkbox(checked, onchange) {
   return el('input', { type: 'checkbox', class: 'set-ctl', checked: !!checked, onchange: (e) => onchange(e.target.checked) });
 }
 
+// logFileRow builds the save-logs-to-file control: a select (off / app
+// settings folder / custom folder) plus a Browse button that picks the
+// custom location with the native folder dialog. ctx.log = { get, set,
+// browse } is injected by main.js and talks to the backend preference
+// (logsettings.json), so the choice survives restarts and `s3b log`.
+function logFileRow(ctx) {
+  let cur = ctx.log.get(); // { mode: 'default'|'off'|'custom', dir }
+  const dirOpt = el('option', { value: 'custom' });
+  const sel = el('select', { class: 'input set-ctl' });
+  const sync = () => {
+    dirOpt.textContent = cur.mode === 'custom' && cur.dir
+      ? cur.dir
+      : t('settings.logCustom');
+    sel.replaceChildren(
+      el('option', { value: 'off', text: t('settings.logOff') }),
+      el('option', { value: 'default', text: t('settings.logDefault') }),
+      dirOpt,
+    );
+    sel.value = cur.mode;
+  };
+  sync();
+  const apply = async (mode, dir) => { cur = await ctx.log.set(mode, dir); sync(); };
+  const browse = async () => {
+    const dir = await ctx.log.browse();
+    if (dir) await apply('custom', dir);
+  };
+  sel.addEventListener('change', async () => {
+    if (sel.value === 'custom') {
+      if (!cur.dir) {
+        const dir = await ctx.log.browse();
+        if (!dir) { sync(); return; } // canceled — revert to the previous mode
+        await apply('custom', dir);
+        return;
+      }
+      await apply('custom', cur.dir); // reuse the remembered folder
+      return;
+    }
+    await apply(sel.value, '');
+  });
+  const btn = el('button', { class: 'btn set-ctl', text: t('settings.browse'), onclick: browse });
+  return row(t('settings.logFile'), el('span', { class: 'set-ctl-group' }, sel, btn), t('settings.logHint'));
+}
+
 // settingsDialog ---------------------------------------------------------
 
 // ctx = {
@@ -79,6 +122,9 @@ export function settingsDialog(ctx) {
       (v) => a.autoRefresh(parseInt(v, 10)),
     )),
     row(t('settings.focus'), checkbox(s.refreshOnFocus(), (v) => a.refreshOnFocus(v))),
+
+    el('div', { class: 'set-section', text: t('settings.logging') }),
+    logFileRow(ctx),
 
     el('div', { class: 'set-section', text: t('settings.transfers') }),
     row(t('settings.conflict'), select(

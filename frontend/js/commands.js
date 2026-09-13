@@ -50,8 +50,8 @@ export function commandState() {
   };
 }
 
-// Toolbar button id -> commandState flag. Refresh/theme/help/transfers/
-// panes/profiles stay always-enabled and are not listed here.
+// Toolbar button id -> commandState flag. Refresh/theme/help/panes stay
+// always-enabled and are not listed here.
 const BUTTONS = {
   'btn-back': 'canBack',
   'btn-forward': 'canForward',
@@ -60,7 +60,6 @@ const BUTTONS = {
   'btn-download': 'canDownload',
   'btn-newfolder': 'canNewFolder',
   'btn-find': 'canFind',
-  'btn-doctor': 'canDoctor',
 };
 
 // updateCommandState recomputes the state, applies it to the toolbar buttons
