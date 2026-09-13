@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "gui-visual": "node scripts/gui-visual.mjs",
+    "gui": "node scripts/gui-visual.mjs --headed",
     "gui-live": "node scripts/gui-live.mjs"
   },
   "devDependencies": {

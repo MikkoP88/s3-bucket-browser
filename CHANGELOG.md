@@ -6,8 +6,44 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0-beta.1] — 2026-09-13
+
+### Fixed (post-cut GUI audit)
+
+- **Properties dialogs were broken for every data source.** `fmtDate` was
+  used in eight places in `main.js` but never imported from `util.js`, so
+  object, folder, bucket and multi-selection Properties all failed with
+  `ReferenceError: fmtDate is not defined` (surfaced as an error toast).
+  Found by the extended visual harness, which now opens every properties
+  dialog and asserts its rows render.
+- **Admin panel ACL tab never rendered.** The tab spread a ternary result
+  (`...(cond ? element : null)`) into `replaceChildren`, which throws for
+  both outcomes — with grants (element is not iterable) and without
+  (null is not iterable) — leaving the previous tab's content on screen.
+  Now a plain conditional child.
+- **Visual harness coverage pass.** The walk now covers all 11 admin tabs,
+  About, the F1 key sheet, pre-sign/storage-class/object-lock dialogs,
+  folder/object/bucket properties, rename/new-folder prompts, delete
+  gates, a dark-theme main-view shot, chrome (menubar/toolbar/statusbar)
+  alignment assertions, and a 1024×640 small-viewport admin-modal fit
+  check; every dialog step runs a geometry audit (modal inside viewport,
+  no clipped buttons, tabs inside the strip, no page-level horizontal
+  scroll). `npm run gui` runs the same walk in a visible browser window.
+
+First beta cut of 1.1.0: feature-complete, full validation pass on CLI
+and GUI, positioned ahead of the stable release.
+
 ### Added
 
+- **Help menu: User guide + Supported data sources.** Two new dialogs
+  document the app in-app: a six-section usage guide (getting started,
+  browsing, transfers, versions & safety, administration, tips — tabbed,
+  same chrome as the admin panel) and a supported-sources sheet covering
+  S3 and every known S3-compatible provider with capability notes, the
+  remote engines (SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs), the local
+  filesystem pane, and CLI URI parity. Menu labels localized in all 15
+  languages; guide prose stays English like the admin panel. The visual
+  harness walks both dialogs (screenshots + content assertions).
 - **Live GUI harness** (`npm run gui-live`, dev-only): a real-backend live
   walk of the GUI. `tools/gui-live` serves the production `frontend/` over
   local HTTP with the actual `pkg/api` app behind a reflection-dispatched
@@ -78,6 +114,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **S3 credentials import actually supports S3-compatible providers.** The
+  import parsed only `aws_access_key_id`/`aws_secret_access_key`, so a
+  MinIO/R2/Wasabi profile in `~/.aws/credentials` landed as an AWS source
+  pointing at the wrong cloud. It now also parses `endpoint_url`, `region`
+  and `aws_session_token`, merges the optional `~/.aws/config`
+  (`[profile x]` sections; sso-session/services blocks are ignored), and
+  sets endpoint/region on the imported sources. A missing credentials file
+  returns a friendly "create it with 'aws configure'" error instead of a
+  bare path error. UI strings renamed from "Import ~/.aws/credentials" to
+  "Import S3 credentials" in all 15 languages.
+- Admin panel dialog now reserves enough width for the full tab strip
+  (and wraps it on narrow windows) instead of scrolling tabs out of view.
+
 - License audit corrections: `gen-notice.sh` mislabeled two direct
   dependencies' SPDX ids in release NOTICE files — `jlaffaye/ftp` is ISC
   (was "MIT") and `pkg/sftp` is BSD-2-Clause (was "BSD-3-Clause"),
@@ -87,6 +136,10 @@ follow [Semantic Versioning](https://semver.org/).
   the post-M9 dependency reality (SBOM + SHA256SUMS ship per release).
 
 ### Changed
+
+- Onboarding/empty-state copy simplified: "Add a data source to connect
+  to Amazon S3 or any S3-compatible storage." (the MinIO/R2/Wasabi
+  enumeration is gone), in all 15 languages.
 
 - **Default UI language is now English.** A fresh start no longer follows
   the browser/OS language (Finnish on fi systems); Settings → Language →

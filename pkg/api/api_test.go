@@ -81,16 +81,32 @@ func TestImportAwsCredentials(t *testing.T) {
 [default]
 aws_access_key_id = AKIADEFAULT
 aws_secret_access_key = secretdefault
+endpoint_url = https://s3.example.com
 
 [work]
 aws_access_key_id = AKIAWORK
 aws_secret_access_key = secretwork
-region = eu-west-1      ; ignored here, noted for M3
 
 [broken]
 aws_access_key_id = AKIAONLY
 `
 	if err := os.WriteFile(filepath.Join(awsDir, "credentials"), []byte(ini), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// config file: region/endpoint for [work], plus a non-profile section
+	// that must be ignored.
+	cfg := `
+[default]
+region = us-east-1
+
+[profile work]
+region = eu-west-1
+endpoint_url = http://minio:9000
+
+[sso-session corp]
+sso_start_uri = https://corp.awsapps.com/start
+`
+	if err := os.WriteFile(filepath.Join(awsDir, "config"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -132,10 +148,33 @@ aws_access_key_id = AKIAONLY
 	if full.S3.AccessKeyID != "AKIAWORK" || full.S3.SecretKey != "secretwork" {
 		t.Errorf("imported source work = %+v", full.S3)
 	}
+	// endpoint_url + region must come through (work from the config file,
+	// default from the credentials file itself).
+	if full.S3.Endpoint != "http://minio:9000" || full.S3.Region != "eu-west-1" {
+		t.Errorf("imported source work endpoint/region = %q/%q, want http://minio:9000/eu-west-1", full.S3.Endpoint, full.S3.Region)
+	}
+	def, err := a.sourceByIDOrName("default")
+	if err != nil || def.S3 == nil {
+		t.Fatalf("imported source default: %+v (%v)", def, err)
+	}
+	if def.S3.Endpoint != "https://s3.example.com" || def.S3.Region != "us-east-1" {
+		t.Errorf("imported source default endpoint/region = %q/%q", def.S3.Endpoint, def.S3.Region)
+	}
 	for _, src := range srcs {
 		if src.S3 != nil && src.S3.SecretKey == "secretwork" {
 			t.Error("listings must mask imported secrets")
 		}
+	}
+}
+
+func TestImportAwsCredentialsMissingFile(t *testing.T) {
+	a := newTestApp(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	_, err := a.ImportAwsCredentials()
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("err = %v, want friendly not-found error", err)
 	}
 }
 

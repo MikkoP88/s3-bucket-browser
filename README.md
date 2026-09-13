@@ -2,7 +2,7 @@
 
 **A Windows-Explorer-style desktop app + CLI for managing Amazon S3 and S3-compatible storage — buckets, objects, versions, and everything in between.**
 
-> **Status: v1.0.** All launch milestones (M0–M6) are shipped and CI-green. Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
+> **Status: Beta.** All launch milestones (M0–M6) are shipped and CI-green; the codebase is feature-complete and in beta hardening ahead of the 1.0 stable cut. Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
 
 ## Quickstart (GUI)
 
@@ -32,7 +32,7 @@ go build -tags desktop,production -o s3b ./cmd/s3b && ./s3b   # no arguments -> 
 - **Drag & drop**: drop files or folders from the OS onto the window to upload into the open folder; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket).
 - **Transfer manager**: per-file and byte-level progress, speed, cancel — powered by multipart upload/download, with an optional **bandwidth throttle** (512 kB/s … 10 MB/s).
 - **Safety ladder**: deletes count first and act second; large selections demand typed confirmation, bucket removal demands typing the bucket name; removing a versioned bucket with `--force` purges the whole version history, markers included.
-- **Profiles**: color-coded connections, `~/.aws/credentials` import, built-in connectivity test, connection doctor.
+- **Data sources**: color-coded connections, S3 credentials import from the AWS shared files (`~/.aws/credentials` + `~/.aws/config` — `endpoint_url` entries become MinIO/R2/Wasabi/… sources), built-in connectivity test, connection doctor.
 - **Light/dark theme**, conflict policies (overwrite / skip / rename) on upload and download, pre-signed URLs, server-side copy/move, rename, new folder.
 - **i18n ready** (15 languages built in — English, Suomi, Svenska, Deutsch, Français, Español, Português, Italiano, Nederlands, Polski, Русский, Türkçe, 中文， 日本語， 한국어; auto-detected, switchable in Settings), accessibility pass on the grid and dialogs (ARIA roles, focus trap), portable mode (drop a `s3b-portable` marker file next to the binary to keep config beside it).
 

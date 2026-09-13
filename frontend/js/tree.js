@@ -16,11 +16,19 @@ const SRC_ICON = {
 };
 
 export class Tree {
-  constructor({ onNavigate, onDropTo, onContext }) {
+  // guardOf(bucket) returns the cached guard state for the bucket row icons
+  // ({versioning, lockEnabled, lockMode, lockDays} or null); onGuardClick
+  // opens the admin panel from those icons; onBuckets(names) is called when
+  // bucket rows appear so the caller can fetch their guards in the
+  // background.
+  constructor({ onNavigate, onDropTo, onContext, guardOf, onGuardClick, onBuckets }) {
     this.container = document.getElementById('tree');
     this.onNavigate = onNavigate;
     this.onDropTo = onDropTo;
     this.onContext = onContext;
+    this.guardOf = guardOf || (() => null);
+    this.onGuardClick = onGuardClick;
+    this.onBuckets = onBuckets;
     this.nodes = new Map(); // id -> node
     this.currentId = null;
     this.defaultS3 = null; // name of the S3 source owning the bucket subtree
@@ -88,6 +96,7 @@ export class Tree {
       n.children.push(node);
     }
     n.loaded = true;
+    this.onBuckets?.(buckets.map((b) => b.name));
   }
 
   async expand(id) {
@@ -253,6 +262,35 @@ export class Tree {
     for (const r of roots) this.container.appendChild(this.renderNode(r));
   }
 
+  // guardIcons builds the versioning / object-lock indicators shown after a
+  // bucket's name in the tree (the navbar chips moved here): 🔄 when
+  // versioning is on (dim when suspended), 🔒 when object lock is
+  // configured. Both open the admin panel on click.
+  guardIcons(bucket) {
+    const g = this.guardOf(bucket);
+    if (!g) return [];
+    const icons = [];
+    if (g.versioning === 'Enabled' || g.versioning === 'Suspended') {
+      icons.push(el('span', {
+        class: `tguard${g.versioning === 'Enabled' ? '' : ' dim'}`,
+        text: '\u{1F504}',
+        title: g.versioning === 'Enabled'
+          ? 'Versioning enabled — every write keeps previous versions'
+          : 'Versioning suspended — existing versions are kept',
+        onclick: (e) => { e.stopPropagation(); this.onGuardClick?.(bucket); },
+      }));
+    }
+    if (g.lockEnabled) {
+      icons.push(el('span', {
+        class: 'tguard',
+        text: '\u{1F512}',
+        title: `Object Lock: ${g.lockMode || 'on'}${g.lockDays ? ` — ${g.lockDays}d default retention` : ''}`,
+        onclick: (e) => { e.stopPropagation(); this.onGuardClick?.(bucket); },
+      }));
+    }
+    return icons;
+  }
+
   renderNode(n) {
     const hasKids = n.loaded && n.children.length > 0;
     const twist = el('span', {
@@ -275,6 +313,8 @@ export class Tree {
       twist,
       el('span', { class: 'ticon', text: icon }),
       el('span', { class: 'tlabel', text: n.label }),
+      // bucket rows carry their versioning / lock state right after the name
+      ...(n.bucket !== undefined && n.prefix === '' ? this.guardIcons(n.bucket) : []),
     );
     row.dataset.bucket = n.bucket;
     row.dataset.prefix = n.prefix;

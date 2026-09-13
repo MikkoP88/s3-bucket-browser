@@ -349,26 +349,29 @@ async function walk() {
     await ok(`status bar: "${(await txt('#status-pfile')).trim()}"`, true);
   });
 
-  await step('browse bucket + guard chips', async () => {
+  await step('browse bucket + tree guard icons', async () => {
     await dblClickRow(BUCKET);
     await waitFor(async () => (await rowKeys()).some((k) => k.startsWith('NetApp_koulutus')), 20000, 'bucket contents');
     await ok('existing data visible (NetApp_koulutus/)', true);
-    const chips = await evalPage(() => Array.from(document.querySelectorAll('#guard-chips .guard-chip')).map((c) => c.textContent));
-    await ok(`guard chips: [${chips.join(', ')}]`, chips.length > 0);
+    // versioning / lock icons load lazily behind the tree's bucket rows
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .tguard').length)) > 0, 10000, 'tree guard icons');
+    const icons = await evalPage(() => Array.from(document.querySelectorAll('#tree .tguard')).map((c) => c.title));
+    await ok(`tree guard icons: [${icons.join(' | ')}]`, icons.length > 0);
     await shot('03-objects');
   });
 
-  await step('admin dialog (guard chips → real bucket info)', async () => {
-    await page.locator('#guard-chips .guard-chip').first().click();
+  await step('admin dialog (tree guard icon → real bucket info)', async () => {
+    await page.locator('#tree .tguard').first().click();
     await waitFor(async () => (await modalText()).length > 20, 10000, 'admin dialog');
     const tabs = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .tab')).map((t) => t.textContent));
     await ok(`admin dialog opens (${tabs.length} tab(s))`, await modalVisible());
+    await ok('admin dialog titled Admin panel', (await modalText()).includes('Admin panel'));
     await shot('04-admin');
     await closeModal();
   });
 
   await step('doctor (real checks)', async () => {
-    await page.locator('#btn-doctor').click();
+    await menuClick(/help/i, /doctor/i);
     await waitFor(async () => /run all/i.test(await modalText()), 10000, 'doctor dialog');
     await clickFooter(/^run all$/i); // rows open as "notrun" — the walk must start them
     await waitFor(async () => /pass/i.test(await evalPage(() => document.querySelector('#modal-root .doc-summary')?.textContent || '')), 60000, 'doctor summary');
@@ -482,7 +485,7 @@ async function walk() {
   });
 
   await step('transfer manager', async () => {
-    await page.locator('#btn-transfers').click();
+    await menuClick(/view/i, /transfers/i);
     await waitFor(() => modalVisible(), 5000, 'transfer manager');
     await ok('transfer manager opens', true);
     await shot('12-transfers');

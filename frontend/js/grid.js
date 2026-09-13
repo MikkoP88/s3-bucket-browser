@@ -24,6 +24,19 @@ const COLUMNS = [
   { id: 'storageClass', label: 'Storage class' },
 ];
 
+// colText returns the text a filter matches against for one column: the
+// rendered value (sizes formatted, dates localized) plus the raw bytes for
+// size, so both "MB" and "1048576" hit. Folders carry no size/date/class.
+function colText(r, id) {
+  switch (id) {
+    case 'name': return r.name || '';
+    case 'size': return r.isDir ? '' : `${fmtBytes(r.size)} ${r.size || 0}`;
+    case 'lastModified': return r.isDir ? '' : fmtDate(r.lastModified || r.modTime);
+    case 'storageClass': return r.isDir ? '' : (r.storageClass || '');
+    default: return '';
+  }
+}
+
 export class Grid {
   // prefix mounts the grid on <prefix>grid-head/-body/-canvas so two grids
   // can coexist (remote + local dual-pane). kind: 'remote' | 'local' decides
@@ -43,7 +56,8 @@ export class Grid {
     this.anchorKey = null;
     this.sortKey = 'name';
     this.sortDir = 1;
-    this.filter = '';
+    this.filter = '';        // global (all-columns) substring filter
+    this.colFilters = {};    // column id -> substring filter (stacked)
     this.typeBuf = '';
     this.typeTimer = null;
 
@@ -72,12 +86,50 @@ export class Grid {
       ...COLUMNS.map((c) => {
         const ind = el('span', { class: 'sort-ind' });
         if (this.sortKey === c.id) ind.textContent = this.sortDir > 0 ? '\u25B2' : '\u25BC';
+        const active = this.colFilters[c.id];
+        const funnel = el('button', {
+          class: `gh-filter${active ? ' on' : ''}`,
+          title: active ? `${c.label}: ${active} (Esc clears)` : `Filter by ${c.label.toLowerCase()}`,
+          'aria-label': `Filter by ${c.label}`,
+          onclick: (e) => { e.stopPropagation(); this.editColumnFilter(c.id, funnel); },
+        });
+        funnel.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 2h14l-5.5 6.2V14l-3-1.6V8.2Z" fill="currentColor"/></svg>';
         return el('div', {
           class: `gh${c.num ? ' num' : ''}`,
           onclick: () => this.cycleSort(c.id),
-        }, el('span', { text: c.label }), ind);
+        }, el('span', { text: c.label }), ind, funnel);
       }),
     );
+  }
+
+  // editColumnFilter swaps one header cell for an inline input bound to
+  // that column's substring filter: typing filters live, Enter/blur keeps
+  // it (the funnel stays highlighted), Esc clears it.
+  editColumnFilter(id, btn) {
+    const cell = btn.closest('.gh');
+    if (!cell || cell.querySelector('.gh-cfilter')) return;
+    cell.replaceChildren();
+    const inp = el('input', { type: 'text', class: 'gh-cfilter', spellcheck: 'false' });
+    inp.value = this.colFilters[id] || '';
+    cell.appendChild(inp);
+    inp.focus();
+    inp.select();
+    inp.addEventListener('click', (e) => e.stopPropagation());
+    inp.addEventListener('input', () => {
+      this.colFilters[id] = inp.value;
+      this.apply();
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+      else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.colFilters[id] = '';
+        this.apply();
+        this.renderHead();
+      }
+    });
+    inp.addEventListener('blur', () => this.renderHead());
   }
 
   cycleSort(id) {
@@ -100,7 +152,7 @@ export class Grid {
   appendRows(rows) {
     if (!rows.length) return;
     this.all.push(...rows);
-    if (!this.filter && this.sortKey === 'name' && this.sortDir === 1) {
+    if (!this.hasFilters() && this.sortKey === 'name' && this.sortDir === 1) {
       this.rows.push(...rows);
       this.render();
     } else {
@@ -113,11 +165,23 @@ export class Grid {
     this.apply();
   }
 
+  // hasFilters: any global or per-column filter active.
+  hasFilters() {
+    return !!this.filter || COLUMNS.some((c) => this.colFilters[c.id]);
+  }
+
   apply() {
     let rows = this.all;
-    if (this.filter) {
-      const q = this.filter.toLowerCase();
-      rows = rows.filter((r) => r.name.toLowerCase().includes(q));
+    // the navbar filter is global — a hit in ANY column keeps the row;
+    // per-column funnels stack on top, each matching its own column
+    const q = (this.filter || '').toLowerCase();
+    if (q) rows = rows.filter((r) => COLUMNS.some((c) => colText(r, c.id).toLowerCase().includes(q)));
+    for (const c of COLUMNS) {
+      const f = this.colFilters[c.id];
+      if (f) {
+        const cq = f.toLowerCase();
+        rows = rows.filter((r) => colText(r, c.id).toLowerCase().includes(cq));
+      }
     }
     const dir = this.sortDir;
     const key = this.sortKey;
