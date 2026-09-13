@@ -160,7 +160,7 @@ body {
 }
 .sidebar-head {
   padding: 6px 10px; font-weight: 600; font-size: 12px;
-  color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text-dim); letter-spacing: .02em;
   display: flex; align-items: center; justify-content: space-between;
 }
 .side-add {
@@ -170,6 +170,19 @@ body {
 }
 .side-add:hover { color: var(--accent); border-color: var(--accent); }
 .tree { flex: 1; overflow: auto; padding: 2px 0 20px; }
+
+/* Sidebar empty state: call to action where the tree would be */
+.tree-empty {
+  margin: 18px 12px; padding: 18px 14px; text-align: center;
+  border: 1px dashed var(--border); border-radius: 8px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.tree-empty-icon { font-size: 34px; margin-bottom: 4px; }
+.tree-empty-title { font-weight: 600; }
+.tree-empty-sub {
+  font-size: 11.5px; color: var(--text-dim); white-space: pre-line; line-height: 1.45;
+}
+.tree-empty-btn { margin-top: 8px; width: 100%; justify-content: center; }
 
 /* Favorites section (M5): pinned buckets above the tree */
 .fav-section { border-bottom: 1px solid var(--border); padding-bottom: 4px; }

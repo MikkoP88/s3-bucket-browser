@@ -168,6 +168,7 @@ async function refreshSources() {
   const def = s3srcs.find((s) => s.default) || s3srcs[0];
   if (def) sel.value = def.name;
   $('status-profile').textContent = def ? def.name : '';
+  renderSidebarHead();
   tree.setSources(sources, nav.current); // M9: sources are the tree's top level
   // M10 panels v2: the side pane's source dropdown follows the source set
   localPane.sources = sources.map((s) => ({ id: s.id, name: s.name, type: s.type, default: !!s.default }));
@@ -185,8 +186,10 @@ async function refreshSources() {
   return true;
 }
 
-function showOnboarding() {
-  nav.replace({ kind: 'onboarding' });
+// renderSidebarHead: the sidebar header is a static "Data sources" label
+// with a persistent "+" add button — it no longer mirrors the active
+// source/bucket (the tree's highlight already marks where you are).
+function renderSidebarHead() {
   const head = $('sidebar-head');
   head.replaceChildren(
     document.createTextNode(t('sourcesTitle')),
@@ -195,7 +198,27 @@ function showOnboarding() {
       onclick: () => sourceEditor(null, afterSourceSaved),
     }),
   );
-  tree.container.replaceChildren();
+}
+
+function showOnboarding() {
+  nav.replace({ kind: 'onboarding' });
+  renderSidebarHead();
+  // sidebar empty state: a proper call to action where the tree would be
+  tree.container.replaceChildren(
+    el('div', { class: 'tree-empty' },
+      el('div', { class: 'tree-empty-icon', text: '\u{1F5BC}' }),
+      el('div', { class: 'tree-empty-title', text: t('noSources') }),
+      el('div', { class: 'tree-empty-sub', text: t('noSourcesSub') }),
+      el('button', {
+        class: 'btn primary tree-empty-btn', text: `+ ${t('addSource')}`,
+        onclick: () => sourceEditor(null, afterSourceSaved),
+      }),
+      el('button', {
+        class: 'btn tree-empty-btn', text: t('importAws'),
+        onclick: importAws,
+      }),
+    ),
+  );
   renderBreadcrumb();
   showEmpty(t('noSources'), t('noSourcesSub'), [
     el('button', { class: 'btn primary', text: t('addSource'), onclick: () => sourceEditor(null, afterSourceSaved) }),
@@ -266,7 +289,6 @@ async function loadView(loc) {
 
   try {
     if (loc.kind === 'buckets') {
-      $('sidebar-head').textContent = t('buckets');
       const buckets = await api.ListBuckets();
       currentEntries = buckets.map((b) => ({
         key: b.name, name: b.name, isDir: true, size: 0,
@@ -280,7 +302,6 @@ async function loadView(loc) {
       else tree.refresh(buckets, loc);
       $('btn-up').disabled = true;
     } else if (loc.kind === 'objects') {
-      $('sidebar-head').textContent = loc.bucket;
       await loadObjectsStream(loc);
       tree.reveal(loc).catch(() => {});
       localPane.syncTo(loc.prefix || '');
@@ -289,7 +310,6 @@ async function loadView(loc) {
       // non-default S3 source: read-only bucket listing (its object
       // operations route through the default profile until multi-source
       // transfers land)
-      $('sidebar-head').textContent = loc.source;
       const buckets = await api.ListSourceBuckets(loc.source);
       currentEntries = buckets.map((b) => ({
         key: b.name, name: b.name, isDir: true, size: 0,
@@ -304,7 +324,6 @@ async function loadView(loc) {
     } else if (loc.kind === 'remote') {
       // sftp/scp/ftp/ftps/local source browsed through its remotefs
       // engine; rows carry the same shape as S3 listings
-      $('sidebar-head').textContent = loc.source;
       const entries = await api.RemoteList(loc.source, loc.path || '/');
       currentEntries = entries;
       grid.setRows(entries);
