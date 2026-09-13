@@ -1,7 +1,8 @@
 // i18n: dictionaries per language; new strings default to
 // the en text so a partially translated dictionary never shows raw keys.
-// The language is auto-detected from the browser (fi for Finnish systems)
-// and can be overridden via localStorage 's3b-lang'.
+// The language defaults to English; a stored choice ('s3b-lang',
+// set by Settings → Language) wins, and 'auto' opts back into
+// browser-language detection.
 //
 // 15 languages: en fi sv de fr es pt it nl pl ru tr zh ja ko.
 // scripts/i18n-check.mjs validates key parity, placeholders and codes
@@ -1966,13 +1967,16 @@ export const LANG_NAMES = {
 
 let lang = 'en';
 
-// detectLang picks the initial language: stored choice first, then the
-// browser language, then en.
+// detectLang picks the initial language: a stored choice first ('auto'
+// follows the browser language), English when nothing is stored.
 export function detectLang() {
   const saved = localStorage.getItem('s3b-lang');
+  if (saved === 'auto') {
+    const nav = (navigator.language || 'en').slice(0, 2).toLowerCase();
+    return dict[nav] ? nav : 'en';
+  }
   if (saved && dict[saved]) return saved;
-  const nav = (navigator.language || 'en').slice(0, 2).toLowerCase();
-  return dict[nav] ? nav : 'en';
+  return 'en';
 }
 
 export function setLang(l) { if (dict[l]) lang = l; }

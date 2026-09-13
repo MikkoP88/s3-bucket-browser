@@ -2248,14 +2248,14 @@ async function closeProfileFileUi() {
 }
 
 // ============================ settings ============================
-// savedLang: the persisted language choice ('auto' follows the browser).
-const savedLang = () => localStorage.getItem('s3b-lang') || 'auto';
+// savedLang: the persisted language choice; 'en' is the default (no
+// stored choice = English), 'auto' follows the browser.
+const savedLang = () => localStorage.getItem('s3b-lang') || 'en';
 
 // setLanguage persists the choice and reloads — strings render once at
 // construction, and a reload is the honest way to re-render them all.
 function setLanguage(v) {
-  if (v === 'auto') localStorage.removeItem('s3b-lang');
-  else localStorage.setItem('s3b-lang', v);
+  localStorage.setItem('s3b-lang', v);
   window.location.reload();
 }
 

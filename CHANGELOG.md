@@ -88,6 +88,11 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Default UI language is now English.** A fresh start no longer follows
+  the browser/OS language (Finnish on fi systems); Settings → Language →
+  "Auto (browser)" explicitly opts back into browser detection, and an
+  already-saved language choice keeps winning as before.
+
 - Drag payloads now carry their origin unambiguously (remote sources:
   `source` without bucket; S3 side pane: `source` + `bucket`; main grid:
   `bucket` only = default source), so the same-bucket/same-source "move is
