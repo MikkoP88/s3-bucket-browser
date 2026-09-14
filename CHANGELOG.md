@@ -6,6 +6,87 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0-beta.2] — 2026-09-14
+
+Beta cut: OS interop, the unified data-source hierarchy, and credential
+import — the app now behaves like a native file manager for every source
+type. Full validation pass on CLI and GUI; the release pipeline ships
+macOS dmg for both Apple Silicon (arm64) and Intel (amd64).
+
+### Added
+
+- **OS ⇄ App clipboard and drag interop.** `Ctrl+C` on remote/S3 rows
+  mirrors the selection onto the real OS clipboard (files are staged
+  through a temp-dir transfer, then handed to the OS as file paths — cut
+  never mirrors, so Explorer never sees a paste as a move). `Ctrl+V` in a
+  bucket accepts paths copied in Explorer and uploads them. Dragging rows
+  OUT of the app exports them as downloadable loopback URLs
+  (`DownloadURL` + `text/uri-list`), so files and folders can be dropped
+  straight into Explorer, e-mail clients and browsers; dropping OS files
+  IN keeps working everywhere (grid, tree, side pane, dual-pane).
+- **Unified data-source hierarchy.** Every source type — S3, SFTP/SCP,
+  FTP/FTPS, WebDAV/WebDAVs, local — renders the same tree: source name →
+  content. The old S3-only "source → bucket level → buckets" extra hop is
+  gone, the Default Data Source concept is gone, and each source node
+  carries a live connectivity ball (green/red, probed after every source
+  refresh). Locations are source-scoped with ONE canonical path format,
+  `Source name://bucket/prefix/` (remotes: `Source name:///dir/`),
+  editable in an inline path bar: click the navbar, type or paste any
+  path, Enter navigates. The sidebar is resizable (drag the splitter,
+  double-click resets, width persisted).
+- **Every S3 feature works on every S3 source.** Opening a source pins it
+  as the "view source" (mirrored in the status bar); rename, new folder,
+  delete (with version-aware gates), properties, versioning/restore,
+  pre-sign, storage class, object lock, admin panel, uploads, downloads,
+  deep search and the dual pane all address the source you are browsing
+  through new source-pinned `Source*` APIs — no "current profile"
+  coupling anywhere in the UI.
+- **Add-source dialog with auto-filled name.** The name auto-fills from
+  the endpoint host for S3 (`hel1.your-objectstorage.com` → `hel1`), the
+  folder name for local sources, and the start-directory leaf (or the
+  host's first label when the start dir is empty) for remote engines —
+  and stays editable: once you type a name it is never overwritten.
+  Start-directory/root fields gain Browse… pickers (server-side browser
+  for remotes, OS folder picker for local), and Test dials the FORM
+  values, saved or not.
+- **One upload command.** A single `Ctrl+U` / toolbar / menu action opens
+  ONE OS dialog that picks files AND folders together; everything routes
+  through the same conflict-policy and transfer pipeline.
+- **Import credentials.** A new dialog (File → Import credentials…)
+  discovers credentials from local files — AWS INI `credentials`/
+  `config`, shared JSON — or fetches them from secrets services:
+  Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, and a
+  fully custom HTTP endpoint (URL, JSON path for the secret payload,
+  arbitrary auth headers). Every candidate gets a live Test (bucket
+  count) before Import; secret values never cross into candidate
+  metadata, and importing creates a ready data source whose buckets are
+  immediately browsable.
+- **Versioning / Object Lock as pills.** Bucket properties render
+  Versioning, Object Lock (and MFA-delete) as Enabled/Disabled pills
+  instead of raw strings.
+
+### Testing
+
+- **Visual harness extended to 223 checks** (from 189): the walk now also
+  drives the add-source auto-name rules (S3 endpoint → host label, local
+  folder → leaf, typed-name precedence), both import-credentials flows
+  (file parse and custom-HTTP KMS with header/JSON-path params), view-
+  source pinning and status-bar mirroring, per-source status balls,
+  canonical-path navigation, sidebar resizing, the OS clipboard mirror
+  and Explorer-path paste, drag-out URL precompute, toolbar
+  back/forward/up with their Alt-key shortcuts, F5, breadcrumb-segment
+  clicks, favorites (add/jump/remove with persistence), theme toggle,
+  auto-refresh intervals (including the blocked-while-jobs-running rule),
+  marquee rubber-band selection, the external-editor manager, `Ctrl+D`
+  download routing and the `Ctrl+F`/`Ctrl+U`/`F9` shortcuts.
+- **Live import-credentials e2e** (`pkg/api`, env-gated by `S3B_E2E_*`):
+  both flows — AWS INI file parse and a custom-HTTP secrets endpoint —
+  run against a real S3-compatible provider end to end: parse/fetch →
+  live bucket-count test → import → buckets listed through the new
+  source, with assertions that credential values never leak into
+  candidate metadata. Verified against Hetzner Object Storage; skips
+  cleanly when the environment is unset.
+
 ## [1.1.0-beta.1] — 2026-09-13
 
 ### Fixed (post-cut GUI audit)

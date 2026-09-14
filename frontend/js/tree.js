@@ -1,6 +1,8 @@
-// Lazy sidebar tree (M9): the configured data sources are the top level.
-// The default S3 source expands into its buckets (the classic view);
-// remote/local sources expand into their remote directories on demand.
+// Lazy sidebar tree (M9/M11): the configured data sources are the top level
+// and EVERY source type expands into its own content — S3 sources list their
+// buckets (each bucket a folder tree), remote/local sources list their
+// directories. Node ids are namespaced per source, so two sources can hold
+// same-named buckets without colliding.
 import { api, onEvent } from './api.js';
 import { el } from './util.js';
 
@@ -16,11 +18,11 @@ const SRC_ICON = {
 };
 
 export class Tree {
-  // guardOf(bucket) returns the cached guard state for the bucket row icons
-  // ({versioning, lockEnabled, lockMode, lockDays} or null); onGuardClick
-  // opens the admin panel from those icons; onBuckets(names) is called when
-  // bucket rows appear so the caller can fetch their guards in the
-  // background.
+  // guardOf(bucket, source) returns the cached guard state for the bucket
+  // row icons ({versioning, lockEnabled, lockMode, lockDays} or null);
+  // onGuardClick(bucket, source) opens the admin panel from those icons;
+  // onBuckets(source, names) is called when bucket rows appear so the caller
+  // can fetch their guards in the background.
   constructor({ onNavigate, onDropTo, onContext, guardOf, onGuardClick, onBuckets }) {
     this.container = document.getElementById('tree');
     this.onNavigate = onNavigate;
@@ -31,20 +33,23 @@ export class Tree {
     this.onBuckets = onBuckets;
     this.nodes = new Map(); // id -> node
     this.currentId = null;
-    this.defaultS3 = null; // name of the S3 source owning the bucket subtree
+    this.status = new Map(); // source name -> 'ok' | 'error' | 'busy'
   }
 
-  nodeKey(bucket, prefix) { return `${bucket}/${prefix}`; }
+  nodeKey(source, bucket, prefix) { return `bkt:${source}:${bucket}:${prefix}`; }
   srcKey(name) { return `src:${name}`; }
   rsrcKey(name, path) { return `src:${name}:${path}`; }
+
+  // setStatus feeds the per-source connectivity balls ('ok' | 'error' |
+  // 'busy'); a partial map keeps the previous state of untouched sources.
+  setStatus(map) {
+    this.status = new Map(Object.entries(map));
+    this.render();
+  }
 
   // setSources rebuilds the top level from the configured sources,
   // preserving the expansion state of every surviving node.
   setSources(sources, currentLoc) {
-    const def = sources.find((s) => s.type === 's3' && s.default)
-      || sources.find((s) => s.type === 's3');
-    this.defaultS3 = def ? def.name : null;
-
     const keep = new Map();
     for (const s of sources) {
       const id = this.srcKey(s.name);
@@ -56,11 +61,11 @@ export class Tree {
       });
       keep.get(id).stype = s.type;
     }
-    // preserve the S3 bucket subtree (owned by the default source) and
-    // any expanded remote directory nodes under surviving sources
+    // preserve bucket subtrees under surviving S3 sources and expanded
+    // remote directory nodes under surviving sources
     for (const [id, n] of this.nodes) {
       if (n.kind === 'source') continue;
-      if (n.bucket !== undefined && this.defaultS3) keep.set(id, n);
+      if (n.bucket !== undefined && keep.has(this.srcKey(n.source))) keep.set(id, n);
       else if (n.kind === 'rdir' && keep.has(this.srcKey(n.source))) keep.set(id, n);
     }
     this.nodes = keep;
@@ -71,11 +76,9 @@ export class Tree {
     }
   }
 
-  // refresh feeds the buckets view's listing into the default S3 source's
-  // children (creating it defensively when setSources has not run yet).
-  async refresh(buckets, currentLoc) {
-    if (!this.defaultS3) return;
-    const root = this.nodes.get(this.srcKey(this.defaultS3));
+  // refresh feeds one S3 source's buckets view into its tree node.
+  async refresh(source, buckets, currentLoc) {
+    const root = this.nodes.get(this.srcKey(source));
     if (!root) return;
     this.buildBucketChildren(root, buckets);
     root.expanded = true;
@@ -85,10 +88,10 @@ export class Tree {
   buildBucketChildren(n, buckets) {
     n.children = [];
     for (const b of buckets) {
-      const id = this.nodeKey(b.name, '');
+      const id = this.nodeKey(n.source, b.name, '');
       const prev = this.nodes.get(id);
       const node = prev || {
-        id, bucket: b.name, prefix: '', label: b.name,
+        id, bucket: b.name, prefix: '', source: n.source, label: b.name,
         expanded: false, loaded: false, children: [], level: n.level + 1, el: null, twistEl: null,
       };
       node.level = n.level + 1;
@@ -96,20 +99,17 @@ export class Tree {
       n.children.push(node);
     }
     n.loaded = true;
-    this.onBuckets?.(buckets.map((b) => b.name));
+    this.onBuckets?.(n.source, buckets.map((b) => b.name));
   }
 
   async expand(id) {
     const n = this.nodes.get(id);
     if (!n) return;
-    // non-default S3 sources are leaves: their objects are not operable
-    // until multi-source transfers land (click opens the root listing)
-    if (n.kind === 'source' && n.stype === 's3' && n.source !== this.defaultS3) return;
     n.expanded = true;
     if (!n.loaded) {
       try {
         if (n.kind === 'source' && n.stype === 's3') {
-          this.buildBucketChildren(n, await api.ListBuckets());
+          this.buildBucketChildren(n, await api.ListSourceBuckets(n.source));
         } else if (n.kind === 'source' || n.kind === 'rdir') {
           this.buildRemoteChildren(n, await api.RemoteList(n.source, n.kind === 'source' ? '/' : n.path));
         } else if (n.bucket !== undefined) {
@@ -124,15 +124,15 @@ export class Tree {
   }
 
   // buildS3Children loads the folder level of a bucket/prefix node through
-  // the streaming listing API (memory stays at one page, PLAN.md §13).
+  // the source-pinned streaming listing (memory stays at one page, §13).
   buildS3Children(n) {
-    return this.listDirs(n.bucket, n.prefix).then((dirs) => {
+    return this.listDirs(n.source, n.bucket, n.prefix).then((dirs) => {
       n.children = [];
       for (const d of dirs) {
-        const cid = this.nodeKey(n.bucket, d.key);
+        const cid = this.nodeKey(n.source, n.bucket, d.key);
         const prev = this.nodes.get(cid);
         const node = prev || {
-          id: cid, bucket: n.bucket, prefix: d.key, label: d.name,
+          id: cid, bucket: n.bucket, prefix: d.key, source: n.source, label: d.name,
           expanded: false, loaded: false, children: [], level: n.level + 1, el: null, twistEl: null,
         };
         node.level = n.level + 1;
@@ -179,8 +179,9 @@ export class Tree {
     this.render();
   }
 
-  // listDirs streams one directory view and keeps only the folders.
-  listDirs(bucket, prefix) {
+  // listDirs streams one source-pinned directory view and keeps only the
+  // folders.
+  listDirs(source, bucket, prefix) {
     return new Promise((resolve, reject) => {
       const dirs = [];
       let settled = false;
@@ -191,7 +192,7 @@ export class Tree {
         offPage?.();
         fn(val);
       };
-      api.ListObjectsStream(bucket, prefix).then((token) => {
+      api.ListSourceObjectsStream(source, bucket, prefix).then((token) => {
         offPage = onEvent('list:page', (p) => {
           if (p.token !== token) return;
           if (p.error) { finish(reject, new Error(p.error)); return; }
@@ -223,34 +224,28 @@ export class Tree {
 
   markCurrent(loc) {
     if (loc && loc.kind === 'buckets') {
-      this.currentId = this.defaultS3 ? this.srcKey(this.defaultS3) : null;
-    } else if (loc && loc.kind === 'srcroot') {
-      this.currentId = this.srcKey(loc.source);
-    } else if (loc && loc.kind === 'remote') {
+      this.currentId = loc.source ? this.srcKey(loc.source) : null;
+    } else if (loc.kind === 'remote') {
       this.currentId = this.rsrcKey(loc.source, loc.path || '/');
     } else if (loc && loc.kind === 'objects') {
-      this.currentId = this.nodeKey(loc.bucket, loc.prefix || '');
+      this.currentId = this.nodeKey(loc.source || '', loc.bucket, loc.prefix || '');
     } else {
       this.currentId = null;
     }
     this.render();
   }
 
-  // navigate maps a node click onto a location: source roots open their
-  // top view, remote folders their directory, buckets stay classic.
+  // navigate maps a node click onto a location: every source opens its own
+  // top view (S3 → its buckets, remote → its root), buckets and folders
+  // drill down.
   navigate(n) {
     if (n.kind === 'source') {
-      if (n.stype === 's3') {
-        this.onNavigate(n.source === this.defaultS3
-          ? { kind: 'buckets' }
-          : { kind: 'srcroot', source: n.source });
-      } else {
-        this.onNavigate({ kind: 'remote', source: n.source, path: '' });
-      }
+      if (n.stype === 's3') this.onNavigate({ kind: 'buckets', source: n.source });
+      else this.onNavigate({ kind: 'remote', source: n.source, path: '' });
     } else if (n.kind === 'rdir') {
       this.onNavigate({ kind: 'remote', source: n.source, path: n.path });
     } else {
-      this.onNavigate({ kind: 'objects', bucket: n.bucket, prefix: n.prefix });
+      this.onNavigate({ kind: 'objects', source: n.source, bucket: n.bucket, prefix: n.prefix });
     }
   }
 
@@ -263,11 +258,11 @@ export class Tree {
   }
 
   // guardIcons builds the versioning / object-lock indicators shown after a
-  // bucket's name in the tree (the navbar chips moved here): 🔄 when
-  // versioning is on (dim when suspended), 🔒 when object lock is
-  // configured. Both open the admin panel on click.
-  guardIcons(bucket) {
-    const g = this.guardOf(bucket);
+  // bucket's name in the tree: 🔄 when versioning is on (dim when
+  // suspended), 🔒 when object lock is configured. Both open the admin
+  // panel on click.
+  guardIcons(bucket, source) {
+    const g = this.guardOf(bucket, source);
     if (!g) return [];
     const icons = [];
     if (g.versioning === 'Enabled' || g.versioning === 'Suspended') {
@@ -277,7 +272,7 @@ export class Tree {
         title: g.versioning === 'Enabled'
           ? 'Versioning enabled — every write keeps previous versions'
           : 'Versioning suspended — existing versions are kept',
-        onclick: (e) => { e.stopPropagation(); this.onGuardClick?.(bucket); },
+        onclick: (e) => { e.stopPropagation(); this.onGuardClick?.(bucket, source); },
       }));
     }
     if (g.lockEnabled) {
@@ -285,10 +280,19 @@ export class Tree {
         class: 'tguard',
         text: '\u{1F512}',
         title: `Object Lock: ${g.lockMode || 'on'}${g.lockDays ? ` — ${g.lockDays}d default retention` : ''}`,
-        onclick: (e) => { e.stopPropagation(); this.onGuardClick?.(bucket); },
+        onclick: (e) => { e.stopPropagation(); this.onGuardClick?.(bucket, source); },
       }));
     }
     return icons;
+  }
+
+  // statusBall renders the connectivity ball after a source's name.
+  statusBall(source) {
+    const st = this.status.get(source) || 'unknown';
+    const title = st === 'ok' ? 'Connected'
+      : st === 'error' ? 'Connection problem — right-click for Test/Reconnect'
+        : st === 'busy' ? 'Checking connection…' : 'Status unknown';
+    return el('span', { class: `sball ${st}`, title });
   }
 
   renderNode(n) {
@@ -313,8 +317,10 @@ export class Tree {
       twist,
       el('span', { class: 'ticon', text: icon }),
       el('span', { class: 'tlabel', text: n.label }),
+      // source rows carry their connectivity ball right after the name
+      ...(n.kind === 'source' ? [this.statusBall(n.source)] : []),
       // bucket rows carry their versioning / lock state right after the name
-      ...(n.bucket !== undefined && n.prefix === '' ? this.guardIcons(n.bucket) : []),
+      ...(n.bucket !== undefined && n.prefix === '' ? this.guardIcons(n.bucket, n.source) : []),
     );
     row.dataset.bucket = n.bucket;
     row.dataset.prefix = n.prefix;
@@ -333,7 +339,7 @@ export class Tree {
         const data = e.dataTransfer.getData('application/x-s3b');
         if (!data) return;
         e.preventDefault();
-        this.onDropTo({ kind: 's3', bucket: n.bucket, dir: n.prefix }, JSON.parse(data), e);
+        this.onDropTo({ kind: 's3', source: n.source, bucket: n.bucket, dir: n.prefix }, JSON.parse(data), e);
       });
       row.addEventListener('contextmenu', (e) => {
         e.preventDefault();
@@ -398,13 +404,13 @@ export class Tree {
   // Reveal + expand the path to a location (after navigation from grid).
   async reveal(loc) {
     if (loc.kind === 'objects') {
-      await this.expand(this.nodeKey(loc.bucket, ''));
-      if (!loc.prefix) return;
+      await this.expand(this.nodeKey(loc.source || '', loc.bucket, ''));
+      if (!loc.prefix) { this.markCurrent(loc); return; }
       let acc = '';
       for (const part of loc.prefix.split('/')) {
         if (!part) continue;
         acc += part + '/';
-        await this.expand(this.nodeKey(loc.bucket, acc));
+        await this.expand(this.nodeKey(loc.source || '', loc.bucket, acc));
       }
       this.markCurrent(loc);
     } else if (loc.kind === 'remote') {
@@ -415,6 +421,9 @@ export class Tree {
         acc += part + '/';
         await this.expand(this.rsrcKey(loc.source, acc));
       }
+      this.markCurrent(loc);
+    } else if (loc.kind === 'buckets') {
+      await this.expand(this.srcKey(loc.source || ''));
       this.markCurrent(loc);
     }
   }

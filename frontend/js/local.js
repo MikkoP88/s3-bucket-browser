@@ -5,7 +5,7 @@
 // land on folder rows of the remote/S3 pane, downloads on folder rows /
 // the body here).
 import { Grid } from './grid.js';
-import { prompt } from './dialogs.js';
+import { browseDirDialog } from './dialogs.js';
 import { el, fmtBytes } from './util.js';
 import { api, onEvent } from './api.js';
 
@@ -381,20 +381,33 @@ export class LocalPane {
   }
 
   async promptPath() {
+    // Browse-style pickers on every binding: remote and S3 sources open the
+    // directory browser dialog (connected, unsaved-state-free), the local
+    // binding uses the native folder picker.
     if (this.binding.kind === 'remote') {
-      const p = await prompt({ title: `Folder on ${this.binding.name || this.binding.source}`, label: 'Path', value: this.dir || '/' });
+      const p = await browseDirDialog({
+        title: `Folder on ${this.binding.name || this.binding.source}`,
+        kind: 'remote',
+        source: this.binding.source,
+        name: this.binding.name,
+        start: this.dir || '/',
+      });
       if (p) this.navigate(p);
       return;
     }
     if (this.binding.kind === 's3') {
-      const p = await prompt({ title: `Path on ${this.binding.name || this.binding.source}`, label: 'bucket or bucket/prefix/', value: this.bucket ? `${this.bucket}/${this.dir || ''}` : '' });
-      if (!p) return;
-      const parts = p.replace(/^\/+|\/+$/g, '').split('/');
-      const bucket = parts.shift();
-      if (bucket) this.navigateS3({ bucket, prefix: parts.length ? `${parts.join('/')}/` : '' });
+      const p = await browseDirDialog({
+        title: `Path on ${this.binding.name || this.binding.source}`,
+        kind: 's3',
+        source: this.binding.source,
+        name: this.binding.name,
+        startBucket: this.bucket,
+        startPrefix: this.dir || '',
+      });
+      if (p) this.navigateS3({ bucket: p.bucket, prefix: p.prefix || '' });
       return;
     }
-    const p = await prompt({ title: 'Local folder', label: 'Path', value: this.dir || '' });
+    const p = await api.PickFolder('Choose a folder');
     if (p) this.navigate(p);
   }
 

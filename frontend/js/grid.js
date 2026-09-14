@@ -341,6 +341,9 @@ export class Grid {
       }
       e.dataTransfer.setData(this.mime, JSON.stringify(this.dragPayload()));
       e.dataTransfer.effectAllowed = 'copyMove';
+      // OS drag-out (rows to Explorer): the host sets DownloadURL /
+      // text-uri-list from precomputed loopback URLs, if any.
+      this.on.dragOS?.(e, this.selectedRows());
       this.on.dragstart?.(this.selectedRows());
     });
     row.addEventListener('dragover', (e) => {

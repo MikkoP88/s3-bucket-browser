@@ -164,11 +164,26 @@ func (a *App) StatBucket(bucket string) (ObjectStat, error) {
 }
 
 // StatObject returns metadata for one object, or an aggregate for a folder.
+// Addresses the source the main view is browsing (SetViewSource).
 func (a *App) StatObject(bucket, key string) (ObjectStat, error) {
 	c, err := a.client("")
 	if err != nil {
 		return ObjectStat{}, err
 	}
+	return a.statObjectC(c, bucket, key)
+}
+
+// SourceStatObject is StatObject pinned to one named S3 source (side pane,
+// tree nodes of other sources) — the main view's context is not touched.
+func (a *App) SourceStatObject(idOrName, bucket, key string) (ObjectStat, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return ObjectStat{}, err
+	}
+	return a.statObjectC(c, bucket, key)
+}
+
+func (a *App) statObjectC(c *s3client.Client, bucket, key string) (ObjectStat, error) {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 
@@ -309,20 +324,34 @@ func (a *App) DeleteBucket(bucket string, force bool) (transfer.DeleteResult, er
 	return res, err
 }
 
-// CreateFolder creates a zero-byte "name/" folder marker.
+// CreateFolder makes a folder marker object under prefix. Addresses the
+// source the main view is browsing (SetViewSource).
 func (a *App) CreateFolder(bucket, prefix, name string) error {
-	name = strings.Trim(name, "/ ")
-	if name == "" || strings.Contains(name, "/") {
-		return errors.New("invalid folder name")
-	}
 	c, err := a.client("")
 	if err != nil {
 		return err
 	}
+	return a.createFolderC(c, bucket, prefix, name)
+}
+
+// SourceCreateFolder is CreateFolder pinned to one named S3 source.
+func (a *App) SourceCreateFolder(idOrName, bucket, prefix, name string) error {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return err
+	}
+	return a.createFolderC(c, bucket, prefix, name)
+}
+
+func (a *App) createFolderC(c *s3client.Client, bucket, prefix, name string) error {
+	name = strings.Trim(name, "/ ")
+	if name == "" || strings.Contains(name, "/") {
+		return errors.New("invalid folder name")
+	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	key := transfer.JoinKey(prefix, name) // trailing-slash marker form
-	_, err = c.S3.PutObject(ctx, &s3.PutObjectInput{
+	_, err := c.S3.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(nil),
@@ -415,14 +444,27 @@ type BucketGuard struct {
 	LockDays    int32  `json:"lockDays,omitempty"` // default retention days
 }
 
-// GetBucketGuard reads the bucket's versioning + object-lock state for the
-// navbar chips; a failing section degrades to its zero value (that chip
-// just doesn't show).
+// GetBucketGuard reports versioning/object-lock state for the tree icons.
+// Addresses the source the main view is browsing (SetViewSource).
 func (a *App) GetBucketGuard(bucket string) (BucketGuard, error) {
 	c, err := a.client("")
 	if err != nil {
 		return BucketGuard{}, err
 	}
+	return a.bucketGuardC(c, bucket)
+}
+
+// SourceGetBucketGuard is GetBucketGuard pinned to one named S3 source —
+// the tree shows buckets of every source, each with its own guard state.
+func (a *App) SourceGetBucketGuard(idOrName, bucket string) (BucketGuard, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return BucketGuard{}, err
+	}
+	return a.bucketGuardC(c, bucket)
+}
+
+func (a *App) bucketGuardC(c *s3client.Client, bucket string) (BucketGuard, error) {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	var g BucketGuard

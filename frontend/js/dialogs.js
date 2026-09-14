@@ -138,13 +138,21 @@ export function prompt({ title, label, value = '', okLabel = 'OK', password = fa
 }
 
 // ---------- properties ----------
+// rows values are strings or DOM nodes (pills etc.).
 export function properties(title, rows) {
   const body = el('div', { class: 'kv' });
   for (const [k, v] of rows) {
     body.appendChild(el('div', { class: 'k', text: k }));
-    body.appendChild(el('div', { class: 'v mono', text: String(v ?? '') }));
+    if (v && v.nodeType === 1) body.appendChild(el('div', { class: 'v' }, v));
+    else body.appendChild(el('div', { class: 'v mono', text: String(v ?? '') }));
   }
   openModal({ title, body, buttons: [{ label: 'Close' }] });
+}
+
+// pill builds an Enabled/Disabled status pill (shared by guard rows and
+// bucket properties).
+export function pill(on) {
+  return el('span', { class: `pill ${on ? 'on' : 'off'}`, text: on ? 'Enabled' : 'Disabled' });
 }
 
 // ---------- doctor (v2: per-check rows, run-all, per-check re-run) ----------
@@ -352,6 +360,9 @@ const SOURCE_TYPES = [
 // sourceEditor edits one data source of any type. existing is a (masked)
 // Source from ListSources or null. Secret fields arrive empty with the
 // stored mask as placeholder; the backend re-attaches stored values.
+// The name starts auto-filled from the connection details (endpoint host,
+// local folder name, remote host/start dir) and stays editable — once the
+// user types a name it is never overwritten.
 export function sourceEditor(existing, onSaved) {
   const f = {
     name: el('input', { class: 'input', value: existing?.name || '', spellcheck: 'false' }),
@@ -372,12 +383,10 @@ export function sourceEditor(existing, onSaved) {
     root: el('input', { class: 'input mono', value: existing?.root || '', placeholder: 'starting directory (optional)' }),
     // local
     localRoot: el('input', { class: 'input mono', value: existing?.localRoot || '', placeholder: 'C:\\data or /home/user/data', spellcheck: 'false' }),
-    setDefault: el('input', { type: 'checkbox', checked: !existing }),
   };
   f.type.value = existing?.type || 's3';
   f.pathStyle.checked = !!existing?.s3?.pathStyle;
   f.insecure.checked = !!existing?.s3?.insecure;
-  if (existing) f.setDefault.checked = !!existing.default;
 
   let color = existing?.color || SOURCE_COLORS[0];
   const chips = el('div', { class: 'chips' }, SOURCE_COLORS.map((c) =>
@@ -389,6 +398,58 @@ export function sourceEditor(existing, onSaved) {
   ));
 
   const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+
+  // ---- auto-filled name (kept until the user edits it) ----
+  let nameDirty = !!existing?.name;
+  const suggestName = () => {
+    const t = f.type.value;
+    let s = '';
+    if (t === 's3') {
+      const ep = f.endpoint.value.trim();
+      if (ep) {
+        try { s = new URL(ep).hostname.split('.')[0] || ''; } catch { s = ''; }
+      }
+    } else if (t === 'local') {
+      s = f.localRoot.value.split(/[\\/]/).filter(Boolean).pop() || '';
+    } else {
+      const root = f.root.value.trim();
+      if (root && root !== '/') {
+        s = root.replace(/\/+$/, '').split('/').pop() || '';
+      } else {
+        const h = f.host.value.trim();
+        s = h ? h.split('.')[0] : '';
+      }
+    }
+    return s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  };
+  const applySuggest = () => {
+    if (nameDirty) return;
+    const s = suggestName();
+    if (s) f.name.value = s;
+  };
+  f.name.addEventListener('input', () => { nameDirty = f.name.value.trim() !== ''; });
+  for (const inp of [f.endpoint, f.host, f.root, f.localRoot]) inp.addEventListener('change', applySuggest);
+  if (!nameDirty) applySuggest();
+
+  // draftSource builds the Source the form currently describes (for the
+  // remote Test dial and the start-directory browser).
+  const draftSource = () => {
+    const t = f.type.value;
+    const src = {
+      id: existing?.id || '',
+      name: f.name.value.trim() || suggestName() || 'draft',
+      type: t,
+    };
+    if (t === 'local') src.localRoot = f.localRoot.value.trim();
+    else if (t !== 's3') {
+      src.host = f.host.value.trim();
+      src.port = parseInt(f.port.value, 10) || 0;
+      src.username = f.username.value.trim();
+      src.password = f.password.value;
+      src.root = f.root.value.trim();
+    }
+    return src;
+  };
 
   // Type-specific field sets, re-rendered when the type select changes.
   const s3Fields = () => el('div', {},
@@ -413,7 +474,22 @@ export function sourceEditor(existing, onSaved) {
       el('div', {}, el('label', { class: 'field', text: 'Username' }), f.username),
       el('div', {}, el('label', { class: 'field', text: 'Password' }), f.password),
     ),
-    el('label', { class: 'field', text: 'Start directory' }), f.root,
+    el('label', { class: 'field', text: 'Start directory' }),
+    el('div', { style: 'display:flex;gap:8px' },
+      f.root,
+      el('button', {
+        class: 'btn', text: 'Browse\u2026', title: 'Browse the start directory on the server (connects with the values above)',
+        onclick: async () => {
+          const p = await browseDirDialog({
+            title: 'Start directory',
+            kind: 'remote',
+            draft: draftSource(),
+            start: f.root.value.trim() || '/',
+          });
+          if (p) { f.root.value = p; applySuggest(); }
+        },
+      }),
+    ),
   );
   const localFields = () => el('div', {},
     el('label', { class: 'field', text: 'Folder' }),
@@ -422,20 +498,19 @@ export function sourceEditor(existing, onSaved) {
       el('button', {
         class: 'btn', text: 'Browse\u2026', onclick: async () => {
           const dir = await api.PickFolder('Choose the source folder');
-          if (dir) f.localRoot.value = dir;
+          if (dir) { f.localRoot.value = dir; applySuggest(); }
         },
       }),
     ),
   );
 
   const fields = el('div', { style: 'margin-top:4px' });
-  const defaults = el('label', { style: 'display:flex;align-items:center;gap:6px' }, f.setDefault, 'Default source');
   const draw = () => {
     const t = f.type.value;
     fields.replaceChildren(
       t === 's3' ? s3Fields() : t === 'local' ? localFields() : remoteFields(),
     );
-    defaults.style.display = t === 's3' ? '' : 'none';
+    applySuggest();
   };
   f.type.onchange = draw;
   draw();
@@ -444,7 +519,6 @@ export function sourceEditor(existing, onSaved) {
     el('label', { class: 'field', text: 'Name' }), f.name,
     el('label', { class: 'field', text: 'Type' }), f.type,
     fields,
-    el('div', { style: 'display:flex;gap:18px;margin-top:10px' }, defaults),
     el('label', { class: 'field', text: 'Accent color' }), chips,
     status,
   );
@@ -456,30 +530,36 @@ export function sourceEditor(existing, onSaved) {
       {
         label: 'Test',
         onclick: async () => {
-          if (f.type.value !== 's3') {
-            status.textContent = 'Save the source first — Test in the Data sources manager dials it for real.';
-            status.style.color = 'var(--text-dim)';
-            return;
-          }
           status.textContent = 'Testing\u2026';
+          status.style.color = 'var(--text-dim)';
           try {
-            // Dial the FORM values, saved or not (masked secrets are
-            // re-attached server-side from the stored source).
-            const res = await api.TestS3Draft({
-              id: existing?.id || '',
-              name: f.name.value.trim(),
-              type: 's3',
-              s3: {
+            let res;
+            if (f.type.value === 's3') {
+              // Dial the FORM values, saved or not (masked secrets are
+              // re-attached server-side from the stored source).
+              res = await api.TestS3Draft({
+                id: existing?.id || '',
                 name: f.name.value.trim(),
-                endpoint: f.endpoint.value.trim(),
-                region: f.region.value.trim(),
-                accessKeyId: f.accessKey.value.trim(),
-                secretKey: f.secretKey.value,
-                sessionToken: f.token.value,
-                pathStyle: f.pathStyle.checked,
-                insecure: f.insecure.checked,
-              },
-            });
+                type: 's3',
+                s3: {
+                  name: f.name.value.trim(),
+                  endpoint: f.endpoint.value.trim(),
+                  region: f.region.value.trim(),
+                  accessKeyId: f.accessKey.value.trim(),
+                  secretKey: f.secretKey.value,
+                  sessionToken: f.token.value,
+                  pathStyle: f.pathStyle.checked,
+                  insecure: f.insecure.checked,
+                },
+              });
+            } else if (f.type.value === 'local') {
+              res = await api.TestSource(existing?.id || f.name.value.trim());
+            } else {
+              // remote engines dial the draft directly (masked secrets
+              // inherited from a same-named stored source server-side)
+              const entries = await api.RemoteListDraft(draftSource(), '/');
+              res = { ok: true, message: `connected — ${entries.length} entries at the source root` };
+            }
             status.textContent = res.ok ? `\u2705 ${res.message}` : `\u274C ${res.message}`;
             status.style.color = res.ok ? 'var(--ok)' : 'var(--danger)';
           } catch (err) {
@@ -498,7 +578,6 @@ export function sourceEditor(existing, onSaved) {
             name: f.name.value.trim(),
             type: t,
             color,
-            default: t === 's3' ? f.setDefault.checked : false,
           };
           if (t === 's3') {
             src.s3 = {
@@ -1790,4 +1869,379 @@ export function toast(message, type = '') {
   const t = el('div', { class: `toast ${type}`, text: message });
   box.appendChild(t);
   setTimeout(() => t.remove(), type === 'error' ? 7000 : 3500);
+}
+
+// ---------- browse-style directory picker (any source) ----------
+// A connected mini-browser: lists the folders of one directory (or the
+// buckets of an S3 source), Up/OK navigation, optional new-folder. Works
+// against a SAVED source (kind:'s3'/'remote' + source id) or an unsaved
+// editor draft (draft Source object, remote engines only).
+// Resolves: remote → '/path/' string; s3 → {bucket, prefix}.
+export function browseDirDialog({ title, kind, source = '', name = '', draft = null, start = '/', startBucket = '', startPrefix = '' }) {
+  return new Promise((resolve) => {
+    let cur = kind === 's3'
+      ? { bucket: startBucket || '', prefix: startPrefix || '' }
+      : { dir: start || '/' };
+    const labelOf = () => kind === 's3'
+      ? `${name || source}://${cur.bucket}${cur.bucket ? '/' + cur.prefix : ''}`
+      : `${name || source}://${cur.dir || '/'}`;
+    const crumb = el('div', { class: 'bd-crumb mono', title: '' });
+    const list = el('div', { class: 'bd-list' });
+    const status = el('div', { class: 'bd-status' });
+
+    const listS3Dirs = (src, bucket, prefix) => new Promise((res, rej) => {
+      const dirs = [];
+      let off = null;
+      let settled = false;
+      const finish = (fn, v) => { if (settled) return; settled = true; off?.(); fn(v); };
+      api.ListSourceObjectsStream(src, bucket, prefix).then((token) => {
+        off = onEvent('list:page', (p) => {
+          if (p.token !== token) return;
+          if (p.error) { finish(rej, new Error(p.error)); return; }
+          for (const e of p.entries || []) if (e.isDir) dirs.push(e);
+          if (p.done) finish(res, dirs);
+        });
+      }).catch((e) => finish(rej, e));
+    });
+
+    async function load() {
+      crumb.textContent = labelOf();
+      crumb.title = labelOf();
+      list.replaceChildren(el('div', { class: 'bd-row dim', text: 'Loading…' }));
+      try {
+        let rows = [];
+        if (kind === 's3') {
+          if (!cur.bucket) {
+            const buckets = await api.ListSourceBuckets(source);
+            rows = buckets.map((b) => ({ name: b.name, isBucket: true }));
+          } else {
+            rows = await listS3Dirs(source, cur.bucket, cur.prefix);
+          }
+        } else {
+          const entries = draft
+            ? await api.RemoteListDraft(draft, cur.dir)
+            : await api.RemoteList(source, cur.dir);
+          rows = entries.filter((e) => e.isDir);
+        }
+        rows.sort((a, b) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1));
+        draw(rows);
+      } catch (e) {
+        list.replaceChildren(el('div', { class: 'bd-row dim', text: String(e) }));
+      }
+    }
+
+    function draw(rows) {
+      list.replaceChildren();
+      if (!rows.length) list.appendChild(el('div', { class: 'bd-row dim', text: '(no folders)' }));
+      for (const r of rows) {
+        list.appendChild(el('div', {
+          class: 'bd-row', text: `${r.isBucket ? '\u{1F5C0} ' : '\u{1F4C1} '}${r.name}`,
+          title: r.name,
+          onclick: () => {
+            if (kind === 's3') {
+              if (!cur.bucket) cur = { bucket: r.name, prefix: '' };
+              else cur.prefix = r.key || `${r.name}/`;
+            } else {
+              cur.dir = r.key || r.path;
+            }
+            load();
+          },
+        }));
+      }
+    }
+
+    const up = async () => {
+      if (kind === 's3') {
+        if (!cur.prefix) { if (cur.bucket) cur = { bucket: '', prefix: '' }; }
+        else {
+          const p = cur.prefix.replace(/\/+$/, '');
+          const i = p.lastIndexOf('/');
+          cur.prefix = i <= 0 ? '' : p.slice(0, i + 1);
+        }
+      } else {
+        const p = (cur.dir || '/').replace(/\/+$/, '');
+        if (p === '' || p === '/') return;
+        const i = p.lastIndexOf('/');
+        cur.dir = i <= 0 ? '/' : p.slice(0, i + 1);
+      }
+      await load();
+    };
+
+    const newFolder = async () => {
+      const nm = await prompt({ title: 'New folder', label: 'Folder name' });
+      if (!nm) return;
+      try {
+        if (kind === 's3') {
+          if (!cur.bucket) { status.textContent = 'Open a bucket first.'; return; }
+          await api.SourceCreateFolder(source, cur.bucket, cur.prefix, nm);
+        } else if (draft) {
+          status.textContent = 'Save the source first, then create folders.';
+          return;
+        } else {
+          await api.RemoteMkdir(source, `${cur.dir.replace(/\/+$/, '')}/${nm}`.replace(/\/{2,}/g, '/'));
+        }
+        await load();
+      } catch (e) {
+        status.textContent = String(e);
+      }
+    };
+
+    openModal({
+      title,
+      body: el('div', { class: 'bd' },
+        el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:8px' },
+          el('button', { class: 'btn', text: '\u2191 Up', onclick: () => up() }),
+          el('button', { class: 'btn', text: '\u{1F4C1}+ New folder', title: 'Create a folder here', onclick: () => newFolder() }),
+          crumb,
+        ),
+        list,
+        status,
+      ),
+      buttons: [
+        { label: 'Cancel', onclick: (c) => { c(); resolve(null); } },
+        {
+          label: 'OK', class: 'primary',
+          onclick: (c) => {
+            c();
+            resolve(kind === 's3' ? { ...cur } : cur.dir);
+          },
+        },
+      ],
+      onClose: () => resolve(null),
+      wide: true,
+    });
+    load();
+  });
+}
+
+// ---------- import credentials (files + KMS services) ----------
+// KMS_PARAM_DEFS mirrors the Go-side KmsFetch params per service.
+const KMS_PARAM_DEFS = {
+  vault: [
+    ['url', 'Vault URL', 'https://vault.example.com'],
+    ['token', 'Token', ''],
+    ['path', 'Secret path (KV v2)', 'secret/my-app'],
+    ['mount', 'Mount (default secret)', 'secret'],
+    ['version', 'Version (optional)', ''],
+    ['namespace', 'Namespace (optional)', ''],
+  ],
+  awssm: [
+    ['region', 'Region', 'us-east-1'],
+    ['accessKey', 'Access key ID', ''],
+    ['secretKey', 'Secret access key', ''],
+    ['secretId', 'Secret name (or full ARN)', ''],
+  ],
+  azure: [
+    ['tenantId', 'Tenant ID', ''],
+    ['clientId', 'Client ID', ''],
+    ['clientSecret', 'Client secret', ''],
+    ['vaultUrl', 'Key vault (name or URL)', ''],
+    ['secretName', 'Secret name', ''],
+  ],
+  gcp: [
+    ['project', 'Project ID', ''],
+    ['secretName', 'Secret name', ''],
+    ['version', 'Version (default latest)', ''],
+    ['credentialsJson', 'Service-account JSON (full file contents)', ''],
+  ],
+  http: [
+    ['url', 'URL', ''],
+    ['method', 'Method (GET or POST)', 'GET'],
+    ['token', 'Bearer token (optional)', ''],
+    ['jsonPath', 'JSON path to credentials (optional, e.g. data.s3)', ''],
+    ['body', 'POST body (optional)', ''],
+    ['headerName1', 'Header 1 name', ''],
+    ['headerValue1', 'Header 1 value', ''],
+    ['headerName2', 'Header 2 name', ''],
+    ['headerValue2', 'Header 2 value', ''],
+  ],
+};
+
+const KMS_SERVICES = [
+  ['vault', 'HashiCorp Vault'],
+  ['awssm', 'AWS Secrets Manager'],
+  ['azure', 'Azure Key Vault'],
+  ['gcp', 'GCP Secret Manager'],
+  ['http', 'Custom HTTP endpoint'],
+];
+
+// kmsFetchDialog collects one service's params and fetches its secrets.
+// onDone fires when this dialog closes (any path) so a caller whose modal
+// it replaced can re-show itself.
+export function kmsFetchDialog(onCandidates, onDone) {
+  const service = el('select', { class: 'input' }, KMS_SERVICES.map(([v, l]) => el('option', { value: v }, l)));
+  const holder = el('div', { style: 'margin-top:4px' });
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const inputs = {};
+  const drawFields = () => {
+    const def = KMS_PARAM_DEFS[service.value] || [];
+    holder.replaceChildren(...def.flatMap(([key, label, ph]) => {
+      const inp = inputs[key] || (inputs[key] = el('input', {
+        class: `input${/key|token|secret/i.test(key) ? ' mono' : ''}`,
+        placeholder: ph, spellcheck: 'false', autocomplete: 'off',
+      }));
+      return [el('label', { class: 'field', text: label }), inp];
+    }));
+  };
+  service.onchange = drawFields;
+  drawFields();
+  openModal({
+    title: 'Import from a secrets service',
+    body: el('div', {},
+      el('label', { class: 'field', text: 'Service' }), service,
+      holder,
+      el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'The secret must contain recognizable connection fields (endpoint/access key/secret, or host/user/password) in JSON or key=value form.' }),
+      status,
+    ),
+    buttons: [
+      { label: 'Cancel' },
+      {
+        label: 'Fetch', class: 'primary',
+        onclick: async () => {
+          const params = {};
+          for (const def of KMS_PARAM_DEFS[service.value] || []) {
+            const v = (inputs[def[0]]?.value || '').trim();
+            if (v) params[def[0]] = v;
+          }
+          status.textContent = 'Fetching…';
+          status.style.color = 'var(--text-dim)';
+          try {
+            const cs = await api.KmsFetch(service.value, params);
+            if (!cs.length) {
+              status.textContent = 'Fetched, but no recognizable connection was found in the secret.';
+              status.style.color = 'var(--danger)';
+              return;
+            }
+            document.querySelector('#modal-root .modal-head .x')?.click();
+            onCandidates(cs);
+          } catch (e) {
+            status.textContent = String(e);
+            status.style.color = 'var(--danger)';
+          }
+        },
+      },
+    ],
+    onClose: () => onDone?.(),
+  });
+}
+
+// importCredsDialog: pick credential files or fetch from a KMS service,
+// review + test the parsed candidates (bucket counts), then import them
+// as data sources. Secrets never leave the Go side — the dialog only sees
+// metadata.
+export function importCredsDialog(onImported) {
+  let candidates = [];
+  const list = el('div', { class: 'cred-list' });
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+
+  const add = (cs) => {
+    candidates = cs.map((c) => ({ ...c, checked: true, tested: null }));
+    draw();
+  };
+
+  const draw = () => {
+    list.replaceChildren();
+    if (!candidates.length) {
+      list.appendChild(el('div', { class: 'cred-empty', text: 'No candidates yet — pick a credential file or fetch from a secrets service.' }));
+      return;
+    }
+    for (const c of candidates) {
+      const testBtn = el('button', {
+        class: 'btn', text: 'Test', title: 'Connect with this candidate (does not save it)',
+        onclick: async () => {
+          c.tested = { pending: true };
+          draw();
+          try {
+            const r = await api.TestCredentialDraft(c.id);
+            c.tested = r;
+          } catch (e) {
+            c.tested = { ok: false, message: String(e) };
+          }
+          draw();
+        },
+      });
+      const where = c.endpoint || c.host || '';
+      list.appendChild(el('div', { class: 'cred-row' },
+        (() => {
+          const cb = el('input', { type: 'checkbox', title: 'Import this candidate' });
+          cb.checked = !!c.checked;
+          cb.addEventListener('change', () => { c.checked = cb.checked; });
+          return cb;
+        })(),
+        el('div', { class: 'cred-main' },
+          el('div', { class: 'cred-name' },
+            el('span', { class: 'cred-badge', text: c.type }),
+            el('span', { text: c.name || '(unnamed)' }),
+          ),
+          el('div', { class: 'cred-sub', text: `${where || 'no endpoint'}${c.origin ? ` — ${c.origin}` : ''}${c.hasSecret ? ' • secret kept' : ''}` }),
+        ),
+        c.tested && !c.tested.pending
+          ? el('div', { class: `cred-test ${c.tested.ok ? 'ok' : 'err'}`, text: c.tested.ok ? `\u2705 ${c.tested.message}` : `\u274C ${c.tested.message}` })
+          : c.tested?.pending ? el('div', { class: 'cred-test', text: 'Testing…' }) : null,
+        testBtn,
+      ));
+    }
+  };
+  draw();
+
+  const fromFiles = async () => {
+    try {
+      const files = await api.PickCredentialFiles();
+      if (!files || !files.length) return;
+      for (const p of files) {
+        let cs = null;
+        try {
+          cs = await api.ParseCredentialFile(p, '');
+        } catch (e) {
+          const msg = String(e);
+          // encrypted profile containers need their password
+          if (/password|decrypt/i.test(msg)) {
+            const pw = await prompt({ title: 'Profile password', label: `Password for ${p.split(/[\\/]/).pop()}`, password: true });
+            if (!pw) continue;
+            cs = await api.ParseCredentialFile(p, pw);
+          } else throw e;
+        }
+        if (cs?.length) add(cs);
+        else status.textContent = `${p.split(/[\\/]/).pop()}: no importable connection found`;
+      }
+    } catch (e) {
+      status.textContent = String(e);
+      status.style.color = 'var(--danger)';
+    }
+  };
+
+  // show (re)opens the dialog. Nested modals (the profile password prompt,
+  // the KMS fetch dialog) replace this one in the modal root — the candidate
+  // state lives here, so it re-shows itself when they close.
+  const show = () => openModal({
+    title: 'Import credentials',
+    body: el('div', {},
+      el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'Turn connection credentials into data sources. Files: AWS CLI INI, rclone.conf, JSON (any shape), .env, or an exported .s3bprofile. Services: Vault, AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or any custom HTTP endpoint.' }),
+      list,
+      status,
+    ),
+    wide: true,
+    buttons: [
+      { label: 'From file\u2026', onclick: async () => { await fromFiles(); show(); } },
+      { label: 'From service\u2026', onclick: () => kmsFetchDialog(add, show) },
+      {
+        label: 'Import', class: 'primary',
+        onclick: async (close) => {
+          const sel = candidates.filter((c) => c.checked).map((c) => c.id);
+          if (!sel.length) { status.textContent = 'Nothing selected.'; return; }
+          try {
+            const res = await api.ImportCredentials(sel);
+            toast(`Imported ${res.imported?.length || 0} source(s)${res.skipped?.length ? `, ${res.skipped.length} skipped` : ''}`, res.imported?.length ? 'ok' : 'error');
+            close();
+            onImported?.(res);
+          } catch (e) {
+            status.textContent = String(e);
+            status.style.color = 'var(--danger)';
+          }
+        },
+      },
+      { label: 'Close' },
+    ],
+  });
+  show();
 }

@@ -8,7 +8,7 @@ import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
   sourceEditor, helpSheet, conflictPolicy, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
-  usageGuideDialog, sourcesInfoDialog,
+  usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
@@ -25,9 +25,12 @@ const tree = new Tree({
   onNavigate: (loc) => nav.to(loc),
   onDropTo: dropToTarget,
   onContext: showTreeMenu,
-  guardOf: (bucket) => guardCache.get(bucket) || null,
-  onGuardClick: (bucket) => adminDialog(bucket, refreshCurrent),
-  onBuckets: (names) => ensureGuards(names),
+  guardOf: (bucket, source) => guardCache.get(guardKey(source, bucket)) || null,
+  onGuardClick: (bucket, source) => navThen(
+    { kind: 'objects', source, bucket, prefix: '' },
+    () => adminDialog(bucket, refreshCurrent),
+  ),
+  onBuckets: (source, names) => ensureGuards(source, names),
 });
 const logArea = createLogArea();
 
@@ -40,6 +43,12 @@ setCommandContext({
 
 let sources = []; // data sources of any type (M8)
 let currentEntries = []; // unfiltered rows of the active view
+
+// The view source: the S3 source the engine-native APIs (bucket/object
+// admin, versions, presign, rename/delete, upload/download) address. It
+// follows navigation — opening a source's buckets/objects sets it Go-side.
+let viewSource = '';
+let dragUrls = []; // loopback URLs for the current selection (OS drag-out)
 
 // Streaming listing state (M5): generation counter + active stream token.
 let listSeq = 0;
@@ -70,7 +79,8 @@ async function boot() {
   refreshOnFocus = localStorage.getItem('s3b-refresh-focus') === '1';
 
   const ok = await refreshSources();
-  if (ok) nav.to({ kind: 'buckets' });
+  if (ok) nav.to(sourceHomeLoc());
+  initSidebarResize();
   refreshPfState(); // container sessions do not survive restarts; defensive
   if (localStorage.getItem('s3b-panes') === '1') localPane.show();
   updateCommandState();
@@ -160,10 +170,8 @@ function providerLabel(endpoint) {
 }
 
 // refreshSources reloads the workspace's data sources (open Profile file,
-// else the session-only registry) and shows onboarding when there is
-// nothing to browse with yet. Switching the default S3 source happens from
-// the tree's source context menu ("Set default"); the active one shows in
-// the status bar.
+// else the session-only registry), refreshes the tree/side pane and probes
+// every source's connectivity for the status balls.
 async function refreshSources() {
   try {
     sources = await api.ListSources();
@@ -171,13 +179,11 @@ async function refreshSources() {
     toast(`Sources: ${err}`, 'error');
     sources = [];
   }
-  const s3srcs = sources.filter((s) => s.type === 's3');
-  const def = s3srcs.find((s) => s.default) || s3srcs[0];
-  $('status-profile').textContent = def ? def.name : '';
+  $('status-profile').textContent = viewSource;
   renderSidebarHead();
-  tree.setSources(sources, nav.current); // M9: sources are the tree's top level
-  // M10 panels v2: the side pane's source dropdown follows the source set
-  localPane.sources = sources.map((s) => ({ id: s.id, name: s.name, type: s.type, default: !!s.default }));
+  tree.setSources(sources, nav.current); // sources are the tree's top level
+  // The side pane's source dropdown follows the source set
+  localPane.sources = sources.map((s) => ({ id: s.id, name: s.name, type: s.type }));
   localPane.renderSources();
   if (!localPane.bindingApplied) localPane.restoreBinding();
   else if (localPane.binding.kind !== 'local'
@@ -188,8 +194,96 @@ async function refreshSources() {
     showOnboarding();
     return false;
   }
+  probeSources();
   updateCommandState();
   return true;
+}
+
+// sourceHomeLoc is the landing view of a source (or the first one): S3
+// sources open their buckets, everything else its root directory.
+function sourceHomeLoc(src) {
+  const s = src || sources[0];
+  if (!s) return { kind: 'onboarding' };
+  return s.type === 's3'
+    ? { kind: 'buckets', source: s.name }
+    : { kind: 'remote', source: s.name, path: '' };
+}
+
+// navThen navigates and runs fn once the view source has settled on the
+// target's source — engine-native dialogs (admin/doctor/versions/stat)
+// address the view source, so a bucket of another source must be opened
+// in the main view first. nav.to is fire-and-forget; this polls the module
+// state with a timeout instead of chaining into loadView.
+function navThen(loc, fn) {
+  nav.to(loc);
+  const want = loc.source || '';
+  const t0 = Date.now();
+  const tick = () => {
+    if (viewSource === want || Date.now() - t0 > 4000) fn();
+    else setTimeout(tick, 25);
+  };
+  tick();
+}
+
+// probeSource tests one source's connectivity: S3 sources list their
+// buckets, everything else lists its root directory.
+async function probeSource(s) {
+  try {
+    if (s.type === 's3') await api.ListSourceBuckets(s.id || s.name);
+    else await api.RemoteList(s.id || s.name, '/');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// probeSources refreshes every source's status ball (busy while probing,
+// ok/error after). Runs in the background after each sources reload.
+let probing = false;
+async function probeSources() {
+  if (probing || !sources.length) return;
+  probing = true;
+  const map = {};
+  for (const s of sources) map[s.name] = 'busy';
+  tree.setStatus(map);
+  await Promise.all(sources.map(async (s) => {
+    map[s.name] = await probeSource(s) ? 'ok' : 'error';
+    tree.setStatus({ ...map });
+  }));
+  probing = false;
+}
+
+// initSidebarResize wires the splitter between sidebar and main area: drag
+// to resize (140px..half the window), persisted in localStorage.
+function initSidebarResize() {
+  const split = $('side-split');
+  const aside = $('sidebar');
+  if (!split || !aside) return;
+  const apply = (w) => {
+    document.documentElement.style.setProperty('--sidebar-w', `${w}px`);
+  };
+  const saved = parseInt(localStorage.getItem('s3b-sidebar-w') || '', 10);
+  if (saved >= 140) apply(saved);
+  split.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    document.body.classList.add('col-resizing');
+    const onMove = (ev) => {
+      const w = Math.min(Math.max(140, ev.clientX), Math.ceil(window.innerWidth / 2));
+      apply(w);
+      localStorage.setItem('s3b-sidebar-w', String(w));
+    };
+    const onUp = () => {
+      document.body.classList.remove('col-resizing');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+  split.addEventListener('dblclick', () => {
+    localStorage.removeItem('s3b-sidebar-w');
+    document.documentElement.style.removeProperty('--sidebar-w');
+  });
 }
 
 // renderSidebarHead: the sidebar header is a static "Data sources" label
@@ -209,26 +303,13 @@ function renderSidebarHead() {
 function showOnboarding() {
   nav.replace({ kind: 'onboarding' });
   renderSidebarHead();
-  // sidebar empty state: a proper call to action where the tree would be
-  tree.container.replaceChildren(
-    el('div', { class: 'tree-empty' },
-      el('div', { class: 'tree-empty-icon', text: '\u{1F5BC}' }),
-      el('div', { class: 'tree-empty-title', text: t('noSources') }),
-      el('div', { class: 'tree-empty-sub', text: t('noSourcesSub') }),
-      el('button', {
-        class: 'btn primary tree-empty-btn', text: `+ ${t('addSource')}`,
-        onclick: () => sourceEditor(null, afterSourceSaved),
-      }),
-      el('button', {
-        class: 'btn tree-empty-btn', text: t('importAws'),
-        onclick: importAws,
-      }),
-    ),
-  );
+  // The sidebar stays empty (the header's + adds sources); the main-area
+  // empty state carries the call to action.
   renderBreadcrumb();
   showEmpty(t('noSources'), t('noSourcesSub'), [
     el('button', { class: 'btn primary', text: `+ ${t('addSource')}`, onclick: () => sourceEditor(null, afterSourceSaved) }),
-    el('button', { class: 'btn', text: `\u{1F4E5} ${t('importAws')}`, onclick: importAws }),
+    el('button', { class: 'btn', text: t('importAws'), onclick: importAws }),
+    el('button', { class: 'btn', text: 'Import credentials\u2026', onclick: importCredsUi }),
   ]);
 }
 
@@ -242,16 +323,28 @@ async function importAws() {
     if (res.imported.length) {
       await refreshSources();
       refreshPfState(); // imports land in the session (or open file)
-      nav.to({ kind: 'buckets' });
+      nav.to(sourceHomeLoc());
     }
   } catch (err) {
     toast(`Import failed: ${err}`, 'error');
   }
 }
 
+// importCredsUi opens the Import credentials dialog: candidates from local
+// credential files (AWS INI/rclone/JSON/.env/.s3bprofile) or a KMS service
+// (Vault, AWS SM, Azure, GCP, custom HTTP), each testable before import.
+async function importCredsUi() {
+  await importCredsDialog(async (res) => {
+    if (res?.imported?.length) {
+      await refreshSources();
+      refreshPfState();
+    }
+  });
+}
+
 function afterSourceSaved() {
   refreshSources().then((ok) => {
-    if (ok && sources.some((s) => s.type === 's3')) nav.to({ kind: 'buckets' });
+    if (ok) nav.to(sourceHomeLoc(sources[sources.length - 1]));
   });
   refreshPfState(); // a container edit flips the dirty flag
   toast('Source saved', 'ok');
@@ -278,12 +371,38 @@ function renderFavorites() {
   $('favorites').replaceChildren(...favs.map((b) => el('div', {
     class: 'fav-row',
     role: 'listitem',
-    title: `s3://${b}`,
-    onclick: () => nav.to({ kind: 'objects', bucket: b, prefix: '' }),
+    title: `${viewSource}://${b}`,
+    onclick: () => nav.to({ kind: 'objects', source: viewSource, bucket: b, prefix: '' }),
   },
     el('span', { class: 'fav-star', text: '\u2605' }),
     el('span', { class: 'fav-label', text: b }),
   )));
+}
+
+// setViewSourceFor resolves a location's source to its canonical NAME,
+// pushes it Go-side (engine-native S3 APIs address it) and mirrors it in
+// the status bar. Returns the resolved name ('' when no S3 source exists).
+async function setViewSourceFor(loc) {
+  let name = loc.source || '';
+  if (!name) {
+    const s = sources.find((x) => x.type === 's3');
+    name = s ? s.name : '';
+  } else {
+    const s = sources.find((x) => x.name === name || x.id === name);
+    name = s ? s.name : name;
+  }
+  loc.source = name;
+  if (name && name !== viewSource) {
+    try {
+      await api.SetViewSource(name);
+    } catch (err) {
+      toast(`View source: ${err}`, 'error');
+    }
+    viewSource = name;
+    $('status-profile').textContent = name;
+    $('status-profile').title = `Active data source: ${name}`;
+  }
+  return name;
 }
 
 async function loadView(loc) {
@@ -295,6 +414,7 @@ async function loadView(loc) {
 
   try {
     if (loc.kind === 'buckets') {
+      const src = await setViewSourceFor(loc);
       const buckets = await api.ListBuckets();
       currentEntries = buckets.map((b) => ({
         key: b.name, name: b.name, isDir: true, size: 0,
@@ -302,33 +422,20 @@ async function loadView(loc) {
       }));
       grid.setRows(currentEntries);
       renderFavorites();
-      if (!currentEntries.length) showEmpty(t('noBuckets'), t('noBucketsSub'), [
-        el('button', { class: 'btn primary', text: t('createBucket'), onclick: createBucket }),
-      ]);
-      else tree.refresh(buckets, loc);
+      if (!currentEntries.length) {
+        showEmpty(t('noBuckets'), t('noBucketsSub'), [
+          el('button', { class: 'btn primary', text: t('createBucket'), onclick: createBucket }),
+        ]);
+      } else tree.refresh(src, buckets, loc);
       $('btn-up').disabled = true;
     } else if (loc.kind === 'objects') {
+      await setViewSourceFor(loc);
       await loadObjectsStream(loc);
       tree.reveal(loc).catch(() => {});
       localPane.syncTo(loc.prefix || '');
       $('btn-up').disabled = false;
-    } else if (loc.kind === 'srcroot') {
-      // non-default S3 source: read-only bucket listing (its object
-      // operations route through the default profile until multi-source
-      // transfers land)
-      const buckets = await api.ListSourceBuckets(loc.source);
-      currentEntries = buckets.map((b) => ({
-        key: b.name, name: b.name, isDir: true, size: 0,
-        lastModified: b.createdAt, bucketCreated: true,
-      }));
-      grid.setRows(currentEntries);
-      if (!currentEntries.length) {
-        const src = sources.find((s) => s.name === loc.source);
-        showEmpty('No buckets', `${src?.s3?.endpoint || 'This endpoint'} has no buckets yet`, []);
-      }
-      $('btn-up').disabled = true;
     } else if (loc.kind === 'remote') {
-      // sftp/scp/ftp/ftps/local source browsed through its remotefs
+      // sftp/scp/ftp/ftps/webdav/local source browsed through its remotefs
       // engine; rows carry the same shape as S3 listings
       const entries = await api.RemoteList(loc.source, loc.path || '/');
       currentEntries = entries;
@@ -387,7 +494,7 @@ async function loadObjectsStream(loc) {
       grid.apply(); // canonical folders-first ordering + active sort/filter
       if (!currentEntries.length && !view.filter) {
         showEmpty(t('emptyFolder'), t('dropToUpload'), [
-          el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: showUploadMenu }),
+          el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: upload }),
         ]);
       }
       consumePendingSelect();
@@ -421,7 +528,7 @@ function consumePendingSelect() {
 // the object row for selection.
 function openSearchResult(loc) {
   pendingSelect = loc;
-  nav.to({ kind: 'objects', bucket: loc.bucket, prefix: loc.prefix });
+  nav.to({ kind: 'objects', source: viewSource, bucket: loc.bucket, prefix: loc.prefix });
 }
 
 function refreshCurrent() {
@@ -436,16 +543,14 @@ function updateNavButtons() {
 function renderBreadcrumb() {
   const bc = $('breadcrumb');
   bc.replaceChildren();
-  const loc = nav.current || { kind: 'buckets' };
-  if (loc.kind === 'srcroot' || loc.kind === 'remote') {
-    const icon = loc.kind === 'srcroot' ? '\u{1F5C2}' : '\u{1F5DD}';
-    const atRoot = loc.kind === 'srcroot' || !loc.path;
-    const root = el('span', { class: `crumb${atRoot ? ' current' : ''}`, text: `${icon} ${loc.source}` });
-    root.onclick = () => nav.to(loc.kind === 'srcroot'
-      ? { kind: 'srcroot', source: loc.source }
-      : { kind: 'remote', source: loc.source, path: '' });
+  const loc = nav.current || { kind: 'buckets', source: viewSource };
+  if (loc.kind === 'remote') {
+    const atRoot = !loc.path || loc.path === '/';
+    const root = el('span', { class: `crumb${atRoot ? ' current' : ''}`, text: `\u{1F5DD} ${loc.source}` });
+    root.title = `${loc.source}://${loc.path || '/'}`;
+    root.onclick = () => nav.to({ kind: 'remote', source: loc.source, path: '' });
     bc.appendChild(root);
-    if (loc.kind === 'remote' && loc.path) {
+    if (loc.path && loc.path !== '/') {
       let acc = '';
       for (const part of loc.path.split('/')) {
         if (!part) continue;
@@ -460,13 +565,15 @@ function renderBreadcrumb() {
     }
     return;
   }
-  const root = el('span', { class: `crumb${loc.kind === 'buckets' ? ' current' : ''}`, text: `\u{1F5C2} ${defaultSourceName()}` });
-  root.onclick = () => nav.to({ kind: 'buckets' });
+  const srcName = loc.source || viewSource;
+  const root = el('span', { class: `crumb${loc.kind === 'buckets' ? ' current' : ''}`, text: `\u{1F5C2} ${srcName}` });
+  root.title = `${srcName}://`;
+  root.onclick = () => nav.to({ kind: 'buckets', source: srcName });
   bc.appendChild(root);
   if (loc.kind !== 'objects') return;
   bc.appendChild(el('span', { class: 'crumb-sep', text: '\u203A' }));
   const b = el('span', { class: 'crumb', text: loc.bucket });
-  b.onclick = () => nav.to({ kind: 'objects', bucket: loc.bucket, prefix: '' });
+  b.onclick = () => nav.to({ kind: 'objects', source: srcName, bucket: loc.bucket, prefix: '' });
   bc.appendChild(b);
   let acc = '';
   for (const part of (loc.prefix || '').split('/')) {
@@ -475,61 +582,45 @@ function renderBreadcrumb() {
     bc.appendChild(el('span', { class: 'crumb-sep', text: '\u203A' }));
     const c = el('span', { class: 'crumb', text: part });
     const target = acc;
-    c.onclick = () => nav.to({ kind: 'objects', bucket: loc.bucket, prefix: target });
+    c.onclick = () => nav.to({ kind: 'objects', source: srcName, bucket: loc.bucket, prefix: target });
     bc.appendChild(c);
   }
   bc.lastChild?.classList.add('current');
 }
 
 // ====================== canonical path bar ======================
-// Every location has ONE path format across all source kinds — the same
-// NAME:// URIs the CLI takes: "s3://bucket/prefix/" for the default S3
-// source, "NAME://" for a named source's root and "NAME:///dir/" for the
-// remote engines. Clicking the navbar's empty area swaps the breadcrumb
-// for an editable field with that string, so a path can be copied out or
-// pasted in from anywhere and navigated with Enter.
-function defaultSourceName() {
-  const def = sources.find((s) => s.type === 's3' && s.default)
-    || sources.find((s) => s.type === 's3');
-  return def ? def.name : 'S3';
-}
-
+// Every location has ONE path format across all source kinds:
+// "NAME://bucket/prefix/" for S3 sources, "NAME:///dir/" for the remote
+// engines — the source's display name is the scheme. Clicking the navbar's
+// empty area swaps the breadcrumb for an editable field with that string,
+// so a path can be copied out or pasted in from anywhere and navigated
+// with Enter.
 function canonicalPath(loc) {
   if (!loc) return '';
-  if (loc.kind === 'buckets') return 's3://';
-  if (loc.kind === 'objects') return `s3://${loc.bucket}/${loc.prefix || ''}`;
-  if (loc.kind === 'srcroot') return `${loc.source}://`;
+  if (loc.kind === 'buckets') return `${loc.source || viewSource}://`;
+  if (loc.kind === 'objects') return `${loc.source || viewSource}://${loc.bucket}/${loc.prefix || ''}`;
   if (loc.kind === 'remote') return `${loc.source}://${loc.path || '/'}`;
   return '';
 }
 
-// parsePath maps a pasted path back to a location. "s3" addresses the
-// default S3 source; any other scheme must match a source's name or id.
-// Returns { loc, hint? } or null when nothing matches.
+// parsePath maps a pasted path back to a location: the scheme must match a
+// source's name or id (the source name IS the scheme). Returns { loc } or
+// null when nothing matches.
 function parsePath(str) {
   const m = String(str || '').trim().match(/^([A-Za-z0-9._-]+):\/\/(.*)$/);
   if (!m) return null;
   const scheme = m[1].toLowerCase();
   const rest = m[2].replace(/\\/g, '/').replace(/^\/+/, '');
-  let src = null;
-  if (scheme === 's3') {
-    src = sources.find((s) => s.type === 's3' && s.default)
-      || sources.find((s) => s.type === 's3');
-  } else {
-    src = sources.find((s) => s.name.toLowerCase() === scheme
-      || String(s.id || '').toLowerCase() === scheme);
-  }
+  const src = sources.find((s) => s.name.toLowerCase() === scheme
+    || String(s.id || '').toLowerCase() === scheme);
   if (!src) return null;
   if (src.type === 's3') {
-    if (!rest) return { loc: { kind: 'buckets' } };
+    if (!rest) return { loc: { kind: 'buckets', source: src.name } };
     const parts = rest.replace(/\/+$/g, '').split('/');
     const bucket = parts.shift();
     if (!bucket) return null;
     const prefix = parts.length ? `${parts.join('/')}/` : '';
-    // the default source browses objects in the main view; a named one
-    // lists its buckets here and browses objects in the side pane
-    if (src.default || scheme === 's3') return { loc: { kind: 'objects', bucket, prefix } };
-    return { loc: { kind: 'srcroot', source: src.name }, hint: true };
+    return { loc: { kind: 'objects', source: src.name, bucket, prefix } };
   }
   const path = rest ? `/${rest.replace(/\/+$/g, '')}/` : '/';
   return { loc: { kind: 'remote', source: src.name, path } };
@@ -552,7 +643,6 @@ function editPath() {
       e.preventDefault();
       const parsed = parsePath(inp.value);
       if (parsed) {
-        if (parsed.hint) toast(t('pathNamedS3Hint'));
         nav.to(parsed.loc);
       } else {
         toast(t('pathInvalid', { p: inp.value.trim() || '?' }), 'error');
@@ -568,24 +658,26 @@ function editPath() {
 }
 
 // ====================== bucket guard state (M10.4) ======================
-// guardCache memoizes one GetBucketGuard per bucket per session. The state
-// shows as small icons after the bucket's name in the Data Sources tree
-// (🔄 versioning, 🔒 object lock) — clicking an icon opens the admin panel —
-// and feeds the bucket properties dialog.
+// guardCache memoizes one guard state per source+bucket per session. The
+// state shows as small icons after the bucket's name in the Data Sources
+// tree (🔄 versioning, 🔒 object lock) — clicking an icon opens the admin
+// panel — and feeds the bucket properties dialogs as Enabled/Disabled pills.
 const guardCache = new Map();
+const guardKey = (source, bucket) => `${source || viewSource || ''}/${bucket}`;
 
-// ensureGuards fetches the guard state of buckets the tree just drew (skips
-// cached ones), then re-renders the tree once so the icons appear. One
-// GetBucketGuard = two quick API calls; a failure caches the zero guard so
-// it is not retried every render.
-function ensureGuards(names) {
-  const missing = names.filter((b) => !guardCache.has(b));
+// ensureGuards fetches the guard state of one source's buckets the tree
+// just drew (skips cached ones), then re-renders the tree once so the
+// icons appear. SourceGetBucketGuard pins the source — the buckets may
+// belong to any configured source, not just the view source. A failure
+// caches the zero guard so it is not retried every render.
+function ensureGuards(source, names) {
+  const missing = names.filter((b) => !guardCache.has(guardKey(source, b)));
   if (!missing.length) return;
   let pending = missing.length;
   for (const b of missing) {
-    api.GetBucketGuard(b)
-      .then((g) => guardCache.set(b, g))
-      .catch(() => guardCache.set(b, { versioning: '', lockEnabled: false }))
+    api.SourceGetBucketGuard(source, b)
+      .then((g) => guardCache.set(guardKey(source, b), g))
+      .catch(() => guardCache.set(guardKey(source, b), { versioning: '', lockEnabled: false }))
       .finally(() => {
         pending -= 1;
         if (pending === 0) tree.render();
@@ -596,47 +688,67 @@ function ensureGuards(names) {
 // ensureGuard returns one bucket's guard state, fetching it once when the
 // cache is cold (properties dialogs use it; the tree batch-fetches via
 // ensureGuards on its own).
-async function ensureGuard(bucket) {
-  if (!guardCache.has(bucket)) {
+async function ensureGuard(source, bucket) {
+  const k = guardKey(source, bucket);
+  if (!guardCache.has(k)) {
     try {
-      guardCache.set(bucket, await api.GetBucketGuard(bucket));
+      guardCache.set(k, await api.SourceGetBucketGuard(source || viewSource, bucket));
     } catch {
-      guardCache.set(bucket, { versioning: '', lockEnabled: false });
+      guardCache.set(k, { versioning: '', lockEnabled: false });
     }
   }
-  return guardCache.get(bucket);
+  return guardCache.get(k);
 }
 
 // guardRows renders the versioning / object-lock rows shared by the bucket
-// and folder properties dialogs (a folder inherits its bucket's guard).
+// and folder properties dialogs (a folder inherits its bucket's guard) as
+// the same Enabled/Disabled pills everywhere.
 function guardRows(g) {
   return [
-    ['Versioning', g.versioning === 'Enabled' ? 'Enabled'
-      : g.versioning === 'Suspended' ? 'Suspended (existing versions kept)' : 'Off'],
-    ['Object Lock', g.lockEnabled
-      ? `Enabled — ${g.lockMode || 'on'}${g.lockDays ? `, ${g.lockDays}d default retention` : ''}`
-      : 'Disabled'],
+    ['Versioning', pill(g.versioning === 'Enabled')],
+    ['Object Lock', pill(!!g.lockEnabled)],
   ];
 }
 
 // ============================ grid wiring ============================
+// refreshDragUrls precomputes loopback URLs for the current selection so a
+// drag out to the OS (Explorer, browsers) can attach DownloadURL /
+// text-uri-list data synchronously in dragstart (dragstart cannot await).
+function refreshDragUrls() {
+  dragUrls = [];
+  const loc = nav.current;
+  const rows = grid.selectedRows();
+  if (!rows.length || rows.some((r) => r.isDir)) return; // files only (folders would need zips)
+  if (loc?.kind !== 'objects' && loc?.kind !== 'remote') return;
+  const items = loc.kind === 'objects'
+    ? rows.map((r) => ({ source: loc.source || viewSource, bucket: loc.bucket, key: r.key, name: r.name, size: r.size || 0 }))
+    : rows.map((r) => ({ source: loc.source, key: r.key, name: r.name, size: r.size || 0 }));
+  api.MakeDragUrls(items)
+    .then((urls) => { if (urls?.length === rows.length) dragUrls = urls; })
+    .catch(() => {});
+}
+
 function wireGrid() {
-  grid.on.select = updateStatus;
+  grid.on.select = () => { updateStatus(); refreshDragUrls(); };
+  grid.on.dragOS = (e, rows) => {
+    // OS drag-out: rows leave the app as downloadable loopback URLs.
+    if (!dragUrls.length || dragUrls.length !== rows.length) return;
+    if (rows.length === 1) {
+      e.dataTransfer.setData('DownloadURL', `application/octet-stream:${rows[0].name}:${dragUrls[0]}`);
+    }
+    e.dataTransfer.setData('text/uri-list', dragUrls.join('\r\n'));
+  };
   grid.on.activate = (row) => {
     const loc = nav.current;
-    if (loc.kind === 'srcroot') {
-      toast('Set this source as default (dropdown or "Use") to manage its objects');
-      return;
-    }
     if (loc.kind === 'remote') {
       if (row.isDir) nav.to({ kind: 'remote', source: loc.source, path: row.key });
       else downloadSelection([{ key: row.key, size: row.size, name: row.name }]);
       return;
     }
     if (loc.kind === 'buckets') {
-      nav.to({ kind: 'objects', bucket: row.key, prefix: '' });
+      nav.to({ kind: 'objects', source: loc.source, bucket: row.key, prefix: '' });
     } else if (row.isDir) {
-      nav.to({ kind: 'objects', bucket: loc.bucket, prefix: row.key });
+      nav.to({ kind: 'objects', source: loc.source, bucket: loc.bucket, prefix: row.key });
     } else {
       downloadSelection([{ key: row.key, size: row.size, name: row.name }]);
     }
@@ -644,7 +756,7 @@ function wireGrid() {
   grid.on.context = (e, rows) => showContextMenu(e, rows);
   grid.on.drop = (targetRow, data, e) => {
     const loc = nav.current;
-    if (loc.kind === 'objects') dropToTarget({ kind: 's3', bucket: loc.bucket, dir: targetRow.key }, data, e);
+    if (loc.kind === 'objects') dropToTarget({ kind: 's3', source: loc.source || viewSource, bucket: loc.bucket, dir: targetRow.key }, data, e);
     else if (loc.kind === 'remote') dropToTarget({ kind: 'remote', source: loc.source, dir: targetRow.key }, data, e);
   };
   // Body-level drop target: the empty area below the rows accepts the same
@@ -694,6 +806,7 @@ function wireGrid() {
       [t('addSource'), '', () => sourceEditor(null, afterSourceSaved)],
       null,
       [t('importAws'), '', () => importAws()],
+      ['Import credentials\u2026', '', () => importCredsUi()],
       null,
       [t('pf.new'), '', newProfileFileUi],
       [t('pf.open'), '', openProfileFileUi],
@@ -804,7 +917,7 @@ function showContextMenu(e, rows) {
 
   if (loc.kind === 'buckets') {
     const b = rows[0];
-    items.push(['Open', 'Enter', () => nav.to({ kind: 'objects', bucket: b.key, prefix: '' })]);
+    items.push(['Open', 'Enter', () => nav.to({ kind: 'objects', source: loc.source, bucket: b.key, prefix: '' })]);
     items.push([isFavorite(b.key) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(b.key)]);
     items.push(['Find in bucket\u2026', '', () => findDialog(b.key, '', openSearchResult)]);
     items.push(['Admin panel\u2026', '', () => adminDialog(b.key, refreshCurrent)]);
@@ -867,6 +980,7 @@ function showEmptyAreaMenu(e) {
       ['New bucket\u2026', '', () => createBucket(), !st.canCreateBucket],
       null,
       ['Import ~/.aws/credentials\u2026', '', () => importAws()],
+      ['Import credentials\u2026', '', () => importCredsUi()],
       null,
       ['Refresh', 'F5', () => refreshCurrent()],
     ]);
@@ -876,8 +990,7 @@ function showEmptyAreaMenu(e) {
     openMenu(e, [
       ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
       null,
-      ['Upload files\u2026', 'Ctrl+U', () => uploadFiles()],
-      ['Upload folder\u2026', '', () => uploadFolder()],
+      ['Upload\u2026', 'Ctrl+U', () => upload()],
       ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
       null,
       ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
@@ -890,8 +1003,7 @@ function showEmptyAreaMenu(e) {
   openMenu(e, [
     ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
     null,
-    ['Upload files\u2026', 'Ctrl+U', () => uploadFiles(), !st.canUpload],
-    ['Upload folder\u2026', '', () => uploadFolder(), !st.canUpload],
+    ['Upload\u2026', 'Ctrl+U', () => upload(), !st.canUpload],
     ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
     null,
     ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
@@ -922,8 +1034,8 @@ async function folderProperties() {
   const rows = grid.rows;
   const files = rows.filter((r) => !r.isDir);
   const bytes = files.reduce((s, r) => s + (r.size || 0), 0);
-  const g = await ensureGuard(loc.bucket);
-  properties(`Properties — s3://${loc.bucket}/${loc.prefix || ''}`, [
+  const g = await ensureGuard(loc.source, loc.bucket);
+  properties(`Properties — ${loc.source || viewSource}://${loc.bucket}/${loc.prefix || ''}`, [
     ['Folders', rows.length - files.length],
     ['Files', files.length],
     ['Total size', fmtBytes(bytes)],
@@ -941,14 +1053,11 @@ function showTreeMenu(e, node) {
   if (node.kind === 'source') {
     const src = sources.find((s) => s.name === node.source);
     if (!src) return;
-    const open = () => {
-      if (node.stype !== 's3') nav.to({ kind: 'remote', source: node.source, path: '' });
-      else nav.to(node.source === tree.defaultS3
-        ? { kind: 'buckets' }
-        : { kind: 'srcroot', source: node.source });
-    };
     openMenu(e, [
-      [node.stype === 's3' ? 'Open buckets' : 'Open root', '', open],
+      [node.stype === 's3' ? 'Open buckets' : 'Open root', '', () => {
+        if (node.stype !== 's3') nav.to({ kind: 'remote', source: node.source, path: '' });
+        else nav.to({ kind: 'buckets', source: node.source });
+      }],
       null,
       ['Refresh', 'F5', () => tree.reload(node.id)],
       ['Reconnect', '', async () => {
@@ -957,6 +1066,8 @@ function showTreeMenu(e, node) {
         try {
           await api.SaveSource(src);
           tree.reload(node.id);
+          tree.setStatus({ [node.source]: 'busy' });
+          probeSource(src).then((ok) => tree.setStatus({ [node.source]: ok ? 'ok' : 'error' }));
           toast(`Reconnected ${node.source}`, 'ok');
         } catch (err) { toast(`${err}`, 'error'); }
       }],
@@ -974,14 +1085,6 @@ function showTreeMenu(e, node) {
         }
       }],
       null,
-      ...(node.stype === 's3' && !src.default
-        ? [['Set default', '', async () => {
-            try {
-              await makeDefaultSource(node.source);
-              await refreshSources();
-            } catch (err) { toast(`${err}`, 'error'); }
-          }], null]
-        : []),
       ['Edit source\u2026', '', () => sourceEditor(src, afterSourceSaved)],
       ['Remove source\u2026', '', async () => {
         if (await confirm({
@@ -1003,13 +1106,9 @@ function showTreeMenu(e, node) {
     openMenu(e, [
       ['Open', '', () => nav.to({ kind: 'remote', source: node.source, path: node.path })],
       null,
-      ['Upload files here\u2026', 'Ctrl+U', async () => {
-        const paths = await api.PickUploadFiles();
+      ['Upload here\u2026', 'Ctrl+U', async () => {
+        const paths = await api.PickUploadItems();
         if (paths?.length) uploadToRemote(paths, node.source, node.path);
-      }],
-      ['Upload folder here\u2026', '', async () => {
-        const dir = await api.PickFolder('Choose a folder to upload');
-        if (dir) uploadToRemote([dir], node.source, node.path);
       }],
       ['Download\u2026', '', async () => {
         const dest = await api.PickFolder('Choose download folder');
@@ -1036,68 +1135,76 @@ function showTreeMenu(e, node) {
     ]);
     return;
   }
-  const go = () => nav.to({ kind: 'objects', bucket: node.bucket, prefix: node.prefix });
+  // S3 bucket/folder nodes: engine-native dialogs address the view source,
+  // so acting on another source's bucket opens it in the main view first
+  // (navThen waits for the view source to settle).
+  const go = () => nav.to({ kind: 'objects', source: node.source, bucket: node.bucket, prefix: node.prefix });
+  const goThen = (fn) => () => navThen(
+    { kind: 'objects', source: node.source, bucket: node.bucket, prefix: node.prefix },
+    fn,
+  );
   if (node.prefix === '') {
     openMenu(e, [
       ['Open', '', go],
       [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
       null,
-      ['Upload files here\u2026', 'Ctrl+U', () => uploadFilesTo(node.bucket, ''), !st.hasProfile],
-      ['Upload folder here\u2026', '', () => uploadFolderTo(node.bucket, ''), !st.hasProfile],
-      ['Paste here', 'Ctrl+V', () => paste('', node.bucket), !(st.hasProfile && clipboard.keys.length)],
+      ['Upload here\u2026', 'Ctrl+U', () => uploadTo('', node.bucket, node.source), !st.hasProfile],
+      ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && clipboard.keys.length)],
       null,
-      ['Find in bucket\u2026', 'Ctrl+Shift+F', () => findDialog(node.bucket, '', openSearchResult), !st.hasProfile],
-      ['Admin panel\u2026', '', () => adminDialog(node.bucket, refreshCurrent), !st.hasProfile],
-      ['Doctor\u2026', '', () => runDoctor(node.bucket), !st.hasProfile],
-      ['Properties', '', () => bucketProperties(node.bucket), !st.hasProfile],
+      ['Find in bucket\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, '', openSearchResult)), !st.hasProfile],
+      ['Admin panel\u2026', '', goThen(() => adminDialog(node.bucket, refreshCurrent)), !st.hasProfile],
+      ['Doctor\u2026', '', goThen(() => runDoctor(node.bucket)), !st.hasProfile],
+      ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
       null,
-      ['Delete bucket\u2026', '', () => deleteBucket(node.bucket), !st.hasProfile],
+      ['Delete bucket\u2026', '', goThen(() => deleteBucket(node.bucket)), !st.hasProfile],
     ]);
     return;
   }
-  const clipCopy = () => { Object.assign(clipboard, { mode: 'copy', kind: 's3', bucket: node.bucket, source: null, dir: node.prefix.replace(/\/+$/, ''), keys: [node.prefix], paths: [] }); toast(`Copied ${node.label}`); updateCommandState(); };
-  const clipCut = () => { Object.assign(clipboard, { mode: 'cut', kind: 's3', bucket: node.bucket, source: null, dir: node.prefix.replace(/\/+$/, ''), keys: [node.prefix], paths: [] }); toast(`Cut ${node.label}`); updateCommandState(); };
+  const clipCopy = () => { Object.assign(clipboard, { mode: 'copy', kind: 's3', bucket: node.bucket, source: node.source, dir: node.prefix.replace(/\/+$/, ''), keys: [node.prefix], paths: [] }); toast(`Copied ${node.label}`); updateCommandState(); };
+  const clipCut = () => { Object.assign(clipboard, { mode: 'cut', kind: 's3', bucket: node.bucket, source: node.source, dir: node.prefix.replace(/\/+$/, ''), keys: [node.prefix], paths: [] }); toast(`Cut ${node.label}`); updateCommandState(); };
   openMenu(e, [
     ['Open', '', go],
     null,
-    ['Upload files here\u2026', 'Ctrl+U', () => uploadFilesTo(node.bucket, node.prefix), !st.hasProfile],
-    ['Upload folder here\u2026', '', () => uploadFolderTo(node.bucket, node.prefix), !st.hasProfile],
+    ['Upload here\u2026', 'Ctrl+U', () => uploadTo(node.prefix, node.bucket, node.source), !st.hasProfile],
     ['Download\u2026', '', () => downloadTreeEntry(node), !st.hasProfile],
     null,
     ['Copy', 'Ctrl+C', clipCopy, !st.hasProfile],
     ['Cut', 'Ctrl+X', clipCut, !st.hasProfile],
-    ['Paste into folder', 'Ctrl+V', () => paste(node.prefix, node.bucket), !(st.hasProfile && clipboard.keys.length)],
+    ['Paste into folder', 'Ctrl+V', () => paste(node.prefix, node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: node.prefix }), !(st.hasProfile && clipboard.keys.length)],
     null,
-    ['Rename\u2026', 'F2', () => renameTreeFolder(node), !st.hasProfile],
-    ['Delete\u2026', 'Del', () => deleteSelection(node.bucket, [node.prefix]), !st.hasProfile],
+    ['Rename\u2026', 'F2', goThen(() => renameTreeFolder(node)), !st.hasProfile],
+    ['Delete\u2026', 'Del', goThen(() => deleteSelection(node.bucket, [node.prefix])), !st.hasProfile],
     null,
-    ['Find here\u2026', 'Ctrl+Shift+F', () => findDialog(node.bucket, node.prefix, openSearchResult), !st.hasProfile],
-    ['Properties', '', () => treeProperties(node), !st.hasProfile],
+    ['Find here\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, node.prefix, openSearchResult)), !st.hasProfile],
+    ['Properties', '', goThen(() => treeProperties(node)), !st.hasProfile],
   ]);
 }
 
-async function uploadFilesTo(bucket, prefix) {
-  const paths = await api.PickUploadFiles();
-  if (paths?.length) uploadPaths(paths, prefix, bucket);
-}
-
-async function uploadFolderTo(bucket, prefix) {
-  const dir = await api.PickFolder('Choose a folder to upload');
-  if (dir) uploadPaths([dir], prefix, bucket);
+// uploadTo picks files AND folders in one OS dialog and uploads them into
+// a bucket/prefix of any S3 source (tree context menus).
+async function uploadTo(prefix, bucket, source) {
+  const paths = await api.PickUploadItems();
+  if (paths?.length) uploadPaths(paths, prefix, bucket, source);
 }
 
 async function downloadTreeEntry(node) {
   const dest = await api.PickFolder('Choose download folder');
   if (!dest) return;
-  await downloadRefs([{ key: node.prefix, size: 0, isDir: true }], dest, node.bucket);
+  // DownloadRefs addresses the view source — open the bucket first when
+  // it belongs to another source.
+  const run = () => downloadRefs([{ key: node.prefix, size: 0, isDir: true }], dest, node.bucket);
+  if (node.source && node.source !== viewSource) {
+    navThen({ kind: 'objects', source: node.source, bucket: node.bucket, prefix: node.prefix }, run);
+  } else run();
 }
 
 async function renameTreeFolder(node) {
   const name = await prompt({ title: 'Rename', label: 'New name', value: node.label });
   if (!name || name === node.label) return;
   try {
-    await api.RenameObject(node.bucket, node.prefix, name);
-    toast('Renamed', 'ok'); // s3:changed refreshes the view + tree
+    await api.SourceRenameObject(node.source, node.bucket, node.prefix, name);
+    toast('Renamed', 'ok');
+    tree.reload(node.id);
   } catch (err) {
     toast(`Rename failed: ${err}`, 'error');
   }
@@ -1131,15 +1238,15 @@ async function renameRemoteTreeFolder(node) {
 async function treeProperties(node) {
   try {
     const [st, g] = await Promise.all([
-      api.StatObject(node.bucket, node.prefix),
-      ensureGuard(node.bucket),
+      api.SourceStatObject(node.source, node.bucket, node.prefix),
+      ensureGuard(node.source, node.bucket),
     ]);
     properties(`Properties — ${node.label}`, [
       ['Type', 'Folder'],
       ['Objects', st.usage.objectCount],
       ['Total size', fmtBytes(st.usage.totalBytes)],
       ...guardRows(g),
-      ['s3:// URI', `s3://${node.bucket}/${node.prefix}`],
+      ['Path', `${node.source}://${node.bucket}/${node.prefix}`],
     ]);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');
@@ -1153,12 +1260,20 @@ document.addEventListener('mousedown', (e) => {
 window.addEventListener('blur', hideContextMenu);
 
 // ============================ actions ============================
-async function uploadPaths(paths, prefixOverride, bucketOverride) {
+// uploadPaths pushes local paths into an S3 bucket/prefix. The view source
+// keeps the native Upload fast path; any other source streams through
+// TransferCross (source-pinned).
+async function uploadPaths(paths, prefixOverride, bucketOverride, sourceOverride) {
   const loc = nav.current;
   const bucket = bucketOverride || loc?.bucket;
+  const source = sourceOverride || loc?.source || viewSource;
   if (!bucket || (!bucketOverride && loc.kind !== 'objects')) { toast('Open a bucket first'); return; }
   const prefix = prefixOverride !== undefined ? prefixOverride : (loc.prefix || '');
-  const res = await conflictPolicy('upload', `s3://${bucket}/${prefix || ''}`);
+  if (source && source !== viewSource) {
+    await startTransfer({ localPaths: paths, dest: { kind: 's3', source, bucket, dir: prefix } });
+    return;
+  }
+  const res = await conflictPolicy('upload', `${source || 's3'}://${bucket}/${prefix || ''}`);
   if (!res) return;
   try {
     await api.Upload(paths, bucket, prefix, res.policy, res.maxBps);
@@ -1169,30 +1284,17 @@ async function uploadPaths(paths, prefixOverride, bucketOverride) {
   }
 }
 
-async function uploadFiles() {
-  const paths = await api.PickUploadFiles();
+// upload is the ONE upload command: a single OS dialog that selects files
+// AND folders together (Ctrl+U, toolbar, menus). Destination follows the
+// active pane: a remote view uploads into its directory, an objects view
+// into the bucket prefix.
+async function upload() {
+  const loc = nav.current;
+  const paths = await api.PickUploadItems();
   if (!paths?.length) return;
-  const loc = nav.current;
   if (loc?.kind === 'remote') return uploadToRemote(paths, loc.source, loc.path || '/');
-  uploadPaths(paths);
-}
-
-async function uploadFolder() {
-  const dir = await api.PickFolder('Choose a folder to upload');
-  if (!dir) return;
-  const loc = nav.current;
-  if (loc?.kind === 'remote') return uploadToRemote([dir], loc.source, loc.path || '/');
-  uploadPaths([dir]);
-}
-
-// showUploadMenu is the single Upload command: a small menu under the button
-// offering the native file picker (Ctrl+U) and the folder picker. The backend
-// walks directories either way; drag & drop needs no picker at all.
-function showUploadMenu(e) {
-  openMenu(e.currentTarget || e, [
-    ['Files\u2026', 'Ctrl+U', uploadFiles],
-    ['Folder\u2026', '', uploadFolder],
-  ]);
+  if (loc?.kind === 'objects') return uploadPaths(paths, loc.prefix || '', loc.bucket, loc.source);
+  toast('Open a bucket or folder first');
 }
 
 async function downloadSelection(overrideRows) {
@@ -1239,14 +1341,14 @@ async function downloadRefs(entries, dest, bucketOverride) {
 
 // xferDestOf derives the destination of the current view, or null.
 function xferDestOf(loc) {
-  if (loc?.kind === 'objects') return { kind: 's3', bucket: loc.bucket, dir: loc.prefix || '' };
+  if (loc?.kind === 'objects') return { kind: 's3', source: loc.source || viewSource, bucket: loc.bucket, dir: loc.prefix || '' };
   if (loc?.kind === 'remote') return { kind: 'remote', source: loc.source, dir: loc.path || '/' };
   return null;
 }
 
 function xferDestLabel(dest) {
-  if (dest.kind === 's3') return `s3://${dest.bucket}/${dest.dir || ''}`;
-  if (dest.kind === 'remote') return `${dest.source}:${dest.dir}`;
+  if (dest.kind === 's3') return `${dest.source || viewSource}://${dest.bucket}/${dest.dir || ''}`;
+  if (dest.kind === 'remote') return `${dest.source}://${dest.dir || '/'}`;
   return dest.dir;
 }
 
@@ -1578,20 +1680,33 @@ async function deleteBucket(bucket) {
     if (!ok) return;
     const res = await api.DeleteBucket(bucket, true);
     toast(`Bucket removed (${res.deleted} object(s) emptied)`, 'ok');
-    nav.to({ kind: 'buckets' });
+    nav.to({ kind: 'buckets', source: viewSource });
   } catch (err) {
     toast(`Delete bucket failed: ${err}`, 'error');
   }
 }
 
+// paste drops the app clipboard into a destination; with the app clipboard
+// empty it falls back to the OS clipboard (Ctrl+C in Explorer) — files land
+// wherever the active view points, exactly like an in-app paste.
 async function paste(prefixOverride, bucketOverride, destOverride) {
   const loc = nav.current;
-  if (!clipHasItems()) return;
   let dest;
-  if (destOverride) dest = destOverride; // explicit target (side-pane menus)
-  else if (bucketOverride) dest = { kind: 's3', bucket: bucketOverride, dir: prefixOverride !== undefined ? prefixOverride : '' };
+  if (destOverride) dest = destOverride; // explicit target (side-pane/tree menus)
+  else if (bucketOverride) dest = { kind: 's3', source: viewSource, bucket: bucketOverride, dir: prefixOverride !== undefined ? prefixOverride : '' };
   else if (prefixOverride !== undefined && loc?.kind === 'remote') dest = { kind: 'remote', source: loc.source, dir: prefixOverride };
   else dest = xferDestOf(loc) || sidePaneDest();
+
+  if (!clipHasItems()) {
+    // OS clipboard fallback: paths copied in Explorer (or any app).
+    let osPaths = null;
+    try { osPaths = await api.OsClipboardFiles(); } catch { /* binding missing */ }
+    if (!osPaths?.length || !dest) return;
+    if (dest.kind === 's3') uploadPaths(osPaths, dest.dir, dest.bucket, dest.source);
+    else if (dest.kind === 'remote') uploadToRemote(osPaths, dest.source, dest.dir);
+    else startTransfer({ localPaths: osPaths, dest, label: dest.dir });
+    return;
+  }
   if (!dest) return;
 
   // Same-dir paste is a no-op (would spam "(1)" renames), and pasting a
@@ -1607,10 +1722,11 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
   }
 
   const move = clipboard.mode === 'cut';
-  // S3 → S3 on the default source keeps the synchronous server-side copy
-  // path; named sources (side-pane origins/destinations) stream through
-  // TransferCross, which still copies server-side on the same client.
-  if (clipboard.kind === 's3' && dest.kind === 's3' && !clipboard.source && !dest.source) {
+  // S3 → S3 within the view source keeps the synchronous server-side copy
+  // path; any other source pairing streams through TransferCross (which
+  // still copies server-side when both sides share a client).
+  if (clipboard.kind === 's3' && dest.kind === 's3'
+    && clipboard.source === dest.source && dest.source === viewSource) {
     const prefix = prefixOverride !== undefined ? prefixOverride : (loc?.prefix || '');
     try {
       const res = await api.CopySelection(clipboard.bucket, clipboard.keys, dest.bucket, prefix, move);
@@ -1685,7 +1801,7 @@ async function selectionProperties() {
         ['Content type', st.contentType],
         ['SSE', st.sse || 'none'],
       ]),
-      ['s3:// URI', `s3://${loc.bucket}/${row.key}`],
+      ['Path', `${loc.source || viewSource}://${loc.bucket}/${row.key}`],
     ];
     // Object-lock state of the selected object (M10.4): one extra call,
     // tolerating buckets without a lock config (rows simply stay away).
@@ -1749,16 +1865,17 @@ async function bucketProperties(bucket) {
       api.StatBucket(bucket).catch(() => null),
       api.GetBucketAdmin(bucket).catch(() => null),
     ]);
-    const def = sources.find((s) => s.type === 's3' && s.default)
+    const def = sources.find((s) => s.name === viewSource)
       || sources.find((s) => s.type === 's3');
+    const gk = guardKey(viewSource, bucket);
     // keep the tree icons in sync with what the panel just told us
-    if (panel) guardCache.set(bucket, {
+    if (panel) guardCache.set(gk, {
       versioning: panel.versions || '',
       lockEnabled: !!panel.lock?.enabled,
       lockMode: panel.lock?.mode || '',
       lockDays: panel.lock?.days || 0,
     });
-    const g = guardCache.get(bucket) || {};
+    const g = guardCache.get(gk) || {};
     const pabOn = panel?.pab
       ? ['blockPublicAcls', 'ignorePublicAcls', 'blockPublicPolicy', 'restrictPublicBuckets']
         .filter((k) => panel.pab[k]).length
@@ -1767,12 +1884,8 @@ async function bucketProperties(bucket) {
       ['Name', bucket],
       ['Provider', def ? providerLabel(def.s3?.endpoint) : '—'],
       ['Region', st?.region || panel?.region || '—'],
-      ['s3:// URI', `s3://${bucket}`],
-      ['Versioning', g.versioning === 'Enabled' ? 'Enabled'
-        : g.versioning === 'Suspended' ? 'Suspended (existing versions kept)' : 'Off'],
-      ['Object Lock', g.lockEnabled
-        ? `Enabled — ${g.lockMode || 'on'}${g.lockDays ? `, ${g.lockDays}d default retention` : ''}`
-        : 'Disabled'],
+      ['Path', `${viewSource}://${bucket}`],
+      ...guardRows(g),
       ...(panel ? [
         ['Default encryption', panel.encryption?.algorithm
           ? `${panel.encryption.algorithm}${panel.encryption.kmsKeyId ? ` (${panel.encryption.kmsKeyId})` : ''}`
@@ -1838,10 +1951,10 @@ async function dropToTarget(target, data, e) {
   const dest = target.kind ? target : { kind: 's3', bucket: target.bucket, dir: target.prefix || '' };
   if (data.paths?.length) { // dragged from the local pane
     if (dest.kind === 's3') {
-      // a named S3 destination (side pane) streams through TransferCross;
-      // the default source keeps the plain upload path
-      if (dest.source) await startTransfer({ localPaths: data.paths, dest, move: e.shiftKey });
-      else uploadPaths(data.paths, dest.dir, dest.bucket);
+      // a destination on another source (side pane / tree) streams through
+      // TransferCross; the view source keeps the plain upload path
+      if (dest.source && dest.source !== viewSource) await startTransfer({ localPaths: data.paths, dest, move: e.shiftKey });
+      else uploadPaths(data.paths, dest.dir, dest.bucket, dest.source);
       return;
     }
     if (dest.kind === 'remote') { await startTransfer({ localPaths: data.paths, dest, move: e.shiftKey }); return; }
@@ -1862,15 +1975,15 @@ async function dropToTarget(target, data, e) {
   }
   const srcBucket = data.bucket;
   if (!srcBucket || !data.keys?.length) return;
-  const srcTag = data.source || ''; // "" = default source (main-grid origin)
-  const sameS3 = dest.kind === 's3' && srcBucket === dest.bucket && srcTag === (dest.source || '');
+  const srcTag = data.source || viewSource; // origin source (main-grid drags carry it)
+  const sameS3 = dest.kind === 's3' && srcBucket === dest.bucket && srcTag === (dest.source || viewSource);
   if (sameS3 && destDirOf(dest) === data.dir) return; // onto itself
   if (sameS3 && intoItself(destDirOf(dest), data.keys)) {
     toast('A folder cannot be moved or copied into itself', 'error');
     return;
   }
-  if (dest.kind === 's3' && !srcTag && !dest.source) {
-    // default-source S3 → S3 keeps the synchronous server-side copy path
+  if (dest.kind === 's3' && srcTag === viewSource && (dest.source || viewSource) === viewSource) {
+    // S3 → S3 within the view source keeps the synchronous server-side copy path
     const move = sameS3
       ? !e.ctrlKey || e.shiftKey         // same bucket: move (Shift forces)
       : e.shiftKey;                      // cross bucket: copy (Shift forces move)
@@ -1913,8 +2026,9 @@ function intoItself(destDir, keys) {
 }
 
 // dropToLocal handles drops onto the local pane (folder rows and body):
-// default-source S3 origin keeps the DownloadRefs fast path; a named S3
-// source and remote origin stream down through TransferCross.
+// an S3 origin on the active view source keeps the DownloadRefs fast path;
+// any other named source or a remote origin streams down through
+// TransferCross.
 async function dropToLocal(payload, dir) {
   if (!dir || payload.paths?.length) return; // local→local is Explorer's job
   if (payload.source && !payload.bucket) { // remote origin
@@ -1923,7 +2037,7 @@ async function dropToLocal(payload, dir) {
     return;
   }
   if (payload.entries?.length) {
-    if (payload.source) { // named S3 source (side-pane origin)
+    if (payload.source && payload.source !== viewSource) { // named S3 source (side-pane origin)
       const items = payload.entries.map((en) => ({ source: payload.source, bucket: payload.bucket, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
       await startTransfer({ items, dest: { kind: 'local', dir }, label: dir });
     } else {
@@ -1999,13 +2113,9 @@ function sideRemoteEmptyMenu(e) {
   openMenu(e, [
     ['Paste', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir }), !clipHasItems()],
     null,
-    ['Upload files\u2026', '', async () => {
-      const paths = await api.PickUploadFiles();
+    ['Upload\u2026', 'Ctrl+U', async () => {
+      const paths = await api.PickUploadItems();
       if (paths?.length) uploadToRemote(paths, b.source, dir);
-    }],
-    ['Upload folder\u2026', '', async () => {
-      const picked = await api.PickFolder('Choose a folder to upload');
-      if (picked) uploadToRemote([picked], b.source, dir);
     }],
     ['New folder', 'Ctrl+Shift+N', async () => {
       const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
@@ -2062,25 +2172,16 @@ async function sideRemoteProperties(row) {
   }
 }
 
-// sidePaneS3IsDefault: true when the pane's S3 binding is the default
-// source — the one the engine-native APIs (delete/rename/stat/new folder)
-// address. Other S3 sources are browse/transfer-only in the pane.
-function sidePaneS3IsDefault() {
-  const b = localPane.binding;
-  if (b.kind !== 's3') return false;
-  const s = localPane.sources.find((x) => (x.id || x.name) === b.source);
-  return !!s?.default;
-}
-
 // showSideS3RowMenu: per-row menu for an S3-bound side pane. Copy/cut feed
-// the cross-source clipboard (origin source + bucket); destructive
-// operations exist only on the default source (bucket rows never).
+// the cross-source clipboard (origin source + bucket); rename/delete/
+// properties run through the source-pinned Source* APIs, so every S3
+// source is fully manageable from the pane (bucket rows never).
 function showSideS3RowMenu(e, rows) {
   const b = localPane.binding;
   const sel = rows.length;
   if (!sel) return;
   const hasBucketRow = rows.some((r) => r.isBucket);
-  const onDefault = sidePaneS3IsDefault() && !!localPane.bucket;
+  const inBucket = !!localPane.bucket;
   openMenu(e, [
     ...(sel === 1 && rows[0].isDir
       ? [['Open', 'Enter', () => localPane.grid.on.activate(rows[0])]]
@@ -2097,22 +2198,54 @@ function showSideS3RowMenu(e, rows) {
       const name = await prompt({ title: 'Rename', label: 'New name', value: row.name });
       if (!name || name === row.name) return;
       try {
-        await api.RenameObject(localPane.bucket, row.key, name);
+        await api.SourceRenameObject(b.source, localPane.bucket, row.key, name);
         toast('Renamed', 'ok');
         localPane.refresh();
       } catch (err) {
         toast(`Rename failed: ${err}`, 'error');
       }
-    }, !onDefault || sel !== 1 || rows[0].isBucket],
-    ['Delete\u2026', 'Del', () => deleteSelection(localPane.bucket, rows.map((r) => r.key)).then(() => localPane.refresh()), !onDefault || hasBucketRow],
+    }, !inBucket || sel !== 1 || rows[0].isBucket],
+    ['Delete\u2026', 'Del', () => deleteSideS3Selection(b.source, localPane.bucket, rows.filter((r) => !r.isBucket).map((r) => r.key)), !inBucket || hasBucketRow],
     null,
-    ['Properties', 'Alt+Enter', () => sideS3Properties(rows[0]), !onDefault || sel !== 1],
+    ['Properties', 'Alt+Enter', () => sideS3Properties(rows[0]), !inBucket || sel !== 1],
   ]);
 }
 
+// deleteSideS3Selection deletes keys in a bucket of a named S3 source with
+// the same preview + confirm ladder as the main view.
+async function deleteSideS3Selection(source, bucket, keys) {
+  if (!keys.length) return;
+  try {
+    const p = await api.SourcePreviewDelete(source, bucket, keys);
+    const desc = `${p.count} object(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}${p.folders ? ` in ${p.folders} folder(s)` : ''}`;
+    let ok;
+    if (p.requiresL2) {
+      ok = await typedConfirm({
+        title: `Delete from ${source}://${bucket}`,
+        message: `You are about to delete ${desc}.\nThis cannot be undone.`,
+        typeWord: 'delete',
+      });
+    } else {
+      ok = await confirm({
+        title: `Delete from ${source}://${bucket}`,
+        message: `Delete ${desc}? This cannot be undone.`,
+        okLabel: 'Delete',
+        danger: true,
+      });
+    }
+    if (!ok) return;
+    const res = await api.SourceDeleteSelection(source, bucket, keys, p.requiresL2);
+    if (res.errors?.length) toast(`${res.deleted} deleted, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
+    else toast(`Deleted ${res.deleted} object(s)`, 'ok');
+    localPane.refresh();
+  } catch (err) {
+    toast(`Delete failed: ${err}`, 'error');
+  }
+}
+
 // sideS3EmptyMenu: empty-area menu of an S3-bound side pane. Writes land in
-// the pane's bucket/prefix; uploads work on every source (TransferCross),
-// folder creation only on the default one.
+// the pane's bucket/prefix — uploads through TransferCross, folder creation
+// through the source-pinned API; both need a bucket first.
 function sideS3EmptyMenu(e) {
   const b = localPane.binding;
   const dir = localPane.dir || '';
@@ -2121,25 +2254,21 @@ function sideS3EmptyMenu(e) {
   openMenu(e, [
     ['Paste', 'Ctrl+V', () => paste(null, null, dest), !clipHasItems() || !inBucket],
     null,
-    ['Upload files\u2026', '', async () => {
-      const paths = await api.PickUploadFiles();
+    ['Upload\u2026', 'Ctrl+U', async () => {
+      const paths = await api.PickUploadItems();
       if (paths?.length) startTransfer({ localPaths: paths, dest });
-    }, !inBucket],
-    ['Upload folder\u2026', '', async () => {
-      const picked = await api.PickFolder('Choose a folder to upload');
-      if (picked) startTransfer({ localPaths: [picked], dest });
     }, !inBucket],
     ['New folder', 'Ctrl+Shift+N', async () => {
       const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
       if (!name) return;
       try {
-        await api.CreateFolder(localPane.bucket, dir, name);
+        await api.SourceCreateFolder(b.source, localPane.bucket, dir, name);
         toast('Folder created', 'ok');
         localPane.refresh();
       } catch (err) {
         toast(`Create folder failed: ${err}`, 'error');
       }
-    }, !sidePaneS3IsDefault() || !inBucket],
+    }, !inBucket],
     null,
     ['Download all\u2026', '', () => downloadSideRows(localPane.grid.rows.filter((r) => !r.isBucket)), !localPane.grid.rows.length],
     ['Select all', 'Ctrl+A', () => localPane.grid.selectAll()],
@@ -2147,11 +2276,12 @@ function sideS3EmptyMenu(e) {
   ]);
 }
 
-// sideS3Properties shows one object's metadata via the default client
-// (StatObject addresses the default source — gated by sidePaneS3IsDefault).
+// sideS3Properties shows one object's metadata via the source-pinned
+// SourceStatObject.
 async function sideS3Properties(row) {
+  const b = localPane.binding;
   try {
-    const st = await api.StatObject(localPane.bucket, row.key);
+    const st = await api.SourceStatObject(b.source, localPane.bucket, row.key);
     properties(`Properties — ${row.name}`, [
       ['Name', row.name],
       ['Type', row.isDir ? 'Folder' : 'Object'],
@@ -2162,21 +2292,21 @@ async function sideS3Properties(row) {
           ['Last modified', fmtDate(st.lastModified)],
           ['Storage class', st.storageClass || ''],
         ]),
-      ['Source', localPane.binding.source],
-      ['s3:// URI', `s3://${localPane.bucket}/${row.key}`],
+      ['Source', b.source],
+      ['Path', `${b.source}://${localPane.bucket}/${row.key}`],
     ]);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');
   }
 }
 
-// Patch grid drag payload to carry the origin (bucket or remote source + dir)
-// so drops build the right TransferCross items.
+// Patch grid drag payload to carry the origin (source + bucket or remote
+// source + dir) so drops build the right TransferCross items.
 const origDragPayload = grid.dragPayload.bind(grid);
 grid.dragPayload = () => {
   const loc = nav.current;
   const base = origDragPayload();
-  if (loc?.kind === 'objects') return { ...base, bucket: loc.bucket, dir: loc.prefix || '' };
+  if (loc?.kind === 'objects') return { ...base, source: loc.source || viewSource, bucket: loc.bucket, dir: loc.prefix || '' };
   if (loc?.kind === 'remote') return { ...base, source: loc.source, dir: loc.path || '/' };
   return base;
 };
@@ -2218,7 +2348,7 @@ function wireToolbar() {
   $('btn-forward').onclick = () => { if (nav.canForward()) nav.forwardGo(); };
   $('btn-up').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
   $('btn-refresh').onclick = refreshCurrent;
-  $('btn-upload').onclick = showUploadMenu;
+  $('btn-upload').onclick = upload;
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = togglePanes;
   $('btn-find').onclick = findFromHere;
@@ -2282,14 +2412,6 @@ async function refreshPfState() {
   }
 }
 
-// makeDefaultSource flips the default flag in one place: the source record
-// via SaveSource (works in Profile-file and session mode alike).
-async function makeDefaultSource(name) {
-  const src = sources.find((s) => s.type === 's3' && s.name === name);
-  if (!src) return;
-  await api.SaveSource({ ...src, default: true, s3: { ...src.s3, default: true } });
-}
-
 async function newProfileFileUi() {
   const name = await prompt({ title: t('pf.new'), label: t('pf.nameLabel'), value: 'work' });
   if (name === null) return;
@@ -2318,7 +2440,7 @@ async function openProfileFileUi() {
     toast(`${t('pf.opened')}: ${basename(path)}`, 'ok');
     await refreshSources();
     await refreshPfState();
-    if (sources.some((s) => s.type === 's3')) nav.to({ kind: 'buckets' });
+    nav.to(sourceHomeLoc());
   } catch (err) {
     toast(`${err}`, 'error'); // wrong password and corruption look identical by design
   }
@@ -2381,7 +2503,7 @@ async function closeProfileFileUi() {
   toast(t('pf.closed'), 'ok');
   await refreshSources();
   await refreshPfState();
-  if (sources.some((s) => s.type === 's3')) nav.to({ kind: 'buckets' });
+  nav.to(sourceHomeLoc());
 }
 
 // ============================ settings ============================
@@ -2449,9 +2571,9 @@ function mountMenubar() {
     {
       label: t('menu.file'),
       items: [
-        { label: t('menu.uploadFiles'), kbd: 'Ctrl+U', action: uploadFiles, enabled: () => st().canUpload },
-        { label: t('menu.uploadFolder'), action: uploadFolder, enabled: () => st().canUpload },
+        { label: 'Upload\u2026', kbd: 'Ctrl+U', action: upload, enabled: () => st().canUpload },
         null,
+        { label: 'Import credentials\u2026', action: importCredsUi },
         { label: t('menu.importAws'), action: importAws },
         null,
         { label: t('pf.new'), action: newProfileFileUi },
@@ -2562,15 +2684,23 @@ function setClip(mode) {
   const loc = nav.current;
   const rows = grid.selectedRows();
   if (rows.length && (loc?.kind === 'objects' || loc?.kind === 'remote')) {
+    const src = loc.kind === 'remote' ? loc.source : (loc.source || viewSource);
     Object.assign(clipboard, {
       mode,
       kind: loc.kind === 'remote' ? 'remote' : 's3',
       bucket: loc.kind === 'objects' ? loc.bucket : null,
-      source: loc.kind === 'remote' ? loc.source : null,
+      source: src,
       dir: loc.kind === 'remote' ? (loc.path || '/') : (loc.prefix || ''),
       keys: rows.map((x) => x.key),
       paths: [],
     });
+    // Mirror the copy onto the OS clipboard so Ctrl+V works in Explorer
+    // too (cut never mirrors — an Explorer paste would move/delete).
+    if (mode === 'copy') {
+      osCopyRemote(rows.map((r) => (loc.kind === 'remote'
+        ? { source: src, key: r.key, size: r.size || 0, isDir: !!r.isDir }
+        : { source: src, bucket: loc.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
+    }
     toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${rows.length} item(s)`);
     updateCommandState();
     return;
@@ -2590,6 +2720,7 @@ function setClip(mode) {
         keys: lrows.map((x) => x.key),
         paths: [],
       });
+      if (mode === 'copy') osCopyRemote(lrows.map((r) => ({ source: localPane.binding.source, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
     } else if (localPane.binding.kind === 's3') {
       if (!localPane.bucket) return; // bucket rows are navigation only
       Object.assign(clipboard, {
@@ -2601,6 +2732,7 @@ function setClip(mode) {
         keys: lrows.filter((x) => !x.isBucket).map((x) => x.key),
         paths: [],
       });
+      if (mode === 'copy') osCopyRemote(lrows.filter((x) => !x.isBucket).map((r) => ({ source: localPane.binding.source, bucket: localPane.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
     } else {
       Object.assign(clipboard, {
         mode,
@@ -2611,10 +2743,58 @@ function setClip(mode) {
         keys: [],
         paths: lrows.map((x) => x.path),
       });
+      // Local files are real OS files — straight onto the OS clipboard.
+      if (mode === 'copy') api.OsClipboardSetFiles(clipboard.paths).catch(() => {});
     }
     toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${lrows.length} item(s)`);
     updateCommandState();
   }
+}
+
+// osCopyRemote mirrors a remote/S3 copy onto the OS clipboard: the selection
+// is staged (downloaded) into a scratch dir via the transfer engine and the
+// staged paths are pushed to CF_HDROP once the engine goes idle. Explorer
+// paste then works like any local copy. Large selections skip the mirror
+// silently — the app-internal clipboard still works everywhere.
+async function osCopyRemote(items) {
+  const MAX_BYTES = 256 * 1024 * 1024;
+  const MAX_ITEMS = 500;
+  if (!items.length) return;
+  const total = items.reduce((s, it) => s + (it.size || 0), 0);
+  if (items.length > MAX_ITEMS || (total > 0 && total > MAX_BYTES)) return;
+  let dir;
+  try {
+    dir = await api.StageClipboardDir();
+  } catch {
+    return;
+  }
+  toast('Preparing OS clipboard — staging download\u2026');
+  try {
+    await api.TransferCross(items, [], { kind: 'local', dir }, 'overwrite', 0, false);
+    showTransfersBadge();
+  } catch (err) {
+    toast(`OS clipboard staging failed: ${err}`, 'error');
+    return;
+  }
+  // Wait for the transfer engine to finish, then push the staged paths.
+  // The staged layout mirrors the transfer planner: dest/<leaf-of-key>.
+  const staged = items.map((it) => `${dir}\\${(it.key || '').replace(/\/+$/, '').split('/').pop()}`);
+  const t0 = Date.now();
+  setTimeout(async function poll() {
+    let busy = true;
+    try {
+      busy = (await api.ActiveTransfers()).some((j) => j.status === 'running');
+    } catch {
+      busy = false;
+    }
+    if (busy && Date.now() - t0 < 120000) { setTimeout(poll, 500); return; }
+    try {
+      await api.OsClipboardSetFiles(staged);
+      toast('Ready to paste in Explorer', 'ok');
+    } catch {
+      // best-effort only
+    }
+  }, 700);
 }
 
 // copySelection/cutSelection: shared by Ctrl+C/X and the Edit menu.
@@ -2645,7 +2825,7 @@ function wireKeys() {
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); findFromHere(); return; }
     if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); $('filter').focus(); $('filter').select(); return; }
     if (ctrl && e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLogArea(); return; }
-    if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); uploadFiles(); return; }
+    if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); upload(); return; }
     if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); saveProfileFileUi(); return; }
     if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); downloadSelection(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newFolder(); return; }
