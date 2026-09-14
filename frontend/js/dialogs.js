@@ -308,27 +308,44 @@ export function doctorDialog(bucket) {
 // ---------- transfer manager ----------
 export function transferManager(onClose) {
   const list = el('div', {});
-  const { close, body } = openModal({
-    title: 'Transfers',
+  const { close } = openModal({
+    title: t('transfer.managerTitle'),
     body: list,
     wide: true,
-    buttons: [{ label: 'Clear finished', onclick: async (c) => { await api.ClearFinishedTransfers(); draw(); } }, { label: 'Close', onclick: (c) => { c(); onClose?.(); } }],
+    buttons: [
+      { label: t('transfer.clearFinished'), onclick: async (c) => { await api.ClearFinishedTransfers(); draw(); } },
+      { label: t('dlg.close'), onclick: (c) => { c(); onClose?.(); } },
+    ],
+    onClose: () => off(),
   });
 
   async function draw() {
     const jobs = await api.ActiveTransfers();
+    // Running jobs stay on top; the rest keep their order.
+    const rank = { running: 0, queued: 1, done: 2, canceled: 3, failed: 4 };
+    jobs.sort((x, y) => (rank[x.status] ?? 9) - (rank[y.status] ?? 9));
     list.replaceChildren(...jobs.map(renderJob));
-    if (!jobs.length) list.appendChild(el('div', { text: 'No transfers.', style: 'color:var(--text-dim)' }));
+    if (!jobs.length) list.appendChild(el('div', { class: 'tm-empty', text: t('transfer.noTransfers') }));
   }
 
   function renderJob(j) {
     const pct = j.totalBytes > 0 ? Math.min(100, (j.sentBytes / j.totalBytes) * 100) : 0;
     const bar = el('div', { class: 'tr-bar' }, el('div', { style: `width:${pct}%` }));
+    const counts = t('transfer.filesCount', { d: j.doneFiles, t: j.totalFiles })
+      + (j.failedFiles ? ` · ${t('transfer.failedCount', { n: j.failedFiles })}` : '')
+      + (j.skippedFiles ? ` · ${t('transfer.skippedCount', { n: j.skippedFiles })}` : '');
+    let bytes = `${fmtBytes(j.sentBytes)}${j.totalBytes ? ` / ${fmtBytes(j.totalBytes)}` : ''}`;
+    if (j.speedBps > 1 && j.status === 'running') {
+      bytes += ` @ ${fmtSpeed(j.speedBps)}`;
+      const remain = j.totalBytes > j.sentBytes ? (j.totalBytes - j.sentBytes) / j.speedBps : 0;
+      if (remain > 1) bytes += ` · ${fmtEta(remain)}`;
+    }
     const job = el('div', { class: `tr-job ${j.status}` },
       el('div', { class: 'tr-top' },
         el('span', { class: 'tr-name', text: `${j.op === 'upload' ? '\u2191' : j.op === 'transfer' ? '\u21C4' : '\u2193'} ${j.currentFile || j.id}` }),
-        el('span', { class: 'tr-status', text: `${j.status} — ${j.doneFiles}/${j.totalFiles} files, ${fmtBytes(j.sentBytes)}${j.totalBytes ? ` / ${fmtBytes(j.totalBytes)}` : ''}${j.speedBps ? ` @ ${fmtSpeed(j.speedBps)}` : ''}` }),
-        j.status === 'running' ? el('button', { class: 'btn', text: 'Cancel', onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
+        el('span', { class: 'tr-status', text: `${j.status} — ${counts}, ${bytes}` }),
+        el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
+        j.status === 'running' ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
       ),
       bar,
       j.error ? el('div', { class: 'tr-sub', text: j.error }) : null,
@@ -338,9 +355,16 @@ export function transferManager(onClose) {
   }
 
   draw();
-  const off = window.runtime?.EventsOn('transfer:update', () => draw());
+  const off = onEvent('transfer:update', () => draw());
   const origClose = close;
-  return { close: () => { origClose(); } };
+  return { close: () => origClose() };
+}
+
+// fmtEta renders a remaining-seconds estimate for running jobs.
+function fmtEta(secs) {
+  if (secs >= 3600) return `~${Math.round(secs / 3600)}h`;
+  if (secs >= 60) return `~${Math.round(secs / 60)}m`;
+  return `~${Math.round(secs)}s`;
 }
 
 // ---------- data source editor (M8: any connection type) ----------
@@ -360,14 +384,15 @@ const SOURCE_TYPES = [
 // sourceEditor edits one data source of any type. existing is a (masked)
 // Source from ListSources or null. Secret fields arrive empty with the
 // stored mask as placeholder; the backend re-attaches stored values.
-// The name starts auto-filled from the connection details (endpoint host,
-// local folder name, remote host/start dir) and stays editable — once the
-// user types a name it is never overwritten.
+// The name starts auto-filled from the connection details (the S3 bucket,
+// endpoint host, local folder name, remote host/start dir) and stays
+// editable — once the user types a name it is never overwritten.
 export function sourceEditor(existing, onSaved) {
   const f = {
     name: el('input', { class: 'input', value: existing?.name || '', spellcheck: 'false' }),
     type: el('select', { class: 'input' }, SOURCE_TYPES.map(([v, l]) => el('option', { value: v }, l))),
     // s3 (legacy profile fields)
+    bucket: el('input', { class: 'input mono', value: existing?.bucket || '', placeholder: 'the bucket this source opens (required)', spellcheck: 'false', list: 'src-bucket-list', autocomplete: 'off' }),
     endpoint: el('input', { class: 'input mono', value: existing?.s3?.endpoint || '', placeholder: 'https://s3.amazonaws.com (empty = AWS)' }),
     region: el('input', { class: 'input', value: existing?.s3?.region || '', placeholder: 'us-east-1' }),
     accessKey: el('input', { class: 'input mono', value: existing?.s3?.accessKeyId || '', autocomplete: 'off' }),
@@ -405,9 +430,15 @@ export function sourceEditor(existing, onSaved) {
     const t = f.type.value;
     let s = '';
     if (t === 's3') {
-      const ep = f.endpoint.value.trim();
-      if (ep) {
-        try { s = new URL(ep).hostname.split('.')[0] || ''; } catch { s = ''; }
+      // an S3 data source IS one bucket — the bucket is the natural name
+      const b = f.bucket.value.trim();
+      if (b) {
+        s = b;
+      } else {
+        const ep = f.endpoint.value.trim();
+        if (ep) {
+          try { s = new URL(ep).hostname.split('.')[0] || ''; } catch { s = ''; }
+        }
       }
     } else if (t === 'local') {
       s = f.localRoot.value.split(/[\\/]/).filter(Boolean).pop() || '';
@@ -428,8 +459,15 @@ export function sourceEditor(existing, onSaved) {
     if (s) f.name.value = s;
   };
   f.name.addEventListener('input', () => { nameDirty = f.name.value.trim() !== ''; });
-  for (const inp of [f.endpoint, f.host, f.root, f.localRoot]) inp.addEventListener('change', applySuggest);
+  for (const inp of [f.bucket, f.endpoint, f.host, f.root, f.localRoot]) inp.addEventListener('change', applySuggest);
   if (!nameDirty) applySuggest();
+
+  // bucket completions: a successful account-wide Test reports the visible
+  // bucket names; they become the bucket field's datalist options.
+  const bucketList = el('datalist', { id: 'src-bucket-list' });
+  const fillBucketList = (names) => {
+    bucketList.replaceChildren(...(names || []).map((b) => el('option', { value: b })));
+  };
 
   // draftSource builds the Source the form currently describes (for the
   // remote Test dial and the start-directory browser).
@@ -453,6 +491,47 @@ export function sourceEditor(existing, onSaved) {
 
   // Type-specific field sets, re-rendered when the type select changes.
   const s3Fields = () => el('div', {},
+    el('label', { class: 'field', text: 'Bucket' }),
+    el('div', { style: 'display:flex;gap:8px' },
+      f.bucket,
+      bucketList,
+      el('button', {
+        class: 'btn', text: 'Pick\u2026', title: 'Connect with the values above and list the buckets you can see (Test fills the same list)',
+        onclick: async () => {
+          status.textContent = 'Listing buckets\u2026';
+          status.style.color = 'var(--text-dim)';
+          try {
+            const res = await api.TestS3Draft({
+              id: existing?.id || '',
+              name: f.name.value.trim() || 'draft',
+              type: 's3',
+              s3: {
+                name: f.name.value.trim() || 'draft',
+                endpoint: f.endpoint.value.trim(),
+                region: f.region.value.trim(),
+                accessKeyId: f.accessKey.value.trim(),
+                secretKey: f.secretKey.value,
+                sessionToken: f.token.value,
+                pathStyle: f.pathStyle.checked,
+                insecure: f.insecure.checked,
+              },
+            });
+            if (res.ok && res.buckets?.length) {
+              fillBucketList(res.buckets);
+              status.textContent = `\u2705 ${res.buckets.length} bucket(s) visible — pick one`;
+              status.style.color = 'var(--ok)';
+              f.bucket.focus();
+            } else {
+              status.textContent = res.ok ? `\u2705 ${res.message} (no buckets visible)` : `\u274C ${res.message}`;
+              status.style.color = res.ok ? 'var(--ok)' : 'var(--danger)';
+            }
+          } catch (err) {
+            status.textContent = `\u274C ${err}`;
+            status.style.color = 'var(--danger)';
+          }
+        },
+      }),
+    ),
     el('label', { class: 'field', text: 'Endpoint URL' }), f.endpoint,
     el('label', { class: 'field', text: 'Region' }), f.region,
     el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px' },
@@ -536,11 +615,14 @@ export function sourceEditor(existing, onSaved) {
             let res;
             if (f.type.value === 's3') {
               // Dial the FORM values, saved or not (masked secrets are
-              // re-attached server-side from the stored source).
+              // re-attached server-side from the stored source). With a
+              // bucket typed the probe checks THAT bucket (a HEAD); without
+              // one it lists the account and fills the bucket completions.
               res = await api.TestS3Draft({
                 id: existing?.id || '',
                 name: f.name.value.trim(),
                 type: 's3',
+                bucket: f.bucket.value.trim(),
                 s3: {
                   name: f.name.value.trim(),
                   endpoint: f.endpoint.value.trim(),
@@ -552,6 +634,7 @@ export function sourceEditor(existing, onSaved) {
                   insecure: f.insecure.checked,
                 },
               });
+              if (res.ok && res.buckets?.length) fillBucketList(res.buckets);
             } else if (f.type.value === 'local') {
               res = await api.TestSource(existing?.id || f.name.value.trim());
             } else {
@@ -580,6 +663,13 @@ export function sourceEditor(existing, onSaved) {
             color,
           };
           if (t === 's3') {
+            if (!f.bucket.value.trim()) {
+              status.textContent = '\u274C Bucket is required — an S3 data source is one bucket';
+              status.style.color = 'var(--danger)';
+              f.bucket.focus();
+              return;
+            }
+            src.bucket = f.bucket.value.trim();
             src.s3 = {
               name: src.name,
               endpoint: f.endpoint.value.trim(),
@@ -650,13 +740,13 @@ export function helpSheet() {
 // is stable documentation.
 const GUIDE_SECTIONS = [
   ['Getting started', [
-    ['Add a data source', 'Click the + button next to DATA SOURCES on the left (or the button on the empty state). Every connection is a data source; the bold one with the star is the default S3 source the main view browses.'],
-    ['Import existing credentials', '"Import S3 credentials" (File menu or the empty state) reads the AWS shared files ~/.aws/credentials and ~/.aws/config. Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3.'],
+    ['Add a data source', 'Click the + button next to DATA SOURCES on the left (or the button on the empty state). Every connection is a data source; click one to browse it in the main view.'],
+    ['Import existing credentials', '"Import S3 Credential" (File menu or the empty state) reads credential files — AWS INI (~/.aws/credentials), rclone, JSON, .env, encrypted .s3bprofile — or a KMS service (Vault, AWS SM, Azure, GCP). Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3. Test each candidate before importing.'],
     ['Save your workspace', 'Data sources live in the session until saved. Ctrl+S / File → Save As writes an encrypted .s3bprofile you can reopen, keep or share; the status bar counts unsaved sources.'],
     ['Secrets', 'Keys and passwords are stored in the OS keyring (Windows Credential Manager, macOS Keychain, Linux SecretService) when available, with a 0600-permission file fallback on headless hosts.'],
   ]],
   ['Browsing', [
-    ['Sidebar tree', 'Sources → buckets → folders. Click to navigate; right-click a node for Properties, Set default, Admin panel and more.'],
+    ['Sidebar tree', 'Sources → buckets → folders. Click to navigate; right-click a node for Properties, Admin panel, transfers and more.'],
     ['Grid', 'Click, Ctrl+click and Shift+click to select, Ctrl+A for all, drag a marquee, or just type to jump to an item. The funnel row under the header filters per column; Ctrl+F focuses the quick filter.'],
     ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and type a path like s3://bucket/folder/ to jump directly. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here.'],
@@ -752,25 +842,56 @@ const RATE_LIMITS = [
   [10485760, '10 MB/s'],
 ];
 
-// conflictPolicy resolves null (canceled) or { policy, maxBps }. The speed
-// limit choice is remembered across transfers (localStorage s3b-throttle).
-// A saved conflict default (Settings, s3b-conflict: overwrite|skip|rename)
-// skips the dialog entirely and starts with the remembered speed limit.
-export function conflictPolicy(kind, target) {
+// savedThrottle returns the remembered speed limit. The control is hidden
+// by default; Settings ("Show speed limit when transferring") opts in
+// (localStorage s3b-show-throttle).
+function savedThrottle() {
+  return parseInt(localStorage.getItem('s3b-throttle') || '0', 10) || 0;
+}
+
+export function showThrottle() {
+  return localStorage.getItem('s3b-show-throttle') === '1';
+}
+
+// resolveTransferOpts decides how a transfer starts:
+//   1. a saved conflict default (Settings) applies silently;
+//   2. else the destination is probed (check) — a clean destination
+//      starts immediately, no dialog at all;
+//   3. only real collisions show the per-file conflict dialog.
+// check is () => Promise<ConflictInfo[]>; a throwing/failed pre-check
+// falls back to the whole-transfer dialog (classic behavior).
+// Resolves null (canceled) or { policy, maxBps, decisions }.
+export async function resolveTransferOpts(kind, target, check) {
   const preset = localStorage.getItem('s3b-conflict') || 'ask';
   if (preset !== 'ask') {
-    return Promise.resolve({
-      policy: preset,
-      maxBps: parseInt(localStorage.getItem('s3b-throttle') || '0', 10) || 0,
-    });
+    return { policy: preset, maxBps: savedThrottle(), decisions: null };
   }
+  let conflicts = null;
+  if (check) {
+    try { conflicts = await check(); } catch { conflicts = null; }
+  }
+  if (conflicts && conflicts.length) {
+    return conflictChoices(kind, target, conflicts);
+  }
+  // Clean destination (or pre-check unavailable): no dialog. The classic
+  // whole-transfer policy dialog only appears when the pre-check itself
+  // failed — the rare degenerate case.
+  if (conflicts) {
+    return { policy: 'overwrite', maxBps: savedThrottle(), decisions: null };
+  }
+  return classicTransferDialog(kind, target);
+}
+
+// classicTransferDialog is the whole-transfer fallback (no per-file rows):
+// used when the pre-check could not run (too many files, stat failures).
+function classicTransferDialog(kind, target) {
   let settled = false;
   return new Promise((resolve) => {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     const options = [
-      ['overwrite', 'Overwrite', 'Replace existing files'],
-      ['skip', 'Skip', 'Keep existing files'],
-      ['rename', 'Rename', 'Keep both — new files get " (1)" suffix'],
+      ['overwrite', t('transfer.overwrite'), t('transfer.overwriteSub')],
+      ['skip', t('transfer.skip'), t('transfer.skipSub')],
+      ['rename', t('transfer.rename'), t('transfer.renameSub')],
     ];
     let choice = 'overwrite';
     const list = el('div', {}, options.map(([id, label, sub]) => {
@@ -781,29 +902,152 @@ export function conflictPolicy(kind, target) {
         el('div', {}, el('div', { text: label, style: 'font-weight:600' }), el('div', { text: sub, style: 'color:var(--text-dim)' })),
       );
     }));
-    const rate = el('select', { class: 'input', style: 'width:auto' },
-      RATE_LIMITS.map(([v, label]) => el('option', { value: String(v) }, label)));
-    rate.value = localStorage.getItem('s3b-throttle') || '0';
+    const rate = throttleSelect();
     openModal({
-      title: `${kind === 'upload' ? 'Upload' : kind === 'transfer' ? 'Transfer' : 'Download'} — conflicting files at ${target}`,
+      title: t('transfer.classicTitle', { kind: kindLabel(kind), target }),
       body: el('div', {},
         list,
-        el('label', { class: 'field', style: 'display:flex;align-items:center;gap:8px;margin-top:10px' },
-          'Speed limit:', rate)),
+        rate.wrap),
       buttons: [
-        { label: 'Cancel', onclick: (c) => { done(null); c(); } },
+        { label: t('dlg.cancel'), onclick: (c) => { done(null); c(); } },
         {
-          label: 'Start',
+          label: t('transfer.start'),
           class: 'primary',
           onclick: (c) => {
-            localStorage.setItem('s3b-throttle', rate.value);
-            done({ policy: choice, maxBps: parseInt(rate.value, 10) || 0 });
+            if (rate.save) localStorage.setItem('s3b-throttle', String(rate.value()));
+            done({ policy: choice, maxBps: rate.value(), decisions: null });
             c();
           },
         },
       ],
       onClose: () => done(null),
     });
+  });
+}
+
+function kindLabel(kind) {
+  return t(kind === 'upload' ? 'transfer.kindUpload' : kind === 'transfer' ? 'transfer.kindTransfer' : 'transfer.kindDownload');
+}
+
+// throttleSelect builds the speed-limit control; hidden unless opted in
+// via Settings. Returns { wrap, value, save }.
+function throttleSelect() {
+  if (!showThrottle()) {
+    return { wrap: el('div'), value: () => savedThrottle(), save: false };
+  }
+  const sel = el('select', { class: 'input', style: 'width:auto' },
+    RATE_LIMITS.map(([v, label]) => el('option', { value: String(v) }, label)));
+  sel.value = String(savedThrottle());
+  const wrap = el('label', { class: 'field', style: 'display:flex;align-items:center;gap:8px;margin-top:10px' },
+    t('transfer.speedLimit'), sel);
+  return { wrap, value: () => parseInt(sel.value, 10) || 0, save: true };
+}
+
+// conflictChoices shows the per-file conflict list: both sides' size and
+// modification time, a checkbox per row, select/unselect all, and bulk
+// actions for the selection. Each row carries its own action (default
+// overwrite); Start resolves { policy, maxBps, decisions } where decisions
+// maps the engine's decision key to the per-file action.
+function conflictChoices(kind, target, conflicts) {
+  let settled = false;
+  return new Promise((resolve) => {
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const actions = conflicts.map(() => 'overwrite');
+    const checked = conflicts.map(() => true);
+
+    const summary = el('div', { class: 'cf-summary' });
+    const updateSummary = () => {
+      const n = { overwrite: 0, skip: 0, rename: 0 };
+      for (const a of actions) n[a]++;
+      summary.textContent = `${n.overwrite} ${t('transfer.overwrite')} · ${n.skip} ${t('transfer.skip')} · ${n.rename} ${t('transfer.rename')}`;
+    };
+
+    const master = el('input', { type: 'checkbox' });
+    master.checked = true;
+    master.addEventListener('change', () => {
+      rows.forEach(({ check }, i) => { check.checked = master.checked; checked[i] = master.checked; });
+    });
+
+    const rows = conflicts.map((c, i) => {
+      const check = el('input', { type: 'checkbox' });
+      check.checked = true;
+      check.addEventListener('change', () => {
+        checked[i] = check.checked;
+        master.checked = checked.every(Boolean);
+      });
+      const sel = el('select', { class: 'input cf-action' },
+        [['overwrite', t('transfer.overwrite')], ['skip', t('transfer.skip')], ['rename', t('transfer.rename')]]
+          .map(([v, l]) => el('option', { value: v }, l)));
+      sel.value = actions[i];
+      sel.addEventListener('change', () => { actions[i] = sel.value; updateSummary(); });
+      const row = el('div', { class: 'cf-row' },
+        el('label', { class: 'cf-check' }, check),
+        el('div', { class: 'cf-name', text: c.key, title: c.decisionKey }),
+        el('div', { class: 'cf-side' },
+          el('div', { class: 'cf-tag', text: t('transfer.source') }),
+          el('div', { text: fmtBytes(c.srcSize) }),
+          el('div', { class: 'cf-time', text: fmtDate(c.srcTime) })),
+        el('div', { class: 'cf-side' },
+          el('div', { class: 'cf-tag', text: t('transfer.destination') }),
+          el('div', { text: fmtBytes(c.dstSize) }),
+          el('div', { class: 'cf-time', text: fmtDate(c.dstTime) })),
+        sel,
+      );
+      return { row, check, sel };
+    });
+
+    const applyBulk = (action) => {
+      rows.forEach((r, i) => {
+        if (!checked[i]) return;
+        actions[i] = action;
+        r.sel.value = action;
+      });
+      updateSummary();
+    };
+    const bulk = el('div', { class: 'cf-bulk' },
+      el('span', { class: 'cf-bulk-label', text: t('transfer.applySelected') }),
+      el('button', { class: 'btn', text: t('transfer.overwrite'), onclick: () => applyBulk('overwrite') }),
+      el('button', { class: 'btn', text: t('transfer.skip'), onclick: () => applyBulk('skip') }),
+      el('button', { class: 'btn', text: t('transfer.rename'), onclick: () => applyBulk('rename') }),
+    );
+
+    const rate = throttleSelect();
+    const header = el('div', { class: 'cf-head' },
+      el('label', { class: 'cf-check' }, master),
+      el('div', { class: 'cf-name', text: t('transfer.file') }),
+      el('div', { class: 'cf-side' }, el('div', { class: 'cf-tag', text: t('transfer.source') })),
+      el('div', { class: 'cf-side' }, el('div', { class: 'cf-tag', text: t('transfer.destination') })),
+      el('div', {}),
+    );
+
+    openModal({
+      title: t('transfer.conflictTitle', { n: conflicts.length }),
+      cls: 'cf-modal',
+      wide: true,
+      body: el('div', {},
+        el('div', { class: 'field', text: t('transfer.conflictIntro') }),
+        header,
+        el('div', { class: 'cf-list' }, rows.map((r) => r.row)),
+        bulk,
+        summary,
+        rate.wrap),
+      buttons: [
+        { label: t('dlg.cancel'), onclick: (c) => { done(null); c(); } },
+        {
+          label: t('transfer.start'),
+          class: 'primary',
+          onclick: (c) => {
+            if (rate.save) localStorage.setItem('s3b-throttle', String(rate.value()));
+            const decisions = {};
+            conflicts.forEach((cf, i) => { decisions[cf.decisionKey] = actions[i]; });
+            done({ policy: 'overwrite', maxBps: rate.value(), decisions });
+            c();
+          },
+        },
+      ],
+      onClose: () => done(null),
+    });
+    updateSummary();
   });
 }
 
@@ -970,7 +1214,7 @@ export function versionsDialog(bucket, key, onChanged) {
 // versionDiffDialog compares two picked versions of one object: a metadata
 // table (size / mtime / ETag / class) plus a unified line diff when both
 // sides are text within the backend's 512 KB cap.
-export function versionDiffDialog(bucket, key, va, vb) {
+function versionDiffDialog(bucket, key, va, vb) {
   const short = (id) => (!id ? '(null version)' : (id.length > 12 ? `\u2026${id.slice(-8)}` : id));
   const meta = el('div', { class: 'verd-meta' });
   const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
@@ -1713,7 +1957,7 @@ export function classDialog(bucket, rows, onChanged) {
 // batchDialog runs one operation per item, sequentially, with live
 // per-item status — the batch-progress surface for multi-run commands.
 // run(item) throws to mark a failure; Stop (or closing) abandons the rest.
-export function batchDialog({ title, intro = '', items, run, onDone }) {
+function batchDialog({ title, intro = '', items, run, onDone }) {
   const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: `0/${items.length}` });
   const list = el('div', { class: 'batch-list' });
   let stopped = false;
@@ -2014,7 +2258,7 @@ export function browseDirDialog({ title, kind, source = '', name = '', draft = n
   });
 }
 
-// ---------- import credentials (files + KMS services) ----------
+// ---------- Import S3 Credential (files + KMS services) ----------
 // KMS_PARAM_DEFS mirrors the Go-side KmsFetch params per service.
 const KMS_PARAM_DEFS = {
   vault: [
@@ -2068,7 +2312,7 @@ const KMS_SERVICES = [
 // kmsFetchDialog collects one service's params and fetches its secrets.
 // onDone fires when this dialog closes (any path) so a caller whose modal
 // it replaced can re-show itself.
-export function kmsFetchDialog(onCandidates, onDone) {
+function kmsFetchDialog(onCandidates, onDone) {
   const service = el('select', { class: 'input' }, KMS_SERVICES.map(([v, l]) => el('option', { value: v }, l)));
   const holder = el('div', { style: 'margin-top:4px' });
   const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
@@ -2125,7 +2369,7 @@ export function kmsFetchDialog(onCandidates, onDone) {
   });
 }
 
-// importCredsDialog: pick credential files or fetch from a KMS service,
+// importCredsDialog (the "Import S3 Credential" dialog): pick credential files or fetch from a KMS service,
 // review + test the parsed candidates (bucket counts), then import them
 // as data sources. Secrets never leave the Go side — the dialog only sees
 // metadata.
@@ -2214,7 +2458,7 @@ export function importCredsDialog(onImported) {
   // the KMS fetch dialog) replace this one in the modal root — the candidate
   // state lives here, so it re-shows itself when they close.
   const show = () => openModal({
-    title: 'Import credentials',
+    title: 'Import S3 Credential',
     body: el('div', {},
       el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'Turn connection credentials into data sources. Files: AWS CLI INI, rclone.conf, JSON (any shape), .env, or an exported .s3bprofile. Services: Vault, AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or any custom HTTP endpoint.' }),
       list,
@@ -2231,7 +2475,9 @@ export function importCredsDialog(onImported) {
           if (!sel.length) { status.textContent = 'Nothing selected.'; return; }
           try {
             const res = await api.ImportCredentials(sel);
-            toast(`Imported ${res.imported?.length || 0} source(s)${res.skipped?.length ? `, ${res.skipped.length} skipped` : ''}`, res.imported?.length ? 'ok' : 'error');
+            const upd = res.updated?.length ? `, ${res.updated.length} updated` : '';
+            toast(`Imported ${res.imported?.length || 0} source(s)${upd}${res.skipped?.length ? `, ${res.skipped.length} skipped` : ''}`,
+              (res.imported?.length || res.updated?.length) ? 'ok' : 'error');
             close();
             onImported?.(res);
           } catch (e) {

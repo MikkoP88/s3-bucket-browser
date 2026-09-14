@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -99,6 +100,37 @@ type UploadOptions struct {
 	Progress     ProgressFn
 }
 
+// newUploader / newDownloader configure the SDK transfer manager from
+// UploadOptions / DownloadOptions. The manager package is deprecated in
+// favor of feature/s3/transfermanager, which is still pre-GA and may
+// change — migrate once it ships stable.
+//
+//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader comment
+func newUploader(client *s3.Client, opts UploadOptions) *manager.Uploader {
+	//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
+	return manager.NewUploader(client, func(u *manager.Uploader) {
+		if opts.PartSize > 0 {
+			u.PartSize = opts.PartSize
+		}
+		if opts.Concurrency > 0 {
+			u.Concurrency = opts.Concurrency
+		}
+	})
+}
+
+//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader comment
+func newDownloader(client *s3.Client, opts DownloadOptions) *manager.Downloader {
+	//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
+	return manager.NewDownloader(client, func(d *manager.Downloader) {
+		if opts.PartSize > 0 {
+			d.PartSize = opts.PartSize
+		}
+		if opts.Concurrency > 0 {
+			d.Concurrency = opts.Concurrency
+		}
+	})
+}
+
 // UploadFile uploads one local file to bucket/key.
 func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key string, opts UploadOptions) error {
 	if opts.NoClobber {
@@ -128,14 +160,7 @@ func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key s
 		}
 	}
 
-	uploader := manager.NewUploader(client, func(u *manager.Uploader) {
-		if opts.PartSize > 0 {
-			u.PartSize = opts.PartSize
-		}
-		if opts.Concurrency > 0 {
-			u.Concurrency = opts.Concurrency
-		}
-	})
+	uploader := newUploader(client, opts)
 	input := &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -148,6 +173,7 @@ func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key s
 		input.ServerSideEncryption = s3types.ServerSideEncryptionAes256
 	}
 
+	//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
 	_, err = uploader.Upload(ctx, input)
 	return err
 }
@@ -156,21 +182,14 @@ func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key s
 // counterpart of UploadFile, used by cross-source transfers where the
 // body is an open remote/S3 stream rather than a local file.
 func UploadReader(ctx context.Context, client *s3.Client, r io.Reader, size int64, bucket, key string, opts UploadOptions) error {
-	var body io.Reader = r
+	body := r
 	if opts.Progress != nil || opts.MaxBPS > 0 {
 		body = &progressReader{
 			r: r, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
 			total: size, reportOn: true,
 		}
 	}
-	uploader := manager.NewUploader(client, func(u *manager.Uploader) {
-		if opts.PartSize > 0 {
-			u.PartSize = opts.PartSize
-		}
-		if opts.Concurrency > 0 {
-			u.Concurrency = opts.Concurrency
-		}
-	})
+	uploader := newUploader(client, opts)
 	input := &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -182,6 +201,7 @@ func UploadReader(ctx context.Context, client *s3.Client, r io.Reader, size int6
 	if opts.SSE == "AES256" {
 		input.ServerSideEncryption = s3types.ServerSideEncryptionAes256
 	}
+	//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
 	_, err := uploader.Upload(ctx, input)
 	return err
 }
@@ -228,14 +248,7 @@ func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath
 	defer f.Close()
 
 	var w io.WriterAt = f
-	downloader := manager.NewDownloader(client, func(d *manager.Downloader) {
-		if opts.PartSize > 0 {
-			d.PartSize = opts.PartSize
-		}
-		if opts.Concurrency > 0 {
-			d.Concurrency = opts.Concurrency
-		}
-	})
+	downloader := newDownloader(client, opts)
 	if opts.Progress != nil || opts.MaxBPS > 0 {
 		w = &progressWriterAt{
 			w: f, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
@@ -243,6 +256,7 @@ func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath
 		}
 	}
 
+	//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
 	_, err = downloader.Download(ctx, w, &s3.GetObjectInput{
 		Bucket: aws.String(bucket), Key: aws.String(key),
 	})
@@ -317,7 +331,9 @@ func DeleteKeys(ctx context.Context, client *s3.Client, bucket string, keys []st
 }
 
 // CollectPrefixKeys gathers every object key under a prefix (used by rm -r,
-// sync --delete and rb --force).
+// sync --delete and rb --force). Note: some stores (MinIO) omit "dir/" from
+// a listing under "dir/" — recursive DELETES must additionally include the
+// folder marker via IncludeFolderMarker or a ghost folder row survives.
 func CollectPrefixKeys(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, prefix string) ([]string, error) {
 	var keys []string
 	err := listing.Walk(ctx, client, bucket, prefix, func(o s3types.Object) error {
@@ -325,6 +341,19 @@ func CollectPrefixKeys(ctx context.Context, client s3.ListObjectsV2APIClient, bu
 		return nil
 	})
 	return keys, err
+}
+
+// IncludeFolderMarker appends the folder prefix to a recursive-delete key
+// set when the listing did not already return it: stores disagree whether
+// "dir/" appears in a listing under "dir/" (AWS lists it, MinIO omits it),
+// and a delete that misses the marker leaves a ghost folder behind. Only
+// deletes want this — converting or copying a marker is pointless and can
+// fail outright on stores where the folder is implicit (no marker object).
+func IncludeFolderMarker(keys []string, prefix string) []string {
+	if strings.HasSuffix(prefix, "/") && !slices.Contains(keys, prefix) {
+		return append(keys, prefix)
+	}
+	return keys
 }
 
 // JoinKey joins prefix parts into a clean object key.

@@ -17,14 +17,14 @@ func profileCmd() *cobra.Command {
 		Use:   "profile",
 		Short: "Manage connection profiles",
 	}
-	cmd.AddCommand(profileAddCmd(), profileListCmd(), profileUseCmd(), profileRemoveCmd(), profileTestCmd())
+	cmd.AddCommand(profileAddCmd(), profileListCmd(), profileRemoveCmd(), profileTestCmd())
 	return cmd
 }
 
 func profileAddCmd() *cobra.Command {
 	var (
 		endpoint, region, accessKey, secretKey, sessionToken string
-		pathStyle, virtualHosted, insecure, makeDefault      bool
+		pathStyle, virtualHosted, insecure                   bool
 	)
 	cmd := &cobra.Command{
 		Use:        "add NAME",
@@ -63,20 +63,13 @@ func profileAddCmd() *cobra.Command {
 			if err := s.UpsertS3Profile(p); err != nil {
 				return usageErr("%v", err)
 			}
-			if makeDefault || len(s.Profiles) == 1 {
-				if err := s.SetDefaultS3(name); err != nil {
-					return usageErr("%v", err)
-				}
-			}
 			if err := s.Save(); err != nil {
 				return opErr(err)
 			}
 
 			key := p.Provider()
 			if flagJSON {
-				pub := p.Public()
-				pub.Default = makeDefault || len(s.Profiles) == 1
-				return printJSON(pub)
+				return printJSON(p.Public())
 			}
 			col.hi.Printf("profile %q saved", name)
 			fmt.Println()
@@ -102,7 +95,6 @@ func profileAddCmd() *cobra.Command {
 	f.BoolVar(&pathStyle, "path-style", false, "path-style addressing")
 	f.BoolVar(&virtualHosted, "virtual-hosted", false, "virtual-hosted addressing")
 	f.BoolVar(&insecure, "insecure", false, "skip TLS verification (labs only)")
-	f.BoolVar(&makeDefault, "default", false, "make this the default profile")
 	return cmd
 }
 
@@ -127,38 +119,9 @@ func profileListCmd() *cobra.Command {
 				return nil
 			}
 			for _, p := range s.Sorted() {
-				mark := " "
-				if p.Default {
-					mark = "*"
-				}
 				prov := provider.Get(p.Provider()).Name
-				fmt.Printf("%s %-16s %-40s %-12s %-10s %s\n",
-					mark, p.Name, orDefault(p.Endpoint, "(AWS default)"), orDefault(p.Region, "us-east-1"), styleName(p.PathStyle), prov)
-			}
-			return nil
-		},
-	}
-}
-
-func profileUseCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:        "use NAME",
-		Short:      "Set the default profile",
-		Deprecated: "use 's3b source use NAME' instead",
-		Args:       cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := store()
-			if err != nil {
-				return err
-			}
-			if err := s.SetDefaultS3(args[0]); err != nil {
-				return usageErr("%v", err)
-			}
-			if err := s.Save(); err != nil {
-				return opErr(err)
-			}
-			if !flagJSON {
-				fmt.Printf("default profile: %s\n", args[0])
+				fmt.Printf("  %-16s %-40s %-12s %-10s %s\n",
+					p.Name, orDefault(p.Endpoint, "(AWS default)"), orDefault(p.Region, "us-east-1"), styleName(p.PathStyle), prov)
 			}
 			return nil
 		},
@@ -204,7 +167,7 @@ func profileTestCmd() *cobra.Command {
 			if len(args) == 1 {
 				p, err = s.Get(args[0])
 			} else {
-				p, err = s.DefaultProfile()
+				p, err = s.SoleProfile()
 			}
 			if err != nil {
 				return opErr(err)

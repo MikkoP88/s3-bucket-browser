@@ -32,13 +32,12 @@ func TestUpsertGetRemove(t *testing.T) {
 		t.Fatalf("want 1 profile, got %d", len(s.Profiles))
 	}
 
-	// Update preserves CreatedAt and Default.
-	s.Profiles[0].Default = true
+	// Update preserves CreatedAt.
 	p.Region = "us-east-1"
 	if err := s.Upsert(p); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Profiles) != 1 || !s.Profiles[0].Default || s.Profiles[0].Region != "us-east-1" {
+	if len(s.Profiles) != 1 || s.Profiles[0].Region != "us-east-1" {
 		t.Fatalf("upsert failed to update in place: %+v", s.Profiles)
 	}
 
@@ -58,32 +57,25 @@ func TestUpsertGetRemove(t *testing.T) {
 	}
 }
 
-func TestDefaultProfile(t *testing.T) {
+func TestSoleProfile(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.DefaultProfile(); err == nil {
-		t.Fatal("empty store should have no default")
+	if _, err := s.SoleProfile(); err == nil {
+		t.Fatal("empty store should have no sole profile")
 	}
 	s.Upsert(Profile{Name: "a"})
-	if _, err := s.DefaultProfile(); err != nil {
-		t.Fatalf("single profile should be implicit default: %v", err)
+	p, err := s.SoleProfile()
+	if err != nil || p.Name != "a" {
+		t.Fatalf("single profile should resolve name-less: %q, %v", p.Name, err)
 	}
 	s.Upsert(Profile{Name: "b"})
-	if _, err := s.DefaultProfile(); err == nil {
-		t.Fatal("two profiles without default should error")
-	}
-	if err := s.SetDefault("b"); err != nil {
-		t.Fatal(err)
-	}
-	p, err := s.DefaultProfile()
-	if err != nil || p.Name != "b" {
-		t.Fatalf("DefaultProfile = %q, %v", p.Name, err)
+	if _, err := s.SoleProfile(); err == nil {
+		t.Fatal("two profiles must require an explicit name")
 	}
 }
 
 func TestSaveLoadRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	s.Upsert(Profile{Name: "x", AccessKeyID: "AKIAEXAMPLE", SecretKey: "supersecret", PathStyle: true})
-	s.SetDefault("x")
 	if err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +85,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, err := got.Get("x")
-	if err != nil || p.SecretKey != "supersecret" || !p.Default || !p.PathStyle {
+	if err != nil || p.SecretKey != "supersecret" || !p.PathStyle {
 		t.Fatalf("round trip mismatch: %+v (%v)", p, err)
 	}
 }

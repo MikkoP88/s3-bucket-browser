@@ -118,9 +118,14 @@ func publicSources(srcs []profile.Source) []profile.Source {
 // editor round-trips never wipe credentials.
 func (a *App) SaveSource(in profile.Source) error {
 	if a.profileFileOpen() {
-		return a.saveSourceInContainer(in)
+		if err := a.saveSourceInContainer(in); err != nil {
+			return err
+		}
+	} else if err := a.saveSessionSource(in); err != nil {
+		return err
 	}
-	return a.saveSessionSource(in)
+	a.emitLogSrc(LogInfo, "sources", in.Name, fmt.Sprintf("data source %q (%s) saved", in.Name, in.Type))
+	return nil
 }
 
 // saveSessionSource upserts into the session-only registry (no Profile
@@ -190,6 +195,7 @@ func (a *App) RemoveSource(idOrName string) error {
 				pf.dirty = true
 				a.pfMu.Unlock()
 				a.invalidateClients()
+				a.emitLogSrc(LogInfo, "sources", src.Name, fmt.Sprintf("data source %q (%s) removed", src.Name, src.Type))
 				return nil
 			}
 		}
@@ -201,6 +207,7 @@ func (a *App) RemoveSource(idOrName string) error {
 			a.session = append(a.session[:i], a.session[i+1:]...)
 			a.pfMu.Unlock()
 			a.invalidateClients()
+			a.emitLogSrc(LogInfo, "sources", src.Name, fmt.Sprintf("data source %q (%s) removed", src.Name, src.Type))
 			return nil
 		}
 	}
@@ -208,8 +215,9 @@ func (a *App) RemoveSource(idOrName string) error {
 	return fmt.Errorf("%w: source %q", profile.ErrNotFound, idOrName)
 }
 
-// TestSource probes a data source. S3 sources get the real bucket-listing
-// check; other engines land with M9 and report so honestly.
+// TestSource probes a data source. S3 sources scoped to one bucket get a
+// HEAD on that bucket (the credential may not list all buckets);
+// account-wide S3 sources list buckets; other engines dial remotefs.
 func (a *App) TestSource(idOrName string) TestResult {
 	src, err := a.sourceByIDOrName(idOrName)
 	if err != nil {
@@ -218,7 +226,16 @@ func (a *App) TestSource(idOrName string) TestResult {
 	if src.Type != profile.TypeS3 || src.S3 == nil {
 		return a.testRemoteSource(src)
 	}
-	return a.TestProfile(src.Name)
+	c, err := a.client(src.Name)
+	if err != nil {
+		return TestResult{OK: false, Message: err.Error()}
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
+	defer cancel()
+	if src.Bucket != "" {
+		return probeBucket(ctx, c, src.Bucket)
+	}
+	return probeBuckets(ctx, c)
 }
 
 // TestS3Draft dials the s3 connection described by in WITHOUT saving it, so
@@ -249,6 +266,9 @@ func (a *App) TestS3Draft(in profile.Source) TestResult {
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 	defer cancel()
+	if bucket := strings.TrimSpace(in.Bucket); bucket != "" {
+		return probeBucket(ctx, c, bucket)
+	}
 	return probeBuckets(ctx, c)
 }
 
@@ -287,6 +307,7 @@ func (a *App) NewProfileFile(name, password string) error {
 	}
 	a.pf = &openProfileFile{name: strings.TrimSpace(name), password: password}
 	a.invalidateClients()
+	a.emitLog(LogInfo, "profile", "new profile file session started (unsaved)")
 	return nil
 }
 
@@ -320,6 +341,7 @@ func (a *App) OpenProfileFile(path, password string) error {
 	a.pf = &openProfileFile{name: name, path: path, password: password, sources: srcs}
 	a.pfMu.Unlock()
 	a.invalidateClients()
+	a.emitLog(LogInfo, "profile", fmt.Sprintf("opened profile file %s (%d source(s))", filepath.Base(path), len(srcs)))
 	return nil
 }
 
@@ -342,6 +364,7 @@ func (a *App) SaveProfileFile() error {
 		return err
 	}
 	pf.dirty = false
+	a.emitLog(LogInfo, "profile", fmt.Sprintf("profile file %s saved (%d source(s))", filepath.Base(pf.path), len(pf.sources)))
 	return nil
 }
 
@@ -379,6 +402,7 @@ func (a *App) SaveProfileFileAs(path, password string) error {
 		return err
 	}
 	pf.path, pf.password, pf.dirty = path, password, false
+	a.emitLog(LogInfo, "profile", fmt.Sprintf("profile file saved as %s (%d source(s))", filepath.Base(path), len(pf.sources)))
 	return nil
 }
 
@@ -387,26 +411,40 @@ func (a *App) SaveProfileFileAs(path, password string) error {
 // means a clean slate: the container AND any session remainder go away.
 func (a *App) CloseProfileFile(force bool) error {
 	a.pfMu.Lock()
-	defer a.pfMu.Unlock()
 	pf := a.pf
 	if pf == nil {
 		if len(a.session) == 0 {
+			a.pfMu.Unlock()
 			return nil // idempotent
 		}
 		if !force {
-			return fmt.Errorf("%d unsaved session source(s) exist — save them first or force close", len(a.session))
+			n := len(a.session)
+			a.pfMu.Unlock()
+			return fmt.Errorf("%d unsaved session source(s) exist — save them first or force close", n)
 		}
+		n := len(a.session)
 		a.session = nil
+		a.pfMu.Unlock()
 		a.invalidateClients()
+		a.emitLog(LogWarn, "profile", fmt.Sprintf("session closed (%d unsaved source(s) discarded)", n))
 		return nil
 	}
 	if pf.dirty && !force {
+		a.pfMu.Unlock()
 		return errors.New("the profile file has unsaved changes — save first or force close")
 	}
+	name := pf.name
+	n := len(pf.sources)
 	pf.password = "" // best-effort wipe
 	a.pf = nil
 	a.session = nil
+	a.pfMu.Unlock()
 	a.invalidateClients()
+	if force {
+		a.emitLog(LogWarn, "profile", fmt.Sprintf("profile file %q closed WITHOUT saving (%d source(s) discarded)", name, n))
+	} else {
+		a.emitLog(LogInfo, "profile", fmt.Sprintf("profile file %q closed (%d source(s))", name, n))
+	}
 	return nil
 }
 
@@ -436,19 +474,6 @@ func (a *App) profileFileOpen() bool {
 	return a.pf != nil
 }
 
-// containerSources returns a copy of the container's sources (nil when no
-// file is open). Shallow: embedded S3 profiles are shared read-only.
-func (a *App) containerSources() []profile.Source {
-	a.pfMu.Lock()
-	defer a.pfMu.Unlock()
-	if a.pf == nil {
-		return nil
-	}
-	out := make([]profile.Source, len(a.pf.sources))
-	copy(out, a.pf.sources)
-	return out
-}
-
 // workspaceSources returns a copy of the workspace's sources: the open
 // Profile file's, else the session-only registry's. Shallow: embedded S3
 // profiles are shared read-only.
@@ -465,8 +490,8 @@ func (a *App) workspaceSources() []profile.Source {
 }
 
 // s3SourceNamed resolves an s3 source for client() lookups: the named
-// source, or (name == "") the default/single s3 source. ok is false when
-// nothing matches.
+// source, or (name == "") the single s3 source of the workspace. ok is
+// false when nothing matches (zero or several s3 sources).
 func s3SourceNamed(srcs []profile.Source, name string) (src profile.Source, ok bool) {
 	isS3 := func(s profile.Source) bool { return s.Type == profile.TypeS3 && s.S3 != nil }
 	if name == "" {
@@ -478,9 +503,6 @@ func s3SourceNamed(srcs []profile.Source, name string) (src profile.Source, ok b
 			}
 			n++
 			only = s
-			if s.Default {
-				return s, true
-			}
 		}
 		if n == 1 {
 			return only, true

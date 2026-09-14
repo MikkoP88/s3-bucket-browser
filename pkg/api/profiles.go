@@ -3,22 +3,21 @@ package api
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/bucketops"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
-	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
+	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
-// profiles.go carries the connectivity probe (TestProfile) and the
-// ~/.aws/credentials import. The legacy profile-mirror API (ListProfiles,
-// SaveProfile, RemoveProfile, SetDefaultProfile) is gone with the strict
-// sources model — the GUI workspace is sources-only and never touches the
-// CLI's profile store.
+// profiles.go carries the connectivity probe (TestProfile). The legacy
+// profile-mirror API (ListProfiles, SaveProfile, RemoveProfile,
+// SetDefaultProfile) is gone with the strict sources model — the GUI
+// workspace is sources-only and never touches the CLI's profile store.
+// Credential imports (files and KMS services, AWS INI included) live in
+// importcreds.go.
 
 // isMasked reports whether s is a masked secret or empty placeholder.
 func isMasked(s string) bool {
@@ -27,11 +26,12 @@ func isMasked(s string) bool {
 
 // TestResult is the outcome of a lightweight connectivity probe.
 type TestResult struct {
-	OK          bool   `json:"ok"`
-	Message     string `json:"message"`
-	Provider    string `json:"provider"`
-	Endpoint    string `json:"endpoint"`
-	BucketCount int    `json:"bucketCount"`
+	OK          bool     `json:"ok"`
+	Message     string   `json:"message"`
+	Provider    string   `json:"provider"`
+	Endpoint    string   `json:"endpoint"`
+	BucketCount int      `json:"bucketCount"`
+	Buckets     []string `json:"buckets,omitempty"` // names (account-wide probes)
 }
 
 // TestProfile lists buckets with a short timeout: the fastest honest answer
@@ -47,7 +47,8 @@ func (a *App) TestProfile(name string) TestResult {
 }
 
 // probeBuckets is the shared Test tail: list buckets with the caller's
-// deadline and shape the verdict.
+// deadline and shape the verdict (names included — the editor's bucket
+// field offers them as completions).
 func probeBuckets(ctx context.Context, c *s3client.Client) TestResult {
 	res := TestResult{
 		Provider: c.ProviderKey,
@@ -58,163 +59,50 @@ func probeBuckets(ctx context.Context, c *s3client.Client) TestResult {
 		res.Message = err.Error()
 		return res
 	}
+	names := make([]string, 0, len(buckets))
+	for _, b := range buckets {
+		names = append(names, aws.ToString(b.Name))
+	}
 	res.OK = true
-	res.BucketCount = len(buckets)
-	res.Message = fmt.Sprintf("connected — %d bucket(s) visible", len(buckets))
+	res.Buckets = names
+	res.BucketCount = len(names)
+	res.Message = fmt.Sprintf("connected — %d bucket(s) visible", len(names))
 	return res
 }
 
-// ImportResult reports what an AWS credentials import did.
+// probeBucket is probeBuckets' bucket-scoped twin: the credential may not
+// be allowed to list all buckets, so the check is a HEAD on the one bucket
+// the source is scoped to.
+func probeBucket(ctx context.Context, c *s3client.Client, bucket string) TestResult {
+	res := TestResult{
+		Provider: c.ProviderKey,
+		Endpoint: c.Endpoint,
+	}
+	if _, err := bucketops.Head(ctx, c.S3, bucket); err != nil {
+		res.Message = err.Error()
+		return res
+	}
+	res.OK = true
+	res.Message = fmt.Sprintf("connected — bucket %s accessible", bucket)
+	return res
+}
+
+// ImportResult reports what a credentials import did. Updated lists
+// existing sources that matched a candidate by connection and were
+// refreshed in place (re-imports never duplicate).
 type ImportResult struct {
 	Imported []string `json:"imported"`
+	Updated  []string `json:"updated"`
 	Skipped  []string `json:"skipped"`
 }
 
-// awsProfile holds the parsed settings of one section of an AWS shared
-// credentials/config file.
-type awsProfile struct {
-	access   string
-	secret   string
-	token    string
-	endpoint string
-	region   string
-}
-
-// parseAwsIni parses an AWS-style INI file. When configFile is true only
-// [default] and [profile x] sections are kept — the config file also
-// carries sso-session/services blocks that are not importable credentials.
-func parseAwsIni(data string, configFile bool) map[string]*awsProfile {
-	out := map[string]*awsProfile{}
-	cur := ""
-	for _, line := range strings.Split(data, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			cur = strings.TrimSpace(line[1 : len(line)-1])
-			if configFile && cur != "default" && !strings.HasPrefix(cur, "profile ") {
-				cur = "" // not a profile section
-				continue
-			}
-			cur = strings.TrimPrefix(cur, "profile ")
-			if cur != "" && out[cur] == nil {
-				out[cur] = &awsProfile{}
-			}
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok || cur == "" {
-			continue
-		}
-		p := out[cur]
-		if p == nil {
-			continue
-		}
-		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
-		switch k {
-		case "aws_access_key_id":
-			p.access = v
-		case "aws_secret_access_key":
-			p.secret = v
-		case "aws_session_token":
-			p.token = v
-		case "endpoint_url":
-			p.endpoint = v
-		case "region":
-			p.region = v
-		}
+// importSourceName maps a credential-file section name onto a source
+// name. AWS's [default] section must not become a source literally named
+// "default" — a leftover section with stale keys would then surface as a
+// non-functional "default" data source; "aws" names what it actually is.
+func importSourceName(section string) string {
+	if strings.EqualFold(strings.TrimSpace(section), "default") {
+		return "aws"
 	}
-	return out
-}
-
-// ImportAwsCredentials imports connections from the AWS shared credentials
-// files (~/.aws/credentials, merged with ~/.aws/config for region and
-// endpoint_url) as s3 data sources in the workspace (open Profile file,
-// else the session registry), the onboarding shortcut. endpoint_url
-// entries become S3-compatible providers (MinIO, R2, Wasabi, …); existing
-// source names are skipped.
-func (a *App) ImportAwsCredentials() (ImportResult, error) {
-	var res ImportResult
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return res, err
-	}
-	credPath := filepath.Join(home, ".aws", "credentials")
-	data, err := os.ReadFile(credPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return res, fmt.Errorf("%s not found — create it with 'aws configure' or add a data source manually", credPath)
-		}
-		return res, fmt.Errorf("cannot read %s: %w", credPath, err)
-	}
-	profiles := parseAwsIni(string(data), false)
-	// The config file is optional; its [profile x] blocks carry region and
-	// endpoint_url for profiles whose keys live in the credentials file.
-	if cfgData, err := os.ReadFile(filepath.Join(home, ".aws", "config")); err == nil {
-		for name, p := range parseAwsIni(string(cfgData), true) {
-			if c := profiles[name]; c != nil {
-				if c.endpoint == "" {
-					c.endpoint = p.endpoint
-				}
-				if c.region == "" {
-					c.region = p.region
-				}
-			}
-		}
-	}
-
-	a.pfMu.Lock()
-	defer a.pfMu.Unlock()
-	dst := &a.session
-	if a.pf != nil {
-		dst = &a.pf.sources
-	}
-	names := make([]string, 0, len(profiles))
-	for name := range profiles {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	imported := 0
-	for _, name := range names {
-		p := profiles[name]
-		if p.access == "" || p.secret == "" {
-			res.Skipped = append(res.Skipped, name+" (incomplete)")
-			continue
-		}
-		exists := false
-		for _, s := range *dst {
-			if s.Name == name {
-				exists = true
-				break
-			}
-		}
-		if exists {
-			res.Skipped = append(res.Skipped, name+" (already exists)")
-			continue
-		}
-		if err := profile.UpsertSourceIn(dst, profile.Source{
-			Name: name,
-			Type: profile.TypeS3,
-			S3: &profile.Profile{
-				Name:         name,
-				AccessKeyID:  p.access,
-				SecretKey:    p.secret,
-				SessionToken: p.token,
-				Endpoint:     p.endpoint,
-				Region:       p.region,
-			},
-		}); err != nil {
-			return res, err
-		}
-		res.Imported = append(res.Imported, name)
-		imported++
-	}
-	if imported > 0 {
-		if a.pf != nil {
-			a.pf.dirty = true
-		}
-		a.invalidateClients()
-	}
-	return res, nil
+	return section
 }

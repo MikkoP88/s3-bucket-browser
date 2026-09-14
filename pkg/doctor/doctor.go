@@ -83,9 +83,7 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 	}
 
 	// Provider capability warnings (ported knowledge base).
-	for _, w := range provider.Warnings(c.ProviderKey, c.Endpoint, c.PathStyle) {
-		r.Warnings = append(r.Warnings, w)
-	}
+	r.Warnings = append(r.Warnings, provider.Warnings(c.ProviderKey, c.Endpoint, c.PathStyle)...)
 
 	host := "s3." + c.Region + ".amazonaws.com"
 	var port = 443

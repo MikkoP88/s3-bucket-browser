@@ -325,8 +325,8 @@ func TestProfileFileDirtyGuard(t *testing.T) {
 	}
 }
 
-// containerS3Source("") resolves the default (or single) s3 source — the
-// container-mode equivalent of DefaultProfile.
+// containerS3Source("") resolves the single s3 source of the container —
+// the container-mode equivalent of SoleProfile.
 func TestContainerDefaultResolution(t *testing.T) {
 	a := newTestApp(t)
 	a.ctx = context.Background()
@@ -336,18 +336,20 @@ func TestContainerDefaultResolution(t *testing.T) {
 	defer a.CloseProfileFile(true)
 
 	if _, ok := a.containerS3Source(""); ok {
-		t.Fatal("no s3 sources yet — default must not resolve")
+		t.Fatal("no s3 sources yet — nothing must resolve")
 	}
-	one := s3Source("one", "s1")
-	one.Default = true
-	if err := a.SaveSource(one); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.SaveSource(s3Source("two", "s2")); err != nil {
+	if err := a.SaveSource(s3Source("one", "s1")); err != nil {
 		t.Fatal(err)
 	}
 	src, ok := a.containerS3Source("")
 	if !ok || src.Name != "one" {
-		t.Fatalf("default resolution: %+v ok=%v", src, ok)
+		t.Fatalf("single-source resolution: %+v ok=%v", src, ok)
+	}
+	// A second s3 source makes the name-less lookup ambiguous.
+	if err := a.SaveSource(s3Source("two", "s2")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.containerS3Source(""); ok {
+		t.Fatal("two s3 sources — name-less resolution must fail")
 	}
 }

@@ -1,8 +1,11 @@
 // Lazy sidebar tree (M9/M11): the configured data sources are the top level
-// and EVERY source type expands into its own content — S3 sources list their
-// buckets (each bucket a folder tree), remote/local sources list their
-// directories. Node ids are namespaced per source, so two sources can hold
-// same-named buckets without colliding.
+// and EVERY source type expands into its own content — remote/local sources
+// list their directories, S3 sources list their bucket's folders (every S3
+// data source is scoped to ONE bucket; its node carries the bucket identity
+// from the definition, so all source types render the same structure —
+// content folders directly under the source). Legacy account-wide S3 sources
+// (no bucket) keep the bucket-list level. Node ids are namespaced per
+// source, so two sources can hold same-named buckets without colliding.
 import { api, onEvent } from './api.js';
 import { el } from './util.js';
 
@@ -59,7 +62,24 @@ export class Tree {
         label: s.name, expanded: false, loaded: false, children: [],
         level: 0, el: null, twistEl: null,
       });
-      keep.get(id).stype = s.type;
+      const n = keep.get(id);
+      n.stype = s.type;
+      // S3 sources are bucket-scoped by definition: the node adopts the
+      // bucket identity up front (bucket-grade navigation, guard icons,
+      // drop target). Legacy account-wide sources (no bucket) keep the
+      // bucket-list level. A changed/removed bucket resets the subtree.
+      if (s.type === 's3') {
+        if (s.bucket) {
+          if (n.bucket !== s.bucket) { n.children = []; n.loaded = false; }
+          n.bucket = s.bucket;
+          n.prefix = '';
+        } else if (n.bucket !== undefined) {
+          delete n.bucket;
+          delete n.prefix;
+          n.children = [];
+          n.loaded = false;
+        }
+      }
     }
     // preserve bucket subtrees under surviving S3 sources and expanded
     // remote directory nodes under surviving sources
@@ -76,15 +96,17 @@ export class Tree {
     }
   }
 
-  // refresh feeds one S3 source's buckets view into its tree node.
-  async refresh(source, buckets, currentLoc) {
+  // refresh feeds one LEGACY account-wide S3 source's buckets view into its
+  // tree node (bucket-scoped sources never show the bucket list).
+  refresh(source, buckets, currentLoc) {
     const root = this.nodes.get(this.srcKey(source));
-    if (!root) return;
+    if (!root || root.bucket !== undefined) return;
     this.buildBucketChildren(root, buckets);
     root.expanded = true;
     this.render(currentLoc);
   }
 
+  // buildBucketChildren is the legacy S3 level: one row per bucket.
   buildBucketChildren(n, buckets) {
     n.children = [];
     for (const b of buckets) {
@@ -109,7 +131,14 @@ export class Tree {
     if (!n.loaded) {
       try {
         if (n.kind === 'source' && n.stype === 's3') {
-          this.buildBucketChildren(n, await api.ListSourceBuckets(n.source));
+          if (n.bucket !== undefined) {
+            // bucket-scoped source: content folders directly under it
+            await this.buildS3Children(n);
+            this.onBuckets?.(n.source, [n.bucket]);
+          } else {
+            // legacy account-wide source: the bucket list
+            this.buildBucketChildren(n, await api.ListSourceBuckets(n.source));
+          }
         } else if (n.kind === 'source' || n.kind === 'rdir') {
           this.buildRemoteChildren(n, await api.RemoteList(n.source, n.kind === 'source' ? '/' : n.path));
         } else if (n.bucket !== undefined) {
@@ -228,7 +257,13 @@ export class Tree {
     } else if (loc.kind === 'remote') {
       this.currentId = this.rsrcKey(loc.source, loc.path || '/');
     } else if (loc && loc.kind === 'objects') {
-      this.currentId = this.nodeKey(loc.source || '', loc.bucket, loc.prefix || '');
+      let id = this.nodeKey(loc.source || '', loc.bucket, loc.prefix || '');
+      if (!this.nodes.has(id) && !loc.prefix) {
+        // bucket-scoped source: the bucket row IS the source node
+        const s = this.nodes.get(this.srcKey(loc.source || ''));
+        if (s && s.bucket === loc.bucket) id = s.id;
+      }
+      this.currentId = id;
     } else {
       this.currentId = null;
     }
@@ -236,12 +271,19 @@ export class Tree {
   }
 
   // navigate maps a node click onto a location: every source opens its own
-  // top view (S3 → its buckets, remote → its root), buckets and folders
-  // drill down.
+  // top view (S3 → its bucket's contents, legacy account-wide S3 → its
+  // buckets, remote → its root), buckets and folders drill down. The bucket
+  // of a bucket-scoped source comes from the definition, so the first click
+  // opens the contents directly — no learning round trip.
   navigate(n) {
     if (n.kind === 'source') {
-      if (n.stype === 's3') this.onNavigate({ kind: 'buckets', source: n.source });
-      else this.onNavigate({ kind: 'remote', source: n.source, path: '' });
+      if (n.stype === 's3' && n.bucket !== undefined) {
+        this.onNavigate({ kind: 'objects', source: n.source, bucket: n.bucket, prefix: '' });
+      } else if (n.stype === 's3') {
+        this.onNavigate({ kind: 'buckets', source: n.source });
+      } else {
+        this.onNavigate({ kind: 'remote', source: n.source, path: '' });
+      }
     } else if (n.kind === 'rdir') {
       this.onNavigate({ kind: 'remote', source: n.source, path: n.path });
     } else {
@@ -310,7 +352,9 @@ export class Tree {
     const row = el('div', {
       class: `tnode${this.currentId === n.id ? ' sel' : ''}`,
       style: `padding-left:${8 + n.level * 14}px`,
-      title: n.kind === 'source' ? `${n.label} (${n.stype})` : undefined,
+      title: n.kind === 'source'
+        ? (n.bucket !== undefined ? `${n.label} (s3 — bucket ${n.bucket})` : `${n.label} (${n.stype})`)
+        : undefined,
       onclick: () => this.navigate(n),
       ondblclick: () => (n.expanded ? this.collapse(n.id) : this.expand(n.id)),
     },
@@ -367,7 +411,9 @@ export class Tree {
       });
     } else if (n.kind === 'source') {
       // Source roots: full context menu; non-S3 roots also accept drops
-      // into their root directory (S3 roots need a bucket — no drop).
+      // into their root directory. Bucket-scoped S3 roots are drop targets
+      // via the S3 branch above; legacy account-wide roots need a bucket
+      // picked first — no drop.
       if (n.stype !== 's3') {
         row.addEventListener('dragover', (e) => {
           if (!e.dataTransfer.types.includes('application/x-s3b')) return;
@@ -404,7 +450,15 @@ export class Tree {
   // Reveal + expand the path to a location (after navigation from grid).
   async reveal(loc) {
     if (loc.kind === 'objects') {
-      await this.expand(this.nodeKey(loc.source || '', loc.bucket, ''));
+      const srcId = this.srcKey(loc.source || '');
+      let rootId = this.nodeKey(loc.source || '', loc.bucket, '');
+      // the bucket node may not exist yet (a legacy source never expanded)
+      // — load the source level first, then pick whichever root it has: a
+      // bucket-scoped source node IS the bucket root
+      if (!this.nodes.has(rootId)) await this.expand(srcId);
+      const s = this.nodes.get(srcId);
+      if (s && s.stype === 's3' && s.bucket === loc.bucket) rootId = srcId;
+      await this.expand(rootId);
       if (!loc.prefix) { this.markCurrent(loc); return; }
       let acc = '';
       for (const part of loc.prefix.split('/')) {

@@ -33,8 +33,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -130,6 +132,7 @@ func (a *App) KmsFetch(service string, params map[string]string) ([]CredCandidat
 	default:
 		return nil, fmt.Errorf("unknown secrets service %q", service)
 	}
+	a.emitLog(LogInfo, "import", fmt.Sprintf("fetched %d candidate(s) from %s", len(payloads), serviceLabel(service, params)))
 	return a.candidatesFromPayloads(payloads, serviceLabel(service, params)), nil
 }
 
@@ -168,28 +171,133 @@ func (a *App) TestCredentialDraft(id string) TestResult {
 		}
 		ctx, cancel := context.WithTimeout(a.ctx, 10*time.Second)
 		defer cancel()
+		if src.Bucket != "" {
+			return probeBucket(ctx, c, src.Bucket)
+		}
 		return probeBuckets(ctx, c)
 	}
 	return a.testRemoteSource(src)
 }
 
-// ImportCredentials adds the selected candidates to the workspace.
+// ImportCredentials adds the selected candidates to the workspace. S3
+// candidates are bucket-scoped: every bucket the credential can see
+// becomes its own data source, named after the bucket. Re-imports are
+// idempotent — a candidate matching an existing source by connection
+// (endpoint + access key + bucket) refreshes it in place, and only
+// buckets without a source are added; nothing is ever duplicated.
 func (a *App) ImportCredentials(ids []string) (ImportResult, error) {
-	res := ImportResult{Imported: []string{}, Skipped: []string{}}
+	res := ImportResult{Imported: []string{}, Updated: []string{}, Skipped: []string{}}
 	for _, id := range ids {
 		src, ok := a.takePending(id, true)
 		if !ok {
 			res.Skipped = append(res.Skipped, id)
 			continue
 		}
-		src.Name = a.uniqueSourceName(src.Name)
-		if err := a.SaveSource(src); err != nil {
-			res.Skipped = append(res.Skipped, src.Name)
-			continue
+		if src.Type == profile.TypeS3 && src.S3 != nil && src.Bucket == "" {
+			names, err := a.listCandidateBuckets(src)
+			if err == nil && len(names) > 0 {
+				for _, bucket := range names {
+					bktSrc := src
+					p := *src.S3
+					p.Name = bucket
+					bktSrc.S3 = &p
+					bktSrc.Name = bucket
+					bktSrc.Bucket = bucket
+					a.importSource(bktSrc, &res)
+				}
+				continue
+			}
+			// Bucket listing failed or sees nothing (a scoped-down
+			// credential): fall through and keep the account-wide source
+			// so the candidate is not lost.
 		}
+		a.importSource(src, &res)
+	}
+	a.emitLog(LogInfo, "import", fmt.Sprintf("import finished: %d added, %d updated, %d skipped",
+		len(res.Imported), len(res.Updated), len(res.Skipped)))
+	return res, nil
+}
+
+// importSource upserts one candidate: a workspace source matching it by
+// ID or connection is refreshed in place (name, color and timestamps
+// kept); otherwise a new uniquely-named source is created.
+func (a *App) importSource(src profile.Source, res *ImportResult) {
+	ex := a.matchingSource(src)
+	if ex != nil {
+		src.ID, src.Name, src.Color = ex.ID, ex.Name, ex.Color
+	} else {
+		src.Name = a.uniqueSourceName(src.Name)
+	}
+	if err := a.SaveSource(src); err != nil {
+		res.Skipped = append(res.Skipped, src.Name)
+		return
+	}
+	if ex != nil {
+		res.Updated = append(res.Updated, src.Name)
+	} else {
 		res.Imported = append(res.Imported, src.Name)
 	}
-	return res, nil
+}
+
+// matchingSource finds the workspace source a candidate would update:
+// the same ID (a container re-import), or the same connection. nil when
+// the candidate is new.
+func (a *App) matchingSource(src profile.Source) *profile.Source {
+	srcs := a.workspaceSources()
+	if src.ID != "" {
+		for i := range srcs {
+			if srcs[i].ID == src.ID {
+				return &srcs[i]
+			}
+		}
+	}
+	for i := range srcs {
+		if sameConnection(srcs[i], src) {
+			return &srcs[i]
+		}
+	}
+	return nil
+}
+
+// sameConnection reports whether two sources describe the same
+// connection: for S3, endpoint + access key + the scoped bucket; for
+// remote engines, host + port + username.
+func sameConnection(a, b profile.Source) bool {
+	if a.Type != b.Type {
+		return false
+	}
+	if a.Type == profile.TypeS3 {
+		return a.Bucket == b.Bucket && a.S3 != nil && b.S3 != nil &&
+			a.S3.AccessKeyID == b.S3.AccessKeyID &&
+			strings.EqualFold(strings.TrimSuffix(a.S3.Endpoint, "/"), strings.TrimSuffix(b.S3.Endpoint, "/"))
+	}
+	return a.Host == b.Host && a.Port == b.Port && a.Username == b.Username
+}
+
+// listCandidateBuckets dials a candidate's credentials and returns the
+// bucket names visible to them (the per-bucket expansion of an import).
+func (a *App) listCandidateBuckets(src profile.Source) ([]string, error) {
+	if a.ctx == nil {
+		return nil, errNoContext
+	}
+	c, err := s3client.New(a.ctx, *src.S3, s3client.Options{Timeout: 0})
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	defer cancel()
+	buckets, err := listing.ListBuckets(ctx, c.S3)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(buckets))
+	for _, b := range buckets {
+		if n := aws.ToString(b.Name); n != "" {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // uniqueSourceName appends -2, -3, … while the name is taken by another
@@ -349,7 +457,7 @@ func (a *App) candidatesFromINI(text, origin string) ([]CredCandidate, error) {
 		if !ok {
 			continue
 		}
-		src := sourceFromFlat(typ, n, sec)
+		src := sourceFromFlat(typ, importSourceName(n), sec)
 		out = append(out, a.candOf(src, filepath.Base(origin)))
 	}
 	if len(out) == 0 {
@@ -442,6 +550,7 @@ var credAliases = map[string][]string{
 	"token":    {"aws_session_token", "AWS_SESSION_TOKEN", "sessionToken", "session_token"},
 	"endpoint": {"endpoint", "endpoint_url", "endpointUrl", "AWS_ENDPOINT_URL", "s3_endpoint", "url"},
 	"region":   {"region", "AWS_REGION", "AWS_DEFAULT_REGION", "defaultRegion"},
+	"bucket":   {"bucket", "Bucket"},
 	"name":     {"name", "profile", "title"},
 	"host":     {"host", "Host", "hostname", "server", "addr"},
 	"user":     {"user", "username", "UserName"},
@@ -454,17 +563,6 @@ func firstVal(m map[string]string, keys ...string) string {
 	for _, k := range keys {
 		if v, ok := m[k]; ok && v != "" {
 			return v
-		}
-	}
-	return ""
-}
-
-func firstAny(m map[string]any, keys ...string) string {
-	for _, k := range keys {
-		if v, ok := m[k]; ok {
-			if s := strings.TrimSpace(toStr(v)); s != "" {
-				return s
-			}
 		}
 	}
 	return ""
@@ -501,6 +599,7 @@ func sourceFromFlat(typ, name string, m map[string]string) profile.Source {
 	switch typ {
 	case profile.TypeS3:
 		src.Type = profile.TypeS3
+		src.Bucket = firstVal(m, credAliases["bucket"]...)
 		src.S3 = &profile.Profile{
 			Name:         name,
 			Endpoint:     firstVal(m, credAliases["endpoint"]...),

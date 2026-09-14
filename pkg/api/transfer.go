@@ -42,18 +42,19 @@ const emitInterval = 100 * time.Millisecond
 
 // JobInfo is the transfer-manager view model (event payload).
 type JobInfo struct {
-	ID          string  `json:"id"`
-	Op          string  `json:"op"` // "upload" | "download"
-	Status      string  `json:"status"`
-	TotalFiles  int     `json:"totalFiles"`
-	DoneFiles   int     `json:"doneFiles"`
-	FailedFiles int     `json:"failedFiles"`
-	TotalBytes  int64   `json:"totalBytes"`
-	SentBytes   int64   `json:"sentBytes"` // completed files + current file
-	CurrentFile string  `json:"currentFile,omitempty"`
-	SpeedBps    float64 `json:"speedBps"`
-	StartedAt   int64   `json:"startedAt"` // unix millis
-	Error       string  `json:"error,omitempty"`
+	ID           string  `json:"id"`
+	Op           string  `json:"op"` // "upload" | "download" | "transfer"
+	Status       string  `json:"status"`
+	TotalFiles   int     `json:"totalFiles"`
+	DoneFiles    int     `json:"doneFiles"`
+	FailedFiles  int     `json:"failedFiles"`
+	SkippedFiles int     `json:"skippedFiles"`
+	TotalBytes   int64   `json:"totalBytes"`
+	SentBytes    int64   `json:"sentBytes"` // completed files + current file
+	CurrentFile  string  `json:"currentFile,omitempty"`
+	SpeedBps     float64 `json:"speedBps"`
+	StartedAt    int64   `json:"startedAt"` // unix millis
+	Error        string  `json:"error,omitempty"`
 }
 
 // DownloadItem pairs an object key with its size (sizes come from the grid,
@@ -69,6 +70,7 @@ type DownloadItem struct {
 type jobHandle struct {
 	mu       sync.Mutex
 	info     JobInfo
+	src      string // source tag for log lines (bucket / source name)
 	ctx      context.Context
 	cancel   context.CancelFunc
 	start    time.Time
@@ -230,8 +232,10 @@ type uploadPair struct {
 
 // Upload starts a background upload job and returns its ID. Paths may be
 // files or directories (directories upload recursively). policy is one of
-// overwrite | skip | rename; maxBPS 0 = unlimited.
-func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64) (string, error) {
+// overwrite | skip | rename; maxBPS 0 = unlimited. decisions optionally
+// overrides the policy per destination object key (the conflict dialog's
+// per-file choices — keys are the CheckConflicts decisionKeys).
+func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64, decisions map[string]string) (string, error) {
 	c, err := a.client("")
 	if err != nil {
 		return "", err
@@ -248,13 +252,28 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 		total += p.size
 	}
 	j := a.jobs.add("upload", len(pairs), total)
+	j.src = bucket
 	id := j.info.ID
-	a.emitLog(LogInfo, "upload", fmt.Sprintf("job %s: uploading %d file(s) (%d bytes) to %s/%s", id, len(pairs), total, bucket, dirPrefix(prefix)))
-	go a.runUpload(j, c, bucket, pairs, policy, maxBPS)
+	a.emitLogSrc(LogInfo, "upload", bucket, fmt.Sprintf("job %s: uploading %d file(s) (%d bytes) to %s/%s", id, len(pairs), total, bucket, dirPrefix(prefix)))
+	logDecisions(a, "upload", decisions)
+	go a.runUpload(j, c, bucket, pairs, policy, decisions, maxBPS)
 	return id, nil
 }
 
-func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs []uploadPair, policy string, maxBPS int64) {
+// logDecisions records the conflict dialog's per-file choices in the log.
+func logDecisions(a *App, scope string, decisions map[string]string) {
+	if len(decisions) == 0 {
+		return
+	}
+	n := map[string]int{}
+	for _, d := range decisions {
+		n[d]++
+	}
+	a.emitLog(LogInfo, scope, fmt.Sprintf("conflict decisions: %d overwrite, %d skip, %d rename",
+		n[PolicyOverwrite], n[PolicySkip], n[PolicyRename]))
+}
+
+func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs []uploadPair, policy string, decisions map[string]string, maxBPS int64) {
 	ctx := j.ctx
 	for _, p := range pairs {
 		if ctx.Err() != nil {
@@ -266,11 +285,19 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 		j.mu.Unlock()
 		j.emit(a.jobs, true)
 
+		pol := filePolicy(decisions, p.key, policy)
+		if pol == PolicySkip { // user kept the destination file
+			j.mu.Lock()
+			j.info.SkippedFiles++
+			j.mu.Unlock()
+			j.fileDone(0, false)
+			j.emit(a.jobs, true)
+			continue
+		}
+
 		key := p.key
 		opts := transfer.UploadOptions{Progress: j.progress, MaxBPS: maxBPS}
-		switch policy {
-		case PolicySkip:
-			opts.NoClobber = true
+		switch pol {
 		case PolicyRename:
 			if alt, err := uniqueRemoteKey(ctx, c, bucket, key); err == nil {
 				key = alt
@@ -306,8 +333,8 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 // transfer history log (JSONL M3).
 func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	j.mu.Lock()
-	id, done, totalFiles, sentBytes, failedFiles :=
-		j.info.ID, j.info.DoneFiles, j.info.TotalFiles, j.info.SentBytes, j.info.FailedFiles
+	id, done, totalFiles, sentBytes, failedFiles, skipped :=
+		j.info.ID, j.info.DoneFiles, j.info.TotalFiles, j.info.SentBytes, j.info.FailedFiles, j.info.SkippedFiles
 	j.info.Status = status
 	j.info.Error = errMsg
 	j.info.CurrentFile = ""
@@ -315,30 +342,32 @@ func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 		j.info.SpeedBps = 0
 	}
 	logEntry := struct {
-		At          string `json:"at"`
-		Op          string `json:"op"`
-		Status      string `json:"status"`
-		TotalFiles  int    `json:"totalFiles"`
-		FailedFiles int    `json:"failedFiles"`
-		TotalBytes  int64  `json:"totalBytes"`
-		SentBytes   int64  `json:"sentBytes"`
-		Error       string `json:"error,omitempty"`
+		At           string `json:"at"`
+		Op           string `json:"op"`
+		Status       string `json:"status"`
+		TotalFiles   int    `json:"totalFiles"`
+		FailedFiles  int    `json:"failedFiles"`
+		SkippedFiles int    `json:"skippedFiles"`
+		TotalBytes   int64  `json:"totalBytes"`
+		SentBytes    int64  `json:"sentBytes"`
+		Error        string `json:"error,omitempty"`
 	}{
-		At:          time.Now().Format(time.RFC3339),
-		Op:          j.info.Op,
-		Status:      status,
-		TotalFiles:  j.info.TotalFiles,
-		FailedFiles: j.info.FailedFiles,
-		TotalBytes:  j.info.TotalBytes,
-		SentBytes:   j.info.SentBytes,
-		Error:       errMsg,
+		At:           time.Now().Format(time.RFC3339),
+		Op:           j.info.Op,
+		Status:       status,
+		TotalFiles:   j.info.TotalFiles,
+		FailedFiles:  j.info.FailedFiles,
+		SkippedFiles: j.info.SkippedFiles,
+		TotalBytes:   j.info.TotalBytes,
+		SentBytes:    j.info.SentBytes,
+		Error:        errMsg,
 	}
 	j.mu.Unlock()
 	j.emit(a.jobs, true)
 	a.logTransfer(logEntry)
-	a.emitLog(jobStatusLevel(status), logEntry.Op,
-		fmt.Sprintf("job %s finished: %s — %d/%d file(s), %d bytes sent, %d failed",
-			id, status, done, totalFiles, sentBytes, failedFiles))
+	a.emitLogSrc(jobStatusLevel(status), logEntry.Op, j.src,
+		fmt.Sprintf("job %s finished: %s — %d/%d file(s), %d bytes sent, %d failed, %d skipped",
+			id, status, done, totalFiles, sentBytes, failedFiles, skipped))
 }
 
 // logTransfer appends one JSONL line to <configdir>/transfers.log. Logging
@@ -448,8 +477,10 @@ func uniqueLocalPath(p string) string {
 }
 
 // Download starts a background download job and returns its ID. policy is
-// one of overwrite | skip | rename; maxBPS 0 = unlimited.
-func (a *App) Download(bucket string, items []DownloadItem, destDir, policy string, maxBPS int64) (string, error) {
+// one of overwrite | skip | rename; maxBPS 0 = unlimited. decisions
+// optionally overrides the policy per destination LOCAL path (the conflict
+// dialog's decisionKeys).
+func (a *App) Download(bucket string, items []DownloadItem, destDir, policy string, maxBPS int64, decisions map[string]string) (string, error) {
 	c, err := a.client("")
 	if err != nil {
 		return "", err
@@ -465,13 +496,15 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 		total += it.Size
 	}
 	j := a.jobs.add("download", len(items), total)
+	j.src = bucket
 	id := j.info.ID
-	a.emitLog(LogInfo, "download", fmt.Sprintf("job %s: downloading %d object(s) (%d bytes) from %s to %s", id, len(items), total, bucket, destDir))
-	go a.runDownload(j, c, bucket, items, destDir, policy, maxBPS)
+	a.emitLogSrc(LogInfo, "download", bucket, fmt.Sprintf("job %s: downloading %d object(s) (%d bytes) from %s to %s", id, len(items), total, bucket, destDir))
+	logDecisions(a, "download", decisions)
+	go a.runDownload(j, c, bucket, items, destDir, policy, decisions, maxBPS)
 	return id, nil
 }
 
-func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items []DownloadItem, destDir, policy string, maxBPS int64) {
+func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items []DownloadItem, destDir, policy string, decisions map[string]string, maxBPS int64) {
 	ctx := j.ctx
 	for _, it := range items {
 		if ctx.Err() != nil {
@@ -488,9 +521,13 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 			rel = strings.TrimPrefix(it.Key, "/")
 		}
 		local := filepath.Join(destDir, filepath.FromSlash(rel))
-		switch policy {
+		pol := filePolicy(decisions, local, policy)
+		switch pol {
 		case PolicySkip:
 			if _, err := os.Stat(local); err == nil {
+				j.mu.Lock()
+				j.info.SkippedFiles++
+				j.mu.Unlock()
 				j.fileDone(0, false)
 				continue
 			}
@@ -539,8 +576,9 @@ type DownloadRef struct {
 // folders are walked recursively (sizes from listing), files use the size
 // shipped by the grid. Dragged files land flat in destDir (the basename —
 // dragging zz-live/live-b.txt onto a pane yields live-b.txt, not a nested
-// zz-live/), folders keep their structure.
-func (a *App) DownloadRefs(bucket string, refs []DownloadRef, destDir, policy string, maxBPS int64) (string, error) {
+// zz-live/), folders keep their structure. decisions optionally overrides
+// the policy per destination LOCAL path.
+func (a *App) DownloadRefs(bucket string, refs []DownloadRef, destDir, policy string, maxBPS int64, decisions map[string]string) (string, error) {
 	c, err := a.client("")
 	if err != nil {
 		return "", err
@@ -568,18 +606,14 @@ func (a *App) DownloadRefs(bucket string, refs []DownloadRef, destDir, policy st
 	if len(items) == 0 {
 		return "", fmt.Errorf("nothing to download")
 	}
-	return a.Download(bucket, items, destDir, policy, maxBPS)
-}
-
-// PickUploadFiles opens the native multi-select file dialog.
-func (a *App) PickUploadFiles() ([]string, error) {
-	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "Choose files to upload",
-	})
+	return a.Download(bucket, items, destDir, policy, maxBPS, decisions)
 }
 
 // PickFolder opens the native directory dialog (download target, uploads).
 func (a *App) PickFolder(title string) (string, error) {
+	if pickerSeams.folder != nil {
+		return pickerSeams.folder(title)
+	}
 	if title == "" {
 		title = "Choose a folder"
 	}

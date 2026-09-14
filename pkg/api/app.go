@@ -81,11 +81,13 @@ func New(version string) *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	a.jobs.setContext(ctx)
+	a.emitLog(LogInfo, "app", "started "+a.version)
 }
 
 // Shutdown cancels any transfers, searches or listing streams still
 // running when the window closes.
 func (a *App) Shutdown(ctx context.Context) {
+	a.emitLog(LogInfo, "app", "stopped")
 	a.jobs.cancelAll()
 	a.searchMu.Lock()
 	for _, cancel := range a.searches {
@@ -119,8 +121,8 @@ func (a *App) quickCtx() (context.Context, context.CancelFunc) {
 
 // client resolves (and caches) an S3 client. An empty name selects the
 // source the main view is currently browsing (SetViewSource — every S3
-// feature works on any source), falling back to the legacy implicit
-// default/single-s3 resolution for older callers. Sources come from the
+// feature works on any source), falling back to the single-s3-source
+// resolution for older callers. Sources come from the
 // workspace only — the open Profile file, else the session registry
 // (strict sources model: the GUI never resolves from the CLI's profile
 // store). The cache is dropped whenever sources change. Locking: pfMu is
@@ -157,7 +159,7 @@ func (a *App) client(name string) (*s3client.Client, error) {
 	if name != "" {
 		a.clients[name] = c
 	}
-	a.clients[""] = c // remember last default resolution
+	a.clients[""] = c // remember last view-source resolution
 	return c, nil
 }
 

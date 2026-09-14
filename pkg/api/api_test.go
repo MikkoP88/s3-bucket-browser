@@ -3,7 +3,6 @@ package api
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
@@ -67,114 +66,17 @@ func newTestApp(t *testing.T) *App {
 	return New("test")
 }
 
-func TestImportAwsCredentials(t *testing.T) {
-	a := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	awsDir := filepath.Join(home, ".aws")
-	if err := os.MkdirAll(awsDir, 0o755); err != nil {
-		t.Fatal(err)
+func TestImportSourceNameNeverDefaults(t *testing.T) {
+	// AWS's [default] section must import as "aws" — never a source
+	// literally named "default" (reads as a phantom UI artifact).
+	if got := importSourceName("default"); got != "aws" {
+		t.Errorf("importSourceName(default) = %q, want aws", got)
 	}
-	ini := `
-# standard AWS credentials file
-[default]
-aws_access_key_id = AKIADEFAULT
-aws_secret_access_key = secretdefault
-endpoint_url = https://s3.example.com
-
-[work]
-aws_access_key_id = AKIAWORK
-aws_secret_access_key = secretwork
-
-[broken]
-aws_access_key_id = AKIAONLY
-`
-	if err := os.WriteFile(filepath.Join(awsDir, "credentials"), []byte(ini), 0o600); err != nil {
-		t.Fatal(err)
+	if got := importSourceName("Default"); got != "aws" {
+		t.Errorf("importSourceName(Default) = %q, want aws", got)
 	}
-	// config file: region/endpoint for [work], plus a non-profile section
-	// that must be ignored.
-	cfg := `
-[default]
-region = us-east-1
-
-[profile work]
-region = eu-west-1
-endpoint_url = http://minio:9000
-
-[sso-session corp]
-sso_start_uri = https://corp.awsapps.com/start
-`
-	if err := os.WriteFile(filepath.Join(awsDir, "config"), []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	res, err := a.ImportAwsCredentials()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Imported) != 2 {
-		t.Fatalf("imported = %v, want [default work]", res.Imported)
-	}
-	if len(res.Skipped) != 1 || !strings.Contains(res.Skipped[0], "broken") {
-		t.Errorf("skipped = %v, want broken section", res.Skipped)
-	}
-	// second import skips existing names (broken stays incomplete)
-	res2, err := a.ImportAwsCredentials()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res2.Imported) != 0 || len(res2.Skipped) != 3 {
-		t.Errorf("re-import: imported=%v skipped=%v, want 0/3", res2.Imported, res2.Skipped)
-	}
-
-	// Imports are session sources, not store profiles.
-	s, err := profile.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Get("work"); err == nil {
-		t.Error("import must not write the CLI store")
-	}
-	srcs, err := a.ListSources()
-	if err != nil || len(srcs) != 2 {
-		t.Fatalf("want 2 session sources, got %+v (%v)", srcs, err)
-	}
-	full, err := a.sourceByIDOrName("work")
-	if err != nil || full.S3 == nil {
-		t.Fatalf("imported source work: %+v (%v)", full, err)
-	}
-	if full.S3.AccessKeyID != "AKIAWORK" || full.S3.SecretKey != "secretwork" {
-		t.Errorf("imported source work = %+v", full.S3)
-	}
-	// endpoint_url + region must come through (work from the config file,
-	// default from the credentials file itself).
-	if full.S3.Endpoint != "http://minio:9000" || full.S3.Region != "eu-west-1" {
-		t.Errorf("imported source work endpoint/region = %q/%q, want http://minio:9000/eu-west-1", full.S3.Endpoint, full.S3.Region)
-	}
-	def, err := a.sourceByIDOrName("default")
-	if err != nil || def.S3 == nil {
-		t.Fatalf("imported source default: %+v (%v)", def, err)
-	}
-	if def.S3.Endpoint != "https://s3.example.com" || def.S3.Region != "us-east-1" {
-		t.Errorf("imported source default endpoint/region = %q/%q", def.S3.Endpoint, def.S3.Region)
-	}
-	for _, src := range srcs {
-		if src.S3 != nil && src.S3.SecretKey == "secretwork" {
-			t.Error("listings must mask imported secrets")
-		}
-	}
-}
-
-func TestImportAwsCredentialsMissingFile(t *testing.T) {
-	a := newTestApp(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	_, err := a.ImportAwsCredentials()
-	if err == nil || !strings.Contains(err.Error(), "not found") {
-		t.Errorf("err = %v, want friendly not-found error", err)
+	if got := importSourceName("work"); got != "work" {
+		t.Errorf("importSourceName(work) = %q, want work", got)
 	}
 }
 
@@ -274,6 +176,36 @@ func TestPresignTTLClamp(t *testing.T) {
 		}
 		if g != want {
 			t.Errorf("clamp(%d) = %d, want %d", in, g, want)
+		}
+	}
+}
+
+func TestSameConnection(t *testing.T) {
+	s3a := profile.Source{Type: profile.TypeS3, Bucket: "pics", S3: &profile.Profile{Endpoint: "https://s3.example.com", AccessKeyID: "AKIA1"}}
+	cases := []struct {
+		label string
+		a, b  profile.Source
+		want  bool
+	}{
+		{"identical s3", s3a, s3a, true},
+		{"endpoint slash + case", s3a,
+			profile.Source{Type: profile.TypeS3, Bucket: "pics", S3: &profile.Profile{Endpoint: "https://S3.example.com/", AccessKeyID: "AKIA1"}}, true},
+		{"different bucket", s3a,
+			profile.Source{Type: profile.TypeS3, Bucket: "docs", S3: &profile.Profile{Endpoint: "https://s3.example.com", AccessKeyID: "AKIA1"}}, false},
+		{"different access key", s3a,
+			profile.Source{Type: profile.TypeS3, Bucket: "pics", S3: &profile.Profile{Endpoint: "https://s3.example.com", AccessKeyID: "AKIA2"}}, false},
+		{"bucket-less vs scoped", s3a,
+			profile.Source{Type: profile.TypeS3, S3: &profile.Profile{Endpoint: "https://s3.example.com", AccessKeyID: "AKIA1"}}, false},
+		{"different type", s3a,
+			profile.Source{Type: profile.TypeSFTP, Host: "h", Username: "u"}, false},
+		{"same remote", profile.Source{Type: profile.TypeSFTP, Host: "h", Port: 22, Username: "u"},
+			profile.Source{Type: profile.TypeSFTP, Host: "h", Port: 22, Username: "u"}, true},
+		{"different port", profile.Source{Type: profile.TypeSFTP, Host: "h", Port: 22, Username: "u"},
+			profile.Source{Type: profile.TypeSFTP, Host: "h", Port: 2222, Username: "u"}, false},
+	}
+	for _, c := range cases {
+		if got := sameConnection(c.a, c.b); got != c.want {
+			t.Errorf("%s: sameConnection = %v, want %v", c.label, got, c.want)
 		}
 	}
 }

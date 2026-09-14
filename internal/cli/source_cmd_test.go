@@ -72,16 +72,6 @@ func TestSourceAddListUseRemove(t *testing.T) {
 		t.Fatalf("local source missing: %v", err)
 	}
 
-	// use: default flag lands on both sides.
-	if code := Execute([]string{"source", "use", "prod"}); code != 0 {
-		t.Fatalf("use: exit %d", code)
-	}
-	s = reloadStore(t)
-	src, err := s.GetSource("prod")
-	if err != nil || !src.Default {
-		t.Fatalf("prod must be the default source after use: %v %+v", err, src)
-	}
-
 	// remove: an s3 source takes its mirror profile with it.
 	if code := Execute([]string{"source", "remove", "prod"}); code != 0 {
 		t.Fatalf("remove: exit %d", code)
@@ -115,10 +105,6 @@ func TestSourceAddRemoteAndGuards(t *testing.T) {
 		t.Errorf("detail must show the per-type default port, got %q", got)
 	}
 
-	// use on a non-s3 source is a usage error (exit 2).
-	if code := Execute([]string{"source", "use", "ftpbox"}); code != exitUsage {
-		t.Errorf("use on non-s3: exit %d, want %d", code, exitUsage)
-	}
 	// test now really dials the remotefs engine: a local source over a
 	// temp directory connects and exits 0…
 	if code := Execute([]string{"source", "add", "disk", "--type", "local",
@@ -136,10 +122,6 @@ func TestSourceAddRemoteAndGuards(t *testing.T) {
 	}
 	if code := Execute([]string{"source", "test", "dead"}); code != exitOpFail {
 		t.Errorf("test on unreachable sftp: exit %d, want %d", code, exitOpFail)
-	}
-	// --default only applies to s3 sources.
-	if code := Execute([]string{"source", "add", "s2", "--type", "sftp", "--host", "h", "--default"}); code != exitUsage {
-		t.Errorf("--default on non-s3: exit %d, want %d", code, exitUsage)
 	}
 	// unknown type is a usage error.
 	if code := Execute([]string{"source", "add", "x", "--type", "nfs"}); code != exitUsage {
@@ -226,7 +208,7 @@ func TestSourceExportImportRoundTrip(t *testing.T) {
 		t.Fatalf("add local: exit %d", code)
 	}
 	if code := Execute([]string{"source", "add", "prod", "--type", "s3",
-		"--endpoint", "http://localhost:9000", "--access-key", "a", "--secret-key", "s", "--default"}); code != 0 {
+		"--endpoint", "http://localhost:9000", "--access-key", "a", "--secret-key", "s"}); code != 0 {
 		t.Fatalf("add s3: exit %d", code)
 	}
 
@@ -255,8 +237,8 @@ func TestSourceExportImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal("s3 source not imported")
 	}
-	if !src.Default {
-		t.Error("default flag must survive the round trip")
+	if src.S3 == nil || src.S3.AccessKeyID != "a" {
+		t.Errorf("imported s3 source lost its profile: %+v", src.S3)
 	}
 	if _, err := s.Get("prod"); err != nil {
 		t.Error("imported s3 source must carry its mirror profile")

@@ -30,8 +30,9 @@ type ListPage struct {
 }
 
 // ListObjectsStream starts a streaming directory listing of bucket/prefix
-// on the default S3 source and returns a token immediately. Entries arrive
-// via EventListPage; the stream always terminates with a Done=true page.
+// on the S3 source the main view is browsing and returns a token
+// immediately. Entries arrive via EventListPage; the stream always
+// terminates with a Done=true page.
 // Cancel with CancelList(token) — e.g. when navigation moved on.
 func (a *App) ListObjectsStream(bucket, prefix string) (string, error) {
 	c, err := a.client("")

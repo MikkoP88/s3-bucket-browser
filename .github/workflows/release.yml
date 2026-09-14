@@ -72,6 +72,12 @@ jobs:
 
   windows:
     runs-on: ubuntu-latest
+    env:
+      # Optional Windows code signing: base64-encoded PFX + its password
+      # (repo secrets WINDOWS_CERT_B64 / WINDOWS_CERT_PASS). Unset → the
+      # signing steps are skipped and artifacts ship unsigned, as before.
+      WINDOWS_CERT_B64: ${{ secrets.WINDOWS_CERT_B64 }}
+      WINDOWS_CERT_PASS: ${{ secrets.WINDOWS_CERT_PASS }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -81,7 +87,9 @@ jobs:
 
       # Windows builds embed publisher metadata (VERSIONINFO) through a
       # generated .syso that must match the target arch and be removed
-      # after the build (tools/versioninfo).
+      # after the build (tools/versioninfo). Binaries are built first and
+      # zipped AFTER the optional signing pass, so every artifact (zip,
+      # portable zip, NSIS installer) carries the signed bytes.
       - name: Build windows-amd64
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
@@ -90,27 +98,40 @@ jobs:
           go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg/
-          (cd dist/pkg && zip -q "../s3b-${VERSION}-windows-amd64.zip" -- *)
-          cp dist/pkg/s3b.exe dist/  # staging for the NSIS installer
         env:
           GOOS: windows
           GOARCH: amd64
 
-      - name: Build windows-arm64 zip
+      - name: Build windows-arm64
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch arm64
           go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg-arm/
-          (cd dist/pkg-arm && zip -q "../s3b-${VERSION}-windows-arm64.zip" -- *)
         env:
           GOOS: windows
           GOARCH: arm64
 
-      - name: Build windows portable zips
+      # Signing is secrets-gated: without a configured certificate the step
+      # is skipped entirely (unsigned build); with one, a rejected cert or
+      # unreachable timestamp fails the release rather than shipping mixed
+      # artifacts.
+      - name: Code-sign binaries
+        if: env.WINDOWS_CERT_B64 != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osslsigncode
+          printf '%s' "$WINDOWS_CERT_B64" | base64 -d > cert.pfx
+          S3B_CERT_PFX="$PWD/cert.pfx" S3B_CERT_PASS="$WINDOWS_CERT_PASS" \
+            bash scripts/sign-windows.sh dist/pkg/s3b.exe dist/pkg-arm/s3b.exe
+          rm -f cert.pfx
+
+      - name: Package windows zips
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          (cd dist/pkg && zip -q "../s3b-${VERSION}-windows-amd64.zip" -- *)
+          (cd dist/pkg-arm && zip -q "../s3b-${VERSION}-windows-arm64.zip" -- *)
           bash scripts/gen-notice.sh "$VERSION" > NOTICE
           mkdir -p dist/port dist/port-arm
           cp dist/pkg/s3b.exe LICENSE NOTICE README-portable.md dist/port/
@@ -119,6 +140,7 @@ jobs:
           cp dist/pkg-arm/s3b.exe LICENSE NOTICE README-portable.md dist/port-arm/
           touch dist/port-arm/s3b-portable
           (cd dist/port-arm && zip -q "../s3b-${VERSION}-windows-arm64-portable.zip" -- *)
+          cp dist/pkg/s3b.exe dist/  # staging for the NSIS installer
 
       - name: Build NSIS installer
         run: |
@@ -129,6 +151,18 @@ jobs:
             -DPAYLOAD="$PWD/dist/s3b.exe" \
             -DOUT="$PWD/dist/s3b-setup-$VER.exe" \
             scripts/installer/s3b.nsi
+
+      # The installer itself gets its own signature (it embeds the already
+      # signed s3b.exe); SmartScreen weighs the outermost signature.
+      - name: Code-sign installer
+        if: env.WINDOWS_CERT_B64 != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends osslsigncode
+          printf '%s' "$WINDOWS_CERT_B64" | base64 -d > cert.pfx
+          S3B_CERT_PFX="$PWD/cert.pfx" S3B_CERT_PASS="$WINDOWS_CERT_PASS" \
+            bash scripts/sign-windows.sh dist/s3b-setup-*.exe
+          rm -f cert.pfx
 
       - uses: actions/upload-artifact@v4
         with:

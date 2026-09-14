@@ -384,6 +384,11 @@ func rmCmd() *cobra.Command {
 			if err != nil {
 				return opErr(err)
 			}
+			// Stores disagree whether the folder marker itself is listed
+			// under its own prefix (AWS: yes, MinIO: no) — a delete that
+			// misses it leaves a ghost folder row behind. Delete-only:
+			// never fold markers into copies or conversions.
+			keys = transfer.IncludeFolderMarker(keys, dirPrefix(u))
 			if dryRun {
 				for _, k := range keys {
 					fmt.Printf("would delete s3://%s/%s\n", u.Bucket, k)

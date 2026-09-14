@@ -185,13 +185,18 @@ function shim() {
   localStorage.setItem('s3b-conflict', 'overwrite');
   localStorage.setItem('s3b-theme', 'light');
   localStorage.setItem('s3b-lang', 'en');
+  // auto refresh ships ON by default now; the walk needs a quiet app (the
+  // auto-refresh step re-enables it explicitly and asserts the ticks)
+  localStorage.setItem('s3b-autorefresh', '0');
 
   const now = Date.now();
   const daysAgo = (d) => new Date(now - d * 86400000).toISOString();
 
   const world = {
     sources: EMPTY ? [] : [
-      { id: 'src-hetzner', name: 'hetzner', type: 's3', default: true },
+      { id: 'src-hetzner', name: 'hetzner', type: 's3' }, // legacy: account-wide
+      { id: 'src-one', name: 'one-bucket', type: 's3', bucket: 'singleton' },
+      { id: 'src-fresh', name: 'fresh-single', type: 's3', bucket: 'lone-bucket' },
       { id: 'src-box', name: 'backup-box', type: 'sftp' },
       { id: 'src-dav', name: 'dav-claims', type: 'webdav' },
     ],
@@ -201,6 +206,12 @@ function shim() {
       { name: 'media-assets', createdAt: daysAgo(90) },
       { name: 'archive-cold', createdAt: daysAgo(30) },
     ],
+    // buckets a credential import discovers per candidate — every bucket
+    // becomes its own bucket-scoped data source
+    importBuckets: {
+      'cand-file1': ['from-file-photos', 'from-file-logs'],
+      'cand-kms1': ['hetzner-kms'],
+    },
     objects: {
       testijotain: [
         { key: 'docs/', isDir: true },
@@ -228,6 +239,25 @@ function shim() {
         { key: 'brand/logo.svg', size: 8192, lastModified: daysAgo(60) },
       ],
       'archive-cold': [],
+      singleton: [
+        { key: 'assets/', isDir: true },
+        { key: 'index.html', size: 512, lastModified: daysAgo(2), storageClass: 'STANDARD' },
+      ],
+      'lone-bucket': [
+        { key: 'data/', isDir: true },
+        { key: 'hello.txt', size: 42, lastModified: daysAgo(1), storageClass: 'STANDARD' },
+      ],
+      // buckets the imported credentials discover (per-bucket sources)
+      'from-file-photos': [
+        { key: 'img-1.jpg', size: 204800, lastModified: daysAgo(3), storageClass: 'STANDARD' },
+        { key: 'img-2.jpg', size: 409600, lastModified: daysAgo(3), storageClass: 'STANDARD' },
+      ],
+      'from-file-logs': [
+        { key: 'app.log', size: 8192, lastModified: daysAgo(0), storageClass: 'STANDARD' },
+      ],
+      'hetzner-kms': [
+        { key: 'kms-seed.txt', size: 64, lastModified: daysAgo(1), storageClass: 'STANDARD' },
+      ],
     },
     remote: {
       'backup-box': [
@@ -263,12 +293,17 @@ function shim() {
     guards: {
       testijotain: { versioning: 'Enabled', lockEnabled: false, lockMode: '', lockDays: 0 },
       'logs-2026': { versioning: 'Suspended', lockEnabled: false, lockMode: '', lockDays: 0 },
+      singleton: { versioning: 'Enabled', lockEnabled: false, lockMode: '', lockDays: 0 },
     },
-    pfState: { open: false, name: '', path: '', dirty: false, sourceCount: EMPTY ? 0 : 3 },
+    pfState: { open: false, name: '', path: '', dirty: false, sourceCount: EMPTY ? 0 : 4 },
     transfers: [
       { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
-      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 12, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
+      // failed/skipped ride the same record: the manager counts them aloud
+      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
     ],
+    // CheckConflicts fixture — empty means a clean destination; the
+    // conflict-view step seeds real collisions before uploading
+    conflicts: [],
     versions: [
       { versionId: '', isLatest: true, isDeleteMarker: false, size: 1234, storageClass: 'STANDARD', etag: '"v3"', lastModified: daysAgo(1) },
       { versionId: 'ver-0002', isLatest: false, isDeleteMarker: false, size: 1100, storageClass: 'STANDARD', etag: '"v2"', lastModified: daysAgo(8) },
@@ -390,7 +425,8 @@ function shim() {
     GetVersion: () => '0.9.0-visual',
     ListSources: () => JSON.parse(JSON.stringify(world.sources)),
     ListBuckets: () => JSON.parse(JSON.stringify(world.buckets)),
-    ListSourceBuckets: () => JSON.parse(JSON.stringify(world.buckets)),
+    ListSourceBuckets: (_src) => JSON.parse(JSON.stringify(world.buckets)),
+    TestSource: (_idOrName) => ({ ok: true, message: 'connected — bucket accessible' }),
     ListObjectsStream: (bucket, prefix) => {
       const t = token();
       emit('list:page', { token: t, entries: listPrefix(bucket, prefix), done: true });
@@ -429,7 +465,6 @@ function shim() {
     },
     PickOpenProfileFile: () => 'C:\\Users\\demo\\Documents\\demo.s3bprofile',
     PickSaveProfileFile: () => 'C:\\Users\\demo\\Documents\\saved.s3bprofile',
-    PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\spec.docx'],
     PickFolder: () => 'C:\\Users\\demo\\Downloads',
     TestProfile: () => ({ ok: true, message: 'OK — visual shim' }),
     DoctorChecks: () => ['Connectivity', 'Authentication', 'Clock skew', 'TLS handshake', 'List permission'],
@@ -447,6 +482,8 @@ function shim() {
     }),
     RunDoctorCheck: (name) => ({ check: name, status: 'pass', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 're-run ok' }),
     ActiveTransfers: () => JSON.parse(JSON.stringify(world.transfers)),
+    // conflict pre-check (M12): whatever the step seeded, the dialog gets
+    CheckConflicts: () => JSON.parse(JSON.stringify(world.conflicts || [])),
     ObjectVersions: () => JSON.parse(JSON.stringify(world.versions)),
     VersionDiffText: () => ({ truncated: false, aText: 'alpha\nold line A\nomega', bText: 'alpha\nnew line B\nomega' }),
     GetBucketAdmin: () => JSON.parse(JSON.stringify(world.admin)),
@@ -462,7 +499,6 @@ function shim() {
     RemoteStat: (source, key) => ({ key, isDir: false, size: 4096, lastModified: daysAgo(3) }),
     CopySelection: (src, keys, dst, prefix, move) => ({ copied: keys.length, errors: [] }),
     EditingFiles: () => [{ bucket: 'testijotain', key: 'docs/notes.md' }],
-    ImportAwsCredentials: () => ({ found: 1, imported: 1 }),
     DeepSearch: (bucket, prefix) => {
       const t = token();
       emit('search:page', {
@@ -501,21 +537,30 @@ function shim() {
       { key: '/draft-up/', isDir: true, name: 'draft-up' },
       { key: '/seed.txt', isDir: false, name: 'seed.txt', size: 12 },
     ],
-    // ---- import credentials (files + KMS) ----
+    // ---- Import S3 Credential (files + KMS) ----
     ParseCredentialFile: () => JSON.parse(JSON.stringify(world.credCandidates)),
     PickCredentialFiles: () => ['C:\\Users\\demo\\Downloads\\credentials'],
-    TestCredentialDraft: () => ({ ok: true, message: '4 buckets reachable' }),
+    TestCredentialDraft: () => ({ ok: true, message: 'connected — 2 bucket(s) visible' }),
     KmsFetch: (service) => JSON.parse(JSON.stringify(world.kmsCandidates)),
+    // the backend contract: per-bucket expansion + idempotent re-import —
+    // an existing bucket-scoped source is UPDATED in place, never duplicated
     ImportCredentials: (ids) => {
       const imported = [];
+      const updated = [];
       for (const id of ids || []) {
         const c = [...world.credCandidates, ...world.kmsCandidates].find((x) => x.id === id);
-        if (!c || world.sources.some((s) => s.name === c.name)) continue;
-        world.sources.push({ id: 'src-' + c.name, name: c.name, type: c.type || 's3' });
-        imported.push(c.name);
+        if (!c) continue;
+        for (const b of world.importBuckets[c.id] || []) {
+          if (world.sources.some((s) => s.name === b)) {
+            updated.push(b);
+            continue;
+          }
+          world.sources.push({ id: 'src-' + b, name: b, type: 's3', bucket: b });
+          imported.push(b);
+        }
       }
       world.pfState.sourceCount = world.sources.length;
-      return { imported, skipped: [] };
+      return { imported, updated, skipped: [] };
     },
   };
 
@@ -798,6 +843,70 @@ async function evalHandleClickTwist(label) {
   await sleep(150);
 }
 
+await step('empty-dir-ctxmenu', async () => {
+  // an empty directory covers the grid with the empty-state overlay —
+  // right-clicking it must still open the folder menu (paste/upload/new
+  // folder), not the browser default
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('archive-cold'), 6000, 'buckets of hetzner');
+  await dblClickRow('archive-cold');
+  await waitFor(async () => evalPage(() => !document.getElementById('empty-state').classList.contains('hidden')), 6000, 'empty state');
+  const overlay = await page.$('#empty-state');
+  await rightClick(overlay);
+  await sleep(80);
+  const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item')).map((i) => i.textContent).join(' | '));
+  await ok('empty dir right-click opens menu', items.length > 0 && /new folder/i.test(items) && /upload/i.test(items));
+  await closeCtx();
+});
+
+await step('tree-single-bucket-first-click', async () => {
+  // the fresh-source path: clicking a NEVER-expanded bucket-scoped source
+  // label must open the bucket contents directly. The bucket comes from
+  // the source definition, so no listing round trip may intervene — if
+  // the tree asked for the bucket list first, this world answers with
+  // hetzner's four buckets and the assertion below fails.
+  await clickTree('fresh-single');
+  await waitFor(async () => (await rowKeys()).includes('hello.txt'), 6000, 'first-click contents');
+  await ok('first click opens bucket contents', (await txt('#breadcrumb')).includes('lone-bucket'));
+});
+
+await step('tree-bucket-scoped-source', async () => {
+  // a bucket-scoped S3 source: the node IS the bucket — definition-carried,
+  // so it renders the same structure as every other source type (content
+  // folders directly under the source) and inherits the bucket's features.
+  await evalHandleClickTwist('one-bucket');
+  await waitFor(async () => !!(await treeRow('assets')), 6000, 'bucket-scoped children');
+  await ok('no bucket row under the bucket-scoped source', !(await treeRow('singleton')));
+  await ok('folders sit directly under the source node', !!(await treeRow('assets')));
+  // the source node inherits the bucket's guard icons (versioning on)
+  await waitFor(async () => (await evalPage((l) => {
+    const n = Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((r) => r.querySelector('.tlabel')?.textContent === l);
+    return n ? n.querySelectorAll('.tguard').length : 0;
+  }, 'one-bucket')) > 0, 6000, 'bucket-scoped guard icons');
+  await ok('versioning icon on the source node', evalPage((l) => {
+    const n = Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((r) => r.querySelector('.tlabel')?.textContent === l);
+    return Array.from(n?.querySelectorAll('.tguard') || []).some((i) => /versioning enabled/i.test(i.title));
+  }, 'one-bucket'));
+  // clicking the source node opens the bucket contents, not the buckets view
+  await clickTree('one-bucket');
+  await waitFor(async () => (await rowKeys()).includes('index.html'), 6000, 'bucket-scoped navigate');
+  await ok('click opens bucket contents directly', (await txt('#breadcrumb')).includes('singleton'));
+  await ok('bucket-scoped source row highlighted', evalPage(() => Array.from(document.querySelectorAll('#tree .tnode'))
+    .some((r) => r.classList.contains('sel') && r.querySelector('.tlabel')?.textContent === 'one-bucket')));
+  // bucket-scoped context menu: full bucket feature set + source management
+  const h = await treeRow('one-bucket');
+  await rightClick(h);
+  await sleep(80);
+  const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item')).map((i) => i.textContent).join(' | '));
+  await ok('bucket-scoped menu has bucket-grade items', /upload here/i.test(items) && /admin panel/i.test(items) && /delete bucket/i.test(items) && /paste here/i.test(items));
+  await ok('bucket-scoped menu keeps source management', /edit source/i.test(items) && /reconnect/i.test(items) && /remove source/i.test(items));
+  await ok('bucket-scoped menu can reach the buckets view', /open buckets view/i.test(items));
+  await shot('tree-bucket-scoped');
+  await closeCtx();
+});
+
 await step('remote-view', async () => {
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box listing');
@@ -848,7 +957,7 @@ await step('help-guide', async () => {
     await guide.asElement().click();
     await waitFor(modalVisible, 4000, 'guide modal');
     await ok('guide has six section tabs', waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .tabstrip .tab').length)) === 6, 4000, 'guide tabs'));
-    await ok('getting-started content rendered', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Import S3 credentials'));
+    await ok('getting-started content rendered', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Import existing credentials'));
     await shot('guide');
     const tab = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))
       .find((t) => /^transfers$/i.test(t.textContent.trim())) || null);
@@ -911,6 +1020,8 @@ await step('settings-dialog', async () => {
   if (item) await item.asElement().click();
   await waitFor(modalVisible, 4000, 'settings modal');
   await ok('settings rows rendered', evalPage(() => document.querySelectorAll('#modal-root .set-row').length >= 7));
+  await ok('speed-limit visibility toggle offered', evalPage(() => Array.from(document.querySelectorAll('#modal-root .set-row'))
+    .some((r) => /speed limit when transferring/i.test(r.textContent))));
   await shot('settings');
   // theme switch applies live
   const darkSel = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root select'))
@@ -940,6 +1051,70 @@ await step('upload', async () => {
   await shot('upload');
 });
 
+await step('conflict-view', async () => {
+  // ask-mode upload against a destination WITH collisions: the per-file
+  // dialog lists both sides, bulk actions hit only checked rows, and the
+  // per-file decisions ride along on the Upload call.
+  const iso = (d) => new Date(Date.now() - d * 86400000).toISOString();
+  const seeded = [
+    { key: 'invoice.pdf', decisionKey: 'invoice.pdf', srcSize: 8192, srcTime: iso(1), dstSize: 7168, dstTime: iso(30) },
+    { key: 'photos/img-001.jpg', decisionKey: 'photos/img-001.jpg', srcSize: 1048576, srcTime: iso(8), dstSize: 1048576, dstTime: iso(40) },
+  ];
+  await evalPage((cs) => {
+    localStorage.setItem('s3b-conflict', 'ask');
+    window.__shim.world.conflicts = cs;
+  }, seeded);
+  await navObjects('testijotain');
+  await resetCalls();
+  await page.click('#btn-upload');
+  await waitFor(modalVisible, 4000, 'conflict modal');
+  await ok('per-file conflict dialog opens', evalPage(() => !!document.querySelector('#modal-root .modal.cf-modal')));
+  await ok('title counts the collisions', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('2 file(s)'));
+  await ok('one row per conflicting file', evalPage(() => document.querySelectorAll('#modal-root .cf-list .cf-row').length === 2));
+  await ok('rows show source vs destination', evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#modal-root .cf-row'))
+      .find((x) => x.querySelector('.cf-name')?.textContent === 'invoice.pdf');
+    const tags = r ? Array.from(r.querySelectorAll('.cf-tag')) : [];
+    return !!r && r.querySelectorAll('.cf-side').length === 2
+      && /source/i.test(tags[0]?.textContent || '') && /destination/i.test(tags[1]?.textContent || '')
+      && !!r.querySelector('.cf-time');
+  }));
+  await ok('decision key carried on the row', evalPage(() => document.querySelector('#modal-root .cf-row .cf-name')?.title === 'invoice.pdf'));
+  await ok('summary starts at 2 overwrite', (await txt('#modal-root .cf-summary')).includes('2 Overwrite'));
+  // per-row action select
+  await page.locator('#modal-root .cf-list .cf-row:nth-child(2) .cf-action').selectOption('skip');
+  await ok('per-row action updates the summary', (await txt('#modal-root .cf-summary')).includes('1 Skip'));
+  // master checkbox clears every row; bulk must then hit nothing
+  await page.click('#modal-root .cf-head .cf-check input');
+  await ok('master unchecks all rows', evalPage(() => Array.from(document.querySelectorAll('#modal-root .cf-list .cf-check input')).every((c) => !c.checked)));
+  await page.locator('#modal-root .cf-bulk button', { hasText: 'Rename' }).click();
+  await ok('bulk ignores unchecked rows', evalPage(() => Array.from(document.querySelectorAll('#modal-root .cf-list .cf-action')).every((s) => s.value !== 'rename')));
+  // master restores every row; bulk overwrite reaches them all
+  await page.click('#modal-root .cf-head .cf-check input');
+  await page.locator('#modal-root .cf-bulk button', { hasText: 'Overwrite' }).click();
+  await ok('bulk applies to checked rows', evalPage(() => Array.from(document.querySelectorAll('#modal-root .cf-list .cf-action')).every((s) => s.value === 'overwrite')));
+  await page.locator('#modal-root .cf-list .cf-row:nth-child(2) .cf-action').selectOption('skip');
+  await shot('conflict');
+  const start = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^start$/i.test(b.textContent.trim())) || null);
+  await ok('Start button present', !!start);
+  if (start) await start.asElement().click();
+  await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'upload with decisions');
+  const c = await findCall('Upload');
+  await ok('CheckConflicts probed the destination', (await findCall('CheckConflicts')) !== null);
+  await ok('per-file decisions ride on Upload', c && c.args[3] === 'overwrite' && !!c.args[5]
+    && c.args[5]['invoice.pdf'] === 'overwrite' && c.args[5]['photos/img-001.jpg'] === 'skip');
+  // same ask mode, but nothing collides: probe, NO dialog, straight upload
+  await evalPage(() => { window.__shim.world.conflicts = []; });
+  await resetCalls();
+  await page.click('#btn-upload');
+  await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'upload without dialog');
+  await ok('no dialog when nothing collides', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
+  const c2 = await findCall('Upload');
+  await ok('clean start is overwrite, no decisions', c2 && c2.args[3] === 'overwrite' && c2.args[5] === null);
+  await evalPage(() => localStorage.setItem('s3b-conflict', 'overwrite'));
+});
+
 await step('sources-in-tree', async () => {
   await ok('source listed in sidebar tree', (await txt('#tree')).includes('backup-box'));
   await ok('sidebar header says Data sources', (await txt('#sidebar-head')).toLowerCase().includes('data sources'));
@@ -952,14 +1127,24 @@ await step('source-editor-autoname', async () => {
   await page.click('#sidebar-head .side-add');
   await waitFor(modalVisible, 4000, 'source editor');
   await ok('title is Add data source', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('Add data source'));
-  // S3: the endpoint host's first label becomes the name
-  const ep = await elOrNull(() => document.querySelector('#modal-root input.mono') || null);
-  await ok('endpoint field focused first', !!ep);
+  // S3: with no bucket typed, the endpoint host's first label becomes the
+  // name; once a bucket is typed it wins (an S3 data source IS one bucket)
+  const ep = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
+    .find((i) => /s3\.amazonaws/.test(i.placeholder || '')) || null);
+  await ok('endpoint field present', !!ep);
   if (ep) {
     await ep.asElement().fill('https://hel1.your-objectstorage.com');
     await ep.asElement().dispatchEvent('change');
   }
   await ok('S3 endpoint auto-fills the name', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'hel1'));
+  const bk = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
+    .find((i) => /bucket this source opens/.test(i.placeholder || '')) || null);
+  await ok('bucket field present (required)', !!bk);
+  if (bk) {
+    await bk.asElement().fill('hel1-media');
+    await bk.asElement().dispatchEvent('change');
+  }
+  await ok('the bucket name auto-fills the name', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'hel1-media'));
   // local: the folder leaf becomes the name
   await page.selectOption('#modal-root select', 'local');
   const folder = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
@@ -1220,6 +1405,14 @@ await step('transfers', async () => {
   if (trItem) await trItem.asElement().click();
   await waitFor(modalVisible, 4000, 'transfers modal');
   await ok('job rendered with its current file', waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('video-final.mp4'), 4000, 'jobs'));
+  await ok('percent badge on every job', evalPage(() => {
+    const ps = Array.from(document.querySelectorAll('#modal-root .tr-pct'));
+    return ps.length === 2 && ps.every((p) => /\d+%/.test(p.textContent));
+  }));
+  await ok('running job leads the list', evalPage(() => document.querySelector('#modal-root .tr-job')?.classList.contains('running') === true));
+  await ok('failed and skipped counted aloud', evalPage(() => /1 failed/.test(document.getElementById('modal-root').textContent)
+    && /2 skipped/.test(document.getElementById('modal-root').textContent)));
+  await ok('running job offers Cancel', evalPage(() => !!document.querySelector('#modal-root .tr-job.running .btn')));
   await shot('transfers');
   await closeModal();
 });
@@ -1303,7 +1496,7 @@ await step('onboarding-empty', async () => {
   await p2.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
   await ok('empty state visible', p2.evaluate(() => !document.getElementById('empty-state').classList.contains('hidden')));
   await ok('simplified onboarding copy', p2.evaluate(() => document.getElementById('empty-state').textContent.includes('Amazon S3 or any S3-compatible storage')));
-  await ok('import button renamed to S3 credentials', p2.evaluate(() => document.getElementById('empty-actions').textContent.toLowerCase().includes('import s3 credentials')));
+  await ok('Import S3 Credential button present', p2.evaluate(() => document.getElementById('empty-actions').textContent.toLowerCase().includes('import s3 credential')));
   await ok('empty actions offer add-source', p2.evaluate(() => document.getElementById('empty-actions').textContent.length > 0));
   await ok('upload greyed without sources', p2.evaluate(() => document.getElementById('btn-upload').disabled));
   await ok('doctor greyed without sources', p2.evaluate(() => window.__s3bCmdState?.canDoctor === false));
@@ -1477,8 +1670,8 @@ await step('import-creds-file', async () => {
   await page.locator('#menubar .mb-title').first().click(); // File
   await sleep(80);
   const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
-    .find((i) => /import credentials/i.test(i.textContent)) || null);
-  await ok('File→Import credentials present', !!item);
+    .find((i) => /import s3 credential/i.test(i.textContent)) || null);
+  await ok('File→Import S3 Credential present', !!item);
   if (!item) return;
   await item.asElement().click();
   await waitFor(modalVisible, 4000, 'import dialog');
@@ -1498,15 +1691,39 @@ await step('import-creds-file', async () => {
   if (test) await test.asElement().click();
   await waitFor(async () => evalPage(() => document.querySelectorAll('#modal-root .cred-test.ok').length > 0), 4000, 'test badge');
   await ok('candidate tested before import', (await findCall('TestCredentialDraft')) !== null);
-  // Import → backend import + tree gains the source
+  // Import → backend import + the tree gains one bucket-scoped source per
+  // discovered bucket (the candidate name itself never becomes a source)
   const imp = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
     .find((b) => /^import$/i.test(b.textContent.trim())) || null);
   if (imp) await imp.asElement().click();
   await waitFor(async () => (await findCall('ImportCredentials')) !== null, 4000, 'import call');
   const c = await findCall('ImportCredentials');
   await ok('imports the checked candidate end-to-end', c && JSON.stringify(c.args[0]) === '["cand-file1"]');
-  await waitFor(async () => (await txt('#tree')).includes('from-file'), 4000, 'tree gains from-file');
-  await ok('imported source appears in the tree', true);
+  await waitFor(async () => !!(await treeRow('from-file-photos')), 4000, 'tree gains from-file-photos');
+  await ok('each discovered bucket becomes its own source', !!(await treeRow('from-file-photos')) && !!(await treeRow('from-file-logs')));
+  await ok('the candidate name itself never becomes a source', !(await treeRow('from-file')));
+  // re-import: the dialog reopens, the same credential is imported again —
+  // existing bucket sources are UPDATED in place, never duplicated
+  await page.locator('#menubar .mb-title').first().click(); // File
+  await sleep(80);
+  const item2 = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /import s3 credential/i.test(i.textContent)) || null);
+  await ok('File→Import S3 Credential reachable again', !!item2);
+  if (item2) {
+    await item2.asElement().click();
+    await waitFor(modalVisible, 4000, 'import dialog again');
+    const ff2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+      .find((b) => /^from file/i.test(b.textContent.trim())) || null);
+    if (ff2) await ff2.asElement().click();
+    await waitFor(async () => !!(await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row'))
+      .find((r) => r.textContent.includes('from-file')) || null)), 4000, 'cred row again');
+    const imp2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+      .find((b) => /^import$/i.test(b.textContent.trim())) || null);
+    if (imp2) await imp2.asElement().click();
+    await sleep(200);
+  }
+  await ok('re-import updates without duplicating', await evalPage(() => Array.from(document.querySelectorAll('#tree .tlabel'))
+    .filter((l) => l.textContent === 'from-file-photos').length) === 1);
 });
 
 await step('import-creds-kms', async () => {
@@ -1514,7 +1731,7 @@ await step('import-creds-kms', async () => {
   await page.locator('#menubar .mb-title').first().click(); // File
   await sleep(80);
   const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
-    .find((i) => /import credentials/i.test(i.textContent)) || null);
+    .find((i) => /import s3 credential/i.test(i.textContent)) || null);
   await ok('menu item still present', !!item);
   if (!item) return;
   await item.asElement().click();
@@ -1554,16 +1771,17 @@ await step('import-creds-kms', async () => {
 });
 
 await step('view-source-switch', async () => {
-  // 'from-file' is a second S3 source: opening it pins the engine to it
-  // (SetViewSource) and mirrors it in the status bar
+  // 'from-file-photos' is a bucket-scoped imported source: opening it pins
+  // the engine to it (SetViewSource), mirrors it in the status bar, and
+  // opens the bucket contents DIRECTLY (no buckets-view round trip)
   await resetCalls();
-  await clickTree('from-file');
-  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'from-file buckets');
+  await clickTree('from-file-photos');
+  await waitFor(async () => (await rowKeys()).includes('img-1.jpg'), 6000, 'from-file-photos contents');
   const c = await findCall('SetViewSource');
-  await ok('opening a source pins it as the view source', c && c.args[0] === 'from-file');
-  await ok('status bar mirrors the active source', (await txt('#status-profile')).includes('from-file'));
+  await ok('opening a source pins it as the view source', c && c.args[0] === 'from-file-photos');
+  await ok('status bar mirrors the active source', (await txt('#status-profile')).includes('from-file-photos'));
   await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'back to hetzner');
+  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'back to hetzner buckets');
   const c2 = await findCall('SetViewSource');
   await ok('switching back re-pins hetzner', c2 && c2.args[0] === 'hetzner');
 });

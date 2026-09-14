@@ -1,5 +1,5 @@
 // xfer.go: cross-source transfers (M9) — stream copies between any two
-// sources: S3 (the default profile or a named S3 source), the remote
+// sources: S3 (the view source or a named S3 source), the remote
 // engines (sftp/scp/ftp/ftps/local-dir sources) and the local pane. One
 // synchronous planner expands the items (remote dirs via remotefs.Walk,
 // S3 dirs via listing.Walk, local dirs via WalkDir, collecting empty
@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
@@ -33,12 +34,12 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// XferItem is one source-side item: an S3 object (Source "" = the default
-// S3 profile; a name = that S3 source's profile), or a file/directory on
+// XferItem is one source-side item: an S3 object (Source "" = the view
+// source; a name = that S3 source's profile), or a file/directory on
 // a non-S3 source (Key is the anchored path, directories with trailing
 // slash, as the grid ships them).
 type XferItem struct {
-	Source string `json:"source"` // "" = default S3; else source name/ID
+	Source string `json:"source"` // "" = view source; else source name/ID
 	Bucket string `json:"bucket"` // S3 items only
 	Key    string `json:"key"`    // S3 object key or remote anchored path
 	Size   int64  `json:"size"`
@@ -83,6 +84,7 @@ type xferFile struct {
 	srcPath string           // s3 key / anchored remote path / OS path
 	dstPath string           // s3 key / anchored remote path / OS path
 	size    int64
+	mtime   time.Time // source modification time (conflict pre-check; zero = unknown)
 }
 
 // pendingDir is a source directory seen during planning; it graduates to
@@ -122,8 +124,9 @@ type xferPlan struct {
 // its ID. items may mix S3 and remote items; localPaths are local-pane
 // files/directories. policy is overwrite | skip | rename; maxBPS 0 =
 // unlimited; move copies first and deletes the source items that
-// transferred cleanly.
-func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest, policy string, maxBPS int64, move bool) (string, error) {
+// transferred cleanly. decisions optionally overrides the policy per
+// planned destination path (the conflict dialog's decisionKeys).
+func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest, policy string, maxBPS int64, move bool, decisions map[string]string) (string, error) {
 	switch policy {
 	case "", PolicyOverwrite, PolicySkip, PolicyRename:
 	default:
@@ -146,15 +149,30 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 		return "", fmt.Errorf("nothing to transfer")
 	}
 	j := a.jobs.add("transfer", len(plan.files), plan.total)
+	j.src = xferDestSource(dest)
 	id := j.info.ID
 	verb := "copying"
 	if move {
 		verb = "moving"
 	}
-	a.emitLog(LogInfo, "transfer",
+	a.emitLogSrc(LogInfo, "transfer", j.src,
 		fmt.Sprintf("job %s: %s %d file(s) (%d bytes) to %s", id, verb, len(plan.files), plan.total, xferDestLabel(dest)))
-	go a.runXfer(j, plan, dst, policy, maxBPS, move)
+	logDecisions(a, "transfer", decisions)
+	go a.runXfer(j, plan, dst, policy, maxBPS, move, decisions)
 	return id, nil
+}
+
+// xferDestSource is the log source tag of a transfer destination: the S3
+// bucket or the remote source name ("" for local folders).
+func xferDestSource(dest XferDest) string {
+	switch dest.Kind {
+	case "s3":
+		return dest.Bucket
+	case "remote":
+		return dest.Source
+	default:
+		return ""
+	}
 }
 
 func xferDestLabel(dest XferDest) string {
@@ -175,7 +193,7 @@ func (a *App) resolveXferDest(dest XferDest) (xferDestSide, error) {
 		if dest.Bucket == "" {
 			return xferDestSide{}, fmt.Errorf("s3 destination needs a bucket")
 		}
-		c, err := a.s3ClientFor(dest.Source) // "" = default profile
+		c, err := a.s3ClientFor(dest.Source) // "" = view source
 		if err != nil {
 			return xferDestSide{}, err
 		}
@@ -351,6 +369,7 @@ func (a *App) planS3Item(ctx context.Context, p *xferPlan, addDir func(int, stri
 			item: idx, srcKind: "s3", client: side.client,
 			bucket: it.Bucket, srcPath: key,
 			dstPath: xferDstJoin(dst, base, rel), size: size,
+			mtime: aws.ToTime(o.LastModified),
 		})
 		p.total += size
 		return nil
@@ -402,6 +421,7 @@ func (a *App) planRemoteItem(ctx context.Context, p *xferPlan, addDir func(int, 
 		p.files = append(p.files, xferFile{
 			item: idx, srcKind: "remote", srcLock: side.lockID, fs: side.fs,
 			srcPath: trimmed + "/" + rel, dstPath: xferDstJoin(dst, base, rel), size: e.Size,
+			mtime: aws.ToTime(e.LastModified),
 		})
 		p.total += e.Size
 		return nil
@@ -423,7 +443,7 @@ func (a *App) planLocalItem(p *xferPlan, addDir func(int, string, string), nonEm
 		base := filepath.Base(lp)
 		p.files = append(p.files, xferFile{
 			item: idx, srcKind: "local", srcPath: lp,
-			dstPath: xferDstJoin(dst, base, ""), size: st.Size(),
+			dstPath: xferDstJoin(dst, base, ""), size: st.Size(), mtime: st.ModTime(),
 		})
 		p.total += st.Size()
 		p.dels = append(p.dels, xferItemDel{item: idx, kind: "local", files: []string{lp}})
@@ -456,7 +476,7 @@ func (a *App) planLocalItem(p *xferPlan, addDir func(int, string, string), nonEm
 		del.files = append(del.files, fp)
 		p.files = append(p.files, xferFile{
 			item: idx, srcKind: "local", srcPath: fp,
-			dstPath: xferDstJoin(dst, base, rel), size: info.Size(),
+			dstPath: xferDstJoin(dst, base, rel), size: info.Size(), mtime: info.ModTime(),
 		})
 		p.total += info.Size()
 		return nil
@@ -482,7 +502,7 @@ func markNonEmpty(nonEmpty map[string]bool, item int, rel string) {
 
 // runXfer executes the planned copies and (for moves) the source
 // deletions. One goroutine, mirroring runUpload's shape.
-func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy string, maxBPS int64, move bool) {
+func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy string, maxBPS int64, move bool, decisions map[string]string) {
 	ctx := j.ctx
 
 	// Empty directories first (remote/local dests only; S3 has no real
@@ -522,7 +542,8 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 		j.emit(a.jobs, true)
 
 		unlock := a.lockSrcs(f.srcLock, dst.lockID)
-		status, err := a.xferOne(ctx, f, dst, policy, maxBPS, j.progress, madeDirs)
+		pol := filePolicy(decisions, f.dstPath, policy)
+		status, err := a.xferOne(ctx, f, dst, pol, maxBPS, j.progress, madeDirs)
 		unlock()
 
 		switch {
@@ -538,6 +559,9 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 			j.fileDone(f.size, true)
 		case status == "skipped":
 			skipped[f.item] = true
+			j.mu.Lock()
+			j.info.SkippedFiles++
+			j.mu.Unlock()
 			j.fileDone(0, false)
 		default:
 			j.fileDone(f.size, false)
@@ -566,7 +590,7 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 				j.mu.Lock()
 				j.info.Error = fmt.Sprintf("delete source %s: %v", d.root, err)
 				j.mu.Unlock()
-				a.emitLog(LogError, "transfer", fmt.Sprintf("job %s: source cleanup failed: %v", j.info.ID, err))
+				a.emitLogSrc(LogError, "transfer", j.src, fmt.Sprintf("job %s: source cleanup failed: %v", j.info.ID, err))
 			}
 		}
 	}
