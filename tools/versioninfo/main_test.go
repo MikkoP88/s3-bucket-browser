@@ -204,7 +204,7 @@ func TestVersionInfoBlob(t *testing.T) {
 	if got := le.Uint32(blob[48:]); got != 9<<16|9 { // FileVersionMS
 		t.Fatalf("dwFileVersionMS = %#x, want %#x", got, 9<<16|9)
 	}
-	if got := le.Uint32(blob[52:]); got != 9<<16|0 { // FileVersionLS
+	if got := le.Uint32(blob[52:]); got != 9<<16 { // FileVersionLS
 		t.Fatalf("dwFileVersionLS = %#x, want %#x", got, 9<<16)
 	}
 

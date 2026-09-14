@@ -79,9 +79,9 @@ func TestSourcePublicMasksSecrets(t *testing.T) {
 }
 
 func TestFromProfile(t *testing.T) {
-	p := Profile{Name: "legacy", Endpoint: "e", Color: "#123456", Default: true}
+	p := Profile{Name: "legacy", Endpoint: "e", Color: "#123456"}
 	s := FromProfile(p)
-	if s.Type != TypeS3 || s.Name != "legacy" || s.Color != "#123456" || !s.Default {
+	if s.Type != TypeS3 || s.Name != "legacy" || s.Color != "#123456" {
 		t.Errorf("FromProfile lost fields: %+v", s)
 	}
 	if s.S3 == nil || s.S3.Endpoint != "e" {
@@ -126,7 +126,7 @@ func TestNormalizeSources(t *testing.T) {
 
 func TestSeedFromProfiles(t *testing.T) {
 	s := newTestStore(t)
-	s.Profiles = []Profile{{Name: "a"}, {Name: "b", Default: true}}
+	s.Profiles = []Profile{{Name: "a"}, {Name: "b"}}
 
 	changed, err := s.SeedFromProfiles()
 	if err != nil {
@@ -138,12 +138,8 @@ func TestSeedFromProfiles(t *testing.T) {
 	if len(s.Sources) != 2 {
 		t.Fatalf("want 2 sources, got %d", len(s.Sources))
 	}
-	b, err := s.GetSource("b")
-	if err != nil {
+	if _, err := s.GetSource("b"); err != nil {
 		t.Fatal(err)
-	}
-	if !b.Default {
-		t.Error("profile default flag must carry into the seeded source")
 	}
 
 	// Idempotent: sources exist, nothing changes.
@@ -171,6 +167,13 @@ func TestUpsertS3ProfileMirror(t *testing.T) {
 	}
 	id, created := src.ID, src.CreatedAt
 
+	// Bucket scoping is source-only (profiles cannot carry it): setting it
+	// directly on the source and re-saving the profile must keep it.
+	src.Bucket = "holiday"
+	if err := s.UpsertSource(src); err != nil {
+		t.Fatal(err)
+	}
+
 	// Update through the profile path: ID and CreatedAt survive, the new
 	// endpoint flows through.
 	p.Endpoint = "http://minio:9001"
@@ -190,27 +193,18 @@ func TestUpsertS3ProfileMirror(t *testing.T) {
 	if src2.S3 == nil || src2.S3.Endpoint != "http://minio:9001" {
 		t.Errorf("endpoint did not flow to the mirror: %+v", src2.S3)
 	}
+	if src2.Bucket != "holiday" {
+		t.Errorf("profile update wiped the source's bucket scoping: %q", src2.Bucket)
+	}
 }
 
-func TestSetDefaultS3SyncsBothSides(t *testing.T) {
-	s := newTestStore(t)
-	for _, n := range []string{"a", "b"} {
-		if err := s.UpsertS3Profile(Profile{Name: n, AccessKeyID: "x", SecretKey: "y"}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.SetDefaultS3("b"); err != nil {
+func TestUpsertSourceTrimsBucket(t *testing.T) {
+	list := []Source{}
+	if err := UpsertSourceIn(&list, Source{Name: "a", Type: TypeS3, S3: &Profile{}, Bucket: "  pics  "}); err != nil {
 		t.Fatal(err)
 	}
-	pa, _ := s.Get("a")
-	pb, _ := s.Get("b")
-	if pa.Default || !pb.Default {
-		t.Error("profile defaults out of sync after SetDefaultS3")
-	}
-	sa, _ := s.GetSource("a")
-	sb, _ := s.GetSource("b")
-	if sa.Default || !sb.Default {
-		t.Error("source defaults out of sync after SetDefaultS3")
+	if list[0].Bucket != "pics" {
+		t.Errorf("bucket must be trimmed, got %q", list[0].Bucket)
 	}
 }
 

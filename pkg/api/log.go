@@ -12,8 +12,9 @@ import (
 // LogLine is the EventLogLine payload consumed by the GUI log drawer.
 type LogLine struct {
 	Time    time.Time `json:"time"`
-	Level   string    `json:"level"` // "info" | "warn" | "error"
-	Scope   string    `json:"scope"` // "transfer", "doctor", "upload", ...
+	Level   string    `json:"level"`            // "info" | "warn" | "error"
+	Scope   string    `json:"scope"`            // "transfer", "doctor", "upload", ...
+	Source  string    `json:"source,omitempty"` // bucket / source name the line is about (filter)
 	Message string    `json:"message"`
 }
 
@@ -65,17 +66,32 @@ func (a *App) SetLogSettings(mode, dir string) (LogSettings, error) {
 	if err := eventlog.SaveSettings(eventlog.Settings{Mode: mode, Dir: dir}); err != nil {
 		return a.GetLogSettings(), err
 	}
+	a.emitLog(LogInfo, "settings", fmt.Sprintf("log file mode set to %s%s", mode, dirNote(dir)))
 	return a.GetLogSettings(), nil
+}
+
+func dirNote(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	return " (" + dir + ")"
 }
 
 // emitLog pushes one structured log line to the frontend log drawer
 // (no-op before Startup, same guard as emit) and persists it to the
 // shared event log so `s3b log` can tail GUI activity (M10.5).
 func (a *App) emitLog(level, scope, msg string) {
+	a.emitLogSrc(level, scope, "", msg)
+}
+
+// emitLogSrc is emitLog with the source (bucket or data-source name) the
+// line is about — the log drawer's per-source filter rides on it.
+func (a *App) emitLogSrc(level, scope, source, msg string) {
 	a.emit(EventLogLine, LogLine{
 		Time:    time.Now().UTC(),
 		Level:   level,
 		Scope:   scope,
+		Source:  source,
 		Message: msg,
 	})
 	eventlog.Append(level, scope, msg)

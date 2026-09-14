@@ -88,7 +88,6 @@ described here. The same engine backs both.
   - [s3b source list](#s3b-source-list) — List data sources (secrets masked)
   - [s3b source remove](#s3b-source-remove) — Remove a data source
   - [s3b source test](#s3b-source-test) — Test connectivity for a source
-  - [s3b source use](#s3b-source-use) — Set the default source
 - [s3b stat](#s3b-stat) — Show bucket, object or source-path metadata
 - [s3b sync](#s3b-sync) — Sync a local folder with an S3 prefix (either direction)
 - [s3b tree](#s3b-tree) — Show a bucket or source subtree as an ASCII tree
@@ -2241,7 +2240,6 @@ keeps resolving them by name.
 * [s3b source list](#s3b-source-list)
 * [s3b source remove](#s3b-source-remove)
 * [s3b source test](#s3b-source-test)
-* [s3b source use](#s3b-source-use)
 
 ## s3b source add
 
@@ -2251,7 +2249,10 @@ Add or update a data source
 
 Add or update a data source of any type:
   s3    --endpoint --region --access-key --secret-key --session-token
-        --path-style/--virtual-hosted --insecure
+        --bucket (every S3 source is ONE bucket) --path-style/
+        --virtual-hosted --insecure
+        shorthand URL: add [NAME] s3://bucket (flags supply the rest;
+        without NAME the bucket is the name)
   sftp/scp/ftp/ftps/webdav/webdavs
         --host --port --username --password --root
         shorthand URL: add [NAME] sftp://user:pass@host:port/root
@@ -2267,7 +2268,7 @@ s3b source add NAME --type TYPE [flags]
 
 ```
       --access-key string      access key ID ($S3B_ACCESS_KEY)
-      --default                make this the default source (s3)
+      --bucket string          bucket this source is scoped to (s3 sources are per-bucket)
       --endpoint string        endpoint URL (empty = AWS)
       --host string            remote host (sftp/scp/ftp/ftps/webdav/webdavs)
       --insecure               skip TLS verification (labs only)
@@ -2441,36 +2442,6 @@ Test connectivity for a source
 
 ```
 s3b source test [NAME|ID]
-```
-
-### Options inherited from parent commands
-
-```
-      --access-key string      access key override ($S3B_ACCESS_KEY)
-      --endpoint-url string    override the profile endpoint URL
-      --json                   machine-readable JSON output
-      --no-color               disable colors (also honors $NO_COLOR)
-      --path-style             force path-style addressing
-      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
-      --region string          override the region
-      --secret-key string      secret key override ($S3B_SECRET_KEY)
-      --session-token string   session token override
-      --timeout duration       per-request timeout (default 5m0s)
-      --verbose                verbose output
-      --virtual-hosted         force virtual-hosted addressing
-
-```
-
-### SEE ALSO
-
-* [s3b source](#s3b-source)
-
-## s3b source use
-
-Set the default source
-
-```
-s3b source use NAME
 ```
 
 ### Options inherited from parent commands

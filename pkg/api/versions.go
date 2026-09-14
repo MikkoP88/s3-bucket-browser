@@ -36,8 +36,10 @@ func (a *App) RestoreVersion(bucket, key, versionID string) error {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	if err := versioning.RestoreVersion(ctx, c.S3, bucket, key, versionID); err != nil {
+		a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("restoring %s (%s) failed: %v", key, versionID, err))
 		return err
 	}
+	a.emitLogSrc(LogInfo, "versions", bucket, fmt.Sprintf("restored %s (version %s)", key, versionID))
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	return nil
 }
@@ -52,8 +54,10 @@ func (a *App) UndoDelete(bucket, key, versionID string) error {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	if err := versioning.RemoveDeleteMarker(ctx, c.S3, bucket, key, versionID); err != nil {
+		a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("undoing delete of %s failed: %v", key, err))
 		return err
 	}
+	a.emitLogSrc(LogWarn, "versions", bucket, fmt.Sprintf("undid delete of %s (marker %s removed)", key, versionID))
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	return nil
 }
@@ -68,8 +72,10 @@ func (a *App) DeleteVersionPermanent(bucket, key, versionID string) error {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	if err := versioning.DeleteVersion(ctx, c.S3, bucket, key, versionID); err != nil {
+		a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("permanently deleting version %s of %s failed: %v", versionID, key, err))
 		return err
 	}
+	a.emitLogSrc(LogWarn, "versions", bucket, fmt.Sprintf("permanently deleted version %s of %s", versionID, key))
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	return nil
 }
@@ -84,6 +90,11 @@ func (a *App) DeleteObjectPermanently(bucket, key string) (transfer.DeleteResult
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	res, err := versioning.DeleteAllVersions(ctx, c.S3, bucket, key)
+	if err != nil {
+		a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("permanently deleting all versions of %s failed: %v", key, err))
+	} else {
+		a.emitLogSrc(LogWarn, "versions", bucket, fmt.Sprintf("permanently deleted %d version(s) of %s", res.Deleted, key))
+	}
 	if res.Deleted > 0 {
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	}
@@ -120,6 +131,11 @@ func (a *App) PurgeVersions(bucket, prefix, mode string, force bool) (transfer.D
 			"%d version(s) would be removed — typed confirmation (force) required", n)
 	}
 	res, err := versioning.Purge(ctx, c.S3, bucket, dirPrefix(prefix), versioning.PurgeMode(mode))
+	if err != nil {
+		a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("purging %s versions under %s failed: %v", mode, dirPrefix(prefix), err))
+	} else if res.Deleted > 0 {
+		a.emitLogSrc(LogWarn, "versions", bucket, fmt.Sprintf("purged %d %s version(s) under %s", res.Deleted, mode, dirPrefix(prefix)))
+	}
 	if res.Deleted > 0 {
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	}

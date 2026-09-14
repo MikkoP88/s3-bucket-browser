@@ -25,7 +25,10 @@ const (
 	sOK                     = 0
 	rpcEChangedMode         = 0x80010106
 	// IFileDialog options: multi-select of existing files AND folders.
+	// FOS_PICKFOLDERS makes folder items selectable in the item view —
+	// files remain selectable too (the modern dialog's one mixed mode).
 	fosAllowMultiSelect = 0x200
+	fosPickFolders      = 0x20
 	fosPathMustExist    = 0x800
 	fosFileMustExist    = 0x1000
 	fosNoChangeDir      = 0x8
@@ -74,9 +77,17 @@ func pickUploadItems(a *App) ([]string, error) {
 	}
 	defer vcall(dlg, 2) // Release
 
-	vcall(dlg, 9, fosAllowMultiSelect|fosPathMustExist|fosFileMustExist|fosNoChangeDir)                        // SetOptions
-	vcall(dlg, 14, uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Select files and/or folders to upload")))) // SetTitle
-	if hr := vcall(dlg, 3, 0); hr != sOK {                                                                     // Show — non-zero is cancel/failure
+	// IFileDialog vtable (after IUnknown 0-2): Show=3, SetFileTypes=4,
+	// SetFileTypeIndex=5, GetFileTypeIndex=6, Advise=7, Unadvise=8,
+	// SetOptions=9, GetOptions=10, SetDefaultFolder=11, SetFolder=12,
+	// GetFolder=13, GetCurrentSelection=14, SetFileName=15, GetFileName=16,
+	// SetTitle=17, SetOkButtonLabel=18, SetFileNameLabel=19, GetResult=20,
+	// AddPlace=21, SetDefaultExtension=22; IFileOpenDialog adds
+	// GetResults=23, GetSelectedItems=24.
+	vcall(dlg, 9, fosAllowMultiSelect|fosPickFolders|fosPathMustExist|fosFileMustExist|fosNoChangeDir) // SetOptions
+	title, _ := syscall.UTF16PtrFromString("Select files and/or folders to upload")
+	vcall(dlg, 17, uintptr(unsafe.Pointer(title))) // SetTitle
+	if hr := vcall(dlg, 3, 0); hr != sOK {         // Show — non-zero is cancel/failure
 		if hr == uintptr(0x800704C7) { // ERROR_CANCELLED
 			return nil, nil
 		}
@@ -84,7 +95,7 @@ func pickUploadItems(a *App) ([]string, error) {
 	}
 
 	var results unsafe.Pointer
-	if hr := vcall(dlg, 22, uintptr(unsafe.Pointer(&results))); hr != sOK || results == nil { // GetResults
+	if hr := vcall(dlg, 23, uintptr(unsafe.Pointer(&results))); hr != sOK || results == nil { // GetResults
 		return nil, errors.New("dialog returned no selection")
 	}
 	defer vcall(results, 2) // Release

@@ -35,12 +35,14 @@ expect_fail() {
   if "$@" >/dev/null 2>&1; then fail "expected rejection: $*"; else pass "rejected as designed: $*"; fi
 }
 
-step "profile add + connectivity test"
-"$BIN" profile add lab --endpoint http://localhost:9000 \
-  --access-key minioadmin --secret-key minioadmin --default >/dev/null
-"$BIN" profile list | grep -q 'lab' || fail "profile not listed"
+step "source add + connectivity test"
+"$BIN" source add lab --type s3 --endpoint http://localhost:9000 \
+  --access-key minioadmin --secret-key minioadmin >/dev/null
+"$BIN" source list | grep -q 'lab' || fail "source not listed"
+# s3 sources mirror as legacy profiles — --profile keeps resolving them
+"$BIN" profile list | grep -q 'lab' || fail "s3 source not mirrored as profile"
 "$BIN" profile test lab | grep -q 'OK' || fail "profile test failed"
-pass "profile created and connectivity OK"
+pass "source created, mirrored as profile, connectivity OK"
 
 step "bucket + folder creation"
 "$BIN" mb "s3://$BUCKET" | grep -q 'created bucket' || fail "mb"
@@ -96,11 +98,15 @@ curl -s "$url" | cmp - "$WORK/data/readme.md" || fail "presigned URL fetch misma
 pass "presigned URL serves the object"
 
 step "safety gates"
-expect_fail "$BIN" rm "s3://$BUCKET/data/" -r            # 301 objects, no --force
+expect_fail "$BIN" rm "s3://$BUCKET/data/" -r            # 302 objects, no --force
 dry_out="$("$BIN" rm "s3://$BUCKET/data/" -r --dry-run)"
-printf '%s\n' "$dry_out" | grep -q 'total: 301' || fail "rm dry-run count: $dry_out"
+# 301 files + the data/ folder marker itself — recursive delete must remove
+# the marker too (MinIO omits it from listings under its own prefix, and a
+# delete that misses it leaves a ghost folder behind)
+printf '%s\n' "$dry_out" | grep -q 'total: 302' || fail "rm dry-run count: $dry_out"
+printf '%s\n' "$dry_out" | grep -q 'would delete s3://'"$BUCKET"'/data/$' || fail "rm dry-run must include the folder marker: $dry_out"
 "$BIN" rm "s3://$BUCKET/data/readme.md" >/dev/null
-"$BIN" rm "s3://$BUCKET/data/" -r --force | grep -q 'deleted 300 object' || fail "rm -r --force"
+"$BIN" rm "s3://$BUCKET/data/" -r --force | grep -q 'deleted 301 object' || fail "rm -r --force"
 expect_fail "$BIN" rb "s3://$BUCKET"                      # still has docs/ + copy/
 pass "L1/L2 safety gates enforced"
 
@@ -269,7 +275,7 @@ step "bucket removal + cleanup"
 # Versioned bucket with markers: rb --force must purge version history too (M4).
 "$BIN" rb "s3://$BUCKET" --force | grep -q 'removed bucket' || fail "rb --force (versioned)"
 if "$BIN" ls --json | grep -q "$BUCKET"; then fail "bucket still visible"; fi
-"$BIN" profile remove lab | grep -q 'removed profile' || fail "profile cleanup"
-pass "bucket and profile removed"
+"$BIN" source remove lab | grep -q 'removed source' || fail "source cleanup"
+pass "bucket and source removed"
 
 printf '\nALL E2E CHECKS PASSED\n'

@@ -5,7 +5,7 @@
 // land on folder rows of the remote/S3 pane, downloads on folder rows /
 // the body here).
 import { Grid } from './grid.js';
-import { browseDirDialog } from './dialogs.js';
+import { browseDirDialog, prompt } from './dialogs.js';
 import { el, fmtBytes } from './util.js';
 import { api, onEvent } from './api.js';
 
@@ -45,7 +45,7 @@ export class LocalPane {
     this.s3Off = null;    // s3 listing page-event unsubscribe
     this.roots = [];
     this.binding = { kind: 'local', source: '' }; // what the pane is bound to
-    this.sources = [];    // [{id,name,type,default}] fed by main after ListSources
+    this.sources = [];    // [{id,name,type}] fed by main after ListSources
     this.sync = localStorage.getItem('s3b-local-sync') === '1';
     this.syncBase = null; // {dir, prefix} captured when sync is enabled
     this.on = {};         // callbacks: dropFolder, dropBody, compare, syncBase, syncUp, openFail, activateRemoteFile, activateS3File
@@ -167,14 +167,16 @@ export class LocalPane {
     if (src.type === 's3') {
       this.cancelS3Stream();
       // source stays the id (backend resolves id-or-name, localStorage too);
-      // name is what the user sees in the crumb and prompts
-      this.binding = { kind: 's3', source: src.id || src.name, name: src.name };
+      // name is what the user sees in the crumb and prompts. A
+      // bucket-scoped source opens its bucket's contents directly; legacy
+      // account-wide sources open the buckets view.
+      this.binding = { kind: 's3', source: src.id || src.name, name: src.name, bucket: src.bucket || '' };
       localStorage.setItem('s3b-side-src', this.binding.source);
       this.applyDragPayload();
       this.updateSyncUi();
-      this.bucket = '';
+      this.bucket = this.binding.bucket;
       this.dir = '';
-      this.navigateS3({ bucket: '', prefix: '' });
+      this.navigateS3({ bucket: this.binding.bucket, prefix: '' });
       return;
     }
     this.binding = { kind: 'remote', source: src.id || src.name, name: src.name };
@@ -224,7 +226,7 @@ export class LocalPane {
 
   async start() {
     if (this.binding.kind === 'remote') return this.navigateRemote(this.dir || '/');
-    if (this.binding.kind === 's3') return this.navigateS3({ bucket: '', prefix: '' });
+    if (this.binding.kind === 's3') return this.navigateS3({ bucket: this.binding.bucket || '', prefix: '' });
     try {
       this.roots = await app().LocalRoots();
       if (this.sync && !this.syncBase) this.syncBase = this.on.syncBase?.() || null;
@@ -236,7 +238,7 @@ export class LocalPane {
 
   home() {
     if (this.binding.kind === 'remote') return this.navigate('/');
-    if (this.binding.kind === 's3') return this.navigateS3({ bucket: '', prefix: '' });
+    if (this.binding.kind === 's3') return this.navigateS3({ bucket: this.binding.bucket || '', prefix: '' });
     this.navigate('');
   }
 
@@ -407,7 +409,13 @@ export class LocalPane {
       if (p) this.navigateS3({ bucket: p.bucket, prefix: p.prefix || '' });
       return;
     }
-    const p = await api.PickFolder('Choose a folder');
+    let p = null;
+    try {
+      p = await api.PickFolder('Choose a folder');
+    } catch {
+      // native picker unavailable (gui-live bridge) — ask for the path
+      p = await prompt({ title: 'Open folder', label: 'Folder path', value: this.dir || '', okLabel: 'Open' });
+    }
     if (p) this.navigate(p);
   }
 

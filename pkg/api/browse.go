@@ -36,9 +36,9 @@ func (a *App) ListBuckets() ([]BucketView, error) {
 	return a.bucketsOf(c)
 }
 
-// s3ClientFor resolves the S3 client of a named source ("" = the default
-// S3 source). Accepts the source name or ID, so frontend payloads can carry
-// either. Non-S3 sources are rejected.
+// s3ClientFor resolves the S3 client of a named source ("" = the source
+// the main view is browsing). Accepts the source name or ID, so frontend
+// payloads can carry either. Non-S3 sources are rejected.
 func (a *App) s3ClientFor(idOrName string) (*s3client.Client, error) {
 	if idOrName == "" {
 		return a.client("")
@@ -54,7 +54,7 @@ func (a *App) s3ClientFor(idOrName string) (*s3client.Client, error) {
 }
 
 // ListSourceBuckets returns the buckets visible to one named S3 source —
-// the per-source root view for non-default S3 sources.
+// the per-source root view.
 func (a *App) ListSourceBuckets(idOrName string) ([]BucketView, error) {
 	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
@@ -97,7 +97,7 @@ func (a *App) ListObjects(bucket, prefix string) ([]listing.Entry, error) {
 	if err != nil {
 		// Routine listings are user-visible in the UI itself (and would flood
 		// the log drawer once auto-refresh ticks); log failures only.
-		a.emitLog(LogError, "list", fmt.Sprintf("listing %s/%s failed: %v", bucket, dirPrefix(prefix), err))
+		a.emitLogSrc(LogError, "list", bucket, fmt.Sprintf("listing %s failed: %v", dirPrefix(prefix), err))
 	}
 	return entries, err
 }
@@ -238,10 +238,10 @@ func (a *App) CreateBucket(name, region string) error {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	if err := bucketops.Create(ctx, c.S3, name, firstNonEmpty(region, c.Region), false); err != nil {
-		a.emitLog(LogError, "admin", fmt.Sprintf("creating bucket %s failed: %v", name, err))
+		a.emitLogSrc(LogError, "admin", name, fmt.Sprintf("creating bucket failed: %v", err))
 		return err
 	}
-	a.emitLog(LogInfo, "admin", "bucket "+name+" created")
+	a.emitLogSrc(LogInfo, "admin", name, "bucket created")
 	a.emit(EventS3Changed, map[string]string{"bucket": name})
 	return nil
 }
@@ -300,23 +300,23 @@ func (a *App) DeleteBucket(bucket string, force bool) (transfer.DeleteResult, er
 		}
 		res, err := versioning.EmptyBucketVersions(ctx, c.S3, bucket)
 		if err != nil {
-			a.emitLog(LogError, "delete", fmt.Sprintf("emptying versioned bucket %s failed: %v", bucket, err))
+			a.emitLogSrc(LogError, "delete", bucket, fmt.Sprintf("emptying versioned bucket failed: %v", err))
 			return res, err
 		}
 		_, derr := c.S3.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
 		if derr == nil {
-			a.emitLog(LogInfo, "delete", "versioned bucket "+bucket+" deleted")
+			a.emitLogSrc(LogInfo, "delete", bucket, "versioned bucket deleted")
 			a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 		} else {
-			a.emitLog(LogError, "delete", fmt.Sprintf("deleting versioned bucket %s failed: %v", bucket, derr))
+			a.emitLogSrc(LogError, "delete", bucket, fmt.Sprintf("deleting versioned bucket failed: %v", derr))
 		}
 		return res, derr
 	}
 	res, err := bucketops.DeleteBucket(ctx, c.S3, bucket, force)
 	if err != nil {
-		a.emitLog(LogError, "delete", fmt.Sprintf("deleting bucket %s failed: %v", bucket, err))
+		a.emitLogSrc(LogError, "delete", bucket, fmt.Sprintf("deleting bucket failed: %v", err))
 	} else {
-		a.emitLog(LogInfo, "delete", "bucket "+bucket+" deleted")
+		a.emitLogSrc(LogInfo, "delete", bucket, "bucket deleted")
 	}
 	if err == nil {
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
@@ -357,10 +357,10 @@ func (a *App) createFolderC(c *s3client.Client, bucket, prefix, name string) err
 		Body:   bytes.NewReader(nil),
 	})
 	if err == nil {
-		a.emitLog(LogInfo, "mkdir", fmt.Sprintf("folder %s/%s created", bucket, key))
+		a.emitLogSrc(LogInfo, "mkdir", bucket, fmt.Sprintf("folder %s created", key))
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket, "prefix": dirPrefix(prefix)})
 	} else {
-		a.emitLog(LogError, "mkdir", fmt.Sprintf("creating folder %s/%s failed: %v", bucket, key, err))
+		a.emitLogSrc(LogError, "mkdir", bucket, fmt.Sprintf("creating folder %s failed: %v", key, err))
 	}
 	return err
 }
@@ -371,7 +371,7 @@ func (a *App) RunDoctor(bucket string) (*doctor.Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.emitLog(LogInfo, "doctor", "running all checks on "+bucket)
+	a.emitLogSrc(LogInfo, "doctor", bucket, "running all checks")
 	report := doctor.Run(a.ctx, c, bucket, c.Profile.Insecure)
 	failed := 0
 	for _, r := range report.Checks {
@@ -380,9 +380,9 @@ func (a *App) RunDoctor(bucket string) (*doctor.Report, error) {
 		}
 	}
 	if failed > 0 {
-		a.emitLog(LogWarn, "doctor", fmt.Sprintf("doctor finished on %s: %d of %d check(s) failed", bucket, failed, len(report.Checks)))
+		a.emitLogSrc(LogWarn, "doctor", bucket, fmt.Sprintf("doctor finished: %d of %d check(s) failed", failed, len(report.Checks)))
 	} else {
-		a.emitLog(LogInfo, "doctor", fmt.Sprintf("doctor finished on %s: all %d check(s) passed", bucket, len(report.Checks)))
+		a.emitLogSrc(LogInfo, "doctor", bucket, fmt.Sprintf("doctor finished: all %d check(s) passed", len(report.Checks)))
 	}
 	return report, nil
 }
@@ -402,16 +402,16 @@ func (a *App) RunDoctorCheck(bucket, name string) (*doctor.CheckResult, error) {
 	}
 	res, err := doctor.RunCheck(a.ctx, c, bucket, name, c.Profile.Insecure)
 	if err != nil {
-		a.emitLog(LogError, "doctor", fmt.Sprintf("check %s on %s failed to run: %v", name, bucket, err))
+		a.emitLogSrc(LogError, "doctor", bucket, fmt.Sprintf("check %s failed to run: %v", name, err))
 		return nil, err
 	}
 	switch res.Status {
 	case doctor.StatusPass:
-		a.emitLog(LogInfo, "doctor", fmt.Sprintf("check %s on %s passed", name, bucket))
+		a.emitLogSrc(LogInfo, "doctor", bucket, fmt.Sprintf("check %s passed", name))
 	case doctor.StatusWarn, doctor.StatusSkip:
-		a.emitLog(LogWarn, "doctor", fmt.Sprintf("check %s on %s: %s", name, bucket, res.Detail))
+		a.emitLogSrc(LogWarn, "doctor", bucket, fmt.Sprintf("check %s: %s", name, res.Detail))
 	default:
-		a.emitLog(LogError, "doctor", fmt.Sprintf("check %s on %s failed: %s", name, bucket, res.Detail))
+		a.emitLogSrc(LogError, "doctor", bucket, fmt.Sprintf("check %s failed: %s", name, res.Detail))
 	}
 	return &res, nil
 }

@@ -21,6 +21,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -291,6 +292,13 @@ func main() {
 			func(string) (string, error) { return *saveProfile, nil },
 		)
 	}
+	// The native upload/folder pickers cannot run outside wails.Run (a
+	// runtime call there is fatal). Reject them instead: the frontend
+	// catches the error and falls back to its text path prompt.
+	api.SetPickers(
+		func() ([]string, error) { return nil, errors.New("native upload picker unavailable under gui-live") },
+		func(string) (string, error) { return "", errors.New("native folder picker unavailable under gui-live") },
+	)
 
 	app := api.New("0.0.0-gui-live")
 	app.Startup(context.Background())

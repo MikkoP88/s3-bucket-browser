@@ -9,9 +9,9 @@ import { el } from './util.js';
 import { t, languages, LANG_NAMES } from './i18n.js';
 import { openModal } from './dialogs.js';
 
-export const AR_STEPS = [0, 5000, 10000, 30000, 60000];
+const AR_STEPS = [0, 5000, 10000, 30000, 60000];
 
-export const RATE_STEPS = [
+const RATE_STEPS = [
   [0, 'settings.rateNone'],
   [524288, '512 kB/s'],
   [1048576, '1 MB/s'],
@@ -132,6 +132,7 @@ export function settingsDialog(ctx) {
       s.conflict(),
       (v) => a.conflict(v),
     ), t('settings.conflictHint')),
+    row(t('settings.showThrottle'), checkbox(s.showThrottle?.() || false, (v) => a.showThrottle?.(v))),
     row(t('settings.throttle'), select(
       RATE_STEPS.map(([v, label]) => [v, t(label)]),
       s.throttle(),

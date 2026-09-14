@@ -30,7 +30,6 @@ type Profile struct {
 	PathStyle    bool   `json:"pathStyle"`
 	Insecure     bool   `json:"insecure"`        // skip TLS verification (labs)
 	Color        string `json:"color,omitempty"` // GUI accent color (M2)
-	Default      bool   `json:"default,omitempty"`
 	// SecretInKeyring: the secret/token live in the OS keyring, not in the
 	// JSON file (M5). Set automatically by Save when a keyring is present.
 	SecretInKeyring bool      `json:"secretInKeyring,omitempty"`
@@ -177,23 +176,20 @@ func (s *Store) Get(name string) (Profile, error) {
 	return Profile{}, fmt.Errorf("%w: %q", ErrNotFound, name)
 }
 
-// DefaultProfile returns the profile marked default, or the only profile.
-func (s *Store) DefaultProfile() (Profile, error) {
-	if len(s.Profiles) == 0 {
-		return Profile{}, errors.New("no profiles configured — run: s3b profile add <name> ...")
-	}
-	for _, p := range s.Profiles {
-		if p.Default {
-			return p, nil
-		}
-	}
-	if len(s.Profiles) == 1 {
+// SoleProfile returns the only profile — name-less CLI calls resolve to
+// it. With zero or several profiles the caller must name one explicitly.
+func (s *Store) SoleProfile() (Profile, error) {
+	switch len(s.Profiles) {
+	case 0:
+		return Profile{}, errors.New("no profiles configured — run 's3b source add' to create one")
+	case 1:
 		return s.Profiles[0], nil
+	default:
+		return Profile{}, errors.New("multiple profiles — pass --profile <name> or set S3B_PROFILE")
 	}
-	return Profile{}, errors.New("multiple profiles and none marked default — pass --profile <name> or run: s3b profile use <name>")
 }
 
-// Upsert inserts or updates a profile by name, preserving default flags.
+// Upsert inserts or updates a profile by name.
 func (s *Store) Upsert(p Profile) error {
 	if p.Name == "" {
 		return errors.New("profile name is required")
@@ -203,7 +199,6 @@ func (s *Store) Upsert(p Profile) error {
 	for i, existing := range s.Profiles {
 		if existing.Name == p.Name {
 			p.CreatedAt = existing.CreatedAt
-			p.Default = existing.Default
 			// Editor round-trips arrive without the secret (masked or
 			// empty): inherit the stored one, keyring flag included.
 			if p.SecretKey == "" && existing.SecretInKeyring {
@@ -232,21 +227,6 @@ func (s *Store) Remove(name string) error {
 		}
 	}
 	return fmt.Errorf("%w: %q", ErrNotFound, name)
-}
-
-// SetDefault marks exactly one profile as default.
-func (s *Store) SetDefault(name string) error {
-	found := false
-	for i := range s.Profiles {
-		s.Profiles[i].Default = s.Profiles[i].Name == name
-		if s.Profiles[i].Default {
-			found = true
-		}
-	}
-	if !found {
-		return fmt.Errorf("%w: %q", ErrNotFound, name)
-	}
-	return nil
 }
 
 // Sorted returns profiles sorted by name.

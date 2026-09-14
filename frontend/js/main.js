@@ -6,7 +6,7 @@ import { Grid } from './grid.js';
 import { Tree } from './tree.js';
 import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
-  sourceEditor, helpSheet, conflictPolicy, presignDialog, presignListDialog, toast, openModal,
+  sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill,
 } from './dialogs.js';
@@ -73,8 +73,9 @@ async function boot() {
   $('logarea').replaceChildren(logArea.root);
   if (localStorage.getItem('s3b-log') === '1') $('logarea').classList.remove('hidden');
 
-  // Auto refresh: restore interval + refresh-on-focus from the last session.
-  const ar = parseInt(localStorage.getItem('s3b-autorefresh') || '0', 10);
+  // Auto refresh: on by default (5 s) unless explicitly turned off;
+  // restore interval + refresh-on-focus from the last session.
+  const ar = parseInt(localStorage.getItem('s3b-autorefresh') || '5000', 10);
   if (ar > 0) setAutoRefresh(ar);
   refreshOnFocus = localStorage.getItem('s3b-refresh-focus') === '1';
 
@@ -113,7 +114,7 @@ function autoRefreshBlocked() {
 
 function autoTick() {
   if (document.hidden || autoRefreshBlocked()) return;
-  refreshCurrent();
+  refreshCurrent(true); // silent: no flicker, selection kept
 }
 
 // setAutoRefresh (re)starts the interval timer; 0 disables it. The choice
@@ -200,13 +201,17 @@ async function refreshSources() {
 }
 
 // sourceHomeLoc is the landing view of a source (or the first one): S3
-// sources open their buckets, everything else its root directory.
+// sources open their bucket's contents (legacy account-wide ones their
+// bucket list), everything else its root directory.
 function sourceHomeLoc(src) {
   const s = src || sources[0];
   if (!s) return { kind: 'onboarding' };
-  return s.type === 's3'
-    ? { kind: 'buckets', source: s.name }
-    : { kind: 'remote', source: s.name, path: '' };
+  if (s.type === 's3') {
+    return s.bucket
+      ? { kind: 'objects', source: s.name, bucket: s.bucket, prefix: '' }
+      : { kind: 'buckets', source: s.name };
+  }
+  return { kind: 'remote', source: s.name, path: '' };
 }
 
 // navThen navigates and runs fn once the view source has settled on the
@@ -225,12 +230,16 @@ function navThen(loc, fn) {
   tick();
 }
 
-// probeSource tests one source's connectivity: S3 sources list their
-// buckets, everything else lists its root directory.
+// probeSource tests one source's connectivity: S3 sources get the backend
+// probe (a HEAD on the scoped bucket, or a bucket list for legacy
+// account-wide sources), everything else lists its root directory.
 async function probeSource(s) {
   try {
-    if (s.type === 's3') await api.ListSourceBuckets(s.id || s.name);
-    else await api.RemoteList(s.id || s.name, '/');
+    if (s.type === 's3') {
+      const res = await api.TestSource(s.id || s.name);
+      return !!res.ok;
+    }
+    await api.RemoteList(s.id || s.name, '/');
     return true;
   } catch {
     return false;
@@ -308,29 +317,11 @@ function showOnboarding() {
   renderBreadcrumb();
   showEmpty(t('noSources'), t('noSourcesSub'), [
     el('button', { class: 'btn primary', text: `+ ${t('addSource')}`, onclick: () => sourceEditor(null, afterSourceSaved) }),
-    el('button', { class: 'btn', text: t('importAws'), onclick: importAws }),
-    el('button', { class: 'btn', text: 'Import credentials\u2026', onclick: importCredsUi }),
+    el('button', { class: 'btn', text: 'Import S3 Credential\u2026', onclick: importCredsUi }),
   ]);
 }
 
-async function importAws() {
-  try {
-    const res = await api.ImportAwsCredentials();
-    const msg = res.imported.length
-      ? `Imported: ${res.imported.join(', ')}${res.skipped.length ? ` — skipped: ${res.skipped.join(', ')}` : ''}`
-      : res.skipped.length ? `Skipped: ${res.skipped.join(', ')}` : 'Nothing found in ~/.aws/credentials or ~/.aws/config';
-    toast(msg, res.imported.length ? 'ok' : '');
-    if (res.imported.length) {
-      await refreshSources();
-      refreshPfState(); // imports land in the session (or open file)
-      nav.to(sourceHomeLoc());
-    }
-  } catch (err) {
-    toast(`Import failed: ${err}`, 'error');
-  }
-}
-
-// importCredsUi opens the Import credentials dialog: candidates from local
+// importCredsUi opens the Import S3 Credential dialog: candidates from local
 // credential files (AWS INI/rclone/JSON/.env/.s3bprofile) or a KMS service
 // (Vault, AWS SM, Azure, GCP, custom HTTP), each testable before import.
 async function importCredsUi() {
@@ -405,10 +396,13 @@ async function setViewSourceFor(loc) {
   return name;
 }
 
-async function loadView(loc) {
-  grid.clearSelection();
+async function loadView(loc, { silent = false } = {}) {
+  // silent (background auto refresh): keep the current rows, selection and
+  // breadcrumb on screen while the new listing is fetched — no flicker. New
+  // data swaps in once, in a single frame.
+  if (!silent) grid.clearSelection();
   updateNavButtons();
-  renderBreadcrumb();
+  if (!silent) renderBreadcrumb();
   tree.markCurrent(loc);
   hideEmpty();
 
@@ -426,11 +420,14 @@ async function loadView(loc) {
         showEmpty(t('noBuckets'), t('noBucketsSub'), [
           el('button', { class: 'btn primary', text: t('createBucket'), onclick: createBucket }),
         ]);
-      } else tree.refresh(src, buckets, loc);
+      }
+      // always feed the tree — the legacy bucket level tracks the live
+      // bucket set (created/deleted), even down to zero
+      tree.refresh(src, buckets, loc);
       $('btn-up').disabled = true;
     } else if (loc.kind === 'objects') {
       await setViewSourceFor(loc);
-      await loadObjectsStream(loc);
+      await loadObjectsStream(loc, silent);
       tree.reveal(loc).catch(() => {});
       localPane.syncTo(loc.prefix || '');
       $('btn-up').disabled = false;
@@ -448,6 +445,9 @@ async function loadView(loc) {
       $('btn-up').disabled = !parentOf(loc);
     }
   } catch (err) {
+    // A silent refresh keeps the current view on transient errors — only an
+    // explicit navigation shows the error state.
+    if (silent) return;
     currentEntries = [];
     grid.setRows([]);
     showEmpty('Could not list', String(err), []);
@@ -459,38 +459,48 @@ async function loadView(loc) {
 // listing API: the first page renders immediately, Go-side memory stays
 // at one page for million-object folders, and stale streams are
 // canceled on navigation (M5).
-async function loadObjectsStream(loc) {
+async function loadObjectsStream(loc, silent = false) {
   const seq = ++listSeq;
   cancelListStream();
   if (pendingSelect && (pendingSelect.bucket !== loc.bucket || pendingSelect.prefix !== (loc.prefix || ''))) {
     pendingSelect = null; // user navigated elsewhere
   }
-  currentEntries = [];
-  grid.setRows([]);
+  if (!silent) {
+    currentEntries = [];
+    grid.setRows([]);
+  }
   grid.setFilter(view.filter);
   let token;
   try {
     token = await api.ListObjectsStream(loc.bucket, loc.prefix || '');
   } catch (err) {
-    if (seq !== listSeq) return;
+    if (seq !== listSeq || silent) return;
     showEmpty('Could not list', String(err), []);
     return;
   }
   if (seq !== listSeq) { api.CancelList(token).catch(() => {}); return; }
   listStream.token = token;
+  // silent: pages buffer off-screen; the grid swaps once, when done.
+  const buffered = [];
   listStream.off = onEvent('list:page', (p) => {
     if (seq !== listSeq || p.token !== token) return;
     if (p.error) {
-      showEmpty('Could not list', p.error, []);
+      if (!silent) showEmpty('Could not list', p.error, []);
       return;
     }
-    currentEntries.push(...p.entries);
-    grid.appendRows(p.entries);
+    if (silent) {
+      buffered.push(...p.entries);
+      currentEntries = buffered;
+    } else {
+      currentEntries.push(...p.entries);
+      grid.appendRows(p.entries);
+    }
     updateStatus();
     if (p.done) {
       listStream.token = null;
       listStream.off?.();
       listStream.off = null;
+      if (silent) grid.setRows(buffered);
       grid.apply(); // canonical folders-first ordering + active sort/filter
       if (!currentEntries.length && !view.filter) {
         showEmpty(t('emptyFolder'), t('dropToUpload'), [
@@ -531,8 +541,8 @@ function openSearchResult(loc) {
   nav.to({ kind: 'objects', source: viewSource, bucket: loc.bucket, prefix: loc.prefix });
 }
 
-function refreshCurrent() {
-  if (nav.current) loadView({ ...nav.current });
+function refreshCurrent(silent = false) {
+  if (nav.current) loadView({ ...nav.current }, { silent });
 }
 
 function updateNavButtons() {
@@ -798,6 +808,12 @@ function wireGrid() {
     e.preventDefault();
     showEmptyAreaMenu(e);
   });
+  // the empty-state overlay covers the grid body in empty folders/bucket
+  // lists — right-clicks land on it, so it must open the same menu
+  $('empty-state').addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showEmptyAreaMenu(e);
+  });
   // sidebar background right-click: profile + tree management
   $('tree').addEventListener('contextmenu', (e) => {
     if (e.target.closest('.tnode')) return; // node menu lands with sidebar parity (M7.9)
@@ -805,8 +821,7 @@ function wireGrid() {
     openMenu(e, [
       [t('addSource'), '', () => sourceEditor(null, afterSourceSaved)],
       null,
-      [t('importAws'), '', () => importAws()],
-      ['Import credentials\u2026', '', () => importCredsUi()],
+      ['Import S3 Credential\u2026', '', () => importCredsUi()],
       null,
       [t('pf.new'), '', newProfileFileUi],
       [t('pf.open'), '', openProfileFileUi],
@@ -979,8 +994,7 @@ function showEmptyAreaMenu(e) {
     openMenu(e, [
       ['New bucket\u2026', '', () => createBucket(), !st.canCreateBucket],
       null,
-      ['Import ~/.aws/credentials\u2026', '', () => importAws()],
-      ['Import credentials\u2026', '', () => importCredsUi()],
+      ['Import S3 Credential\u2026', '', () => importCredsUi()],
       null,
       ['Refresh', 'F5', () => refreshCurrent()],
     ]);
@@ -1046,11 +1060,13 @@ async function folderProperties() {
 
 // showTreeMenu gives sidebar nodes (sources, buckets and folders)
 // context-menu parity with grid rows. node = {kind:'source',…} source root,
-// {bucket, prefix, label} bucket/folder, or {kind:'rdir', source, path,
-// label} remote directory — from the Tree.
+// {kind:'source', bucket, …} bucket-scoped S3 source (the node IS the
+// bucket), {bucket, prefix, label} bucket/folder (legacy account-wide
+// sources), or {kind:'rdir', source, path, label} remote directory — from
+// the Tree.
 function showTreeMenu(e, node) {
   const st = commandState();
-  if (node.kind === 'source') {
+  if (node.kind === 'source' && node.bucket === undefined) {
     const src = sources.find((s) => s.name === node.source);
     if (!src) return;
     openMenu(e, [
@@ -1083,6 +1099,66 @@ function showTreeMenu(e, node) {
             toast(`\u2705 ${node.source} reachable`, 'ok');
           } catch (err) { toast(`\u274C ${err}`, 'error'); }
         }
+      }],
+      null,
+      ['Edit source\u2026', '', () => sourceEditor(src, afterSourceSaved)],
+      ['Remove source\u2026', '', async () => {
+        if (await confirm({
+          title: `Remove source ${node.source}?`,
+          message: 'The connection is removed from the workspace.\nStored credentials will be deleted.',
+          danger: true, okLabel: 'Remove',
+        })) {
+          try {
+            await api.RemoveSource(src.id || src.name);
+            await refreshSources();
+            refreshPfState();
+          } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
+        }
+      }],
+    ]);
+    return;
+  }
+  if (node.kind === 'source') {
+    // Bucket-scoped S3 source (the node IS the bucket): it inherits the
+    // full bucket-grade feature set (open contents, favorites, upload/
+    // paste, find, admin, doctor, properties, delete bucket) on top of
+    // source management.
+    const src = sources.find((s) => s.name === node.source);
+    if (!src) return;
+    const go = () => nav.to({ kind: 'objects', source: node.source, bucket: node.bucket, prefix: '' });
+    const goThen = (fn) => () => navThen(
+      { kind: 'objects', source: node.source, bucket: node.bucket, prefix: '' },
+      fn,
+    );
+    openMenu(e, [
+      ['Open', '', go],
+      [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
+      null,
+      ['Upload here\u2026', 'Ctrl+U', () => uploadTo('', node.bucket, node.source), !st.hasProfile],
+      ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && clipboard.keys.length)],
+      null,
+      ['Find in bucket\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, '', openSearchResult)), !st.hasProfile],
+      ['Admin panel\u2026', '', goThen(() => adminDialog(node.bucket, refreshCurrent)), !st.hasProfile],
+      ['Doctor\u2026', '', goThen(() => runDoctor(node.bucket)), !st.hasProfile],
+      ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
+      null,
+      ['Delete bucket\u2026', '', goThen(() => deleteBucket(node.bucket)), !st.hasProfile],
+      null,
+      ['Open buckets view', '', () => nav.to({ kind: 'buckets', source: node.source })],
+      ['Refresh', 'F5', () => tree.reload(node.id)],
+      ['Reconnect', '', async () => {
+        try {
+          await api.SaveSource(src);
+          tree.reload(node.id);
+          tree.setStatus({ [node.source]: 'busy' });
+          probeSource(src).then((ok) => tree.setStatus({ [node.source]: ok ? 'ok' : 'error' }));
+          toast(`Reconnected ${node.source}`, 'ok');
+        } catch (err) { toast(`${err}`, 'error'); }
+      }],
+      ['Test connection\u2026', '', async () => {
+        // bucket-scoped: the backend probes THIS bucket, not the account
+        const res = await api.TestSource(src.id || node.source);
+        toast(res.ok ? `\u2705 ${res.message}` : `\u274C ${res.message}`, res.ok ? 'ok' : 'error');
       }],
       null,
       ['Edit source\u2026', '', () => sourceEditor(src, afterSourceSaved)],
@@ -1273,10 +1349,11 @@ async function uploadPaths(paths, prefixOverride, bucketOverride, sourceOverride
     await startTransfer({ localPaths: paths, dest: { kind: 's3', source, bucket, dir: prefix } });
     return;
   }
-  const res = await conflictPolicy('upload', `${source || 's3'}://${bucket}/${prefix || ''}`);
+  const res = await resolveTransferOpts('upload', `${source || 's3'}://${bucket}/${prefix || ''}`,
+    () => api.CheckConflicts(null, paths, { kind: 's3', source: source || '', bucket, dir: prefix }));
   if (!res) return;
   try {
-    await api.Upload(paths, bucket, prefix, res.policy, res.maxBps);
+    await api.Upload(paths, bucket, prefix, res.policy, res.maxBps, res.decisions || null);
     toast(`Uploading ${paths.length} item(s)\u2026`);
     showTransfersBadge();
   } catch (err) {
@@ -1322,10 +1399,11 @@ async function downloadRefs(entries, dest, bucketOverride) {
   const loc = nav.current;
   const bucket = bucketOverride || loc.bucket;
   if (!entries?.length || !bucket) return;
-  const res = await conflictPolicy('download', dest);
+  const res = await resolveTransferOpts('download', dest,
+    () => api.CheckConflicts(entries.map((e) => ({ source: '', bucket, key: e.key, size: e.size || 0, isDir: !!e.isDir })), null, { kind: 'local', dir: dest }));
   if (!res) return;
   try {
-    await api.DownloadRefs(bucket, entries, dest, res.policy, res.maxBps);
+    await api.DownloadRefs(bucket, entries, dest, res.policy, res.maxBps, res.decisions || null);
     toast(`Downloading ${entries.length} item(s)\u2026`);
     showTransfersBadge();
   } catch (err) {
@@ -1369,10 +1447,11 @@ function sidePaneDest() {
 // startTransfer runs one background TransferCross job; resolves false when
 // the user canceled the conflict dialog or the job failed to start.
 async function startTransfer({ items = [], localPaths = [], dest, move = false, label } = {}) {
-  const res = await conflictPolicy('transfer', label || xferDestLabel(dest));
+  const res = await resolveTransferOpts('transfer', label || xferDestLabel(dest),
+    () => api.CheckConflicts(items, localPaths, dest));
   if (!res) return false;
   try {
-    await api.TransferCross(items, localPaths, dest, res.policy, res.maxBps, move);
+    await api.TransferCross(items, localPaths, dest, res.policy, res.maxBps, move, res.decisions || null);
     toast(`${move ? 'Moving' : 'Copying'} ${items.length + localPaths.length} item(s)\u2026`);
     showTransfersBadge();
     return true;
@@ -1395,7 +1474,7 @@ function clipboardToXfer() {
   }
   return {
     items: clipboard.keys.map((k) => ({
-      source: clipboard.source || '', // "" = default S3 source
+      source: clipboard.source || '', // "" = the view source
       bucket: clipboard.bucket,
       key: k,
       isDir: k.endsWith('/'),
@@ -2535,6 +2614,7 @@ async function openSettings() {
       log: () => !$('logarea').classList.contains('hidden'),
       conflict: () => localStorage.getItem('s3b-conflict') || 'ask',
       throttle: () => localStorage.getItem('s3b-throttle') || '0',
+      showThrottle: () => localStorage.getItem('s3b-show-throttle') === '1',
     },
     apply: {
       theme: (v) => { document.documentElement.dataset.theme = v; localStorage.setItem('s3b-theme', v); },
@@ -2545,6 +2625,7 @@ async function openSettings() {
       log: setLogArea,
       conflict: (v) => localStorage.setItem('s3b-conflict', v),
       throttle: (v) => localStorage.setItem('s3b-throttle', String(v)),
+      showThrottle: (v) => localStorage.setItem('s3b-show-throttle', v ? '1' : '0'),
     },
     log: {
       get: () => logSet,
@@ -2573,8 +2654,7 @@ function mountMenubar() {
       items: [
         { label: 'Upload\u2026', kbd: 'Ctrl+U', action: upload, enabled: () => st().canUpload },
         null,
-        { label: 'Import credentials\u2026', action: importCredsUi },
-        { label: t('menu.importAws'), action: importAws },
+        { label: 'Import S3 Credential\u2026', action: importCredsUi },
         null,
         { label: t('pf.new'), action: newProfileFileUi },
         { label: t('pf.open'), action: openProfileFileUi },
@@ -2770,7 +2850,7 @@ async function osCopyRemote(items) {
   }
   toast('Preparing OS clipboard — staging download\u2026');
   try {
-    await api.TransferCross(items, [], { kind: 'local', dir }, 'overwrite', 0, false);
+    await api.TransferCross(items, [], { kind: 'local', dir }, 'overwrite', 0, false, null);
     showTransfersBadge();
   } catch (err) {
     toast(`OS clipboard staging failed: ${err}`, 'error');
@@ -2841,7 +2921,7 @@ function wireEvents() {
   onEvent('s3:changed', (data) => {
     const loc = nav.current;
     if (!loc) return;
-    if (loc.kind === 'buckets' || data?.bucket === loc.bucket) refreshCurrent();
+    if (loc.kind === 'buckets' || data?.bucket === loc.bucket) refreshCurrent(true);
   });
   onEvent('transfer:update', (j) => {
     showTransfersBadge();
@@ -2852,7 +2932,7 @@ function wireEvents() {
     if (j?.status && j.status !== 'running') {
       const op = String(j.op || j.id || '');
       if (op.startsWith('transfer')) {
-        refreshCurrent();
+        refreshCurrent(true);
         if (localPane.visible) localPane.refresh();
       } else if (op.startsWith('download') && localPane.visible) {
         localPane.refresh();
@@ -2872,7 +2952,7 @@ function wireEvents() {
   $('status-jobs').onclick = () => transferManager();
   window.addEventListener('focus', updateEditingStatus);
   window.addEventListener('focus', () => {
-    if (refreshOnFocus && !autoRefreshBlocked()) refreshCurrent();
+    if (refreshOnFocus && !autoRefreshBlocked()) refreshCurrent(true);
   });
 }
 

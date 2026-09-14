@@ -1,8 +1,8 @@
 //go:build !s3b_headless
 
 // Package gui wires the Wails webview shell around the pkg/api service and
-// the embedded frontend. It lives at the module root because
-// go:embed can only reference files below the embedding package.
+// the embedded frontend. It lives at the module root because the embed
+// directive can only reference files below the embedding package.
 //
 // Build tag: plain builds include the GUI everywhere. On headless Linux
 // servers build with -tags s3b_headless to get a pure-Go CLI without GTK

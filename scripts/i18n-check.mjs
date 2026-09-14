@@ -7,7 +7,10 @@
 //      (both directions — no stale names either)
 //   5. reports strings identical to their en source as INFO (may be
 //      legitimate, e.g. de "Name"), never as a failure
-import { readFileSync } from 'node:fs';
+//   6. no dead keys: every en key must be referenced somewhere outside
+//      i18n.js (a literal occurrence in any frontend file, or a dynamic
+//      template prefix like `doctor.${...}` covering the family)
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
@@ -54,6 +57,21 @@ if (LANG_NAMES) {
   const stale = Object.keys(LANG_NAMES).filter((c) => !(c in dict));
   if (stale.length) err(`LANG_NAMES has names for non-existent languages: ${stale.join(', ')}`);
 }
+
+// 6. dead keys — an en key is live when its literal appears in any other
+// frontend file, or when a template-literal prefix (`foo.${`) could build
+// it at runtime.
+const jsDir = join(root, 'frontend/js');
+const scanFiles = [join(root, 'frontend/index.html'), ...readdirSync(jsDir)
+  .filter((f) => f.endsWith('.js') && f !== 'i18n.js')
+  .map((f) => join(jsDir, f))];
+let corpus = '';
+for (const f of scanFiles) {
+  try { corpus += readFileSync(f, 'utf8'); } catch { /* index.html may not exist */ }
+}
+const dynPrefixes = [...corpus.matchAll(/`([a-z][\w]*)\.\$\{/g)].map((m) => m[1]);
+const dead = Object.keys(dict.en).filter((k) => !corpus.includes(k) && !dynPrefixes.some((p) => k.startsWith(`${p}.`)));
+if (dead.length) err(`dead keys — referenced nowhere (${dead.length}): ${dead.join(', ')}`);
 
 const untranslated = [];
 for (const lang of langs.filter((l) => l !== 'en')) {

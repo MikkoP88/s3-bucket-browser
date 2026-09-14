@@ -27,14 +27,18 @@ const (
 // local directory root. Exactly one type's field set is meaningful; S3
 // sources carry the full legacy Profile (endpoint, credentials, options).
 type Source struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Type    string `json:"type"` // one of the Type* constants
-	Color   string `json:"color,omitempty"`
-	Default bool   `json:"default,omitempty"` // default S3 source
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Type  string `json:"type"` // one of the Type* constants
+	Color string `json:"color,omitempty"`
 
 	// S3 (Type == s3): the complete legacy profile, secrets included.
 	S3 *Profile `json:"s3,omitempty"`
+
+	// Bucket scopes an S3 source to ONE bucket — every S3 data source is
+	// an individual bucket. Legacy account-wide sources carry no bucket
+	// and keep the bucket-list view.
+	Bucket string `json:"bucket,omitempty"`
 
 	// Remote filesystem (Type in sftp/scp/ftp/ftps).
 	Host          string `json:"host,omitempty"`
@@ -111,16 +115,15 @@ func (s Source) Public() Source {
 // profile in the legacy store is an s3 data source).
 func FromProfile(p Profile) Source {
 	return Source{
-		Name:    p.Name,
-		Type:    TypeS3,
-		S3:      &p,
-		Color:   p.Color,
-		Default: p.Default,
+		Name:  p.Name,
+		Type:  TypeS3,
+		S3:    &p,
+		Color: p.Color,
 	}
 }
 
-// NormalizeSources validates a set, deduplicates names and ensures at most
-// one default. IDs are assigned when missing.
+// NormalizeSources validates a set and deduplicates names. IDs are
+// assigned when missing.
 func NormalizeSources(srcs []Source) ([]Source, error) {
 	seen := map[string]bool{}
 	usedIDs := map[string]bool{}
@@ -181,9 +184,10 @@ func (s *Store) UpsertSource(src Source) error {
 // UpsertSourceIn is the shared insert-or-update for a source list (the
 // store or an open Profile file): strictly keyed by ID — an empty ID means
 // create, and a create with an already-used name is rejected (updates carry
-// their ID and may rename freely, as long as the new name is free). At most
-// one source stays default; timestamps set.
+// their ID and may rename freely, as long as the new name is free).
+// Timestamps are set.
 func UpsertSourceIn(list *[]Source, src Source) error {
+	src.Bucket = strings.TrimSpace(src.Bucket)
 	if err := src.Validate(); err != nil {
 		return err
 	}
@@ -200,11 +204,6 @@ func UpsertSourceIn(list *[]Source, src Source) error {
 		}
 		if existing.Name == src.Name {
 			return fmt.Errorf("duplicate source name %q", src.Name)
-		}
-	}
-	if src.Default {
-		for i := range *list {
-			(*list)[i].Default = false
 		}
 	}
 	if idx >= 0 {
@@ -269,7 +268,7 @@ func (s *Store) SeedFromProfiles() (bool, error) {
 
 // UpsertS3Profile upserts a profile and keeps its s3 source mirror in
 // sync (new name creates the source, existing name updates it while
-// preserving source-only fields: ID, color, default flag, timestamps).
+// preserving source-only fields: ID, color, timestamps).
 func (s *Store) UpsertS3Profile(p Profile) error {
 	if err := s.Upsert(p); err != nil {
 		return err
@@ -278,15 +277,15 @@ func (s *Store) UpsertS3Profile(p Profile) error {
 }
 
 // mirrorProfileToSource upserts the s3 source matching a profile by name.
+// Source-only fields the profile cannot carry (bucket scoping, color)
+// survive the mirror.
 func (s *Store) mirrorProfileToSource(p Profile) error {
 	src := FromProfile(p)
 	for _, existing := range s.Sources {
 		if existing.Type == TypeS3 && existing.Name == p.Name {
 			src.ID = existing.ID
 			src.CreatedAt = existing.CreatedAt
-			if existing.Default {
-				src.Default = true
-			}
+			src.Bucket = existing.Bucket
 			if src.Color == "" {
 				src.Color = existing.Color
 			}
@@ -306,17 +305,4 @@ func (s *Store) RemoveS3Profile(name string) error {
 		_ = s.RemoveSource(src.ID)
 	}
 	return nil
-}
-
-// SetDefaultS3 flags one profile as the default connection and mirrors
-// the flag onto its source (other defaults clear on both sides).
-func (s *Store) SetDefaultS3(name string) error {
-	if err := s.SetDefault(name); err != nil {
-		return err
-	}
-	p, err := s.Get(name)
-	if err != nil {
-		return err // unreachable after a successful SetDefault
-	}
-	return s.mirrorProfileToSource(p)
 }

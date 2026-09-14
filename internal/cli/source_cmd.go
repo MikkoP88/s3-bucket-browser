@@ -37,7 +37,6 @@ func sourceCmd() *cobra.Command {
 	cmd.AddCommand(
 		sourceAddCmd(),
 		sourceListCmd(),
-		sourceUseCmd(),
 		sourceRemoveCmd(),
 		sourceTestCmd(),
 		sourceExportCmd(),
@@ -113,16 +112,20 @@ func sourceAddCmd() *cobra.Command {
 	var (
 		typ                                                  string
 		endpoint, region, accessKey, secretKey, sessionToken string
+		bucket                                               string
 		host, username, password, root                       string
 		port                                                 int
-		pathStyle, virtualHosted, insecure, makeDefault      bool
+		pathStyle, virtualHosted, insecure                   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "add NAME --type TYPE",
 		Short: "Add or update a data source",
 		Long: "Add or update a data source of any type:\n" +
 			"  s3    --endpoint --region --access-key --secret-key --session-token\n" +
-			"        --path-style/--virtual-hosted --insecure\n" +
+			"        --bucket (every S3 source is ONE bucket) --path-style/\n" +
+			"        --virtual-hosted --insecure\n" +
+			"        shorthand URL: add [NAME] s3://bucket (flags supply the rest;\n" +
+			"        without NAME the bucket is the name)\n" +
 			"  sftp/scp/ftp/ftps/webdav/webdavs\n" +
 			"        --host --port --username --password --root\n" +
 			"        shorthand URL: add [NAME] sftp://user:pass@host:port/root\n" +
@@ -137,10 +140,23 @@ func sourceAddCmd() *cobra.Command {
 			}
 			name := args[0]
 			var u sourceURL
-			if len(args) == 2 {
+			// s3://BUCKET shorthand: sets the bucket (and the name when
+			// no explicit NAME is given); credentials come from flags/env.
+			if b, isS3 := parseS3BucketURL(args[len(args)-1]); isS3 {
+				if b == "" {
+					return usageErr("s3:// shorthand must name a bucket: s3://my-bucket")
+				}
+				if cmd.Flags().Changed("bucket") && bucket != b {
+					return usageErr("--bucket %s conflicts with the URL (%s)", bucket, b)
+				}
+				bucket = b
+				if len(args) == 1 {
+					name = b
+				}
+			} else if len(args) == 2 {
 				parsed, ok, perr := parseSourceURL(args[1])
 				if !ok {
-					return usageErr("second argument must be a sftp:// scp:// ftp:// ftps:// webdav:// or webdavs:// URL")
+					return usageErr("second argument must be a sftp:// scp:// ftp:// ftps:// webdav:// webdavs:// or s3:// URL")
 				}
 				if perr != nil {
 					return usageErr("%v", perr)
@@ -152,6 +168,7 @@ func sourceAddCmd() *cobra.Command {
 				}
 				u, name = parsed, parsed.host
 			}
+			bucket = strings.TrimSpace(bucket)
 			if u.typ != "" {
 				if cmd.Flags().Changed("type") && typ != u.typ {
 					return usageErr("--type %s conflicts with the URL (its scheme implies --type %s)", typ, u.typ)
@@ -190,8 +207,15 @@ func sourceAddCmd() *cobra.Command {
 				if err := s.UpsertS3Profile(p); err != nil {
 					return usageErr("%v", err)
 				}
-				if makeDefault || len(s.Profiles) == 1 {
-					if err := s.SetDefaultS3(name); err != nil {
+				if bucket != "" {
+					// bucket scoping is source-only (profiles cannot carry
+					// it) — set it on the mirror the upsert just made
+					m, err := s.GetSource(name)
+					if err != nil {
+						return opErr(err)
+					}
+					m.Bucket = bucket
+					if err := s.UpsertSource(m); err != nil {
 						return usageErr("%v", err)
 					}
 				}
@@ -204,6 +228,7 @@ func sourceAddCmd() *cobra.Command {
 				}
 				col.hi.Printf("source %q saved (s3)\n", name)
 				fmt.Printf("  endpoint: %s\n", orDefault(p.Endpoint, "(AWS default)"))
+				fmt.Printf("  bucket:   %s\n", orDefault(bucket, "(all — account-wide)"))
 				fmt.Printf("  style:    %s\n", styleName(p.PathStyle))
 				if p.Insecure {
 					col.warn.Println("  warning:  TLS verification disabled (--insecure)")
@@ -241,9 +266,6 @@ func sourceAddCmd() *cobra.Command {
 			}
 
 			if src.Type != profile.TypeS3 {
-				if makeDefault {
-					return usageErr("only S3 sources can be the default connection")
-				}
 				if err := s.UpsertSource(src); err != nil {
 					return usageErr("%v", err)
 				}
@@ -284,6 +306,7 @@ func sourceAddCmd() *cobra.Command {
 	f.StringVar(&accessKey, "access-key", "", "access key ID ($S3B_ACCESS_KEY)")
 	f.StringVar(&secretKey, "secret-key", "", "secret access key ($S3B_SECRET_KEY)")
 	f.StringVar(&sessionToken, "session-token", "", "STS session token")
+	f.StringVar(&bucket, "bucket", "", "bucket this source is scoped to (s3 sources are per-bucket)")
 	f.StringVar(&host, "host", "", "remote host (sftp/scp/ftp/ftps/webdav/webdavs)")
 	f.IntVar(&port, "port", 0, "port (0 = per-type default at dial time)")
 	f.StringVar(&username, "username", "", "remote username")
@@ -292,7 +315,6 @@ func sourceAddCmd() *cobra.Command {
 	f.BoolVar(&pathStyle, "path-style", false, "path-style addressing (s3)")
 	f.BoolVar(&virtualHosted, "virtual-hosted", false, "virtual-hosted addressing (s3)")
 	f.BoolVar(&insecure, "insecure", false, "skip TLS verification (labs only)")
-	f.BoolVar(&makeDefault, "default", false, "make this the default source (s3)")
 	return cmd
 }
 
@@ -305,6 +327,19 @@ type sourceURL struct {
 	username string
 	password string
 	root     string
+}
+
+// parseS3BucketURL matches the s3://BUCKET shorthand (ok=false for
+// anything else; ok=true with an empty bucket means malformed).
+func parseS3BucketURL(raw string) (bucket string, ok bool) {
+	if !strings.HasPrefix(strings.ToLower(raw), "s3://") {
+		return "", false
+	}
+	b := strings.Trim(raw[5:], "/")
+	if b == "" || strings.ContainsAny(b, "@:/?#") {
+		return "", true
+	}
+	return b, true
 }
 
 // parseSourceURL parses a scheme://user:pass@host:port/root connection
@@ -357,7 +392,11 @@ func sourceDetail(s profile.Source) string {
 		if s.S3 == nil {
 			return ""
 		}
-		return orDefault(s.S3.Endpoint, "(AWS default)")
+		ep := orDefault(s.S3.Endpoint, "(AWS default)")
+		if s.Bucket != "" {
+			return fmt.Sprintf("%s @ %s", s.Bucket, ep)
+		}
+		return ep
 	case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS, profile.TypeWebDAV, profile.TypeWebDAVS:
 		port := s.Port
 		if port == 0 {
@@ -399,42 +438,7 @@ func sourceListCmd() *cobra.Command {
 				return nil
 			}
 			for _, src := range s.SortedSources() {
-				mark := " "
-				if src.Default {
-					mark = "*"
-				}
-				fmt.Printf("%s %-20s %-6s %s\n", mark, src.Name, src.Type, sourceDetail(src))
-			}
-			return nil
-		},
-	}
-}
-
-func sourceUseCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "use NAME",
-		Short: "Set the default source",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			s, err := store()
-			if err != nil {
-				return err
-			}
-			src, err := s.GetSource(args[0])
-			if err != nil {
-				return usageErr("%v", err)
-			}
-			if src.Type != profile.TypeS3 {
-				return usageErr("only S3 sources can be the default connection")
-			}
-			if err := s.SetDefaultS3(src.Name); err != nil {
-				return usageErr("%v", err)
-			}
-			if err := s.Save(); err != nil {
-				return opErr(err)
-			}
-			if !flagJSON {
-				fmt.Printf("default source: %s\n", src.Name)
+				fmt.Printf("  %-20s %-6s %s\n", src.Name, src.Type, sourceDetail(src))
 			}
 			return nil
 		},
@@ -491,7 +495,7 @@ func sourceTestCmd() *cobra.Command {
 					return opErr(err)
 				}
 			} else {
-				p, err := s.DefaultProfile()
+				p, err := s.SoleProfile()
 				if err != nil {
 					return opErr(err)
 				}

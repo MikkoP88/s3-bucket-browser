@@ -134,7 +134,7 @@ func (a *App) RemoteList(idOrName, dir string) ([]listing.Entry, error) {
 	defer unlock()
 	entries, err := fs.List(ctx, dir)
 	if err != nil {
-		a.emitLog(LogError, "list", fmt.Sprintf("listing %s:%s failed: %v", idOrName, dir, err))
+		a.emitLogSrc(LogError, "list", idOrName, fmt.Sprintf("listing %s failed: %v", dir, err))
 	}
 	return entries, err
 }
@@ -191,9 +191,9 @@ func (a *App) RemoteMkdir(idOrName, dir string) error {
 	defer unlock()
 	err = fs.MkdirAll(ctx, dir)
 	if err != nil {
-		a.emitLog(LogError, "mkdir", fmt.Sprintf("mkdir %s:%s failed: %v", idOrName, dir, err))
+		a.emitLogSrc(LogError, "mkdir", idOrName, fmt.Sprintf("mkdir %s failed: %v", dir, err))
 	} else {
-		a.emitLog(LogInfo, "mkdir", fmt.Sprintf("created %s:%s", idOrName, dir))
+		a.emitLogSrc(LogInfo, "mkdir", idOrName, fmt.Sprintf("created %s", dir))
 	}
 	return err
 }
@@ -226,10 +226,10 @@ func (a *App) RemoteRename(idOrName, path, newName string) error {
 	unlock := a.lockSrcs(src.ID)
 	defer unlock()
 	if err := fs.Rename(ctx, cleaned, target); err != nil {
-		a.emitLog(LogError, "rename", fmt.Sprintf("rename %s:%s failed: %v", idOrName, cleaned, err))
+		a.emitLogSrc(LogError, "rename", idOrName, fmt.Sprintf("rename %s failed: %v", cleaned, err))
 		return err
 	}
-	a.emitLog(LogInfo, "rename", fmt.Sprintf("renamed %s:%s to %s", idOrName, cleaned, target))
+	a.emitLogSrc(LogInfo, "rename", idOrName, fmt.Sprintf("renamed %s to %s", cleaned, target))
 	return nil
 }
 
@@ -316,13 +316,13 @@ func (a *App) RemoteRemove(idOrName string, paths []string) (*RemoteDeleteResult
 		}
 		if err := fs.Remove(ctx, cleaned); err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: %v", cleaned, err))
-			a.emitLog(LogError, "delete", fmt.Sprintf("delete %s:%s failed: %v", idOrName, cleaned, err))
+			a.emitLogSrc(LogError, "delete", idOrName, fmt.Sprintf("delete %s failed: %v", cleaned, err))
 			continue
 		}
 		out.Deleted++
 	}
 	if out.Deleted > 0 {
-		a.emitLog(LogInfo, "delete", fmt.Sprintf("deleted %d item(s) from %s", out.Deleted, idOrName))
+		a.emitLogSrc(LogInfo, "delete", idOrName, fmt.Sprintf("deleted %d item(s)", out.Deleted))
 	}
 	return out, nil
 }

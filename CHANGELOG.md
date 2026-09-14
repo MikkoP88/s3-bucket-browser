@@ -6,6 +6,74 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0-beta.3] — 2026-09-14
+
+Beta cut: transfer conflict preview, per-bucket S3 sources, Windows code
+signing and a UI polish pass — plus two live-testing discoveries fixed:
+ghost folders after recursive deletes on MinIO-style stores, and clean
+destinations always opening a dialog. Everything was validated against a
+real backend: a 62-check live GUI walk (real browser, real MinIO, real
+transfers) and the full CLI e2e suite, with `go test -race` green across
+all packages.
+
+### Added
+
+- **Transfer conflict preview (GUI).** Every upload, download and copy
+  pre-checks the destination before moving anything. A clean destination
+  now transfers with **no dialog at all**; when files collide you get a
+  per-file list showing both sides' size and modification time, a
+  checkbox per row, select/unselect all, bulk actions and a per-row
+  action (overwrite / skip / rename) with a live summary. The old
+  whole-transfer policy prompt survives only as the fallback when the
+  pre-check itself fails.
+- **Per-bucket S3 sources.** Every S3 source is scoped to one bucket:
+  `s3b source add` gains `--bucket` plus an `s3://bucket` shorthand
+  (without a name, the bucket is the name), `source list` shows each
+  source's bucket or "(all — account-wide)", and the GUI tree shows the
+  bucket's content directly under the source node — the same shape as
+  every other source type. Legacy account-wide sources keep the
+  bucket-list level. This replaces the removed `source use`
+  default-source concept.
+- **Windows code signing.** Release builds sign every Windows artifact —
+  both architecture binaries, the portable zips and the NSIS installer —
+  with a SHA-256 Authenticode signature plus an RFC 3161 timestamp. The
+  current certificate is self-signed; its public key ships at
+  `scripts/certs/s3b-signing.cer` so fleets can pin it (details and
+  SmartScreen guidance in [docs/security.md](docs/security.md)).
+- **Transfer manager polish.** Per-job percentage, an animated progress
+  bar and a proper empty state.
+- **Log area live filtering.** Level, scope and source selectors plus
+  free-text search — all applied retroactively over the whole line
+  buffer, not just future lines.
+
+### Changed
+
+- UI polish pass: uniform micro-transitions on interactive elements,
+  the theme accent color on checkboxes and radios, hover elevation on
+  primary/danger buttons, and row hover on grid header filters.
+- Code hygiene: dead code removed across Go and the frontend (including
+  the `source use` command, unused i18n keys, CSS rules and JS exports);
+  the tree is staticcheck-clean; `scripts/i18n-check.mjs` now also
+  detects unused translation keys.
+- Test harnesses grew with the features: the live GUI walk covers 62
+  checks end-to-end, the visual harness 258.
+
+### Fixed
+
+- **No more ghost folders after recursive delete.** Stores disagree on
+  whether the folder marker `dir/` appears in a listing under `dir/`
+  (AWS lists it, MinIO omits it), so recursive deletes built from the
+  listing left an unremovable ghost folder row on MinIO-style stores.
+  `rm -r` and the GUI folder delete (including their dry-runs) now
+  always include the marker; copies and storage-class conversion
+  deliberately never do — converting an implicit folder's marker is
+  pointless and can fail outright.
+- **Clean-destination transfers no longer prompt.** An empty conflict
+  pre-check result serialized as JSON `null`, which the frontend read
+  as "pre-check failed" — so every clean upload/download opened the
+  classic whole-transfer dialog. Empty now round-trips as a proper
+  empty list and the transfer simply starts.
+
 ## [1.1.0-beta.2] — 2026-09-14
 
 Beta cut: OS interop, the unified data-source hierarchy, and credential

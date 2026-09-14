@@ -123,16 +123,16 @@ func (a *App) deleteSelectionC(c *s3client.Client, bucket string, keys []string,
 		return transfer.DeleteResult{}, fmt.Errorf(
 			"%d object(s) selected — typed confirmation (force) required to delete", len(all))
 	}
-	a.emitLog(LogInfo, "delete", fmt.Sprintf("deleting %d object(s) from %s", len(all), bucket))
+	a.emitLogSrc(LogInfo, "delete", bucket, fmt.Sprintf("deleting %d object(s)", len(all)))
 	res, err := transfer.DeleteKeys(ctx, c.S3, bucket, all)
 	switch {
 	case err != nil:
-		a.emitLog(LogError, "delete", fmt.Sprintf("deleting %d object(s) from %s failed: %v", len(all), bucket, err))
+		a.emitLogSrc(LogError, "delete", bucket, fmt.Sprintf("deleting %d object(s) failed: %v", len(all), err))
 	case len(res.Errors) > 0:
-		a.emitLog(LogWarn, "delete", fmt.Sprintf("deleted %d of %d object(s) from %s — %s",
-			res.Deleted, len(all), bucket, strings.Join(res.Errors, "; ")))
+		a.emitLogSrc(LogWarn, "delete", bucket, fmt.Sprintf("deleted %d of %d object(s) — %s",
+			res.Deleted, len(all), strings.Join(res.Errors, "; ")))
 	default:
-		a.emitLog(LogInfo, "delete", fmt.Sprintf("deleted %d object(s) from %s", res.Deleted, bucket))
+		a.emitLogSrc(LogInfo, "delete", bucket, fmt.Sprintf("deleted %d object(s)", res.Deleted))
 	}
 	if res.Deleted > 0 {
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
@@ -152,7 +152,10 @@ func expandSelection(ctx context.Context, c *s3client.Client, bucket string, key
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, sub...)
+		// Delete-only marker inclusion: some stores (MinIO) omit the
+		// folder marker from a listing under its own prefix; missing it
+		// would leave a ghost folder row behind after the delete.
+		out = append(out, transfer.IncludeFolderMarker(sub, k)...)
 	}
 	return out, nil
 }
@@ -184,7 +187,7 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	a.emitLog(LogInfo, "rename", fmt.Sprintf("renaming %s/%s to %q", bucket, key, newName))
+	a.emitLogSrc(LogInfo, "rename", bucket, fmt.Sprintf("renaming %s to %q", key, newName))
 
 	if strings.HasSuffix(key, "/") { // folder: move everything beneath it
 		trimmed := strings.TrimSuffix(key, "/")
@@ -195,10 +198,13 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 		dstPrefix := joinKeyNoSlash(parent, newName)
 		res, err := a.copyMove(ctx, c, bucket, []string{key}, bucket, dstPrefix, true)
 		if err != nil {
+			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s failed: %v", key, err))
 			return err
 		}
 		if len(res.Errors) > 0 {
-			return fmt.Errorf("%s", strings.Join(res.Errors, "; "))
+			err := fmt.Errorf("%s", strings.Join(res.Errors, "; "))
+			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s failed: %v", key, err))
+			return err
 		}
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket, "prefix": parent})
 		return nil
@@ -209,14 +215,18 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 		return nil
 	}
 	if err := transfer.Copy(ctx, c.S3, bucket, key, bucket, dstKey); err != nil {
+		a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming %s to %q failed: %v", key, newName, err))
 		return err
 	}
 	res, err := transfer.DeleteKeys(ctx, c.S3, bucket, []string{key})
 	if err != nil {
+		a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming %s: deleting the original failed: %v", key, err))
 		return err
 	}
 	if len(res.Errors) > 0 {
-		return fmt.Errorf("%s", strings.Join(res.Errors, "; "))
+		err := fmt.Errorf("%s", strings.Join(res.Errors, "; "))
+		a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming %s: deleting the original failed: %v", key, err))
+		return err
 	}
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	return nil
@@ -246,14 +256,14 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 	}
 	switch {
 	case err != nil:
-		a.emitLog(LogError, "copy", fmt.Sprintf("%s %d item(s) from %s to %s/%s failed: %v",
-			verb, len(keys), bucket, dstBucket, dirPrefix(dstPrefix), err))
+		a.emitLogSrc(LogError, "copy", dstBucket, fmt.Sprintf("%s %d item(s) from %s to %s failed: %v",
+			verb, len(keys), bucket, dirPrefix(dstPrefix), err))
 	case len(res.Errors) > 0:
-		a.emitLog(LogWarn, "copy", fmt.Sprintf("%s %d item(s) to %s/%s with %d error(s) — %s",
-			verb, res.Copied+res.Moved, dstBucket, dirPrefix(dstPrefix), len(res.Errors), strings.Join(res.Errors, "; ")))
+		a.emitLogSrc(LogWarn, "copy", dstBucket, fmt.Sprintf("%s %d item(s) with %d error(s) — %s",
+			verb, res.Copied+res.Moved, len(res.Errors), strings.Join(res.Errors, "; ")))
 	default:
-		a.emitLog(LogInfo, "copy", fmt.Sprintf("%s %d item(s) from %s to %s/%s",
-			verb, res.Copied+res.Moved, bucket, dstBucket, dirPrefix(dstPrefix)))
+		a.emitLogSrc(LogInfo, "copy", dstBucket, fmt.Sprintf("%s %d item(s) from %s to %s",
+			verb, res.Copied+res.Moved, bucket, dirPrefix(dstPrefix)))
 	}
 	if res.Copied > 0 || res.Moved > 0 {
 		a.emit(EventS3Changed, map[string]string{"bucket": dstBucket, "prefix": dirPrefix(dstPrefix)})
@@ -356,5 +366,18 @@ func (a *App) PresignObject(bucket, key string, ttlSeconds int) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	a.emitLogSrc(LogInfo, "share", bucket, fmt.Sprintf("presigned GET %s (valid %s)", key, ttlLabel(ttlSeconds)))
 	return req.URL, nil
+}
+
+// ttlLabel renders a presign TTL as a compact human string.
+func ttlLabel(secs int) string {
+	switch {
+	case secs%86400 == 0:
+		return fmt.Sprintf("%dd", secs/86400)
+	case secs%3600 == 0:
+		return fmt.Sprintf("%dh", secs/3600)
+	default:
+		return fmt.Sprintf("%dm", secs/60)
+	}
 }

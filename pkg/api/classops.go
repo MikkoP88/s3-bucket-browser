@@ -47,15 +47,15 @@ func (a *App) ConvertStorageClass(bucket string, keys []string, class string, fo
 		return 0, fmt.Errorf("would convert %d object(s) — confirm to proceed", len(flat))
 	}
 	done := 0
-	a.emitLog(LogInfo, "admin", fmt.Sprintf("converting %d object(s) in %s to storage class %s", len(flat), bucket, class))
+	a.emitLogSrc(LogInfo, "admin", bucket, fmt.Sprintf("converting %d object(s) to storage class %s", len(flat), class))
 	for _, k := range flat {
 		if err := transfer.ConvertStorageClass(ctx, c.S3, bucket, k, "", class); err != nil {
-			a.emitLog(LogError, "admin", fmt.Sprintf("storage-class conversion in %s failed after %d object(s): %v", bucket, done, err))
+			a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("storage-class conversion failed after %d object(s): %v", done, err))
 			return done, err
 		}
 		done++
 	}
-	a.emitLog(LogInfo, "admin", fmt.Sprintf("converted %d object(s) in %s to %s", done, bucket, class))
+	a.emitLogSrc(LogInfo, "admin", bucket, fmt.Sprintf("converted %d object(s) to %s", done, class))
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	return done, nil
 }

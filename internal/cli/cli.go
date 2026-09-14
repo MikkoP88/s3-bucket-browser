@@ -197,7 +197,7 @@ func resolveClient(ctx context.Context) (*s3client.Client, error) {
 	if name != "" {
 		p, err = s.Get(name)
 	} else {
-		p, err = s.DefaultProfile()
+		p, err = s.SoleProfile()
 	}
 	if err != nil {
 		return nil, opErr(err)

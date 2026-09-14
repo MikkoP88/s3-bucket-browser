@@ -19,7 +19,13 @@
 // Credentials NEVER live here: S3B_ACCESS_KEY / S3B_SECRET_KEY must be set
 // (same envs the CLI uses). Bucket/endpoint/region via S3B_BUCKET /
 // S3B_ENDPOINT / S3B_REGION (defaults: testijotain @ hel1.your-objectstorage,
-// us-east-1, path-style). Native pickers (upload menus, OS file drops) cannot
+// us-east-1, path-style) — any S3-compatible endpoint works, e.g. local
+// MinIO: S3B_ENDPOINT=http://localhost:9000 S3B_BUCKET=<versioned bucket>.
+// S3B_SEED (optional) names a pre-existing prefix in the bucket; when set it
+// is the "existing data" marker the browse/cleanup steps assert on, so the
+// walk also runs against a fresh bucket that only holds the seed folder.
+// The bucket MUST have versioning enabled (the versions/A-B steps need it).
+// Native pickers (upload menus, OS file drops) cannot
 // be scripted in a plain browser — DnD covers the transfer paths; the native
 // dialogs remain covered by gui-visual + manual passes.
 //
@@ -51,7 +57,8 @@ const SECRET = process.env.S3B_SECRET_KEY;
 const ENDPOINT = process.env.S3B_ENDPOINT || 'https://hel1.your-objectstorage.com';
 const REGION = process.env.S3B_REGION || 'us-east-1';
 const BUCKET = process.env.S3B_BUCKET || 'testijotain';
-const SRCNAME = 'hetzner-live';
+const SRCNAME = 's3-live';
+const SEED = process.env.S3B_SEED || 'NetApp_koulutus'; // pre-existing prefix in BUCKET
 const PASSWORD = 'live-walk-password-1';
 const LOCK = '\u{1F510}'; // the profile-file chip glyph (main.js uses \u{1F510})
 const PORT = 39871; // fixed port: a restart keeps the origin (and localStorage) stable
@@ -231,6 +238,25 @@ async function dnd(fromH, toH, { shift = false, ctrl = false } = {}) {
   }, [fromH.asElement(), toH.asElement(), shift, ctrl]);
   await sleep(150);
 }
+// after a drop exactly one of three things happens (conflict preset
+// 'ask'): a clean destination with a working probe transfers SILENTLY; a
+// dirty destination opens the per-file conflict dialog ('file(s) already
+// exist'); a failed probe opens the classic whole-transfer dialog ('may
+// already exist'). Start whichever appears — both default to overwrite —
+// and report which path was taken ('dialog' | 'silent').
+async function startIfAsked(timeoutMs = 8000) {
+  try {
+    await waitFor(async () => {
+      if (!(await modalVisible())) return false;
+      const h = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((b) => /^start$/i.test(b.textContent.trim())) || null);
+      return (h && await h.asElement()) ? true : false;
+    }, timeoutMs, 'transfer dialog');
+    await clickFooter(/^start$/i);
+    return 'dialog';
+  } catch { return 'silent'; }
+}
+
 // context menu on the grid's empty area (dispatched on the body itself so
 // the row filter in the handler lets it through)
 async function bodyCtx() {
@@ -324,15 +350,16 @@ async function walk() {
     await shot('01-onboarding');
   });
 
-  await step('add + test Hetzner source', async () => {
+  await step('add + test S3 source', async () => {
     await page.locator('#empty-actions .btn.primary').first().click();
-    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n >= 5), 5000, 'source editor fields');
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n >= 6), 5000, 'source editor fields');
     const inputs = page.locator('#modal-root .modal input.input');
     await inputs.nth(0).fill(SRCNAME);      // name
-    await inputs.nth(1).fill(ENDPOINT);     // endpoint
-    await inputs.nth(2).fill(REGION);       // region
-    await inputs.nth(3).fill(KEY);          // access key
-    await inputs.nth(4).fill(SECRET);       // secret key
+    await inputs.nth(1).fill(BUCKET);       // bucket (an S3 source IS one bucket)
+    await inputs.nth(2).fill(ENDPOINT);     // endpoint
+    await inputs.nth(3).fill(REGION);       // region
+    await inputs.nth(4).fill(KEY);          // access key
+    await inputs.nth(5).fill(SECRET);       // secret key
     // path-style checkbox (first checkbox in the modal)
     await page.locator('#modal-root .modal input[type="checkbox"]').first().check();
     await clickFooter(/^test$/i);
@@ -340,8 +367,9 @@ async function walk() {
     await ok('source test passed against real S3', (await modalText()).includes('✅'));
     await shot('02-source-test');
     await clickFooter(/^save$/i);
-    await waitFor(async () => (await rowKeys()).includes(BUCKET), 20000, 'buckets list');
-    await ok('buckets listed', true);
+    // save navigates straight to the bucket root (per-bucket sources)
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root listing');
+    await ok('bucket root listed', true);
   });
 
   await step('session-only status chip', async () => {
@@ -350,9 +378,9 @@ async function walk() {
   });
 
   await step('browse bucket + tree guard icons', async () => {
-    await dblClickRow(BUCKET);
-    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith('NetApp_koulutus')), 20000, 'bucket contents');
-    await ok('existing data visible (NetApp_koulutus/)', true);
+    // the per-bucket source opens at the bucket root directly
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket contents');
+    await ok(`existing data visible (${SEED}/)`, true);
     // versioning / lock icons load lazily behind the tree's bucket rows
     await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .tguard').length)) > 0, 10000, 'tree guard icons');
     const icons = await evalPage(() => Array.from(document.querySelectorAll('#tree .tguard')).map((c) => c.title));
@@ -402,18 +430,18 @@ async function walk() {
   });
 
   await step('DnD upload (local row → grid body)', async () => {
-    // default conflict preset is "ask": the dialog opens for EVERY upload —
-    // an unanswered (canceled) dialog silently cancels the whole upload
-    await dnd(await sideRow('live-a.txt'), await bodyH());
-    await waitFor(async () => /conflicting files/i.test(await modalText()), 15000, 'conflict dialog');
-    await clickFooter(/^start$/i); // default radio = Overwrite
-    await waitFor(async () => (await names()).includes('live-a.txt'), 60000, 'uploaded row');
-    await ok('live-a.txt uploaded via drag & drop', true);
-    await dnd(await sideRow('live-b.txt'), await bodyH());
-    await waitFor(async () => /conflicting files/i.test(await modalText()), 15000, 'conflict dialog (b)');
-    await clickFooter(/^start$/i);
-    await waitFor(async () => (await names()).includes('live-b.txt'), 60000, 'uploaded row b');
-    await ok('live-b.txt uploaded via drag & drop', true);
+    // both upload paths are valid: clean destination = silent (the
+    // conflict probe serialized []), dirty = per-file conflict dialog.
+    const upload = async (file) => {
+      await dnd(await sideRow(file), await bodyH());
+      const how = await startIfAsked(8000);
+      await waitFor(async () => (await names()).includes(file), 60000, `uploaded row ${file}`);
+      return how;
+    };
+    const a = await upload('live-a.txt');
+    await ok(`live-a.txt uploaded via drag & drop (${a})`, true);
+    const b = await upload('live-b.txt');
+    await ok(`live-b.txt uploaded via drag & drop (${b})`, true);
     await shot('07-uploaded');
   });
 
@@ -431,7 +459,9 @@ async function walk() {
   await step('overwrite via conflict dialog → 2 versions → A/B diff', async () => {
     await writeFile(path.join(FIX, 'live-a.txt'), V2);
     await dnd(await sideRow('live-a.txt'), await bodyH());
-    await waitFor(async () => /conflicting files/i.test(await modalText()), 15000, 'conflict dialog');
+    // dirty destination → the per-file conflict dialog must appear (the
+    // probe now works against any S3 endpoint)
+    await waitFor(async () => /already exist/i.test(await modalText()), 15000, 'conflict dialog');
     await ok('conflict policy dialog shown', true);
     await shot('08-conflict');
     await clickFooter(/^start$/i); // default radio = Overwrite
@@ -468,8 +498,7 @@ async function walk() {
     await answerPrompt(dst);
     await waitFor(async () => (await sideKeys()).length === 0, 10000, 'empty downloads dir');
     await dnd(await rowAction('live-b.txt', 'grid'), await sideBodyH());
-    await waitFor(async () => /conflicting files/i.test(await modalText()), 15000, 'download conflict dialog');
-    await clickFooter(/^start$/i);
+    await startIfAsked(8000); // clean dir = silent; dirty = dialog
     await waitFor(async () => (await sideKeys()).includes('live-b.txt'), 60000, 'downloaded row');
     const bytes = await readFile(path.join(dst, 'live-b.txt'), 'utf8');
     await ok('downloaded bytes identical', bytes === B_TXT);
@@ -552,7 +581,7 @@ async function walk() {
     await menuClick(/^file$/i, /open profile file/i);
     await waitFor(() => page.locator('#modal-root .modal input[type="password"]').count().then((n) => n > 0), 5000, 'password prompt');
     await answerPrompt(PASSWORD);
-    await waitFor(async () => (await rowKeys()).includes(BUCKET), 20000, 'buckets after reopen');
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root after reopen');
     await ok('sources restored from encrypted file', true);
     await ok('profile chip back', (await txt('#status-pfile')).includes(LOCK));
     await shot('17-reopened');
@@ -572,8 +601,7 @@ async function walk() {
     await menuClick(/^file$/i, /open profile file/i);
     await waitFor(() => page.locator('#modal-root .modal input[type="password"]').count().then((n) => n > 0), 5000, 'password prompt');
     await answerPrompt(PASSWORD);
-    await waitFor(async () => (await rowKeys()).includes(BUCKET), 20000, 'buckets');
-    await dblClickRow(BUCKET);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root');
     await dblClickRow(`${PREFIX}/`);
     await waitFor(async () => (await rowKeys()).length >= 2, 20000, 'zz-live contents');
     await page.keyboard.press('Control+A');
@@ -588,11 +616,20 @@ async function walk() {
     await page.keyboard.press('Delete');
     await waitFor(() => modalVisible(), 5000, 'folder delete confirm');
     await confirmDanger('delete');
-    await waitFor(async () => !(await rowKeys()).includes(`${PREFIX}/`), 60000, 'folder gone');
-    await ok('zz-live folder deleted', true);
-    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith('NetApp')), 20000, 'bucket root relisted');
+    // AWS drops the folder row at once; versioned MinIO keeps synthesizing
+    // the DIR entry from delete-marker versions until they are purged —
+    // accept either (the marker itself must be gone either way, and the
+    // final object-level assertion below catches real leftovers).
+    let gone = false;
+    try {
+      await waitFor(async () => !(await rowKeys()).includes(`${PREFIX}/`), 20000, 'folder gone');
+      gone = true;
+    } catch { /* versioned store keeps the synthetic prefix row */ }
+    await ok(gone ? 'zz-live folder row deleted' : 'zz-live emptied (row synthesized from delete markers)', true);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root relisted');
     const left = await rowKeys();
-    await ok(`bucket root back to pre-existing data [${left.join(', ')}]`, left.every((k) => !k.startsWith(PREFIX)) && left.some((k) => k.startsWith('NetApp_koulutus')));
+    const leftover = left.filter((k) => k.startsWith(PREFIX) && !k.endsWith('/'));
+    await ok(`bucket root back to pre-existing data [${left.join(', ')}]`, leftover.length === 0 && left.some((k) => k.startsWith(SEED)));
     await shot('19-cleaned');
   });
 }
