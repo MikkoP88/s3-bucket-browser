@@ -1,6 +1,6 @@
 // keyring.go stores profile secrets in the OS keyring (Windows Credential
 // Manager / macOS Keychain / Linux SecretService) instead of the profiles
-// JSON (M5, PLAN.md §14). When no keyring is available — headless boxes,
+// JSON (M5). When no keyring is available — headless boxes,
 // test sandboxes, S3B_NO_KEYRING=1 — secrets transparently stay in the
 // 0600 config file like before.
 package profile

@@ -1,6 +1,6 @@
 // walk.go: recursive traversal over any FS engine — the remotefs analogue
 // of listing.Walk for the S3 pipeline. Used by count-then-act deletes
-// (PLAN.md §9) and cross-source transfer planning.
+// and cross-source transfer planning.
 package remotefs
 
 import (

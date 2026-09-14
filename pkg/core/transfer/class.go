@@ -1,6 +1,6 @@
 // class.go implements server-side storage-class conversion: an object is
 // copied onto itself with a new storage class (S3's only conversion
-// mechanism, PLAN.md §8.6).
+// mechanism).
 package transfer
 
 import (

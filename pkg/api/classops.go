@@ -1,5 +1,5 @@
 // classops.go: GUI-facing storage-class conversion + object-lock
-// operations (M5, PLAN.md §8.6/8.7).
+// operations (M5).
 package api
 
 import (

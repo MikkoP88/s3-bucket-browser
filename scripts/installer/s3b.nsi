@@ -1,4 +1,4 @@
-; s3b.nsi — NSIS installer for S3 Bucket Browser (M5, PLAN.md §12).
+; s3b.nsi — NSIS installer for S3 Bucket Browser (M5).
 ;
 ;   makensis -DVERSION=1.2.3 scripts/installer/s3b.nsi
 ;

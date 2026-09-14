@@ -63,7 +63,7 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
   return { close, body: box.querySelector('.modal-body') };
 }
 
-// ---------- confirmations (safety ladder, PLAN.md §9) ----------
+// ---------- confirmations (safety ladder) ----------
 export function confirm({ title, message, okLabel = 'OK', danger = false }) {
   let settled = false;
   return new Promise((resolve) => {

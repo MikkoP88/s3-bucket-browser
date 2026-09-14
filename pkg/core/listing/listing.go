@@ -46,7 +46,7 @@ func ListBuckets(ctx context.Context, client s3.ListBucketsAPIClient) ([]s3types
 // (common prefixes, folder markers) and objects as the paginator yields
 // them. Returning an error from fn stops the walk. Unlike List it never
 // accumulates entries, so million-object folders cost O(page) memory on
-// the Go side (PLAN.md §13).
+// the Go side.
 func WalkDir(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, prefix string, opts Options, fn func(Entry) error) error {
 	input := &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket), Prefix: aws.String(prefix), Delimiter: aws.String("/"),

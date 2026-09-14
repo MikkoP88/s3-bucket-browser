@@ -3,13 +3,13 @@
 > Research method note (2026-09-09): competitor facts were verified where
 > possible by direct fetches (s3browser.com, cyberduck.io/s3) and GitHub API
 > queries, combined with curated product knowledge. A refresh pass with live
-> search is planned (tracked in PLAN.md §3); conclusions are not expected to
+> search is planned; conclusions are not expected to
 > change materially. Corrections to any row are welcome — this page is meant
 > to stay honest, not to win.
 
 | Tool | Platforms | License | S3 admin depth | Versioning UX | CLI | Main weakness |
 |---|---|---|---|---|---|---|
-| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock) | First-class (timeline, restore, undo delete, purge, force-empty versioned buckets) | Yes — same binary, same engine | 1.0: no code signing yet (SBOM + SHA256SUMS ship per release); no CloudFront/KMS consoles; single maintainer |
+| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock); SFTP/SCP, FTP/FTPS and local sources ride the same UI and CLI | First-class (timeline, restore, undo delete, purge, force-empty versioned buckets) | Yes — same binary, same engine | Beta: no code signing yet (SBOM + SHA256SUMS ship per release); no CloudFront/KMS consoles; single maintainer |
 | **S3 Browser / "CS Browser" 13.x** (s3browser.com) | Windows only | Freeware; Pro paid | Deep (policy, ACL, CORS, lifecycle, CloudFront) | Yes, incl. delete versions | No | Windows-only, closed-source, dated UI |
 | **Cyberduck** | Win, macOS | GPL-3.0 (copyleft) | Medium (versioning, lifecycle, logging, storage class, SSE) | Partial | `duck` (separate) | GPL, Java footprint, no Linux desktop, generic multi-protocol (S3 not first-class) |
 | **MSP360 (CloudBerry) Explorer** | Win, macOS | Freemium (1 account free) | Medium-deep | Yes | No (separate paid) | Paywalls for sync/encryption/multi-account |
@@ -55,11 +55,11 @@ this project fills.
    search. Most GUIs choke far below 100k objects.
 7. **Source-available + minimal deps + no telemetry.** Every rival is
    GPL, freeware, paid, AGPL or stalled. Zero npm runtime dependencies;
-   the dependency budget is audited each release (PLAN.md §6).
+   the dependency budget is audited each release.
 
-## What s3b deliberately does not do (v1.0)
+## What s3b deliberately does not do
 
-Drive mounting (TntDrive/Mountain Duck/rclone mount territory) · non-S3
-protocols (SFTP/FTP/WebDAV) · cloud KMS/IAM console features ·
+Drive mounting (TntDrive/Mountain Duck/rclone mount territory) · WebDAV
+and SMB sources · cloud KMS/IAM console features ·
 team/collaboration features · mobile · CloudFront management · notification
-configuration UI · embedded web server mode. See PLAN.md §19.
+configuration UI · embedded web server mode.

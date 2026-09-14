@@ -1,6 +1,6 @@
 // Virtualized, sortable, multi-select details grid.
 // Renders only the visible slice (+overscan) so a 100k-object folder scrolls
-// at full frame rate (PLAN.md §11 performance budget).
+// at full frame rate (performance budget).
 import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
 
 const ROW_H = 28;

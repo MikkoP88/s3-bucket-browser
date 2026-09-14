@@ -1,4 +1,4 @@
-// lockops.go implements object-lock administration (PLAN.md §8.7):
+// lockops.go implements object-lock administration:
 // bucket-level lock configuration and per-object retention / legal hold.
 // Object lock requires versioning and is a one-way door on AWS: once
 // enabled it cannot be disabled — only tightened.

@@ -1,4 +1,4 @@
-// Package versioning implements S3 version management (PLAN.md §8.6):
+// Package versioning implements S3 version management:
 // version timelines, restore-as-latest, permanent deletes, bulk purges and
 // force-emptying of versioned buckets. Deleting a specific version ID is
 // permanent (safety ladder L3, §9) — callers must gate it behind typed
@@ -284,7 +284,7 @@ const (
 )
 
 // CountPurge reports how many versions/markers a purge would remove
-// (count-then-act, PLAN.md §9).
+// (count-then-act).
 func CountPurge(ctx context.Context, client *s3.Client, bucket, prefix string, mode PurgeMode) (int, error) {
 	n := 0
 	err := WalkVersions(ctx, client, bucket, prefix, func(v Version) error {

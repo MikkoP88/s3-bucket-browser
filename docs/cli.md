@@ -1800,7 +1800,7 @@ Without an argument lists all buckets.
 With s3://bucket/prefix shows one directory view (folders + objects);
 --recursive streams every object under the prefix instead.
 Source URIs (NAME://dir over any saved non-S3 source) work the same way.
---watch re-lists and prints changes until Ctrl+C (plan-v2 M10.5).
+--watch re-lists and prints changes until Ctrl+C.
 
 ```
 s3b ls [s3://bucket[/prefix] | NAME://dir] [flags]

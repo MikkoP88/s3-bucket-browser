@@ -1,4 +1,4 @@
-// S3 Bucket Browser — application shell (Explorer layout, PLAN.md §11).
+// S3 Bucket Browser — application shell (Explorer layout).
 import { api, onEvent } from './api.js';
 import { el, fmtBytes, fmtDate, basename, debounce } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
@@ -458,7 +458,7 @@ async function loadView(loc) {
 // loadObjectsStream fills the grid incrementally from the streaming
 // listing API: the first page renders immediately, Go-side memory stays
 // at one page for million-object folders, and stale streams are
-// canceled on navigation (PLAN.md §13, M5).
+// canceled on navigation (M5).
 async function loadObjectsStream(loc) {
   const seq = ++listSeq;
   cancelListStream();
@@ -1472,7 +1472,7 @@ async function editObject(row) {
 }
 
 // Shift+Del: destroy the selection including all versions and delete markers
-// (safety ladder L3, PLAN.md §9).
+// (safety ladder L3).
 async function deletePermanentSelection() {
   const loc = nav.current;
   if (loc.kind !== 'objects') return;

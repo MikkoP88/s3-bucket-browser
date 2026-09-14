@@ -173,7 +173,7 @@ func TestSaveWithoutKeyringKeepsSecrets(t *testing.T) {
 }
 
 // Portable mode: a marker file next to the executable switches the config
-// directory to <exe-dir>/config (PLAN.md §8).
+// directory to <exe-dir>/config.
 func TestPortableConfigDir(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {

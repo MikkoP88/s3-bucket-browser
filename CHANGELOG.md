@@ -669,7 +669,7 @@ MIT-licensed, zero telemetry.
 
 ### Added — safety, connection & scale
 
-- Safety ladder (PLAN.md §9): count-then-act on every destructive
+- Safety ladder: count-then-act on every destructive
   operation, `--force` gates, `--dry-run` previews, typed bucket name in
   the GUI for bucket-wide actions.
 - Profiles with OS-keyring secret storage (Windows Credential Manager /
@@ -695,7 +695,7 @@ MIT-licensed, zero telemetry.
 - Memory-bound listing test: a hermetic walk of 250k objects through an
   in-process mock S3 grows the live heap by <1 MB (retaining everything
   costs 40 MB) plus a 100k-object listing benchmark — the O(page) streaming
-  guarantee (PLAN.md §13) is now pinned by CI.
+  guarantee is now pinned by CI.
 
 ### Fixed
 

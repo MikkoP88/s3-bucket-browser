@@ -20,7 +20,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Exit-code contract (inherited from s3-bucket-tester, PLAN.md §10).
+// Exit-code contract (inherited from s3-bucket-tester).
 const (
 	exitOK         = 0
 	exitOpFail     = 1

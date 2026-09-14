@@ -283,7 +283,7 @@ func (a *App) PreviewBucketDelete(bucket string) (BucketDeletePreview, error) {
 }
 
 // DeleteBucket removes a bucket; non-empty buckets require force=true after
-// the GUI showed the typed-confirmation dialog (L2, PLAN.md §9). Versioned
+// the GUI showed the typed-confirmation dialog (L2). Versioned
 // buckets are emptied of ALL versions first (L3 — the preview dialog shows
 // the version/delete-marker counts).
 func (a *App) DeleteBucket(bucket string, force bool) (transfer.DeleteResult, error) {

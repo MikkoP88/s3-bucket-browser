@@ -1,8 +1,8 @@
 // Package eventlog persists the app activity log as JSON lines under the
 // config dir (events.jsonl): the same lines the GUI log drawer shows, kept
-// across sessions so `s3b log` can tail them (plan-v2 M10.5 CLI parity).
+// across sessions so `s3b log` can tail them (CLI parity).
 // The file is capped; when it outgrows the cap the oldest half of the lines
-// is dropped (a log, not an audit trail — PLAN.md §9 gates stay in S3).
+// is dropped (a log, not an audit trail — safety-ladder gates stay in S3).
 package eventlog
 
 import (

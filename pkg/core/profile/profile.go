@@ -1,6 +1,6 @@
 // Package profile manages named connection profiles stored locally.
 //
-// Secret storage (PLAN.md §14, M5): secrets live in the OS keyring
+// Secret storage (M5): secrets live in the OS keyring
 // (Windows Credential Manager / macOS Keychain / SecretService) whenever
 // one is available and are hydrated back on load; the profiles JSON only
 // keeps a flag. Without a keyring (headless hosts, tests, S3B_NO_KEYRING=1)

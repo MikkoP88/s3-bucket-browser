@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# gen-notice.sh — emit a NOTICE file for distribution bundles (plan-v2 M10
-# item 6): the project's own license line, every direct dependency with its
+# gen-notice.sh — emit a NOTICE file for distribution bundles: the
+# project's own license line, every direct dependency with its
 # SPDX id, and the full pinned module graph. Versions are read live from
 # go.mod at release time; the release SBOM (docs/security.md) stays the
 # authoritative license inventory for the transitive set.

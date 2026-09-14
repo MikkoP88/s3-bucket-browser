@@ -1,5 +1,5 @@
 // search.go exposes cancelable deep search to the GUI: matches stream as
-// page events and a done event terminates the run (M5, PLAN.md §8.9).
+// page events and a done event terminates the run (M5).
 package api
 
 import (

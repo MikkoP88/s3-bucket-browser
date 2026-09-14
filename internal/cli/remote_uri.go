@@ -1,5 +1,5 @@
-// remote_uri.go: "source://" URIs on the CLI (plan-v2 M10.5 — URIs for all
-// sources). Any saved non-S3 data source (local/sftp/scp/ftp/ftps) can be
+// remote_uri.go: "source://" URIs on the CLI — every saved data source gets a
+// scheme. Any saved non-S3 data source (local/sftp/scp/ftp/ftps) can be
 // addressed as NAME://path, e.g. `s3b ls vault://media` or
 // `s3b cp vault://media/a.txt s3://b/`. S3 sources keep their s3:// URIs
 // and resolve by name via --profile (the store mirrors them).

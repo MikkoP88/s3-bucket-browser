@@ -1,9 +1,10 @@
 # Contributing to S3 Bucket Browser
 
 Thanks for helping! This file covers the short path from clone to a merged
-PR. The product plan lives in [PLAN.md](PLAN.md) — architecture (§7),
-safety model (§9) and non-goals (§19) explain most "why did they do it this
-way" questions.
+PR. The architecture is documented in code comments (start at
+`cmd/s3b/main.go` and `pkg/api/app.go`); the safety model in
+[docs/security.md](docs/security.md); release history in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Build & run
 
@@ -39,15 +40,17 @@ against a local MinIO — it never touches your real profile store.
    test may require network access, real cloud credentials, or a keyring.
    MinIO-based e2e is the only exception and lives behind the optional
    script above.
-2. **Minimal dependencies (hard rule).** Runtime deps are MIT/Apache-2.0
-   only and limited to the budget in PLAN.md §6. Zero npm runtime
+2. **Minimal dependencies (hard rule).** Runtime deps are permissive-only
+   (MIT/Apache-2.0/ISC/BSD) and audited each release
+   (see [docs/security.md](docs/security.md)). Zero npm runtime
    dependencies. If a PR needs a new module, justify it in the PR text —
    stdlib-first is the default answer.
 3. **One engine, two faces.** Feature logic goes in `pkg/core` (pure Go);
    `pkg/api` binds it to the GUI, `internal/cli` to the CLI. No feature
    exists in only one face except pure visuals.
 4. **Safety ladder is sacred.** Any destructive operation must count
-   before acting, expose `--dry-run`, and gate on the ladder in §9. PRs
+   before acting, expose `--dry-run`, and gate on the ladder in
+   [docs/security.md](docs/security.md). PRs
    that loosen a gate need a very good reason in writing.
 5. **Secrets stay masked.** Never log, echo or JSON-print a secret.
 6. **Generated docs are generated.** After changing any command's flags or

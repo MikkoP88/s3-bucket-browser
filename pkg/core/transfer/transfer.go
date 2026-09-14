@@ -271,7 +271,7 @@ func (p *progressWriterAt) WriteAt(b []byte, off int64) (int, error) {
 }
 
 // Copy performs a server-side copy (single request; objects > 5 GB need
-// multipart copy — added in M2 per PLAN.md §8.4).
+// multipart copy — added in M2).
 func Copy(ctx context.Context, client *s3.Client, srcBucket, srcKey, dstBucket, dstKey string) error {
 	_, err := client.CopyObject(ctx, &s3.CopyObjectInput{
 		Bucket:     aws.String(dstBucket),
