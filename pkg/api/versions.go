@@ -43,7 +43,7 @@ func (a *App) RestoreVersion(bucket, key, versionID string) error {
 }
 
 // UndoDelete removes a delete marker: the object reappears with its previous
-// current version (PLAN.md §8.6 "delete marker UX").
+// current version ("delete marker UX").
 func (a *App) UndoDelete(bucket, key, versionID string) error {
 	c, err := a.client("")
 	if err != nil {
@@ -59,7 +59,7 @@ func (a *App) UndoDelete(bucket, key, versionID string) error {
 }
 
 // DeleteVersionPermanent permanently deletes one version (L3: the frontend
-// gates this behind a typed "permanent" confirmation, PLAN.md §9).
+// gates this behind a typed "permanent" confirmation).
 func (a *App) DeleteVersionPermanent(bucket, key, versionID string) error {
 	c, err := a.client("")
 	if err != nil {

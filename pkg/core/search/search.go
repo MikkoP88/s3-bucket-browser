@@ -2,7 +2,7 @@
 // stream every object under a prefix and match it against a filter (name
 // glob, size, age, storage class). Results are delivered through a
 // callback so both the CLI and the GUI can consume them incrementally
-// without ever holding the whole bucket in memory (PLAN.md §13).
+// without ever holding the whole bucket in memory.
 package search
 
 import (

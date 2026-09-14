@@ -1,5 +1,5 @@
 // stream.go: memory-bounded streaming directory listing for the GUI
-// (M5 performance pass, PLAN.md §13). Pages of entries flow to the
+// (M5 performance pass). Pages of entries flow to the
 // frontend as events; the Go side never accumulates the folder, so a
 // million-object prefix costs one paginator page of memory.
 package api

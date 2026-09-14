@@ -302,7 +302,7 @@ export class LocalPane {
 
   // navigateS3 lists the bound S3 source: the buckets view at the root,
   // one streamed prefix inside a bucket. Same one-page memory contract as
-  // the main view (PLAN.md §13).
+  // the main view.
   async navigateS3({ bucket, prefix }) {
     this.cancelS3Stream();
     const seq = this.s3Seq;

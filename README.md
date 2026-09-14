@@ -1,8 +1,8 @@
 # S3 Bucket Browser
 
-**A Windows-Explorer-style desktop app + CLI for managing Amazon S3 and S3-compatible storage — buckets, objects, versions, and everything in between.**
+**A Windows-Explorer-style desktop app + CLI for S3-compatible cloud storage and remote file servers (SFTP/SCP, FTP/FTPS) — buckets, objects, versions, and everything in between.**
 
-> **Status: Beta.** All launch milestones (M0–M6) are shipped and CI-green; the codebase is feature-complete and in beta hardening ahead of the 1.0 stable cut. Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
+> **Status: v1.0 released; 1.1.0 in beta.** 1.1 adds a unified data-source hierarchy (S3, SFTP/SCP, FTP/FTPS, local folders), OS clipboard/drag interop and credential import — see the [CHANGELOG](CHANGELOG.md). Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
 
 ## Quickstart (GUI)
 
@@ -30,11 +30,12 @@ go build -tags desktop,production -o s3b ./cmd/s3b && ./s3b   # no arguments -> 
 - **Bucket administration**: versioning toggle, bucket policy, CORS, lifecycle rules, default encryption, public-access block, static website and tags — all in one tabbed admin panel (also `s3b bucket …` on the CLI).
 - **Multi-select everything**: click / Ctrl+click / Shift+click / Ctrl+A, marquee drag-select, type-to-jump, full keyboard map (F1 in-app).
 - **Drag & drop**: drop files or folders from the OS onto the window to upload into the open folder; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket).
+- **OS interop**: Ctrl+C mirrors the selection to the real OS clipboard, Ctrl+V uploads files copied in Explorer/Finder, and rows drag out of the window as downloadable URLs.
 - **Transfer manager**: per-file and byte-level progress, speed, cancel — powered by multipart upload/download, with an optional **bandwidth throttle** (512 kB/s … 10 MB/s).
 - **Safety ladder**: deletes count first and act second; large selections demand typed confirmation, bucket removal demands typing the bucket name; removing a versioned bucket with `--force` purges the whole version history, markers included.
-- **Data sources**: color-coded connections, S3 credentials import from the AWS shared files (`~/.aws/credentials` + `~/.aws/config` — `endpoint_url` entries become MinIO/R2/Wasabi/… sources), built-in connectivity test, connection doctor.
+- **Data sources**: color-coded connections in one sidebar hierarchy — S3 providers, SFTP/SCP, FTP/FTPS servers and local folders, all browsable with the same Explorer UI (and `NAME://` URIs on the CLI). **Import credentials** from local files or KMS/secrets services — including fully custom HTTP endpoints (URL / JSON path / headers) — with a live bucket-count test; plus import from the AWS shared files (`~/.aws/credentials` + `~/.aws/config`, where `endpoint_url` entries become MinIO/R2/Wasabi/… sources), built-in connectivity test and connection doctor.
 - **Light/dark theme**, conflict policies (overwrite / skip / rename) on upload and download, pre-signed URLs, server-side copy/move, rename, new folder.
-- **i18n ready** (15 languages built in — English, Suomi, Svenska, Deutsch, Français, Español, Português, Italiano, Nederlands, Polski, Русский, Türkçe, 中文， 日本語， 한국어; auto-detected, switchable in Settings), accessibility pass on the grid and dialogs (ARIA roles, focus trap), portable mode (drop a `s3b-portable` marker file next to the binary to keep config beside it).
+- **i18n ready** (15 languages built in — English, Suomi, Svenska, Deutsch, Français, Español, Português, Italiano, Nederlands, Polski, Русский, Türkçe, 中文， 日本語， 한국어; English by default with optional auto-detect, switchable in Settings), accessibility pass on the grid and dialogs (ARIA roles, focus trap), portable mode (drop a `s3b-portable` marker file next to the binary to keep config beside it).
 
 Headless Linux servers can build a pure-Go CLI without GTK dependencies:
 
@@ -54,6 +55,10 @@ s3b profile add lab --endpoint http://localhost:9000 \
     --access-key minioadmin --secret-key minioadmin --default
 s3b profile test lab          # lightweight connectivity check
 s3b doctor s3://my-bucket     # deep diagnosis: DNS → TCP → TLS → auth → policy/ACL
+
+# Non-S3 sources live in the same store and use NAME:// URIs everywhere
+s3b source add vault sftp://deploy@backups.example.com
+s3b ls vault://media           # same engine, same flags as s3://
 
 s3b ls                        # buckets          s3b ls s3://b/photos/    # folder view
 s3b tree s3://b               # ASCII tree       s3b du s3://b/photos/    # size + count
@@ -109,7 +114,7 @@ s3b lock legalhold s3://b/report.pdf --on
 
 Every command takes `--json` for machine-readable output, `--profile` to pick a connection, and `--verbose` for per-item detail. Shell completions: `s3b completion bash|zsh|fish|powershell`. Exit codes: `0` OK, `1` operation failure, `2` usage/config error, `3` unexpected.
 
-**Safety ladder** (PLAN.md §9): destructive operations count first and act second. Prefix deletes over 50 objects require `--force`, removing non-empty buckets requires `--force`, and the GUI will additionally require typed confirmation. Enabling object lock is permanent; COMPLIANCE retention cannot be shortened or removed.
+**Safety ladder**: destructive operations count first and act second. Prefix deletes over 50 objects require `--force`, removing non-empty buckets requires `--force`, and the GUI will additionally require typed confirmation. Enabling object lock is permanent; COMPLIANCE retention cannot be shortened or removed.
 
 ## Install
 
@@ -130,7 +135,7 @@ Because none of the existing ones do it all:
 | Connection doctor with fix suggestions | yes | no | no | no | no |
 | Telemetry | **none** | – | – | – | – |
 
-See [PLAN.md §3](PLAN.md#3-competitive-landscape--gap-analysis) for the full landscape and gap analysis.
+See [docs/comparison.md](docs/comparison.md) for the full landscape and gap analysis.
 
 ## Design principles
 

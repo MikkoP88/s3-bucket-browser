@@ -1,6 +1,6 @@
 // Command s3b is the entry point of the S3 Bucket Browser application.
 //
-// Design contract (see PLAN.md §7):
+// Design contract:
 //   - invoked with no arguments  -> launch the desktop GUI
 //   - invoked with arguments     -> run as the CLI (cobra command tree)
 package main

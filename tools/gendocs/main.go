@@ -9,8 +9,8 @@
 //
 // The markdown is rendered here directly from cobra's public API rather than
 // via spf13/cobra/doc: that package pulls in md2man and yaml modules for man
-// and yaml output this tool never produces (PLAN.md design principle 4,
-// minimal dependencies).
+// and yaml output this tool never produces (design principle: minimal
+// dependencies).
 package main
 
 import (

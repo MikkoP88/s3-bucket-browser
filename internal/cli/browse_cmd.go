@@ -43,7 +43,7 @@ func lsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ls [s3://bucket[/prefix] | NAME://dir]",
 		Short: "List buckets, or one directory view of a bucket or source",
-		Long:  "Without an argument lists all buckets.\nWith s3://bucket/prefix shows one directory view (folders + objects);\n--recursive streams every object under the prefix instead.\nSource URIs (NAME://dir over any saved non-S3 source) work the same way.\n--watch re-lists and prints changes until Ctrl+C (plan-v2 M10.5).",
+		Long:  "Without an argument lists all buckets.\nWith s3://bucket/prefix shows one directory view (folders + objects);\n--recursive streams every object under the prefix instead.\nSource URIs (NAME://dir over any saved non-S3 source) work the same way.\n--watch re-lists and prints changes until Ctrl+C.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {

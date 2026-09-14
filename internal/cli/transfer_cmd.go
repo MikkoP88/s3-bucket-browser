@@ -20,7 +20,7 @@ import (
 )
 
 // rmForceThreshold is the L1 safety gate: deleting more objects than this
-// under a prefix requires --force (PLAN.md §9).
+// under a prefix requires --force.
 const rmForceThreshold = 50
 
 // copyOptions drives cp/mv (mv = cp + source removal).

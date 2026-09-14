@@ -1,5 +1,5 @@
 // Package adminops implements bucket administration sub-resources
-// (PLAN.md §8.5 M3): policy, ACL, CORS, lifecycle, encryption, public access
+// (M3): policy, ACL, CORS, lifecycle, encryption, public access
 // block, website hosting and tagging. Every getter maps "not configured" and
 // "provider does not implement this API" onto empty results or readable
 // errors so the GUI can disable unsupported panels instead of failing.

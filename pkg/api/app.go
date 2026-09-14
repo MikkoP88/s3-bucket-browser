@@ -1,4 +1,4 @@
-// Package api is the GUI service layer (PLAN.md §7): the single place where
+// Package api is the GUI service layer: the single place where
 // the Wails frontend meets the pkg/core engine. Everything the webview can
 // call is a method on App; core packages stay free of Wails imports.
 package api

@@ -303,7 +303,7 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 }
 
 // finishJob stamps the final status, emits it and appends it to the local
-// transfer history log (JSONL, PLAN.md §8.4 M3).
+// transfer history log (JSONL M3).
 func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	j.mu.Lock()
 	id, done, totalFiles, sentBytes, failedFiles :=

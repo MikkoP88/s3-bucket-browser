@@ -6,7 +6,7 @@ import (
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 )
 
-// AdminPanel is the whole bucket-administration view (PLAN.md §8.5, M3).
+// AdminPanel is the whole bucket-administration view (M3).
 // Every section carries its own error string: providers that do not
 // implement an API disable that tab instead of failing the panel.
 type AdminPanel struct {

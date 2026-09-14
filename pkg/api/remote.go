@@ -234,7 +234,7 @@ func (a *App) RemoteRename(idOrName, path, newName string) error {
 }
 
 // RemoteDeletePreview is the count-then-act half of remote deletes
-// (PLAN.md §9): it walks every listed path (file or directory tree) and
+// (safety ladder): it walks every listed path (file or directory tree) and
 // reports what a delete would remove. Paths that do not exist are counted
 // as errors — the caller decides how loud to be.
 type RemoteDeletePreview struct {

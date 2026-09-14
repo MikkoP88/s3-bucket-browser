@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// These tests pin the streaming guarantee of PLAN.md §13: listing a huge
+// These tests pin the streaming guarantee: listing a huge
 // prefix through the callback APIs costs O(page) memory on the Go side.
 // They run against an in-process httptest S3 (hermetic — no network, no
 // keyring, no real bucket) that serves N pages of ListObjectsV2 XML.
@@ -133,7 +133,7 @@ func TestWalkDirStreamingMemoryBounded(t *testing.T) {
 	})
 }
 
-// BenchmarkWalkDir100k tracks per-object listing cost (PLAN.md §13: CI
+// BenchmarkWalkDir100k tracks per-object listing cost (CI
 // benchmark artifacts). Run with: go test -bench . -run '^$' ./pkg/core/listing
 func BenchmarkWalkDir100k(b *testing.B) {
 	client := newMockS3(b, 100, memPageSize)

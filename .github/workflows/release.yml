@@ -49,7 +49,7 @@ jobs:
           GOOS: linux
           GOARCH: arm64
 
-      # Portable editions (plan-v2 M10 item 6): the s3b-portable marker has
+      # Portable editions: the s3b-portable marker has
       # redirected config beside the binary since M5 — the release job just
       # bundles binary + LICENSE + NOTICE + marker + README-portable.md.
       # NOTICE is generated from go.mod so versions are always current.
@@ -179,7 +179,7 @@ jobs:
           path: dist/*.dmg
 
   # Supply-chain metadata for the release: full dependency graph plus an
-  # SBOM (docs/security.md, PLAN.md §16).
+  # SBOM (docs/security.md).
   sbom:
     runs-on: ubuntu-latest
     steps:

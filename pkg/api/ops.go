@@ -16,10 +16,10 @@ import (
 )
 
 // deleteForceThreshold mirrors the CLI's L1 gate (internal/cli rmForceThreshold,
-// PLAN.md §9): above this count the GUI requires typed confirmation.
+// safety ladder): above this count the GUI requires typed confirmation.
 const deleteForceThreshold = 50
 
-// DeletePreview feeds the confirmation dialog (count-then-act, PLAN.md §9).
+// DeletePreview feeds the confirmation dialog (count-then-act).
 type DeletePreview struct {
 	Count      int   `json:"count"`
 	Bytes      int64 `json:"bytes"`
@@ -231,7 +231,7 @@ type CopyResult struct {
 
 // CopySelection server-side copies (or moves) a selection into dstBucket/
 // dstPrefix. Sources are copied first and only deleted afterwards when
-// moving (count-then-act, PLAN.md §9).
+// moving (count-then-act).
 func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix string, move bool) (CopyResult, error) {
 	c, err := a.client("")
 	if err != nil {

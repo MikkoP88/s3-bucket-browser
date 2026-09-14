@@ -1,4 +1,4 @@
-// portable.go implements portable mode (M5, PLAN.md §8): when a marker
+// portable.go implements portable mode (M5): when a marker
 // file named "s3b-portable" sits next to the executable, all state lives
 // in a "config" folder beside the binary — nothing is written to the
 // user profile directory. Designed for USB-stick / running-from-downloads

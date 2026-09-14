@@ -1,6 +1,6 @@
 // Package bucketops implements bucket lifecycle operations (create, head,
 // empty, delete) with the M1 safety model: destructive operations require an
-// explicit force flag and report counts before acting (PLAN.md §9).
+// explicit force flag and report counts before acting.
 package bucketops
 
 import (
