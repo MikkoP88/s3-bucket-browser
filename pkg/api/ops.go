@@ -32,11 +32,25 @@ type DeletePreview struct {
 // PreviewDelete expands a selection (folder keys end with "/") and reports
 // what a delete would remove — without deleting anything. Folder contents
 // are walked; individually selected objects are stat'ed for their size.
+// Addresses the source the main view is browsing (SetViewSource).
 func (a *App) PreviewDelete(bucket string, keys []string) (DeletePreview, error) {
 	c, err := a.client("")
 	if err != nil {
 		return DeletePreview{}, err
 	}
+	return a.previewDeleteC(c, bucket, keys)
+}
+
+// SourcePreviewDelete is PreviewDelete pinned to one named S3 source.
+func (a *App) SourcePreviewDelete(idOrName, bucket string, keys []string) (DeletePreview, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return DeletePreview{}, err
+	}
+	return a.previewDeleteC(c, bucket, keys)
+}
+
+func (a *App) previewDeleteC(c *s3client.Client, bucket string, keys []string) (DeletePreview, error) {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 
@@ -79,11 +93,25 @@ func (a *App) PreviewDelete(bucket string, keys []string) (DeletePreview, error)
 // DeleteSelection removes the selected objects/folders. The server re-counts
 // and refuses large batches unless force=true, which the frontend only sets
 // after the typed-confirmation dialog (L2) — same contract as `s3b rm --force`.
+// Addresses the source the main view is browsing (SetViewSource).
 func (a *App) DeleteSelection(bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
 	}
+	return a.deleteSelectionC(c, bucket, keys, force)
+}
+
+// SourceDeleteSelection is DeleteSelection pinned to one named S3 source.
+func (a *App) SourceDeleteSelection(idOrName, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return transfer.DeleteResult{}, err
+	}
+	return a.deleteSelectionC(c, bucket, keys, force)
+}
+
+func (a *App) deleteSelectionC(c *s3client.Client, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 
@@ -131,14 +159,28 @@ func expandSelection(ctx context.Context, c *s3client.Client, bucket string, key
 
 // RenameObject renames in place: server-side copy to the new key, then delete
 // of the original (S3 has no native rename). Works for folders too.
+// Addresses the source the main view is browsing (SetViewSource).
 func (a *App) RenameObject(bucket, key, newName string) error {
-	newName = strings.Trim(newName, "/ ")
-	if newName == "" || strings.Contains(newName, "/") {
-		return fmt.Errorf("invalid name")
-	}
 	c, err := a.client("")
 	if err != nil {
 		return err
+	}
+	return a.renameObjectC(c, bucket, key, newName)
+}
+
+// SourceRenameObject is RenameObject pinned to one named S3 source.
+func (a *App) SourceRenameObject(idOrName, bucket, key, newName string) error {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return err
+	}
+	return a.renameObjectC(c, bucket, key, newName)
+}
+
+func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) error {
+	newName = strings.Trim(newName, "/ ")
+	if newName == "" || strings.Contains(newName, "/") {
+		return fmt.Errorf("invalid name")
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()

@@ -139,6 +139,30 @@ func (a *App) RemoteList(idOrName, dir string) ([]listing.Entry, error) {
 	return entries, err
 }
 
+// RemoteListDraft lists a directory of an UNSAVED source (the editor's
+// "browse start directory" button): dials with the form values, lists,
+// disconnects. Masked secrets inherit from a same-named stored source so
+// editing an existing connection without re-typing the password works.
+func (a *App) RemoteListDraft(in profile.Source, dir string) ([]listing.Entry, error) {
+	if in.Type == profile.TypeS3 {
+		return nil, fmt.Errorf("S3 sources have no start directory")
+	}
+	if existing, err := a.sourceByIDOrName(in.Name); err == nil && existing.Type == in.Type {
+		inheritSourceSecrets(&in, existing)
+	}
+	if a.ctx == nil {
+		return nil, errNoContext
+	}
+	fs, err := remotefs.Dial(a.ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	defer fs.Close()
+	ctx, cancel := a.quickCtx()
+	defer cancel()
+	return fs.List(ctx, dir)
+}
+
 // RemoteStat returns metadata for one file or directory of a non-S3 source.
 func (a *App) RemoteStat(idOrName, path string) (listing.Entry, error) {
 	src, fs, err := a.remoteSource(idOrName)

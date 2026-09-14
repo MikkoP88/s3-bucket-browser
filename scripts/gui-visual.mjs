@@ -297,6 +297,15 @@ function shim() {
     ],
   };
   world.transfers[0].sentBytes = 71803392; // (kept deterministic if edited above)
+  // view-source context + OS interop + import-credentials fixtures
+  world.viewSource = '';
+  world.osClip = [];
+  world.credCandidates = [
+    { id: 'cand-file1', name: 'from-file', type: 's3', endpoint: 'fsn1.your-objectstorage.com', host: '', username: '', hasSecret: true, origin: 'credentials' },
+  ];
+  world.kmsCandidates = [
+    { id: 'cand-kms1', name: 'hetzner-kms', type: 's3', endpoint: 'hel1.your-objectstorage.com', host: '', username: '', hasSecret: true, origin: 'http://kms.local/secret/s3' },
+  ];
 
   // children of a key-space (S3 prefix or anchored remote dir)
   function children(all, prefix, anchored) {
@@ -467,6 +476,47 @@ function shim() {
       return t;
     },
     CancelSearch: () => ({}),
+    // ---- view-source context + source-pinned ops (M11) ----
+    SetViewSource: (idOrName) => {
+      const s = world.sources.find((x) => x.name === idOrName || x.id === idOrName);
+      world.viewSource = s ? s.name : idOrName;
+      return world.viewSource;
+    },
+    SourceGetBucketGuard: (_src, bucket) => JSON.parse(JSON.stringify(world.guards[bucket]
+      || { versioning: 'Off', lockEnabled: false, lockMode: '', lockDays: 0 })),
+    SourceStatObject: (_src, _bucket, key) => (key.endsWith('/')
+      ? { key, isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
+      : { key, size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD' }),
+    SourcePreviewDelete: (_src, _bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
+    SourceDeleteSelection: (_src, _bucket, keys) => ({ deleted: keys.length, errors: [] }),
+    SourceRenameObject: () => ({}),
+    SourceCreateFolder: () => ({}),
+    // ---- OS interop ----
+    PickUploadItems: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
+    OsClipboardFiles: () => JSON.parse(JSON.stringify(world.osClip || [])),
+    OsClipboardSetFiles: (paths) => { world.osClip = paths; return {}; },
+    StageClipboardDir: () => 'C:\\Users\\demo\\AppData\\Local\\Temp\\s3b-clip-1',
+    MakeDragUrls: (items) => items.map((it, i) => `http://127.0.0.1:39317/drag/${i}/${encodeURIComponent(it.name || it.key)}`),
+    RemoteListDraft: () => [
+      { key: '/draft-up/', isDir: true, name: 'draft-up' },
+      { key: '/seed.txt', isDir: false, name: 'seed.txt', size: 12 },
+    ],
+    // ---- import credentials (files + KMS) ----
+    ParseCredentialFile: () => JSON.parse(JSON.stringify(world.credCandidates)),
+    PickCredentialFiles: () => ['C:\\Users\\demo\\Downloads\\credentials'],
+    TestCredentialDraft: () => ({ ok: true, message: '4 buckets reachable' }),
+    KmsFetch: (service) => JSON.parse(JSON.stringify(world.kmsCandidates)),
+    ImportCredentials: (ids) => {
+      const imported = [];
+      for (const id of ids || []) {
+        const c = [...world.credCandidates, ...world.kmsCandidates].find((x) => x.id === id);
+        if (!c || world.sources.some((s) => s.name === c.name)) continue;
+        world.sources.push({ id: 'src-' + c.name, name: c.name, type: c.type || 's3' });
+        imported.push(c.name);
+      }
+      world.pfState.sourceCount = world.sources.length;
+      return { imported, skipped: [] };
+    },
   };
 
   const App = new Proxy({}, {
@@ -610,6 +660,17 @@ const findCall = async (m) => (await calls()).filter((c) => c.m === m).at(-1) ||
 async function navObjects(bucket) {
   await clickTree(bucket);
   await waitFor(async () => (await rowKeys()).some((k) => k.includes('.') || k.endsWith('/')), 6000, `objects of ${bucket}`);
+  await sleep(150);
+}
+// navObjectsOf opens a bucket of a SPECIFIC source: with several S3 sources
+// configured, same-named buckets exist in the tree under each — clicking the
+// source node first makes the buckets grid (and its rows) source-unambiguous.
+async function navObjectsOf(source, bucket) {
+  await clickTree(source);
+  await waitFor(async () => (await rowKeys()).includes(bucket), 6000, `buckets of ${source}`);
+  await sleep(150);
+  await dblClickRow(bucket);
+  await waitFor(async () => (await rowKeys()).some((k) => k.includes('.') || k.endsWith('/')), 6000, `objects of ${source}/${bucket}`);
   await sleep(150);
 }
 
@@ -865,18 +926,61 @@ await step('settings-dialog', async () => {
   await ok('modal closed', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
 });
 
-await step('upload-menu', async () => {
+await step('upload', async () => {
+  // the ONE upload command: a single OS dialog picking files AND folders
+  await navObjects('testijotain');
+  await resetCalls();
   await page.click('#btn-upload');
-  await sleep(80);
-  await ok('upload menu opens', evalPage(() => !document.getElementById('ctxmenu').classList.contains('hidden')));
-  await shot('upload-menu');
-  await closeCtx();
+  await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'upload');
+  const c = await findCall('Upload');
+  await ok('single dialog uploads files and folders', c && c.args[1] === 'testijotain'
+    && c.args[0].length === 2 && /invoice\.pdf$/.test(c.args[0][0]) && /photos$/.test(c.args[0][1]));
+  await ok('PickUploadItems backed the dialog', (await findCall('PickUploadItems')) !== null);
+  await ok('no context menu', evalPage(() => document.getElementById('ctxmenu').classList.contains('hidden')));
+  await shot('upload');
 });
 
 await step('sources-in-tree', async () => {
   await ok('source listed in sidebar tree', (await txt('#tree')).includes('backup-box'));
   await ok('sidebar header says Data sources', (await txt('#sidebar-head')).toLowerCase().includes('data sources'));
   await shot('sources-tree');
+});
+
+await step('source-editor-autoname', async () => {
+  // the sidebar "+" opens the Add-source dialog; the Name field auto-fills
+  // from the connection details and stays editable (a typed name wins)
+  await page.click('#sidebar-head .side-add');
+  await waitFor(modalVisible, 4000, 'source editor');
+  await ok('title is Add data source', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('Add data source'));
+  // S3: the endpoint host's first label becomes the name
+  const ep = await elOrNull(() => document.querySelector('#modal-root input.mono') || null);
+  await ok('endpoint field focused first', !!ep);
+  if (ep) {
+    await ep.asElement().fill('https://hel1.your-objectstorage.com');
+    await ep.asElement().dispatchEvent('change');
+  }
+  await ok('S3 endpoint auto-fills the name', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'hel1'));
+  // local: the folder leaf becomes the name
+  await page.selectOption('#modal-root select', 'local');
+  const folder = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
+    .find((i) => i.placeholder.includes('C:\\data')) || null);
+  const browse = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /browse/i.test(b.textContent)) || null);
+  await ok('local type shows folder field + Browse', !!folder && !!browse);
+  if (folder) {
+    await folder.asElement().fill('C:\\Users\\demo\\backups');
+    await folder.asElement().dispatchEvent('change');
+  }
+  await ok('folder name auto-fills the name', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'backups'));
+  // a hand-typed name is never overwritten by later field changes
+  await page.fill('#modal-root input.input', 'my-box');
+  if (folder) {
+    await folder.asElement().fill('C:\\Users\\demo\\photos');
+    await folder.asElement().dispatchEvent('change');
+  }
+  await ok('typed name survives field changes', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'my-box'));
+  await shot('source-editor');
+  await closeModal();
 });
 
 await step('doctor', async () => {
@@ -1064,6 +1168,10 @@ await step('props-dialogs', async () => {
     const ks = Array.from(document.querySelectorAll('#modal-root .kv .k')).map((k) => k.textContent);
     return ['Provider', 'Versioning'].every((w) => ks.some((k) => k.includes(w)));
   }));
+  await ok('guard rows render as Enabled/Disabled pills', evalPage(() => {
+    const pills = Array.from(document.querySelectorAll('#modal-root .pill'));
+    return pills.length >= 2 && pills.some((p) => /enabled/i.test(p.textContent) && p.classList.contains('on'));
+  }));
   await ok('bucket props layout clean', (await layoutAudit()).ok);
   await shot('props-bucket');
   await closeModal();
@@ -1236,7 +1344,7 @@ await step('dnd-s3-to-remote-tree', async () => {
   await dnd(from, to);
   const c = await findCall('TransferCross');
   await ok('routes to TransferCross', !!c);
-  await ok('items pin the default S3 source', c && c.args[0][0].bucket === 'testijotain' && c.args[0][0].source === '');
+  await ok('items pin the originating S3 source', c && c.args[0][0].bucket === 'testijotain' && c.args[0][0].source === 'hetzner');
   await ok('dest is the remote source', c && c.args[2].kind === 'remote' && c.args[2].source === 'backup-box');
   await shot('dnd-s3-remote');
 });
@@ -1360,6 +1468,405 @@ await step('paste-parity', async () => {
   await sleep(200);
   c = await findCall('TransferCross');
   await ok('remote paste routes through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[2].bucket === 'testijotain');
+});
+
+// ===================== view-source + OS interop (slice 6) =====================
+
+await step('import-creds-file', async () => {
+  await resetCalls();
+  await page.locator('#menubar .mb-title').first().click(); // File
+  await sleep(80);
+  const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /import credentials/i.test(i.textContent)) || null);
+  await ok('File→Import credentials present', !!item);
+  if (!item) return;
+  await item.asElement().click();
+  await waitFor(modalVisible, 4000, 'import dialog');
+  // From file… → OS picker + parse (no nested modal on a plain INI file)
+  const ff = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^from file/i.test(b.textContent.trim())) || null);
+  await ok('From file… button present', !!ff);
+  if (ff) await ff.asElement().click();
+  await waitFor(async () => (await findCall('ParseCredentialFile')) !== null, 4000, 'parse');
+  await waitFor(async () => !!(await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row'))
+    .find((r) => r.textContent.includes('from-file')) || null)), 4000, 'cred row');
+  await ok('parsed candidate listed for review', true);
+  await shot('import-creds');
+  // Test → connectivity check + ok badge
+  const test = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row button'))
+    .find((b) => /^test$/i.test(b.textContent.trim())) || null);
+  if (test) await test.asElement().click();
+  await waitFor(async () => evalPage(() => document.querySelectorAll('#modal-root .cred-test.ok').length > 0), 4000, 'test badge');
+  await ok('candidate tested before import', (await findCall('TestCredentialDraft')) !== null);
+  // Import → backend import + tree gains the source
+  const imp = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^import$/i.test(b.textContent.trim())) || null);
+  if (imp) await imp.asElement().click();
+  await waitFor(async () => (await findCall('ImportCredentials')) !== null, 4000, 'import call');
+  const c = await findCall('ImportCredentials');
+  await ok('imports the checked candidate end-to-end', c && JSON.stringify(c.args[0]) === '["cand-file1"]');
+  await waitFor(async () => (await txt('#tree')).includes('from-file'), 4000, 'tree gains from-file');
+  await ok('imported source appears in the tree', true);
+});
+
+await step('import-creds-kms', async () => {
+  await resetCalls();
+  await page.locator('#menubar .mb-title').first().click(); // File
+  await sleep(80);
+  const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /import credentials/i.test(i.textContent)) || null);
+  await ok('menu item still present', !!item);
+  if (!item) return;
+  await item.asElement().click();
+  await waitFor(modalVisible, 4000, 'import dialog');
+  const fsBtn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^from service/i.test(b.textContent.trim())) || null);
+  await ok('From service… button present', !!fsBtn);
+  if (!fsBtn) return;
+  await fsBtn.asElement().click();
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent))
+    .includes('Import from a secrets service'), 4000, 'kms dialog');
+  // custom HTTP service with a URL
+  await page.selectOption('#modal-root select', 'http');
+  const url = await elOrNull(() => {
+    const inp = Array.from(document.querySelectorAll('#modal-root input'));
+    return inp[0] || null;
+  });
+  if (url) await url.asElement().fill('http://kms.local/secret/s3');
+  const fetch = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^fetch$/i.test(b.textContent.trim())) || null);
+  await ok('Fetch button present', !!fetch);
+  if (fetch) await fetch.asElement().click();
+  await waitFor(async () => (await findCall('KmsFetch')) !== null, 4000, 'KmsFetch');
+  const c = await findCall('KmsFetch');
+  await ok('custom HTTP service carries its URL param', c && c.args[0] === 'http' && /kms\.local/.test(c.args[1]?.url || ''));
+  // the KMS dialog closes and the import dialog comes back with the secret
+  // (nested modals replace — the state must survive the round trip)
+  await waitFor(async () => !!(await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row'))
+    .find((r) => r.textContent.includes('hetzner-kms')) || null)), 4000, 'kms candidate row');
+  await ok('import dialog re-shown with the fetched candidate', true);
+  await shot('import-kms');
+  const imp = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^import$/i.test(b.textContent.trim())) || null);
+  if (imp) await imp.asElement().click();
+  await waitFor(async () => (await txt('#tree')).includes('hetzner-kms'), 4000, 'tree gains hetzner-kms');
+  await ok('KMS-imported source appears in the tree', true);
+});
+
+await step('view-source-switch', async () => {
+  // 'from-file' is a second S3 source: opening it pins the engine to it
+  // (SetViewSource) and mirrors it in the status bar
+  await resetCalls();
+  await clickTree('from-file');
+  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'from-file buckets');
+  const c = await findCall('SetViewSource');
+  await ok('opening a source pins it as the view source', c && c.args[0] === 'from-file');
+  await ok('status bar mirrors the active source', (await txt('#status-profile')).includes('from-file'));
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'back to hetzner');
+  const c2 = await findCall('SetViewSource');
+  await ok('switching back re-pins hetzner', c2 && c2.args[0] === 'hetzner');
+});
+
+await step('status-balls', async () => {
+  // every configured source gets a connectivity ball; all engines answer
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .sball.ok').length)) >= 3, 6000, 'ok balls');
+  await ok('sources carry OK status balls', evalPage(() => document.querySelectorAll('#tree .sball.ok').length >= 3));
+  await shot('status-balls');
+});
+
+await step('breadcrumb-path-nav', async () => {
+  await navObjectsOf('hetzner', 'testijotain');
+  // clicking the navbar's empty area opens the inline path editor holding
+  // the canonical Source://bucket/prefix path
+  await evalPage(() => document.querySelector('.navbar').dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit')), 4000, 'path editor');
+  await ok('path field holds the canonical path', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 'hetzner://testijotain/'));
+  await shot('path-edit');
+  // type another location and press Enter — parsePath navigates
+  await page.fill('#breadcrumb input.path-edit', 'hetzner://logs-2026/');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).includes('app/'), 6000, 'navigated via path');
+  await ok('pasting a Source://bucket/ path navigates', (await txt('#breadcrumb')).includes('logs-2026'));
+});
+
+await step('sidebar-resize', async () => {
+  const w0 = await evalPage(() => document.getElementById('sidebar').getBoundingClientRect().width);
+  await evalPage(() => {
+    const split = document.getElementById('side-split');
+    split.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 380 }));
+    window.dispatchEvent(new MouseEvent('mouseup'));
+  });
+  await sleep(80);
+  const w1 = await evalPage(() => document.getElementById('sidebar').getBoundingClientRect().width);
+  await ok('splitter drag resizes the sidebar', Math.round(w1) === 380);
+  await ok('width persisted', evalPage(() => localStorage.getItem('s3b-sidebar-w') === '380'));
+  await shot('sidebar-resized');
+  // double-click resets to the default
+  await evalPage(() => document.getElementById('side-split').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+  await sleep(60);
+  const w2 = await evalPage(() => document.getElementById('sidebar').getBoundingClientRect().width);
+  await ok('double-click resets the width', evalPage(() => localStorage.getItem('s3b-sidebar-w') === null) && Math.abs(w2 - w0) < 2);
+});
+
+await step('os-copy-mirror', async () => {
+  // Ctrl+C on remote rows also mirrors to the OS clipboard: files are
+  // staged into a temp dir, then handed to Explorer as file paths
+  await clickTree('backup-box');
+  await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'remote listing');
+  await resetCalls();
+  await clickRow('backup.sh');
+  await page.keyboard.press('Control+c');
+  await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'staging transfer');
+  const c = await findCall('TransferCross');
+  await ok('copy stages through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[0][0].key === '/backup.sh');
+  await ok('staging lands in the clipboard dir', c && c.args[2].kind === 'local' && /s3b-clip/.test(c.args[2].dir || ''));
+  await ok('staging uses the overwrite policy', c && c.args[3] === 'overwrite');
+  // let the idle poll see an empty queue, then the OS clipboard is set.
+  // earlier steps' stale staging polls write their own entries when the
+  // queue clears — wait for OUR staged path specifically.
+  await evalPage(() => { window.__shim.world.transfers = []; });
+  await waitFor(async () => (await calls()).some((x) => x.m === 'OsClipboardSetFiles'
+    && (x.args[0] || []).some((p) => /backup\.sh$/.test(p))), 8000, 'backup.sh handed to the OS clipboard');
+  await ok('staged file handed to the OS clipboard', true);
+});
+
+await step('os-clipboard-paste', async () => {
+  // fresh page (empty app clipboard): Ctrl+V falls back to the OS
+  // clipboard — paths copied in Explorer upload into the open bucket
+  const p3 = await context.newPage();
+  p3.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await p3.addInitScript(shim);
+  await p3.goto(BASE);
+  await p3.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await p3.evaluate(() => { window.__shim.world.osClip = ['C:\\Users\\demo\\Downloads\\photos.zip']; });
+  await p3.evaluate(() => Array.from(document.querySelectorAll('#tree .tnode'))
+    .find((n) => n.querySelector('.tlabel')?.textContent === 'testijotain')?.click());
+  await p3.waitForFunction(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .some((r) => r._model && r._model.key === 'readme.md'), null, { timeout: 8000 });
+  await p3.evaluate(() => { window.__shim.calls.length = 0; });
+  await p3.keyboard.press('Control+v');
+  await p3.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'Upload'), null, { timeout: 6000 });
+  const c = await p3.evaluate(() => window.__shim.calls.filter((x) => x.m === 'Upload').at(-1));
+  await ok('Explorer-copied paths paste into a bucket', c && c.args[1] === 'testijotain' && /photos\.zip$/.test(c.args[0][0]));
+  const sawOs = await p3.evaluate(() => window.__shim.calls.some((x) => x.m === 'OsClipboardFiles'));
+  await ok('OS clipboard read through the binding', sawOs);
+  await p3.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-os-paste.png') });
+  await p3.close();
+});
+
+await step('drag-urls', async () => {
+  // selecting files precomputes drag-out URLs (OS drag needs synchronous
+  // data in dragstart)
+  await navObjectsOf('hetzner', 'testijotain');
+  await resetCalls();
+  await clickRow('readme.md');
+  await waitFor(async () => (await findCall('MakeDragUrls')) !== null, 4000, 'drag urls');
+  const c = await findCall('MakeDragUrls');
+  await ok('selection precomputes drag-out URLs', c && c.args[0][0].bucket === 'testijotain'
+    && c.args[0][0].key === 'readme.md' && c.args[0][0].name === 'readme.md');
+  await ok('drag items tag the originating source', c && c.args[0][0].source === 'hetzner');
+});
+
+// ===================== full-feature coverage (slice 7) =====================
+await step('toolbar-nav', async () => {
+  // back/forward/up through BOTH the toolbar buttons and the Alt-key
+  // shortcuts, plus F5 — the canonical file-manager navigation set
+  await navObjectsOf('hetzner', 'testijotain');
+  await dblClickRow('docs');
+  await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 6000, 'inside docs');
+  await ok('Back enabled after navigating', evalPage(() => !document.getElementById('btn-back').disabled));
+  await page.click('#btn-back');
+  await waitFor(async () => !(await txt('#breadcrumb')).includes('docs'), 6000, 'back to bucket root');
+  await ok('Back button returns', true);
+  await ok('Forward enabled after going back', evalPage(() => !document.getElementById('btn-forward').disabled));
+  await page.keyboard.press('Alt+ArrowRight');
+  await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 6000, 'Alt+Right forward');
+  await ok('Alt+Right goes forward', true);
+  await page.keyboard.press('Alt+ArrowUp');
+  await waitFor(async () => !(await txt('#breadcrumb')).includes('docs'), 6000, 'Alt+Up parent');
+  await ok('Alt+Up climbs to the parent', true);
+  await resetCalls();
+  await page.keyboard.press('F5');
+  await waitFor(async () => (await findCall('ListObjectsStream')) !== null, 4000, 'F5 ListObjectsStream');
+  await ok('F5 refreshes the current view', true);
+});
+
+await step('crumb-click', async () => {
+  // clicking a breadcrumb segment navigates straight to it
+  await navObjectsOf('hetzner', 'testijotain');
+  await dblClickRow('docs');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'docs rows');
+  // one level deeper so the docs crumb is not the current location
+  await dblClickRow('legacy');
+  await waitFor(async () => (await rowKeys()).includes('docs/legacy/old.txt'), 6000, 'legacy objects');
+  const crumb = await elOrNull(() => Array.from(document.querySelectorAll('#breadcrumb .crumb'))
+    .find((c) => c.textContent === 'docs') || null);
+  await ok('docs crumb rendered', !!crumb);
+  if (crumb) await crumb.asElement().click();
+  await waitFor(async () => !(await txt('#breadcrumb')).includes('legacy'), 6000, 'crumb nav');
+  await ok('crumb click navigates to that folder', (await txt('#breadcrumb')).includes('docs'));
+  // the source root crumb goes back to the buckets view
+  const root = await elOrNull(() => Array.from(document.querySelectorAll('#breadcrumb .crumb'))
+    .find((c) => /hetzner/.test(c.textContent)) || null);
+  await ok('source crumb rendered', !!root);
+  if (root) await root.asElement().click();
+  await waitFor(async () => (await rowKeys()).includes('logs-2026'), 6000, 'buckets via crumb');
+  await ok('source crumb returns to the buckets view', true);
+});
+
+await step('favorites', async () => {
+  // star a bucket from its context menu, jump in from the sidebar, unstar
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view');
+  await ok('favorites hidden while empty', evalPage(() => document.getElementById('fav-section').classList.contains('hidden')));
+  await openCtx('testijotain');
+  await ctxItem(/add to favorites/i);
+  await waitFor(async () => !!(await elOrNull(() => document.querySelector('#favorites .fav-row') || null)), 4000, 'fav row');
+  await ok('favorite appears in the sidebar', evalPage(() => document.querySelector('#favorites .fav-label')?.textContent === 'testijotain'));
+  await ok('favorite persisted', (await evalPage(() => localStorage.getItem('s3b-favs'))).includes('testijotain'));
+  await shot('favorites');
+  await resetCalls();
+  await page.click('#favorites .fav-row');
+  await waitFor(async () => (await txt('#breadcrumb')).includes('testijotain')
+    && (await rowKeys()).some((k) => k === 'readme.md'), 6000, 'fav navigation');
+  await ok('clicking a favorite opens the bucket', true);
+  // remove again — the section hides
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view again');
+  await openCtx('testijotain');
+  await ctxItem(/remove from favorites/i);
+  await ok('unstar hides the section', waitFor(async () => evalPage(() => document.getElementById('fav-section').classList.contains('hidden')), 4000, 'fav hidden'));
+  await ok('favorites emptied', (await evalPage(() => localStorage.getItem('s3b-favs'))) === '[]');
+});
+
+await step('theme-toggle', async () => {
+  const before = await evalPage(() => document.documentElement.dataset.theme);
+  await page.click('#btn-theme');
+  const after = await evalPage(() => document.documentElement.dataset.theme);
+  await ok('toolbar toggles the theme', before !== after);
+  await ok('choice persisted', (await evalPage(() => localStorage.getItem('s3b-theme'))) === after);
+  await shot(`theme-${after}`);
+  await page.click('#btn-theme');
+  await ok('second click restores', evalPage((b) => document.documentElement.dataset.theme === b, before));
+});
+
+await step('auto-refresh', async () => {
+  // View → Auto refresh → interval; the status bar mirrors it and the
+  // timer actually re-lists the open view. Retire the transfers-step job
+  // first — a visible jobs badge blocks background refreshes BY DESIGN,
+  // and it only re-evaluates on the next transfer:update.
+  await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'done' }));
+  await waitFor(async () => evalPage(() => document.getElementById('status-jobs').classList.contains('hidden')), 4000, 'jobs badge retired');
+  await page.bringToFront();
+  await navObjectsOf('hetzner', 'testijotain');
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  const ar = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /auto.?refresh/i.test(i.textContent)) || null);
+  await ok('View menu has Auto refresh', !!ar);
+  if (ar) {
+    await ar.asElement().hover();
+    await sleep(120);
+    const s5 = await elOrNull(() => Array.from(document.querySelectorAll('.mb-dd.sub:not(.hidden) .mb-item'))
+      .find((i) => /^5\s*s$/i.test(i.textContent.trim())) || null);
+    await ok('interval submenu offers 5 s', !!s5);
+    if (s5) await s5.asElement().click();
+  }
+  await ok('status bar mirrors the interval', waitFor(async () => /5s/.test(await txt('#status-auto')), 4000, 'status-auto 5s'));
+  await resetCalls();
+  await waitFor(async () => (await findCall('ListObjectsStream')) !== null, 9000, 'auto tick');
+  await ok('auto refresh re-lists the view', true);
+  // Off cleans the indicator up
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  const ar2 = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /auto.?refresh/i.test(i.textContent)) || null);
+  if (ar2) {
+    await ar2.asElement().hover();
+    await sleep(120);
+    const off = await elOrNull(() => Array.from(document.querySelectorAll('.mb-dd.sub:not(.hidden) .mb-item'))
+      .find((i) => /off/i.test(i.textContent)) || null);
+    await ok('Off entry offered', !!off);
+    if (off) await off.asElement().click();
+  }
+  await ok('Off hides the indicator', waitFor(async () => evalPage(() => document.getElementById('status-auto').classList.contains('hidden')), 4000, 'status-auto off'));
+});
+
+await step('marquee-select', async () => {
+  // rubber-band starting in the empty area below the rows, dragged up
+  await navObjectsOf('hetzner', 'testijotain');
+  const keys = await rowKeys();
+  const geo = await evalPage(() => {
+    const r = document.getElementById('grid-body').getBoundingClientRect();
+    return { x: r.left + r.width / 2, top: r.top, bottom: r.bottom };
+  });
+  const startY = geo.top + keys.length * 28 + 8;
+  if (startY < geo.bottom - 4) {
+    await page.mouse.move(geo.x, startY);
+    await page.mouse.down();
+    await page.mouse.move(geo.x, startY - 70, { steps: 4 });
+    await page.mouse.up();
+    // selected summary reads "N of TOTAL items selected" — the unselected
+    // status only carries the total, so anchor on "of … selected"
+    await ok('marquee rubber-band selects a band', waitFor(async () => /[2-9] of \d+ items/.test(await txt('#status-selection')), 4000, 'selection count'));
+    await shot('marquee');
+    await page.keyboard.press('Escape');
+    await ok('Escape clears the selection', waitFor(async () => !/ of /.test(await txt('#status-selection')), 4000, 'cleared'));
+  } else {
+    await ok('marquee rubber-band selects a band (no empty area — skipped)', true);
+  }
+});
+
+await step('editors-manager', async () => {
+  // files open in the external editor show in the status bar; clicking
+  // the indicator opens the manager
+  await evalPage(() => window.dispatchEvent(new Event('focus')));
+  await waitFor(async () => evalPage(() => !document.getElementById('status-editing').classList.contains('hidden')), 4000, 'editing indicator');
+  await ok('status bar lists files in editor', /editor/.test(await txt('#status-editing')));
+  await page.click('#status-editing');
+  await waitFor(modalVisible, 4000, 'editing modal');
+  await ok('manager lists the open file', waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('notes.md'), 4000, 'file row'));
+  await shot('editors');
+  await closeModal();
+});
+
+await step('download-selection', async () => {
+  // Ctrl+D (and the toolbar button) download through DownloadRefs after
+  // a destination folder pick
+  await navObjectsOf('hetzner', 'testijotain');
+  await clickRow('readme.md');
+  await resetCalls();
+  await page.keyboard.press('Control+d');
+  await waitFor(async () => (await findCall('DownloadRefs')) !== null, 4000, 'DownloadRefs');
+  const c = await findCall('DownloadRefs');
+  await ok('Ctrl+D downloads through DownloadRefs', c && c.args[0] === 'testijotain'
+    && c.args[1]?.[0]?.key === 'readme.md' && /Downloads$/.test(c.args[2] || ''));
+  await shot('download');
+});
+
+await step('shortcut-keys', async () => {
+  // Ctrl+F focuses the filter box
+  await page.keyboard.press('Control+f');
+  await ok('Ctrl+F focuses the filter', evalPage(() => document.activeElement?.id === 'filter'));
+  await evalPage(() => document.activeElement?.blur());
+  // Ctrl+U runs the single upload flow
+  await resetCalls();
+  await page.keyboard.press('Control+u');
+  await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'Ctrl+U upload');
+  const up = await findCall('Upload');
+  await ok('Ctrl+U uploads through one dialog', up && up.args[1] === 'testijotain');
+  // F9 toggles the dual pane (normalize to closed first — earlier steps
+  // leave the pane open)
+  if (!(await evalPage(() => document.getElementById('local-pane').classList.contains('hidden')))) {
+    await page.keyboard.press('F9');
+    await sleep(120);
+  }
+  await page.keyboard.press('F9');
+  await ok('F9 opens the side pane', waitFor(async () => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane open'));
+  await page.keyboard.press('F9');
+  await ok('F9 closes it again', waitFor(async () => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed'));
 });
 
 await step('layout-audit', async () => {

@@ -1,7 +1,7 @@
 // Navigation history + selection/clipboard/view state.
-// Locations: {kind:'buckets'} | {kind:'objects', bucket, prefix}
-//          | {kind:'srcroot', source}          — non-default S3 source root
-//          | {kind:'remote', source, path}     — sftp/scp/ftp/ftps/local
+// Locations: {kind:'buckets', source}                    — buckets of one S3 source
+//          | {kind:'objects', source, bucket, prefix}    — objects of one S3 source
+//          | {kind:'remote', source, path}               — sftp/scp/ftp/ftps/webdav/local
 
 export const nav = {
   stack: [],       // back stack
@@ -48,21 +48,21 @@ export const nav = {
 
 // Parent of a location; null when already at top.
 export function parentOf(loc) {
-  if (loc.kind === 'buckets' || loc.kind === 'srcroot') return null;
+  if (loc.kind === 'buckets') return null;
   if (loc.kind === 'remote') {
     if (!loc.path || loc.path === '' || loc.path === '/') return null;
     const p = loc.path.replace(/\/+$/, '');
     const i = p.lastIndexOf('/');
     return { kind: 'remote', source: loc.source, path: i >= 0 ? p.slice(0, i + 1) : '' };
   }
-  if (!loc.prefix || loc.prefix === '') return { kind: 'buckets' };
+  if (!loc.prefix || loc.prefix === '') return { kind: 'buckets', source: loc.source };
   const p = loc.prefix.replace(/\/+$/, '');
   const i = p.lastIndexOf('/');
-  return { kind: 'objects', bucket: loc.bucket, prefix: i >= 0 ? p.slice(0, i + 1) : '' };
+  return { kind: 'objects', source: loc.source, bucket: loc.bucket, prefix: i >= 0 ? p.slice(0, i + 1) : '' };
 }
 
 // Clipboard for the cross-source matrix. kind records the ORIGIN so paste
-// can build the right TransferCross payload: 's3' (default-profile bucket),
+// can build the right TransferCross payload: 's3' (a named S3 source),
 // 'remote' (a named remote source) or 'local' (local-pane paths). dir is the
 // origin directory (same-dir paste is a no-op and gets refused).
 export const clipboard = {

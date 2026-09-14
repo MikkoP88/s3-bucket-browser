@@ -55,6 +55,12 @@ type App struct {
 
 	streamMu sync.Mutex
 	streams  map[string]context.CancelFunc // running listing streams
+
+	viewMu     sync.Mutex
+	viewSource string // the S3 source the main view is browsing ("" = none)
+
+	pendingMu    sync.Mutex
+	pendingCreds map[string]pendingCred // import-candidate stash (secrets stay Go-side)
 }
 
 // New creates the service. version is shown in the About dialog / status bar.
@@ -112,14 +118,20 @@ func (a *App) quickCtx() (context.Context, context.CancelFunc) {
 }
 
 // client resolves (and caches) an S3 client. An empty name selects the
-// default s3 source. Sources come from the workspace only — the open
-// Profile file, else the session registry (strict sources model: the GUI
-// never resolves from the CLI's profile store). The cache is dropped
-// whenever sources change. Locking: pfMu is only ever taken OUTSIDE a.mu,
-// so the source snapshot is resolved before locking.
+// source the main view is currently browsing (SetViewSource — every S3
+// feature works on any source), falling back to the legacy implicit
+// default/single-s3 resolution for older callers. Sources come from the
+// workspace only — the open Profile file, else the session registry
+// (strict sources model: the GUI never resolves from the CLI's profile
+// store). The cache is dropped whenever sources change. Locking: pfMu is
+// only ever taken OUTSIDE a.mu, so the source snapshot is resolved before
+// locking.
 func (a *App) client(name string) (*s3client.Client, error) {
 	if a.ctx == nil {
 		return nil, errNoContext
+	}
+	if name == "" {
+		name = a.currentViewSource()
 	}
 	cSrc, haveSrc := a.containerS3Source(name)
 	if !haveSrc {
@@ -147,6 +159,37 @@ func (a *App) client(name string) (*s3client.Client, error) {
 	}
 	a.clients[""] = c // remember last default resolution
 	return c, nil
+}
+
+// currentViewSource returns the S3 source name the main view set last.
+func (a *App) currentViewSource() string {
+	a.viewMu.Lock()
+	defer a.viewMu.Unlock()
+	return a.viewSource
+}
+
+// SetViewSource names the S3 source whose buckets/objects the main view is
+// browsing. Every engine-native API called without an explicit source
+// (list/stat/rename/delete/admin/…) resolves to it, which is how all S3
+// features work on any source with no "default" concept. An empty name
+// clears the context. Unknown names return an error so the frontend notices
+// stale navigation state instead of silently browsing the wrong endpoint.
+func (a *App) SetViewSource(idOrName string) error {
+	if idOrName == "" {
+		a.viewMu.Lock()
+		a.viewSource = ""
+		a.viewMu.Unlock()
+		return nil
+	}
+	// IDs and names both accepted; store the canonical NAME (client cache
+	// and every "" resolution key on it).
+	if src, err := a.sourceByIDOrName(idOrName); err == nil && src.Type == profile.TypeS3 {
+		a.viewMu.Lock()
+		a.viewSource = src.Name
+		a.viewMu.Unlock()
+		return nil
+	}
+	return fmt.Errorf("%w: S3 data source %q", profile.ErrNotFound, idOrName)
 }
 
 // invalidateClients drops cached clients after a profile mutation. Remote
