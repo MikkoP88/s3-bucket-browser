@@ -84,24 +84,6 @@ func (a *App) bucketsOf(c *s3client.Client) ([]BucketView, error) {
 	return out, nil
 }
 
-// ListObjects returns one Explorer-style folder view of bucket/prefix:
-// sub-folders first, then objects, sorted by name.
-func (a *App) ListObjects(bucket, prefix string) ([]listing.Entry, error) {
-	c, err := a.client("")
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
-	entries, err := listing.List(ctx, c.S3, bucket, dirPrefix(prefix), listing.Options{})
-	if err != nil {
-		// Routine listings are user-visible in the UI itself (and would flood
-		// the log drawer once auto-refresh ticks); log failures only.
-		a.emitLogSrc(LogError, "list", bucket, fmt.Sprintf("listing %s failed: %v", dirPrefix(prefix), err))
-	}
-	return entries, err
-}
-
 // dirPrefix normalizes a prefix into folder form ("photos" -> "photos/").
 func dirPrefix(p string) string {
 	p = strings.TrimPrefix(p, "/")
@@ -114,17 +96,6 @@ func dirPrefix(p string) string {
 // joinKeyNoSlash joins key parts without a trailing slash.
 func joinKeyNoSlash(parts ...string) string {
 	return strings.TrimSuffix(transfer.JoinKey(parts...), "/")
-}
-
-// FolderUsage aggregates count + size under a prefix (folder Properties).
-func (a *App) FolderUsage(bucket, prefix string) (listing.Usage, error) {
-	c, err := a.client("")
-	if err != nil {
-		return listing.Usage{}, err
-	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
-	return listing.Du(ctx, c.S3, bucket, dirPrefix(prefix))
 }
 
 // ObjectStat is the Properties dialog payload.
@@ -414,24 +385,6 @@ func (a *App) RunDoctorCheck(bucket, name string) (*doctor.CheckResult, error) {
 		a.emitLogSrc(LogError, "doctor", bucket, fmt.Sprintf("check %s failed: %s", name, res.Detail))
 	}
 	return &res, nil
-}
-
-// BucketVersioning reports whether a bucket has versioning enabled (used by the
-// object grid's version badge; full version browsing is M4).
-func (a *App) BucketVersioning(bucket string) (string, error) {
-	c, err := a.client("")
-	if err != nil {
-		return "", err
-	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
-	out, err := c.S3.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
-		Bucket: aws.String(bucket),
-	})
-	if err != nil {
-		return "", err
-	}
-	return string(out.Status), nil
 }
 
 // BucketGuard is the cheap per-view guard state of a bucket: versioning

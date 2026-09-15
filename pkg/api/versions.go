@@ -82,27 +82,6 @@ func (a *App) DeleteVersionPermanent(bucket, key, versionID string) error {
 	return nil
 }
 
-// DeleteObjectPermanently destroys every version of one key (L3: the GUI
-// gates this behind a typed "permanent" confirmation, Shift+Del).
-func (a *App) DeleteObjectPermanently(bucket, key string) (transfer.DeleteResult, error) {
-	c, err := a.client("")
-	if err != nil {
-		return transfer.DeleteResult{}, err
-	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
-	res, err := versioning.DeleteAllVersions(ctx, c.S3, bucket, key)
-	if err != nil {
-		a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("permanently deleting all versions of %s failed: %v", key, err))
-	} else {
-		a.emitLogSrc(LogWarn, "versions", bucket, fmt.Sprintf("permanently deleted %d version(s) of %s", res.Deleted, key))
-	}
-	if res.Deleted > 0 {
-		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
-	}
-	return res, err
-}
-
 // PurgePreview counts what a purge would remove (count-then-act).
 // mode: "noncurrent" | "markers" | "all".
 func (a *App) PurgePreview(bucket, prefix, mode string) (int, error) {
@@ -196,16 +175,6 @@ func (a *App) PrefixVersionStats(bucket, prefix string) (versioning.Stats, error
 	return a.prefixVersionStatsC(c, bucket, prefix)
 }
 
-// SourcePrefixVersionStats is PrefixVersionStats pinned to one named S3
-// source.
-func (a *App) SourcePrefixVersionStats(idOrName, bucket, prefix string) (versioning.Stats, error) {
-	c, err := a.s3ClientFor(idOrName)
-	if err != nil {
-		return versioning.Stats{}, err
-	}
-	return a.prefixVersionStatsC(c, bucket, prefix)
-}
-
 func (a *App) prefixVersionStatsC(c *s3client.Client, bucket, prefix string) (versioning.Stats, error) {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
@@ -229,15 +198,6 @@ type MarkerList struct {
 // browsing.
 func (a *App) PrefixMarkers(bucket, prefix string, exactKey bool) (MarkerList, error) {
 	c, err := a.client("")
-	if err != nil {
-		return MarkerList{}, err
-	}
-	return a.prefixMarkersC(c, bucket, prefix, exactKey)
-}
-
-// SourcePrefixMarkers is PrefixMarkers pinned to one named S3 source.
-func (a *App) SourcePrefixMarkers(idOrName, bucket, prefix string, exactKey bool) (MarkerList, error) {
-	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return MarkerList{}, err
 	}
