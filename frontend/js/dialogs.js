@@ -38,6 +38,7 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
     buttons.map((b) => el('button', {
       class: `btn ${b.class || ''}`,
       text: b.label,
+      disabled: !!b.disabled,
       onclick: () => b.onclick ? b.onclick(close) : close(null),
     })),
   );
@@ -60,7 +61,8 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
   // initial focus: first form control, else first button
   const firstCtl = box.querySelector('input, select, textarea') || box.querySelector('.modal-foot .btn');
   firstCtl?.focus?.();
-  return { close, body: box.querySelector('.modal-body') };
+  // btns exposes the footer buttons (some dialogs toggle them live)
+  return { close, body: box.querySelector('.modal-body'), btns: [...foot.children] };
 }
 
 // ---------- confirmations (safety ladder) ----------
@@ -111,38 +113,215 @@ export function versionChoiceDialog({ move = false, defaultOn = true } = {}) {
   });
 }
 
-// deleteChoiceDialog asks how to delete from a VERSIONED bucket: the safe
-// marker path (default — objects stay restorable in version history) or the
-// permanent one (L3 — destroys every version and delete marker). Resolves
-// 'marker' | 'permanent' | null (canceled). Non-versioned buckets never
-// reach this dialog.
-export function deleteChoiceDialog({ desc = '' } = {}) {
+// deleteWindow is the unified Delete window every source opens (one
+// "Delete…" entry everywhere). It shows exactly what will be removed
+// (objects, folders, bytes), lists the source's delete types when it
+// supports more than one (versioned S3: marker / keep-current /
+// permanent) and holds the typed-"delete" confirm partition — enabled
+// via Settings, always forced for the destructive (L3) modes, greyed
+// out otherwise. Resolves null (canceled) or the chosen mode id
+// ('' for single-type sources).
+export function deleteWindow({ target, summary, modes = [], mode = '', typedOn = false }) {
   let settled = false;
   return new Promise((resolve) => {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
-    const mk = el('input', { type: 'radio', name: 'delmode', value: 'marker' });
-    const pm = el('input', { type: 'radio', name: 'delmode', value: 'permanent' });
-    mk.checked = true;
-    openModal({
-      title: t('del.title'),
-      body: el('div', {},
-        desc ? el('div', { text: desc }) : null,
-        el('label', { class: 'vcv-row' }, mk, ` ${t('del.marker')}`),
-        el('div', { class: 'set-hint', text: t('del.markerHint') }),
-        el('label', { class: 'vcv-row' }, pm, ` ${t('del.perm')}`),
-        el('div', { class: 'set-hint', text: t('del.permHint') }),
+    const isL3 = (m) => m === 'permanent' || m === 'keepcurrent';
+    let cur = modes.some((m) => m.id === mode) ? mode : (modes[0]?.id || '');
+
+    // summary: objects/files, folders, bytes, selected items
+    const s = summary || {};
+    const nObjects = s.objects ?? s.files ?? s.count ?? 0;
+    const sumBox = el('div', { class: 'delw-sum' },
+      el('div', { class: 'delw-target', text: target }),
+      el('div', { class: 'delw-stats' },
+        el('span', { text: t('delw.objects', { n: nObjects }) }),
+        (s.folders || 0) > 0 ? el('span', { text: t('delw.folders', { n: s.folders }) }) : null,
+        s.bytes > 0 ? el('span', { text: fmtBytes(s.bytes) }) : null,
+        s.items > 0 && s.items !== nObjects ? el('span', { text: t('delw.items', { n: s.items }) }) : null,
       ),
+    );
+
+    // delete-type radios (only when the source offers several)
+    const modeBox = el('div', { class: 'delw-modes' });
+    if (modes.length > 1) {
+      modeBox.appendChild(el('div', { class: 'set-hint delw-modelbl', text: t('delw.modes') }));
+      for (const m of modes) {
+        const r = el('input', { type: 'radio', name: 'delmode', value: m.id });
+        r.checked = m.id === cur;
+        r.addEventListener('change', () => { cur = m.id; sync(); });
+        modeBox.appendChild(el('div', { class: 'delw-mode' },
+          el('label', { class: 'vcv-row' }, r, ` ${t(m.label)}`),
+          el('div', { class: 'set-hint', text: t(m.hint) }),
+        ));
+      }
+    }
+
+    // mode-dependent warning line
+    const warnBox = el('div', { class: 'delw-warn' });
+
+    // typed-"delete" partition: rendered always; active when the Settings
+    // toggle is on or the picked mode is L3; greyed out otherwise.
+    const input = el('input', { class: 'input', autocomplete: 'off', spellcheck: 'false' });
+    const confirmBox = el('div', { class: 'delw-confirm' },
+      el('label', { class: 'field', text: t('delw.typeToConfirm') }),
+      input,
+    );
+    input.addEventListener('input', sync);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !delBtn.disabled) { done(cur); m.close(); }
+    });
+
+    const m = openModal({
+      title: t('delw.title'),
+      body: el('div', { class: 'delw' }, sumBox, modeBox, warnBox, confirmBox),
       buttons: [
         { label: 'Cancel', onclick: (c) => { done(null); c(); } },
-        {
-          label: t('del.go'),
-          class: 'danger',
-          onclick: (c) => { done(pm.checked ? 'permanent' : 'marker'); c(); },
-        },
+        { label: t('delw.go'), class: 'danger', onclick: (c) => { if (!delBtn.disabled) { done(cur); c(); } } },
       ],
       onClose: () => done(null),
     });
+    const delBtn = m.btns[1];
+
+    function sync() {
+      const active = typedOn || isL3(cur);
+      confirmBox.classList.toggle('off', !active);
+      input.disabled = !active;
+      input.placeholder = active ? '' : t('delw.typeOff');
+      delBtn.disabled = active && input.value.trim() !== 'delete';
+      delBtn.textContent = isL3(cur) ? t('delw.goL3') : t('delw.go');
+      warnBox.textContent = modes.length > 1 || isL3(cur)
+        ? t(cur === 'permanent' ? 'delw.permWarn' : cur === 'keepcurrent' ? 'delw.keepWarn' : 'delw.markerNote')
+        : t('delw.noHistory');
+    }
+    sync();
+    if (!input.disabled) input.focus();
   });
+}
+
+// dirVersionsDialog is the Directory Versions window: structured version
+// information for one folder — totals (current objects, noncurrent
+// versions, delete markers, noncurrent bytes) plus per-child aggregates
+// (versions / markers / live state). Two bounded ListObjectVersions
+// passes (stats + immediate children); the old object-timeline dialog
+// paginated the whole subtree for one exact key and hung on "Loading…"
+// for minutes — folders get this window instead.
+export function dirVersionsDialog(bucket, prefix, onChanged) {
+  const stats = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: t('loading') });
+  const kids = el('div', { class: 'ver-list' });
+  const stat = (label, v) => el('span', { class: 'dirv-stat' },
+    el('span', { class: 'dirv-lbl', text: label }),
+    el('span', { class: 'dirv-val', text: String(v) }));
+
+  async function draw() {
+    stats.style.color = 'var(--text-dim)';
+    stats.textContent = t('loading');
+    kids.replaceChildren();
+    try {
+      const [st, ch] = await Promise.all([
+        api.PrefixVersionStats(bucket, prefix),
+        api.PrefixVersionSummary(bucket, prefix),
+      ]);
+      stats.replaceChildren(el('div', { class: 'dirv-stats' },
+        stat(t('dirv.current'), st.currentObjects),
+        stat(t('dirv.noncurrent'), st.noncurrent),
+        stat(t('dirv.markers'), st.deleteMarkers),
+        stat(t('dirv.totalVersions'), st.versions),
+        stat(t('dirv.noncurrentBytes'), fmtBytes(st.noncurrentBytes || 0)),
+      ));
+      kids.replaceChildren(...(ch.length
+        ? ch.map((c) => el('div', { class: `ver-row${c.allDeleted ? ' ghost' : ''}` },
+            el('span', { class: 'ver-icon', text: c.isDir ? '\u{1F4C2}' : (c.allDeleted ? '\u26D4' : '\u25CF') }),
+            el('span', { class: 'ver-main' },
+              el('div', { text: `${c.name}${c.isDir ? '/' : ''}` }),
+              el('div', { class: 'ver-sub', text: `${t('dirv.versions')}: ${c.versions} \u00b7 ${t('dirv.markers')}: ${c.markers}` }),
+            ),
+            c.allDeleted ? el('span', { class: 'tag', text: t('dirv.deleted') }) : null,
+          ))
+        : [el('div', { class: 'ver-sub', text: t('dirv.empty') })]));
+    } catch (err) {
+      stats.textContent = String(err);
+      stats.style.color = 'var(--danger)';
+    }
+  }
+
+  openModal({
+    title: `${t('dirv.title')} — s3://${bucket}/${prefix || ''}`,
+    body: el('div', {}, stats, kids),
+    wide: true,
+    buttons: [{ label: 'Close' }, { label: t('dirv.refresh'), class: 'primary', onclick: (c) => { draw(); } }],
+  });
+  draw();
+}
+
+// markersDialog is the Delete Marker window: every delete marker of one
+// key (exact) or under one folder prefix, newest first, each removable
+// with one click ("undo delete" — the object reappears with its previous
+// current version), plus a bulk remove for everything listed. Works for
+// files and directories alike.
+export function markersDialog(bucket, key, isDir, onChanged) {
+  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: t('loading') });
+  const list = el('div', { class: 'ver-list' });
+  let listed = [];
+
+  const undo = async (mk) => {
+    try {
+      await api.UndoDelete(bucket, mk.key, mk.versionId);
+      toast(t('markw.undone'), 'ok');
+      onChanged?.();
+      draw();
+    } catch (err) {
+      toast(`Failed: ${err}`, 'error');
+    }
+  };
+
+  const removeAll = async () => {
+    if (!listed.length) return;
+    if (!(await confirm({ title: t('markw.removeAll'), message: t('markw.removeAllConfirm', { n: listed.length }), okLabel: t('markw.removeAll'), danger: true }))) return;
+    for (const mk of listed) {
+      try { await api.UndoDelete(bucket, mk.key, mk.versionId); } catch { /* keep going */ }
+    }
+    toast(t('markw.undoneAll'), 'ok');
+    onChanged?.();
+    draw();
+  };
+
+  async function draw() {
+    status.style.color = 'var(--text-dim)';
+    status.textContent = t('loading');
+    list.replaceChildren();
+    try {
+      const res = await api.PrefixMarkers(bucket, key, !isDir);
+      listed = res.markers || [];
+      status.textContent = listed.length
+        ? t('markw.count', { n: listed.length }) + (res.truncated ? ` ${t('markw.more')}` : '')
+        : t('markw.empty');
+      const rel = isDir ? (k) => k.slice(key.length) || k : (k) => k;
+      list.replaceChildren(...listed.map((mk) => el('div', { class: 'ver-row' },
+        el('span', { class: 'ver-icon', text: '\u26D4' }),
+        el('span', { class: 'ver-main' },
+          el('div', { text: rel(mk.key) }),
+          el('div', { class: 'ver-sub', text: `${mk.lastModified ? fmtDate(asMillis(mk.lastModified)) : ''}${mk.versionId ? ` — ${mk.versionId}` : ''}${mk.isLatest ? ` — ${t('markw.latest')}` : ''}` }),
+        ),
+        el('span', { class: 'ver-actions' },
+          el('button', { class: 'btn', text: t('markw.remove'), title: t('markw.removeTip'), onclick: () => undo(mk) }),
+        ),
+      )));
+    } catch (err) {
+      status.textContent = String(err);
+      status.style.color = 'var(--danger)';
+    }
+  }
+
+  openModal({
+    title: `${t('markw.title')} — s3://${bucket}/${key}`,
+    body: el('div', {}, status, list),
+    wide: true,
+    buttons: [
+      { label: 'Close' },
+      { label: t('markw.removeAll'), class: 'danger', onclick: () => removeAll() },
+    ],
+  });
+  draw();
 }
 
 export function typedConfirm({ title, message, typeWord, okLabel = 'Delete', danger = true }) {
@@ -1200,7 +1379,7 @@ export function versionsDialog(bucket, key, onChanged) {
     if (!(await typedConfirm({
       title: 'Permanently delete version',
       message: `This destroys one version of s3://${bucket}/${key}.\nIt cannot be recovered — not even from version history.`,
-      typeWord: 'permanent',
+      typeWord: 'delete',
     }))) return;
     act(() => api.DeleteVersionPermanent(bucket, key, v.versionId), 'Version destroyed');
   };

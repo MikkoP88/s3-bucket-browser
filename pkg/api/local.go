@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 )
 
 // LocalEntry is one row of the local (dual-pane) grid.
@@ -203,6 +205,95 @@ func linuxTerminal(dir string) *exec.Cmd {
 		}
 	}
 	return nil
+}
+
+// ---------------- local delete (Delete Window, count-then-act) ----------------
+
+// LocalDeletePreview expands a local selection (files and whole directory
+// trees) and reports what a delete would remove — the local half of the
+// Delete Window's count-then-act contract. Roots are refused outright.
+func (a *App) LocalDeletePreview(paths []string) (DeletePreview, error) {
+	var p DeletePreview
+	for _, root := range paths {
+		if isFsRoot(root) {
+			return DeletePreview{}, errors.New("refusing to delete a filesystem root")
+		}
+		st, err := os.Stat(root)
+		if err != nil {
+			return DeletePreview{}, err
+		}
+		if !st.IsDir() {
+			p.Objects++
+			p.Count++
+			p.Bytes += st.Size()
+			continue
+		}
+		p.Folders++
+		err = filepath.WalkDir(root, func(sub string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil // unreadable entries are skipped, not fatal
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				p.Folders++
+			} else {
+				p.Objects++
+				p.Count++
+				p.Bytes += info.Size()
+			}
+			return nil
+		})
+		if err != nil {
+			return DeletePreview{}, err
+		}
+	}
+	p.RequiresL1 = p.Count > 0
+	p.RequiresL2 = p.Count > deleteForceThreshold
+	return p, nil
+}
+
+// LocalRemove deletes the listed local paths (files or whole directory
+// trees). Deletion is permanent — the OS trash is not involved; the GUI
+// previews with LocalDeletePreview and confirms first (typed confirmation
+// above the L2 threshold, same ladder as S3).
+func (a *App) LocalRemove(paths []string) (transfer.DeleteResult, error) {
+	var out transfer.DeleteResult
+	for _, root := range paths {
+		if isFsRoot(root) {
+			out.Errors = append(out.Errors, fmt.Sprintf("%s: refusing to delete a filesystem root", root))
+			continue
+		}
+		var err error
+		if st, serr := os.Stat(root); serr == nil && st.IsDir() {
+			err = os.RemoveAll(root)
+		} else {
+			err = os.Remove(root)
+		}
+		if err != nil {
+			out.Errors = append(out.Errors, fmt.Sprintf("%s: %v", root, err))
+			a.emitLogSrc(LogError, "delete", "local", fmt.Sprintf("deleting %s failed: %v", root, err))
+			continue
+		}
+		out.Deleted++
+	}
+	if len(out.Errors) == 0 {
+		a.emitLogSrc(LogWarn, "delete", "local", fmt.Sprintf("deleted %d item(s)", out.Deleted))
+	}
+	return out, nil
+}
+
+// isFsRoot reports whether p is a filesystem root (drive root or "/"),
+// which local deletes must never touch.
+func isFsRoot(p string) bool {
+	if p == "" || p == "/" || p == "\\" {
+		return true
+	}
+	vol := filepath.VolumeName(filepath.Clean(p))
+	rest := strings.TrimPrefix(filepath.Clean(p), vol)
+	return vol != "" && (rest == "" || rest == string(filepath.Separator))
 }
 
 // ---------------- directory compare (WinSCP-style keep in sync) ----------------

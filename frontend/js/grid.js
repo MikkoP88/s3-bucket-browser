@@ -1,6 +1,8 @@
 // Virtualized, sortable, multi-select details grid.
 // Renders only the visible slice (+overscan) so a 100k-object folder scrolls
-// at full frame rate (performance budget).
+// at full frame rate (performance budget). The column set is dynamic: the
+// catalog below lists every possible column, setColumns() picks the visible
+// ones (Settings exposes them; "name" is always visible).
 import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
 import { t } from './i18n.js';
 
@@ -18,12 +20,29 @@ function acceptedMimes(kind) {
     : ['application/x-s3b'];
 }
 
-const COLUMNS = [
-  { id: 'name', label: 'Name', flex: true },
-  { id: 'size', label: 'Size', num: true },
-  { id: 'lastModified', label: 'Date modified' },
-  { id: 'storageClass', label: 'Storage class' },
+// Column catalog — every column the details grid can show. flex columns
+// absorb the remaining width; the rest are fixed. "name" is the identity
+// column (icon + name + version/marker badges) and is always visible.
+export const COLUMNS = [
+  { id: 'name', labelKey: 'col.name', flex: true, minW: 200 },
+  { id: 'type', labelKey: 'col.type', w: 110 },
+  { id: 'size', labelKey: 'col.size', w: 110, num: true },
+  { id: 'lastModified', labelKey: 'col.date', w: 160 },
+  { id: 'storageClass', labelKey: 'col.class', w: 120 },
+  { id: 'etag', labelKey: 'col.etag', w: 190 },
 ];
+
+// DEFAULT_COLS is the out-of-box visible set (the pre-settings layout).
+export const DEFAULT_COLS = ['name', 'size', 'lastModified', 'storageClass'];
+
+// typeOf renders the Type column: "Folder" / "File" / the uppercase
+// extension ("JPG", "PDF").
+export function typeOf(r) {
+  if (r.isDir) return t('type.folder');
+  const i = String(r.name || '').lastIndexOf('.');
+  if (i > 0 && i < r.name.length - 1) return r.name.slice(i + 1).toUpperCase();
+  return t('type.file');
+}
 
 // colText returns the text a filter matches against for one column: the
 // rendered value (sizes formatted, dates localized) plus the raw bytes for
@@ -31,9 +50,11 @@ const COLUMNS = [
 function colText(r, id) {
   switch (id) {
     case 'name': return r.name || '';
+    case 'type': return typeOf(r);
     case 'size': return r.isDir ? '' : `${fmtBytes(r.size)} ${r.size || 0}`;
     case 'lastModified': return r.isDir ? '' : fmtDate(r.lastModified || r.modTime);
     case 'storageClass': return r.isDir ? '' : (r.storageClass || '');
+    case 'etag': return r.isDir ? '' : (r.etag || '');
     default: return '';
   }
 }
@@ -64,9 +85,48 @@ export class Grid {
 
     this.pool = [];
     this.accepts = null; // optional mime list override (side-pane bindings)
-    this.on = {}; // callbacks: select, activate, context, dragstart, drop
-    this.renderHead();
+    this.showMarkers = true; // delete-marker badges on (Settings toggle)
+    this.on = {}; // callbacks: select, activate, context, dragstart, drop, badgeV, badgeM
+    this.setColumns(DEFAULT_COLS);
     this.body.addEventListener('scroll', () => this.render());
+  }
+
+  // ---------- columns ----------
+
+  // visibleCols returns the currently shown columns in display order.
+  visibleCols() { return this.cols; }
+
+  // setColumns applies a visible-column id list ("name" is forced in).
+  setColumns(ids) {
+    const want = new Set(Array.isArray(ids) ? ids : []);
+    want.add('name');
+    this.cols = COLUMNS.filter((c) => want.has(c.id));
+    if (!this.cols.some((c) => c.id === this.sortKey)) {
+      this.sortKey = 'name';
+      this.sortDir = 1;
+    }
+    // filters of now-hidden columns are dropped, not kept dormant
+    for (const c of COLUMNS) {
+      if (!want.has(c.id) && this.colFilters[c.id]) delete this.colFilters[c.id];
+    }
+    this.renderHead();
+    this.rebuildPool();
+    this.apply();
+  }
+
+  // gridTemplate is the CSS grid-template-columns for head + rows.
+  gridTemplate() {
+    return `34px ${this.cols.map((c) => (c.flex ? `minmax(${c.minW}px,3fr)` : `${c.w}px`)).join(' ')}`;
+  }
+
+  // nameCellIdx is the child index of the name cell within pooled rows.
+  nameCellIdx() { return 1 + this.cols.findIndex((c) => c.id === 'name'); }
+
+  // rebuildPool drops every pooled row (their cell layout is baked in) and
+  // lets render() recreate them against the current columns.
+  rebuildPool() {
+    this.canvas.replaceChildren();
+    this.pool = [];
   }
 
   // ---------- setup ----------
@@ -82,23 +142,25 @@ export class Grid {
       else this.selectAll();
     });
     this.headCb = cb;
+    this.head.style.gridTemplateColumns = this.gridTemplate();
     this.head.replaceChildren(
       el('div', { class: 'gh check' }, cb),
-      ...COLUMNS.map((c) => {
+      ...this.cols.map((c) => {
         const ind = el('span', { class: 'sort-ind' });
         if (this.sortKey === c.id) ind.textContent = this.sortDir > 0 ? '\u25B2' : '\u25BC';
         const active = this.colFilters[c.id];
+        const label = t(c.labelKey);
         const funnel = el('button', {
           class: `gh-filter${active ? ' on' : ''}`,
-          title: active ? `${c.label}: ${active} (Esc clears)` : `Filter by ${c.label.toLowerCase()}`,
-          'aria-label': `Filter by ${c.label}`,
+          title: active ? `${label}: ${active} (Esc clears)` : `${t('col.filterBy')} ${label.toLowerCase()}`,
+          'aria-label': `${t('col.filterBy')} ${label}`,
           onclick: (e) => { e.stopPropagation(); this.editColumnFilter(c.id, funnel); },
         });
         funnel.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 2h14l-5.5 6.2V14l-3-1.6V8.2Z" fill="currentColor"/></svg>';
         return el('div', {
           class: `gh${c.num ? ' num' : ''}`,
           onclick: () => this.cycleSort(c.id),
-        }, el('span', { text: c.label }), ind, funnel);
+        }, el('span', { text: label }), ind, funnel);
       }),
     );
   }
@@ -168,16 +230,16 @@ export class Grid {
 
   // hasFilters: any global or per-column filter active.
   hasFilters() {
-    return !!this.filter || COLUMNS.some((c) => this.colFilters[c.id]);
+    return !!this.filter || this.cols.some((c) => this.colFilters[c.id]);
   }
 
   apply() {
     let rows = this.all;
-    // the navbar filter is global — a hit in ANY column keeps the row;
-    // per-column funnels stack on top, each matching its own column
+    // the navbar filter is global — a hit in ANY visible column keeps the
+    // row; per-column funnels stack on top, each matching its own column
     const q = (this.filter || '').toLowerCase();
-    if (q) rows = rows.filter((r) => COLUMNS.some((c) => colText(r, c.id).toLowerCase().includes(q)));
-    for (const c of COLUMNS) {
+    if (q) rows = rows.filter((r) => this.cols.some((c) => colText(r, c.id).toLowerCase().includes(q)));
+    for (const c of this.cols) {
       const f = this.colFilters[c.id];
       if (f) {
         const cq = f.toLowerCase();
@@ -214,22 +276,18 @@ export class Grid {
     this.render();
   }
 
-  // setMarkers decorates rows with delete-marker badges from a
-  // PrefixVersionSummary pass (versioned buckets only): map keys
-  // `${isDir?'d':'f'}:${name}` → {markers, versions, allDeleted}. Files show
-  // a marker count when their history has markers; folders aggregate the
-  // state beneath them ("all deleted" when nothing live remains). null
-  // clears the badges.
+  // setMarkers decorates rows from a PrefixVersionSummary pass (versioned
+  // buckets only): map keys `${isDir?'d':'f'}:${name}` → ChildSummary
+  // {versions, markers, allDeleted}. The version badge (⟲ n) shows the
+  // row's version count; the marker badge (⛔ n) its delete-marker count —
+  // directories aggregate everything beneath them. All-deleted folders are
+  // dimmed like ghost rows. null clears the decorations.
   setMarkers(map) {
     for (const r of this.all) {
       const s = map ? (map.get(`${r.isDir ? 'd' : 'f'}:${r.name}`) || null) : null;
-      if (s && s.markers > 0) {
-        r.vmark = s.allDeleted && r.isDir ? `\u26D4 ${t('del.all')}` : `\u26D4 ${s.markers}`;
-        r.vmarkTip = `${s.allDeleted && r.isDir ? `${t('del.all')} — ` : ''}${t('del.tip', { v: s.versions, m: s.markers })}`;
-      } else {
-        r.vmark = '';
-        r.vmarkTip = '';
-      }
+      r.vcount = s ? s.versions : 0;
+      r.mcount = s ? s.markers : 0;
+      r.dimmed = !!(s && s.allDeleted && r.isDir);
     }
     this.render();
   }
@@ -246,6 +304,27 @@ export class Grid {
   }
 
   // ---------- rendering ----------
+
+  // makeRow builds one pooled row against the current columns.
+  makeRow() {
+    const row = el('div', { class: 'grid-row', draggable: 'true', role: 'option' });
+    row.style.gridTemplateColumns = this.gridTemplate();
+    row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox' })));
+    for (const c of this.cols) {
+      if (c.id === 'name') {
+        row.appendChild(el('div', { class: 'gc name' },
+          el('span', { class: 'icon' }),
+          el('span', { class: 'tname' }),
+          el('span', { class: 'vbadge', role: 'button' }),
+          el('span', { class: 'mbadge', role: 'button' })));
+      } else {
+        row.appendChild(el('div', { class: `gc${c.num ? ' num' : ''} ${c.id}` }));
+      }
+    }
+    this.wireRow(row);
+    return row;
+  }
+
   render(force = false) {
     const total = this.rows.length;
     this.canvas.style.height = `${total * ROW_H}px`;
@@ -257,14 +336,7 @@ export class Grid {
     // recycle pool
     const need = Math.max(0, last - first + 1);
     while (this.pool.length < need) {
-      const row = el('div', { class: 'grid-row', draggable: 'true', role: 'option' });
-      row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox' })));
-      const nameCell = el('div', { class: 'gc name' }, el('span', { class: 'icon' }), el('span', { class: 'tname' }), el('span', { class: 'vmark' }));
-      row.appendChild(nameCell);
-      row.appendChild(el('div', { class: 'gc num size' }));
-      row.appendChild(el('div', { class: 'gc lastModified' }));
-      row.appendChild(el('div', { class: 'gc storageClass' }));
-      this.wireRow(row);
+      const row = this.makeRow();
       this.canvas.appendChild(row); // pool rows live in the canvas; recycled via display/top
       this.pool.push(row);
     }
@@ -278,20 +350,43 @@ export class Grid {
       row._model = m;
       row.classList.toggle('sel', this.sel.has(m.key));
       row.classList.toggle('focus', m.key === this.focusKey);
+      row.classList.toggle('ghost', !!(m.ghost || m.dimmed));
       row.setAttribute('aria-selected', this.sel.has(m.key) ? 'true' : 'false');
       row.dataset.cmp = m.cmp || '';
       const cells = row.children;
       const cb = cells[0].children[0];
       cb.checked = this.sel.has(m.key);
       cb.setAttribute('aria-label', `Select ${m.name}`);
-      cells[1].children[0].textContent = fileIcon(m.name, m.isDir);
-      cells[1].children[1].textContent = m.name;
-      const vm = cells[1].children[2];
-      vm.textContent = m.vmark || '';
-      vm.title = m.vmarkTip || '';
-      cells[2].textContent = m.isDir ? '' : fmtBytes(m.size);
-      cells[3].textContent = m.isDir ? '' : fmtDate(m.lastModified || m.modTime);
-      cells[4].textContent = m.isDir ? '' : (m.storageClass || '');
+      for (let ci = 0; ci < this.cols.length; ci++) {
+        const cell = cells[1 + ci];
+        const c = this.cols[ci];
+        if (c.id === 'name') {
+          cell.children[0].textContent = fileIcon(m.name, m.isDir);
+          cell.children[1].textContent = m.name;
+          // version badge: count + tooltip (counts only); click opens the
+          // Versions window (file) / Directory Versions window (folder)
+          const vb = cell.children[2];
+          vb.textContent = m.vcount ? `\u27F2 ${m.vcount}` : '';
+          vb.title = m.vcount ? t('ver.count', { n: m.vcount }) : '';
+          // marker badge: count + tooltip (counts only); click opens the
+          // Delete Marker window
+          const mb = cell.children[3];
+          const showM = this.showMarkers !== false;
+          mb.textContent = showM && m.mcount ? `\u26D4 ${m.mcount}` : '';
+          mb.title = showM && m.mcount ? t('mark.count', { n: m.mcount }) : '';
+        } else if (c.id === 'type') {
+          cell.textContent = typeOf(m);
+        } else if (c.id === 'etag') {
+          cell.textContent = m.isDir ? '' : (m.etag || '');
+          cell.title = cell.textContent;
+        } else if (c.id === 'size') {
+          cell.textContent = m.isDir ? '' : fmtBytes(m.size);
+        } else if (c.id === 'lastModified') {
+          cell.textContent = m.isDir ? '' : fmtDate(m.lastModified || m.modTime);
+        } else if (c.id === 'storageClass') {
+          cell.textContent = m.isDir ? '' : (m.storageClass || '');
+        }
+      }
     }
     // header checkbox reflects the full selection state
     if (this.headCb) {
@@ -318,6 +413,20 @@ export class Grid {
       this.render();
       this.on.select?.(this.selectedRows());
     });
+    // badges (inside the name cell): clicks open the Versions / Delete
+    // Marker windows without disturbing the row selection.
+    const nc = row.children[this.nameCellIdx()];
+    const vb = nc.children[2];
+    const mb = nc.children[3];
+    for (const [badge, cb2] of [[vb, 'badgeV'], [mb, 'badgeM']]) {
+      badge.addEventListener('mousedown', (e) => e.stopPropagation());
+      badge.addEventListener('dblclick', (e) => e.stopPropagation());
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const m = row._model;
+        if (m) this.on[cb2]?.(m);
+      });
+    }
     row.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       const m = row._model;
