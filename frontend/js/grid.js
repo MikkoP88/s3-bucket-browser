@@ -37,7 +37,7 @@ export const DEFAULT_COLS = ['name', 'size', 'lastModified', 'storageClass'];
 
 // typeOf renders the Type column: "Folder" / "File" / the uppercase
 // extension ("JPG", "PDF").
-export function typeOf(r) {
+function typeOf(r) {
   if (r.isDir) return t('type.folder');
   const i = String(r.name || '').lastIndexOf('.');
   if (i > 0 && i < r.name.length - 1) return r.name.slice(i + 1).toUpperCase();
