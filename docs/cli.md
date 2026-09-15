@@ -1444,7 +1444,11 @@ Copy files (local↔S3, S3→S3 server-side)
 ### Synopsis
 
 Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy),
-plus NAME:// source URIs (any saved non-S3 source) on either side.
+plus NAME:// source URIs on either side — any saved data source, S3 sources too:
+NAME://bucket/key for account-wide S3 sources, NAME://key for per-bucket ones.
+Both sides on the same S3 source copy server-side; anything else streams.
+--versions (S3→S3) recreates the source's version timeline at the destination,
+delete markers included; mv --versions then purges the sources (L3, --force gates).
 SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.
 
 ```
@@ -1455,10 +1459,12 @@ s3b cp SRC DST [flags]
 
 ```
       --dry-run                show what would transfer, do nothing
+      --force                  with mv --versions: allow purging more than 50 source versions
       --no-clobber             skip uploads when the object already exists
   -r, --recursive              copy everything under a prefix/directory
       --sse string             server-side encryption (AES256)
       --storage-class string   storage class (STANDARD, GLACIER, ...)
+      --versions               recreate the full version timeline (both sides must be S3; destination must be versioned)
 
 ```
 
@@ -1915,7 +1921,11 @@ Move files (copy, then delete sources on success)
 ### Synopsis
 
 Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy),
-plus NAME:// source URIs (any saved non-S3 source) on either side.
+plus NAME:// source URIs on either side — any saved data source, S3 sources too:
+NAME://bucket/key for account-wide S3 sources, NAME://key for per-bucket ones.
+Both sides on the same S3 source copy server-side; anything else streams.
+--versions (S3→S3) recreates the source's version timeline at the destination,
+delete markers included; mv --versions then purges the sources (L3, --force gates).
 SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.
 
 ```
@@ -1926,10 +1936,12 @@ s3b mv SRC DST [flags]
 
 ```
       --dry-run                show what would transfer, do nothing
+      --force                  with mv --versions: allow purging more than 50 source versions
       --no-clobber             skip uploads when the object already exists
   -r, --recursive              copy everything under a prefix/directory
       --sse string             server-side encryption (AES256)
       --storage-class string   storage class (STANDARD, GLACIER, ...)
+      --versions               recreate the full version timeline (both sides must be S3; destination must be versioned)
 
 ```
 

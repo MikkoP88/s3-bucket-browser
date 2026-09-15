@@ -185,9 +185,9 @@ function shim() {
   localStorage.setItem('s3b-conflict', 'overwrite');
   localStorage.setItem('s3b-theme', 'light');
   localStorage.setItem('s3b-lang', 'en');
-  // auto refresh ships ON by default now; the walk needs a quiet app (the
-  // auto-refresh step re-enables it explicitly and asserts the ticks)
-  localStorage.setItem('s3b-autorefresh', '0');
+  // NOTE: s3b-autorefresh is deliberately NOT set — auto refresh is off by
+  // default; the boot path with no stored key is exactly what the walk
+  // asserts (and the auto-refresh step re-enables it explicitly).
 
   const now = Date.now();
   const daysAgo = (d) => new Date(now - d * 86400000).toISOString();
@@ -295,6 +295,19 @@ function shim() {
       'logs-2026': { versioning: 'Suspended', lockEnabled: false, lockMode: '', lockDays: 0 },
       singleton: { versioning: 'Enabled', lockEnabled: false, lockMode: '', lockDays: 0 },
     },
+    // PrefixVersionSummary fixture: delete-marker aggregates per folder view.
+    // readme.md has a marker in its history; docs/ aggregates markers under
+    // it; docs/legacy/ is entirely delete-marked ("all deleted").
+    versionKids: {
+      'testijotain/': [
+        { name: 'docs', isDir: true, versions: 6, markers: 2, allDeleted: false },
+        { name: 'readme.md', isDir: false, versions: 4, markers: 1, allDeleted: false },
+      ],
+      'testijotain/docs/': [
+        { name: 'legacy', isDir: true, versions: 1, markers: 1, allDeleted: true },
+        { name: 'notes.md', isDir: false, versions: 2, markers: 0, allDeleted: false },
+      ],
+    },
     pfState: { open: false, name: '', path: '', dirty: false, sourceCount: EMPTY ? 0 : 4 },
     transfers: [
       { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
@@ -304,6 +317,13 @@ function shim() {
     // CheckConflicts fixture — empty means a clean destination; the
     // conflict-view step seeds real collisions before uploading
     conflicts: [],
+    // file-log prefs: what the Settings dialog reads/writes. levels/scopes
+    // gate ONLY the log file — the in-app drawer filters client-side and
+    // never consults these.
+    logSettings: {
+      mode: 'default', dir: '', levels: [], scopes: [],
+      allScopes: ['admin', 'app', 'copy', 'delete', 'doctor', 'download', 'import', 'list', 'mkdir', 'profile', 'rename', 'settings', 'share', 'sources', 'transfer', 'upload', 'versions'],
+    },
     versions: [
       { versionId: '', isLatest: true, isDeleteMarker: false, size: 1234, storageClass: 'STANDARD', etag: '"v3"', lastModified: daysAgo(1) },
       { versionId: 'ver-0002', isLatest: false, isDeleteMarker: false, size: 1100, storageClass: 'STANDARD', etag: '"v2"', lastModified: daysAgo(8) },
@@ -489,7 +509,12 @@ function shim() {
     GetBucketAdmin: () => JSON.parse(JSON.stringify(world.admin)),
     BucketVersionStats: () => ({ currentObjects: 7, versions: 12, deleteMarkers: 2, noncurrent: 5, noncurrentBytes: 1048576 }),
     CompareAny: (x, y) => JSON.parse(JSON.stringify(world.compareRows)),
-    PreviewDelete: (bucket, keys) => ({ requiresL2: false, objects: keys.length, bytes: 1234 }),
+    PreviewDelete: (bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
+    DeleteSelection: (_bucket, keys, _l2) => ({ deleted: keys.length, errors: [] }),
+    DeleteSelectionPermanent: (_bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
+    // delete-marker badges (versioned folders): per-immediate-child
+    // aggregates keyed `${bucket}/${prefix}` — mirrors PrefixVersionSummary
+    PrefixVersionSummary: (bucket, prefix) => JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || [])),
     RemoteDeletePreview: () => ({ n: 1 }),
     PresignObject: (bucket, key) => `https://${bucket}.s3.visual.shim/${key}?X-Amz-Signature=visual`,
     StatObject: (bucket, key) => (key.endsWith('/')
@@ -498,7 +523,13 @@ function shim() {
     StatBucket: (bucket) => ({ name: bucket, region: 'eu-central', objects: 7, bytes: 224975891, createdAt: daysAgo(220) }),
     RemoteStat: (source, key) => ({ key, isDir: false, size: 4096, lastModified: daysAgo(3) }),
     CopySelection: (src, keys, dst, prefix, move) => ({ copied: keys.length, errors: [] }),
+    CopySelectionVersions: (srcS, srcB, keys, dstS, dstB, prefix, move) => 'vcopy-1',
     EditingFiles: () => [{ bucket: 'testijotain', key: 'docs/notes.md' }],
+    GetLogSettings: () => JSON.parse(JSON.stringify(world.logSettings)),
+    SetLogSettings: (mode, dir, levels, scopes) => {
+      world.logSettings = { ...world.logSettings, mode, dir, levels: levels || [], scopes: scopes || [] };
+      return JSON.parse(JSON.stringify(world.logSettings));
+    },
     DeepSearch: (bucket, prefix) => {
       const t = token();
       emit('search:page', {
@@ -525,10 +556,12 @@ function shim() {
       : { key, size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD' }),
     SourcePreviewDelete: (_src, _bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
     SourceDeleteSelection: (_src, _bucket, keys) => ({ deleted: keys.length, errors: [] }),
+    SourceDeleteSelectionPermanent: (_src, _bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
+    SourcePrefixVersionSummary: (_src, bucket, prefix) => JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || [])),
     SourceRenameObject: () => ({}),
     SourceCreateFolder: () => ({}),
     // ---- OS interop ----
-    PickUploadItems: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
+    PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
     OsClipboardFiles: () => JSON.parse(JSON.stringify(world.osClip || [])),
     OsClipboardSetFiles: (paths) => { world.osClip = paths; return {}; },
     StageClipboardDir: () => 'C:\\Users\\demo\\AppData\\Local\\Temp\\s3b-clip-1',
@@ -660,6 +693,19 @@ async function closeModal() {
 async function modalVisible() {
   return evalPage(() => !document.getElementById('modal-root').classList.contains('hidden'));
 }
+// The per-task version-choice dialog (S3→S3 onto a versioned destination):
+// wait for it, set the preserve checkbox to `preserve`, click the primary
+// Copy/Move button.
+async function vcvChoose(preserve) {
+  await waitFor(modalVisible, 4000, 'version choice dialog');
+  await evalPage((p) => {
+    const chk = document.querySelector('#modal-root .vcv-row input');
+    if (!chk) throw new Error('version dialog: no .vcv-row input');
+    if (chk.checked !== p) chk.click();
+  }, preserve);
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await sleep(120);
+}
 // Layout-artifact audit for whatever is currently on screen: page must not
 // scroll horizontally, an open modal must sit fully inside the viewport,
 // dialog action buttons must not clip their labels, and a tab strip's tabs
@@ -731,6 +777,17 @@ await step('boot', async () => {
   await ok('buckets listed', waitFor(async () => (await rowKeys()).length >= 4, 6000, 'buckets'));
   await ok('tree shows all sources', evalPage(() => ['hetzner', 'backup-box', 'dav-claims']
     .every((n) => Array.from(document.querySelectorAll('#tree .tlabel')).some((l) => l.textContent === n))));
+  // source rows render the hand-drawn SVG glyph set (license-free) and the
+  // three source types here (s3, sftp, webdav) are visually distinct
+  await ok('source rows carry distinct SVG glyphs', evalPage(() => {
+    const glyph = (name) => {
+      const row = Array.from(document.querySelectorAll('#tree .tnode'))
+        .find((r) => r.querySelector('.tlabel')?.textContent === name);
+      return row?.querySelector('.ticon svg')?.innerHTML || '';
+    };
+    const s3 = glyph('hetzner'), sftp = glyph('backup-box'), dav = glyph('dav-claims');
+    return !!s3 && !!sftp && !!dav && s3 !== sftp && sftp !== dav && s3 !== dav;
+  }));
   await shot('boot-buckets');
 });
 
@@ -900,7 +957,7 @@ await step('tree-bucket-scoped-source', async () => {
   await rightClick(h);
   await sleep(80);
   const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item')).map((i) => i.textContent).join(' | '));
-  await ok('bucket-scoped menu has bucket-grade items', /upload here/i.test(items) && /admin panel/i.test(items) && /delete bucket/i.test(items) && /paste here/i.test(items));
+  await ok('bucket-scoped menu has bucket-grade items', /upload/i.test(items) && /files/i.test(items) && /folder/i.test(items) && /admin panel/i.test(items) && /delete bucket/i.test(items) && /paste here/i.test(items));
   await ok('bucket-scoped menu keeps source management', /edit source/i.test(items) && /reconnect/i.test(items) && /remove source/i.test(items));
   await ok('bucket-scoped menu can reach the buckets view', /open buckets view/i.test(items));
   await shot('tree-bucket-scoped');
@@ -1033,22 +1090,62 @@ await step('settings-dialog', async () => {
     await shot('settings-dark');
     await darkSel.asElement().selectOption('light');
   }
+  // new rows: the edit open-with toggle, the file-log multi-select filters,
+  // and Reset to defaults (presence only — clicking it would wipe the run)
+  await ok('edit open-with toggle offered', evalPage(() => Array.from(document.querySelectorAll('#modal-root .set-row'))
+    .some((r) => /ask which app/i.test(r.textContent))));
+  await ok('file-log multi-select filters present', evalPage(() => document.querySelectorAll('#modal-root .ms-btn').length >= 2));
+  await ok('reset-to-defaults offered', evalPage(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .some((b) => /reset to defaults/i.test(b.textContent))));
+  await shot('settings-new-rows');
+  // ticking a level in the file-log filter persists via SetLogSettings;
+  // the current mode rides along unchanged (file-only filters)
+  await resetCalls();
+  await evalPage(() => document.querySelector('#modal-root .ms-btn').click());
+  await sleep(60);
+  await evalPage(() => {
+    const pop = document.querySelector('#modal-root .ms-pop:not(.hidden)');
+    const opt = Array.from(pop.querySelectorAll('.ms-opt')).find((l) => /^warn/.test(l.textContent.trim()));
+    opt.querySelector('input').click();
+  });
+  await waitFor(async () => (await findCall('SetLogSettings')) !== null, 4000, 'SetLogSettings on level tick');
+  const ls = await findCall('SetLogSettings');
+  await ok('level selection rides on SetLogSettings (file log only)', ls
+    && ls.args[0] === 'default' && Array.isArray(ls.args[2]) && ls.args[2].includes('warn')
+    && Array.isArray(ls.args[3]) && ls.args[3].length === 0);
   await closeModal();
   await ok('modal closed', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
 });
 
 await step('upload', async () => {
-  // the ONE upload command: a single OS dialog picking files AND folders
+  // the Upload menu: one header, Files (Ctrl+U) and Folder leaves — the
+  // restored v1.0.0 pair of native pickers feeding the same Upload pipe
   await navObjects('testijotain');
   await resetCalls();
   await page.click('#btn-upload');
+  await ok('upload menu: Upload header over Files and Folder leaves', evalPage(() => {
+    const items = Array.from(document.querySelectorAll('#ctxmenu .item'));
+    const label = (i) => items[i]?.textContent || '';
+    return items.length >= 3 && /Upload/.test(label(0)) && /Files/.test(label(1))
+      && /Folder/.test(label(2)) && items[1].classList.contains('sub');
+  }));
+  await shot('upload-menu');
+  await page.locator('#ctxmenu .item', { hasText: 'Files' }).click();
   await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'upload');
   const c = await findCall('Upload');
-  await ok('single dialog uploads files and folders', c && c.args[1] === 'testijotain'
+  await ok('Files leaf uploads the picked paths', c && c.args[1] === 'testijotain'
     && c.args[0].length === 2 && /invoice\.pdf$/.test(c.args[0][0]) && /photos$/.test(c.args[0][1]));
-  await ok('PickUploadItems backed the dialog', (await findCall('PickUploadItems')) !== null);
+  await ok('PickUploadFiles backed the dialog', (await findCall('PickUploadFiles')) !== null);
   await ok('no context menu', evalPage(() => document.getElementById('ctxmenu').classList.contains('hidden')));
   await shot('upload');
+  // Folder leaf: the directory picker feeds the same Upload call
+  await resetCalls();
+  await page.click('#btn-upload');
+  await page.locator('#ctxmenu .item', { hasText: 'Folder' }).click();
+  await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'folder upload');
+  const c2 = await findCall('Upload');
+  await ok('Folder leaf uploads the picked directory', c2 && c2.args[0].length === 1
+    && /Downloads$/.test(c2.args[0][0]) && c2.args[1] === 'testijotain');
 });
 
 await step('conflict-view', async () => {
@@ -1067,6 +1164,7 @@ await step('conflict-view', async () => {
   await navObjects('testijotain');
   await resetCalls();
   await page.click('#btn-upload');
+  await page.locator('#ctxmenu .item', { hasText: 'Files' }).click();
   await waitFor(modalVisible, 4000, 'conflict modal');
   await ok('per-file conflict dialog opens', evalPage(() => !!document.querySelector('#modal-root .modal.cf-modal')));
   await ok('title counts the collisions', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('2 file(s)'));
@@ -1108,6 +1206,7 @@ await step('conflict-view', async () => {
   await evalPage(() => { window.__shim.world.conflicts = []; });
   await resetCalls();
   await page.click('#btn-upload');
+  await page.locator('#ctxmenu .item', { hasText: 'Files' }).click();
   await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'upload without dialog');
   await ok('no dialog when nothing collides', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
   const c2 = await findCall('Upload');
@@ -1383,14 +1482,110 @@ await step('prompts-and-delete-gates', async () => {
     return i && i.value === 'new-folder';
   }));
   await closeModal();
-  // Delete gate: counts first, acts second — cancel
+  // Delete gate on a VERSIONED bucket: the mode choice comes first
+  // (marker default) — cancel out of it
   await clickRow('readme.md');
   await page.keyboard.press('Delete');
-  await waitFor(modalVisible, 4000, 'delete confirm');
-  await ok('delete confirm shows object count', (await evalPage(() => document.getElementById('modal-root').textContent)).length > 10);
-  await ok('delete layout clean', (await layoutAudit()).ok);
-  await shot('delete-confirm');
+  await waitFor(modalVisible, 4000, 'delete choice dialog');
+  await ok('delete choice shows both modes', (await evalPage(() => document.getElementById('modal-root').textContent)).length > 10);
+  await ok('delete choice layout clean', (await layoutAudit()).ok);
   await closeModal();
+});
+
+await step('delete-choice-marker', async () => {
+  await navObjects('testijotain');
+  await clickRow('readme.md');
+  await page.keyboard.press('Delete');
+  await waitFor(modalVisible, 4000, 'delete choice dialog');
+  await ok('choice offers marker + permanent', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .vcv-row'));
+    return rows.length === 2 && /marker/i.test(rows[0].textContent) && /permanent/i.test(rows[1].textContent);
+  }));
+  await ok('marker is the default', evalPage(() => {
+    const mk = document.querySelectorAll('#modal-root .vcv-row input')[0];
+    return mk && mk.checked && mk.value === 'marker';
+  }));
+  await shot('delete-choice');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  // marker path: the confirm explains restorability (versioned bucket)
+  await waitFor(async () => (await txt('#modal-root')).includes('restored'), 4000, 'marker confirm');
+  await ok('marker confirm layout clean', (await layoutAudit()).ok);
+  await shot('delete-marker-confirm');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('DeleteSelection')) !== null, 4000, 'DeleteSelection (marker)');
+  const c = await findCall('DeleteSelection');
+  await ok('DeleteSelection got the key', c && JSON.stringify(c.args[1]).includes('readme.md'));
+  await ok('marker path stayed marker', (await findCall('DeleteSelectionPermanent')) === null
+    && (await findCall('SourceDeleteSelectionPermanent')) === null);
+});
+
+await step('delete-choice-permanent', async () => {
+  // same dialog, permanent branch: typed 'permanent' gate, then the
+  // count-then-act backend with force=true
+  await clickRow('budget-2026.xlsx');
+  await page.keyboard.press('Delete');
+  await waitFor(modalVisible, 4000, 'delete choice dialog');
+  await evalPage(() => {
+    const pm = Array.from(document.querySelectorAll('#modal-root .vcv-row input')).find((i) => i.value === 'permanent');
+    pm.click();
+  });
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await txt('#modal-root')).includes('to confirm'), 4000, 'typed permanent confirm');
+  // wrong word: the gate must not close
+  await evalPage(() => { document.querySelector('#modal-root input').value = 'nope'; });
+  await evalPage(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((b) => /delete/i.test(b.textContent)).click());
+  await sleep(120);
+  await ok('wrong word keeps the dialog open', await modalVisible());
+  await evalPage(() => { const i = document.querySelector('#modal-root input'); i.value = ''; i.focus(); });
+  await page.keyboard.type('permanent');
+  await evalPage(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((b) => /delete/i.test(b.textContent)).click());
+  // the view may be source-pinned: the plain and Source-pinned backends are
+  // equivalent here — accept whichever fired
+  await waitFor(async () => (await findCall('DeleteSelectionPermanent')) !== null
+    || (await findCall('SourceDeleteSelectionPermanent')) !== null, 4000, 'DeleteSelectionPermanent');
+  const c = (await findCall('DeleteSelectionPermanent')) || (await findCall('SourceDeleteSelectionPermanent'));
+  await ok('permanent sent force + the key', c && c.args[c.args.length - 1] === true && JSON.stringify(c.args).includes('budget-2026.xlsx'));
+});
+
+await step('shift-del-permanent-directory', async () => {
+  // Shift+Del skips the choice: straight to the typed gate. A DIRECTORY
+  // key must reach the backend intact — purge-everything semantics, not
+  // the old per-key folder-marker-only delete.
+  await clickRow('photos');
+  await page.keyboard.press('Shift+Delete');
+  await waitFor(async () => (await txt('#modal-root')).includes('to confirm'), 4000, 'shift+del typed confirm');
+  await page.keyboard.type('permanent');
+  await evalPage(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((b) => /delete/i.test(b.textContent)).click());
+  await waitFor(async () => (await findCall('DeleteSelectionPermanent')) !== null
+    || (await findCall('SourceDeleteSelectionPermanent')) !== null, 4000, 'Shift+Del permanent');
+  const c = (await findCall('DeleteSelectionPermanent')) || (await findCall('SourceDeleteSelectionPermanent'));
+  await ok('directory key routed to the purge backend', c && JSON.stringify(c.args).includes('photos/'));
+});
+
+await step('marker-badges', async () => {
+  // delete-marker badges: file rows carry a marker count, folder rows the
+  // aggregate beneath them, and an all-delete-marked folder says so
+  await navObjects('testijotain');
+  await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .vmark'))
+    .some((v) => v.textContent.includes('\u26D4'))), 4000, 'marker badges rendered');
+  const badge = (label) => evalPage((l) => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === l);
+    const v = r?.querySelector('.vmark');
+    return v ? { text: v.textContent, title: v.title } : null;
+  }, label);
+  const rd = await badge('readme.md');
+  await ok('file badge shows the marker count', rd && rd.text.includes('\u26D4 1') && rd.title.includes('4'));
+  const noBadge = await badge('scan.png');
+  await ok('marker-free rows stay bare', noBadge && noBadge.text === '');
+  const docs = await badge('docs');
+  await ok('folder badge aggregates markers', docs && docs.text.includes('\u26D4 2'));
+  await dblClickRow('docs');
+  await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('legacy/')), 4000, 'docs children');
+  await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .vmark'))
+    .some((v) => v.textContent.includes('all deleted'))), 4000, 'all-deleted badge');
+  const legacy = await badge('legacy');
+  await ok('all-deleted folder badge', legacy && legacy.text.includes('all deleted') && legacy.title.includes('all deleted'));
+  await shot('marker-badges');
 });
 
 await step('transfers', async () => {
@@ -1547,6 +1742,9 @@ await step('dnd-s3-onto-folder-move', async () => {
   const from = await gridRow('readme.md');
   const to = await gridRow('docs');
   await dnd(from, to);
+  // testijotain keeps versioning → the per-task version choice appears;
+  // keep it plain (latest versions only)
+  await vcvChoose(false);
   const c = await findCall('CopySelection');
   await ok('same-bucket drop defaults to move', c && c.args[4] === true);
   await ok('targets the folder prefix', c && c.args[3] === 'docs/');
@@ -1622,6 +1820,55 @@ await step('dnd-os-file-drop', async () => {
   await ok('OS drop over grid uploads into current view', c && c.args[1] === 'testijotain' && /photos\.zip$/.test(c.args[0][0]));
 });
 
+await step('dnd-os-file-drop-tree', async () => {
+  // OS files dropped ONTO a sidebar node: the node under the cursor decides
+  // the destination, never the accidentally-open main view. Bucket node →
+  // s3 dest carrying the node's source; non-S3 source root → remote root.
+  const overTreeNode = async (label) => {
+    const r = await treeRow(label);
+    if (!r) throw new Error(`no tree node "${label}"`);
+    const box = await r.asElement().boundingBox();
+    await page.evaluate(({ x, y }) => {
+      window.__shim.emit('wails:file-drop', { x, y, paths: ['C:\\Users\\demo\\Downloads\\photos.zip'] });
+    }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+  };
+  await resetCalls();
+  await overTreeNode('testijotain');
+  await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'bucket-node drop');
+  let c = await findCall('TransferCross');
+  await ok('drop on bucket node uploads to that bucket root', c
+    && c.args[2].bucket === 'testijotain' && c.args[2].dir === '' && /photos\.zip$/.test(c.args[1][0]));
+  await ok('bucket node carries its source', c && c.args[2].source === 'hetzner');
+  await resetCalls();
+  await overTreeNode('dav-claims');
+  await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'remote-source-node drop');
+  c = await findCall('TransferCross');
+  await ok('drop on non-S3 source node goes to its root', c
+    && c.args[2].kind === 'remote' && c.args[2].source === 'dav-claims' && c.args[2].dir === '/');
+});
+
+await step('edit-choose-app', async () => {
+  // Settings → Editing (default ON): Edit routes through the OS
+  // "Open with…" chooser — EditObject(bucket, key, chooseApp)
+  await navObjects('testijotain');
+  await resetCalls();
+  await openCtx('readme.md');
+  await ctxItem(/^edit$/i);
+  await waitFor(async () => (await findCall('EditObject')) !== null, 4000, 'EditObject (chooser on)');
+  let c = await findCall('EditObject');
+  await ok('Edit asks for the OS app by default (chooseApp=true)', c
+    && c.args[1] === 'readme.md' && c.args[2] === true);
+  // the Settings toggle turns the chooser off → default app next time
+  await evalPage(() => localStorage.setItem('s3b-edit-choose-app', '0'));
+  await resetCalls();
+  await openCtx('readme.md');
+  await ctxItem(/^edit$/i);
+  await waitFor(async () => (await findCall('EditObject')) !== null, 4000, 'EditObject (chooser off)');
+  c = await findCall('EditObject');
+  await ok('setting off edits with the default app (chooseApp=false)', c && c.args[2] === false);
+  await evalPage(() => localStorage.setItem('s3b-edit-choose-app', '1'));
+});
+
 await step('paste-parity', async () => {
   // copy S3 → paste in another bucket
   await resetCalls();
@@ -1646,6 +1893,7 @@ await step('paste-parity', async () => {
   await clickTree('testijotain');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back to testijotain');
   await page.keyboard.press('Control+v');
+  await vcvChoose(false); // testijotain is versioned — decline the history copy
   await sleep(200);
   c = await findCall('CopySelection');
   await ok('Ctrl+X/V moves', c && c.args[4] === true && c.args[2] === 'testijotain');
@@ -1661,6 +1909,50 @@ await step('paste-parity', async () => {
   await sleep(200);
   c = await findCall('TransferCross');
   await ok('remote paste routes through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[2].bucket === 'testijotain');
+});
+
+await step('copy-versions-choice', async () => {
+  // Per-task version preservation on S3→S3: asked ONLY when the
+  // destination bucket has versioning enabled; the checkbox pre-sets
+  // from the Settings toggle (default on).
+  // (a) Suspended destination → straight plain copy, no dialog at all
+  await navObjects('testijotain');
+  await resetCalls();
+  let from = await gridRow('readme.md');
+  await dnd(from, await treeRow('logs-2026'));
+  await sleep(300); // let any (wrong) async guard/dialog path settle
+  let c = await findCall('CopySelection');
+  await ok('Suspended dest copies without asking', !!c && !(await modalVisible())
+    && (await calls()).every((x) => x.m !== 'CopySelectionVersions'));
+  // (b) Enabled destination → dialog with the checkbox pre-set on →
+  // versioned job with the right args
+  await clickTree('logs-2026');
+  await waitFor(async () => (await rowKeys()).includes('app/'), 6000, 'logs objects');
+  await resetCalls();
+  from = await gridRow('app');
+  await dnd(from, await treeRow('testijotain'));
+  await waitFor(modalVisible, 4000, 'version choice dialog');
+  await ok('checkbox pre-set from Settings (on)', evalPage(() => document.querySelector('#modal-root .vcv-row input')?.checked === true));
+  await shot('copy-versions-choice');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await findCall('CopySelectionVersions')) !== null, 4000, 'versioned copy started');
+  c = await findCall('CopySelectionVersions');
+  await ok('versioned job args', c && c.args[0] === '' && c.args[1] === 'logs-2026'
+    && c.args[2][0] === 'app/' && ['hetzner', ''].includes(c.args[3])
+    && c.args[4] === 'testijotain' && c.args[6] === false);
+  // (c) Settings default off → checkbox starts unchecked → falls back to
+  // the plain latest-version copy
+  await evalPage(() => localStorage.setItem('s3b-copy-versions', '0'));
+  await resetCalls();
+  from = await gridRow('app');
+  await dnd(from, await treeRow('testijotain'));
+  await waitFor(modalVisible, 4000, 'dialog again');
+  await ok('checkbox pre-set off with Settings off', evalPage(() => document.querySelector('#modal-root .vcv-row input')?.checked === false));
+  await vcvChoose(false);
+  c = await findCall('CopySelection');
+  await ok('unchecked falls back to plain copy', !!c && c.args[2] === 'testijotain'
+    && (await calls()).every((x) => x.m !== 'CopySelectionVersions'));
+  await evalPage(() => localStorage.removeItem('s3b-copy-versions'));
 });
 
 // ===================== view-source + OS interop (slice 6) =====================
@@ -1979,6 +2271,8 @@ await step('auto-refresh', async () => {
   await waitFor(async () => evalPage(() => document.getElementById('status-jobs').classList.contains('hidden')), 4000, 'jobs badge retired');
   await page.bringToFront();
   await navObjectsOf('hetzner', 'testijotain');
+  // Default is OFF: with no stored interval the indicator must stay hidden.
+  await ok('auto refresh default OFF (no indicator)', evalPage(() => document.getElementById('status-auto').classList.contains('hidden')));
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
   await sleep(80);
   const ar = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
@@ -2074,7 +2368,7 @@ await step('shortcut-keys', async () => {
   await page.keyboard.press('Control+u');
   await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'Ctrl+U upload');
   const up = await findCall('Upload');
-  await ok('Ctrl+U uploads through one dialog', up && up.args[1] === 'testijotain');
+  await ok('Ctrl+U runs the Files picker', up && up.args[1] === 'testijotain');
   // F9 toggles the dual pane (normalize to closed first — earlier steps
   // leave the pane open)
   if (!(await evalPage(() => document.getElementById('local-pane').classList.contains('hidden')))) {

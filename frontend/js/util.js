@@ -14,6 +14,47 @@ export function el(tag, attrs = {}, ...children) {
   return n;
 }
 
+// multiSel builds a compact multi-select control: a button summarizing
+// the current selection (allLabel when nothing is picked) over a popover
+// of checkboxes with an "All" toggle on top. Options are seeded up front
+// and can grow via add(v) as new values stream in. The live selection is
+// exposed as .sel (a Set — an EMPTY set means "everything", so a filter
+// pass is sel.size === 0 || sel.has(v)). Used by the log drawer filters
+// and the Settings file-log filters.
+export function multiSel(allLabel, values = [], selected = [], onChange) {
+  const sel = new Set(selected);
+  const checks = new Map();
+  const btn = el('button', { class: 'ms-btn', type: 'button' });
+  const allChk = el('input', { type: 'checkbox', checked: sel.size === 0 });
+  const pop = el('div', { class: 'ms-pop hidden' },
+    el('label', { class: 'ms-opt' }, allChk, ` ${allLabel}`));
+  const wrap = el('div', { class: 'ms' }, btn, pop);
+
+  const sync = () => {
+    allChk.checked = sel.size === 0;
+    for (const [v, chk] of checks) chk.checked = sel.has(v);
+    btn.textContent = sel.size ? [...sel].join(', ') : allLabel;
+    onChange?.();
+  };
+  btn.addEventListener('click', (e) => { e.stopPropagation(); pop.classList.toggle('hidden'); });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) pop.classList.add('hidden'); });
+  allChk.addEventListener('change', () => { if (allChk.checked) sel.clear(); sync(); });
+
+  const add = (v) => {
+    if (!v || checks.has(v)) return;
+    const chk = el('input', { type: 'checkbox', checked: sel.has(v) });
+    chk.addEventListener('change', () => {
+      if (chk.checked) sel.add(v); else sel.delete(v);
+      sync();
+    });
+    checks.set(v, chk);
+    pop.appendChild(el('label', { class: 'ms-opt' }, chk, ` ${v}`));
+  };
+  for (const v of values) add(v);
+  sync();
+  return { root: wrap, sel, add };
+}
+
 export function fmtBytes(n) {
   if (n === null || n === undefined) return '';
   if (n < 1024) return `${n} B`;
@@ -90,4 +131,31 @@ export function fileIcon(name, isDir) {
   if (['txt', 'md', 'log', 'json', 'xml', 'yaml', 'yml', 'csv', 'ini', 'conf'].includes(ext)) return '\u{1F4C4}';
   if (['exe', 'msi', 'bat', 'sh', 'ps1'].includes(ext)) return '\u{2699}';
   return '\u{1F4C5}';
+}
+
+// Source-type glyphs for the sidebar: original inline SVGs drawn for this
+// project (16×16, stroke-based, currentColor so they follow the theme).
+// No external icon set is embedded — nothing to attribute, no license to
+// carry. S3 gets the storage-bucket silhouette; sftp/scp the SSH terminal
+// prompt; ftp a folder with opposing transfer arrows; ftps the locked
+// folder; webdav(s) the globe (the s variant badged with a padlock); local
+// a disk drive; anything unknown a server stack.
+const svgWrap = (inner) => `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+const svgFolder = '<path d="M1.7 5V3.9c0-.66.54-1.2 1.2-1.2h3l1.5 1.6h5.7c.66 0 1.2.54 1.2 1.2V12c0 .66-.54 1.2-1.2 1.2H2.9c-.66 0-1.2-.54-1.2-1.2Z"/>';
+const svgLock = '<g><rect x="9.7" y="9.5" width="4.9" height="4.1" rx="0.7"/><path d="M10.9 9.5V8.4a1.25 1.25 0 0 1 2.5 0v1.1"/></g>';
+const svgShell = svgWrap('<rect x="2" y="2.7" width="12" height="10.6" rx="1.4"/><path d="m5 6.3 2.3 2-2.3 2.1"/><path d="M8.7 10.7h3"/>');
+const SRC_SVG = {
+  s3: svgWrap('<path d="M3 4.3 4.35 13c.14 1 1.64 1.8 3.65 1.8s3.51-.8 3.65-1.8L13 4.3"/><ellipse cx="8" cy="4.3" rx="5" ry="1.9"/>'),
+  sftp: svgShell,
+  scp: svgShell,
+  ftp: svgWrap(`${svgFolder}<path d="M9.6 7.1v5.3M8.3 8.4l1.3-1.3 1.3 1.3"/><path d="M12.6 12.4V7.1M11.3 11.1l1.3 1.3 1.3-1.3"/>`),
+  ftps: svgWrap(svgFolder + svgLock),
+  webdav: svgWrap('<circle cx="8" cy="8" r="5.7"/><path d="M2.3 8h11.4"/><ellipse cx="8" cy="8" rx="2.6" ry="5.7"/>'),
+  webdavs: svgWrap('<circle cx="7" cy="7.1" r="4.9"/><path d="M2.1 7.1h9.8"/><ellipse cx="7" cy="7.1" rx="2.2" ry="4.9"/>' + svgLock),
+  local: svgWrap('<rect x="2" y="4.6" width="12" height="6.8" rx="1.3"/><path d="M4.2 9.3h4.6"/><circle cx="11.9" cy="9" r="0.9"/>'),
+  other: svgWrap('<rect x="2.6" y="2.4" width="10.8" height="4.6" rx="1"/><rect x="2.6" y="9" width="10.8" height="4.6" rx="1"/><circle cx="12" cy="4.7" r="0.55"/><circle cx="12" cy="11.3" r="0.55"/>'),
+};
+
+export function srcIcon(stype) {
+  return SRC_SVG[stype] || SRC_SVG.other;
 }

@@ -6,7 +6,8 @@
 #   docker run -d -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100:upload
 #   docker run -d -p 2121:21 -p 21000-21002:21000-21002 \
 #     -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
-#     -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 fauria/vsftpd
+#     -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 \
+#     -e REVERSE_LOOKUP_ENABLE=NO fauria/vsftpd
 #   docker run -d -p 7070:80 rclone/rclone:latest \
 #     serve webdav --addr :80 --user e2e --pass e2epass /srv
 #   docker run -d -p 7071:80 rclone/rclone:latest \

@@ -47,10 +47,12 @@ func editDir(bucket string) string {
 // stays stable for two consecutive polls (editor save jitters).
 const watcherPoll = 1200 * time.Millisecond
 
-// EditObject downloads bucket/key into a temp workspace, opens it with the
-// OS default editor and keeps watching: every saved change is uploaded back
-// automatically (WinSCP-style "keep remote up to date").
-func (a *App) EditObject(bucket, key string) (EditInfo, error) {
+// EditObject downloads bucket/key into a temp workspace, opens it with
+// the OS default editor (or, chooseApp=true, the OS "Open with…" picker
+// so the user selects the editing application per file) and keeps
+// watching: every saved change is uploaded back automatically
+// (WinSCP-style "keep remote up to date").
+func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 	c, err := a.client("")
 	if err != nil {
 		return EditInfo{}, err
@@ -82,7 +84,11 @@ func (a *App) EditObject(bucket, key string) (EditInfo, error) {
 	a.editors[s.Bucket+"\x00"+s.Key] = s
 	a.editorsMu.Unlock()
 
-	if err := a.OpenLocal(local); err != nil {
+	open := a.OpenLocal
+	if chooseApp {
+		open = a.OpenLocalWith // OS "Open with…" picker
+	}
+	if err := open(local); err != nil {
 		return s.info(), fmt.Errorf("downloaded but could not open editor: %w", err)
 	}
 	go a.watchEditor(s)

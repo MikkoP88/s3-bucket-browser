@@ -98,6 +98,11 @@ type UploadOptions struct {
 	Concurrency  int
 	MaxBPS       int64 // 0 = unlimited (transfer throttle)
 	Progress     ProgressFn
+	// ContentType and Metadata are carried through by streamed versioned
+	// copies (recreated versions must look like the source object). Empty
+	// values keep the SDK defaults.
+	ContentType string
+	Metadata    map[string]string
 }
 
 // newUploader / newDownloader configure the SDK transfer manager from
@@ -200,6 +205,12 @@ func UploadReader(ctx context.Context, client *s3.Client, r io.Reader, size int6
 	}
 	if opts.SSE == "AES256" {
 		input.ServerSideEncryption = s3types.ServerSideEncryptionAes256
+	}
+	if opts.ContentType != "" {
+		input.ContentType = aws.String(opts.ContentType)
+	}
+	if len(opts.Metadata) > 0 {
+		input.Metadata = opts.Metadata
 	}
 	//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
 	_, err := uploader.Upload(ctx, input)

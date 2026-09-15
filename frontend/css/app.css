@@ -213,6 +213,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .tnode.drop-target { background: var(--accent-soft); outline: 1px dashed var(--accent); }
 .tnode .twist { width: 14px; text-align: center; color: var(--text-dim); flex: none; font-size: 9px; }
 .tnode .ticon { flex: none; width: 16px; text-align: center; }
+.tnode .ticon svg { display: inline-block; vertical-align: -2px; }
 .tnode .tlabel { overflow: hidden; text-overflow: ellipsis; }
 
 /* ================= Grid ================= */
@@ -283,6 +284,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .gc.num { justify-content: flex-end; font-variant-numeric: tabular-nums; }
 .gc .icon { flex: none; width: 16px; text-align: center; }
+/* delete-marker badge (versioned buckets): ⛔ count / ⛔ all deleted */
+.vmark { flex: none; font-size: 11px; color: var(--warn); }
 .gh.check, .gc.check { justify-content: center; padding: 0; }
 .gh.check { cursor: default; }
 .gc.check input, .gh.check input { accent-color: var(--accent); cursor: pointer; }
@@ -350,6 +353,38 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .la-msg { overflow: hidden; text-overflow: ellipsis; }
 /* Filtering is applied in JS against the line buffer (retroactive). */
 
+/* Multi-select popover control (log drawer filters + Settings file-log
+   filters): a button summarizing the selection over a checkbox popover
+   with an "All" toggle. Shared by logarea.js and settings.js. */
+.ms { position: relative; display: inline-flex; flex: none; }
+.ms-btn {
+  position: relative; font: var(--font); font-size: 11px;
+  padding: 2px 22px 2px 8px; max-width: 170px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  background: var(--panel-alt); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
+.ms-btn:hover { background: var(--hover); }
+.ms-btn::after {
+  content: ''; position: absolute; right: 7px; top: 50%;
+  width: 0; height: 0; pointer-events: none;
+  border-left: 4px solid transparent; border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-dim); transform: translateY(-2px);
+}
+.ms-pop {
+  position: absolute; top: calc(100% + 2px); left: 0; z-index: 95;
+  min-width: 120px; max-height: 220px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: var(--shadow); padding: 4px;
+}
+.ms-opt {
+  display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  padding: 3px 6px; font-size: 11.5px; color: var(--text);
+  border-radius: 4px; cursor: pointer;
+}
+.ms-opt:hover { background: var(--hover); }
+.ms-opt input { margin: 0; flex: none; }
+
 /* ================= Buttons & inputs (dialogs) ================= */
 .btn {
   font: var(--font); padding: 6px 14px; border-radius: 4px; cursor: pointer;
@@ -384,6 +419,9 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
 .ctxmenu .item:hover { background: var(--hover); }
 .ctxmenu .item.disabled { color: var(--text-dim); pointer-events: none; }
 .ctxmenu .item .kbd { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+.ctxmenu .item.hdr { font-weight: 600; cursor: default; }
+.ctxmenu .item.hdr:hover { background: none; }
+.ctxmenu .item.sub { padding-left: 26px; }
 .ctxmenu .sep { height: 1px; background: var(--border-soft); margin: 4px 6px; }
 
 /* ================= Modals ================= */
@@ -743,6 +781,13 @@ kbd {
 .set-hint { font-size: 11.5px; color: var(--text-dim); }
 .set-ctl { flex: none; width: auto; min-width: 200px; }
 .set-ctl-group { display: flex; gap: 6px; align-items: center; }
+
+/* Version-choice dialog row (S3→S3 copy: preserve the timeline?) */
+.vcv-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 6px; cursor: pointer;
+}
+.vcv-row input { margin: 0; flex: none; }
 
 /* Source status balls in the tree (ok / error / busy) */
 .sball {

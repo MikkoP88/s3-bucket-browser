@@ -41,7 +41,14 @@ func usageErr(format string, a ...any) error {
 	return exitError{exitUsage, fmt.Errorf(format, a...)}
 }
 
+// opErr marks an operation failure — unless the error already carries an
+// exit classification, which it keeps (a usage error raised deep inside a
+// copy pipeline still exits as usage).
 func opErr(err error) error {
+	var ee exitError
+	if errors.As(err, &ee) {
+		return err
+	}
 	return exitError{exitOpFail, err}
 }
 

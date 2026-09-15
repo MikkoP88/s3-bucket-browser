@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
@@ -204,6 +205,85 @@ func CollectStats(ctx context.Context, client *s3.Client, bucket, prefix string)
 	})
 	st.CurrentObjects = len(latest)
 	return st, err
+}
+
+// ChildSummary aggregates the version state of one immediate child of a
+// prefix: a file key or a common-prefix "directory". AllDeleted means no
+// live (latest, non-marker) version exists — for a file, its newest state
+// is a delete marker; for a directory, every version beneath it is marked.
+type ChildSummary struct {
+	Name       string `json:"name"`
+	IsDir      bool   `json:"isDir"`
+	Versions   int    `json:"versions"`
+	Markers    int    `json:"markers"`
+	AllDeleted bool   `json:"allDeleted"`
+}
+
+// ChildSummaries folds one ListObjectVersions pass under prefix (folder
+// form, trailing "/") into per-immediate-child aggregates — the folder
+// view's delete-marker badges. A key continuing past the prefix maps to
+// its first path segment as a directory child; the prefix's own rows are
+// skipped.
+func ChildSummaries(ctx context.Context, client *s3.Client, bucket, prefix string) ([]ChildSummary, error) {
+	type agg struct {
+		isDir, live bool
+		vers, marks int
+	}
+	kids := map[string]*agg{}
+	err := WalkVersions(ctx, client, bucket, prefix, func(v Version) error {
+		rest := strings.TrimPrefix(v.Key, prefix)
+		if rest == "" {
+			return nil // the prefix's own marker/folder rows
+		}
+		name, isDir := rest, false
+		if i := strings.Index(rest, "/"); i >= 0 {
+			name, isDir = rest[:i], true
+		}
+		k := mapKey(isDir, name)
+		a := kids[k]
+		if a == nil {
+			a = &agg{isDir: isDir}
+			kids[k] = a
+		}
+		if v.IsDeleteMarker {
+			a.marks++
+		} else {
+			a.vers++
+			if v.IsLatest {
+				a.live = true
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ChildSummary, 0, len(kids))
+	for k, a := range kids {
+		out = append(out, ChildSummary{
+			Name:       k[2:],
+			IsDir:      a.isDir,
+			Versions:   a.vers,
+			Markers:    a.marks,
+			AllDeleted: !a.live,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].IsDir != out[j].IsDir {
+			return out[i].IsDir
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out, nil
+}
+
+// mapKey namespaces child names so a file "docs" and a directory "docs/"
+// (which can coexist in S3) keep separate aggregates.
+func mapKey(isDir bool, name string) string {
+	if isDir {
+		return "d:" + name
+	}
+	return "f:" + name
 }
 
 // RestoreVersion makes an old object version current again via a server-side

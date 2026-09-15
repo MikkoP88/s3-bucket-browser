@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,9 +34,25 @@ const (
 )
 
 // LogSettings is the save-logs-to-file preference shown in Settings.
+// Levels/Scopes filter what is WRITTEN to the file (empty = everything);
+// they never affect the in-app log drawer, which filters client-side on
+// its own controls. AllScopes lists every scope the app emits (selector
+// options; read-only metadata, ignored by SetLogSettings).
 type LogSettings struct {
-	Mode string `json:"mode"` // "default" | "off" | "custom"
-	Dir  string `json:"dir"`  // the picked folder (mode == "custom")
+	Mode      string   `json:"mode"` // "default" | "off" | "custom"
+	Dir       string   `json:"dir"`  // the picked folder (mode == "custom")
+	Levels    []string `json:"levels"`
+	Scopes    []string `json:"scopes"`
+	AllScopes []string `json:"allScopes"`
+}
+
+// LogScopes lists every scope the app logs under — the Settings dialog's
+// file-log scope selector options. Keep in sync with emitLog/emitLogSrc
+// call sites.
+var LogScopes = []string{
+	"admin", "app", "copy", "delete", "doctor", "download", "import",
+	"list", "mkdir", "profile", "rename", "settings", "share",
+	"sources", "transfer", "upload", "versions",
 }
 
 // GetLogSettings returns the current log-file preference.
@@ -44,12 +61,12 @@ func (a *App) GetLogSettings() LogSettings {
 	if s.Mode == "" {
 		s.Mode = LogModeDefault
 	}
-	return LogSettings{Mode: s.Mode, Dir: s.Dir}
+	return LogSettings{Mode: s.Mode, Dir: s.Dir, Levels: s.Levels, Scopes: s.Scopes, AllScopes: LogScopes}
 }
 
 // SetLogSettings persists the log-file preference; "custom" requires a
 // non-empty dir (the dialog browses for it first).
-func (a *App) SetLogSettings(mode, dir string) (LogSettings, error) {
+func (a *App) SetLogSettings(mode, dir string, levels, scopes []string) (LogSettings, error) {
 	if mode == "" {
 		mode = LogModeDefault
 	}
@@ -63,11 +80,42 @@ func (a *App) SetLogSettings(mode, dir string) (LogSettings, error) {
 	default:
 		return a.GetLogSettings(), fmt.Errorf("unknown log mode %q", mode)
 	}
-	if err := eventlog.SaveSettings(eventlog.Settings{Mode: mode, Dir: dir}); err != nil {
+	levels = cleanLogFilter(levels, []string{LogInfo, LogWarn, LogError})
+	scopes = cleanLogFilter(scopes, LogScopes)
+	if err := eventlog.SaveSettings(eventlog.Settings{Mode: mode, Dir: dir, Levels: levels, Scopes: scopes}); err != nil {
 		return a.GetLogSettings(), err
 	}
-	a.emitLog(LogInfo, "settings", fmt.Sprintf("log file mode set to %s%s", mode, dirNote(dir)))
+	a.emitLog(LogInfo, "settings", fmt.Sprintf("log file mode set to %s%s%s", mode, dirNote(dir), filterNote(levels, scopes)))
 	return a.GetLogSettings(), nil
+}
+
+// cleanLogFilter keeps known values, trimmed, de-duplicated, first come.
+func cleanLogFilter(in, known []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] || !slices.Contains(known, v) {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+func filterNote(levels, scopes []string) string {
+	if len(levels) == 0 && len(scopes) == 0 {
+		return ""
+	}
+	lv, sc := levels, scopes
+	if len(lv) == 0 {
+		lv = []string{"all"}
+	}
+	if len(sc) == 0 {
+		sc = []string{"all"}
+	}
+	return fmt.Sprintf(" (levels: %s; scopes: %s)", strings.Join(lv, ", "), strings.Join(sc, ", "))
 }
 
 func dirNote(dir string) string {

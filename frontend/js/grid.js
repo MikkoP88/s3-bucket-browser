@@ -2,6 +2,7 @@
 // Renders only the visible slice (+overscan) so a 100k-object folder scrolls
 // at full frame rate (performance budget).
 import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
+import { t } from './i18n.js';
 
 const ROW_H = 28;
 const OVERSCAN = 8;
@@ -199,8 +200,7 @@ export class Grid {
     // prune selection to existing rows
     const live = new Set(rows.map((r) => r.key));
     for (const k of this.sel) if (!live.has(k)) this.sel.delete(k);
-    this.render(true);
-    this.on.select?.(this.selectedRows());
+    this.render(true); // force: re-emit select (selection may have been pruned)
   }
 
   selectedRows() { return this.rows.filter((r) => this.sel.has(r.key)); }
@@ -214,17 +214,35 @@ export class Grid {
     this.render();
   }
 
+  // setMarkers decorates rows with delete-marker badges from a
+  // PrefixVersionSummary pass (versioned buckets only): map keys
+  // `${isDir?'d':'f'}:${name}` → {markers, versions, allDeleted}. Files show
+  // a marker count when their history has markers; folders aggregate the
+  // state beneath them ("all deleted" when nothing live remains). null
+  // clears the badges.
+  setMarkers(map) {
+    for (const r of this.all) {
+      const s = map ? (map.get(`${r.isDir ? 'd' : 'f'}:${r.name}`) || null) : null;
+      if (s && s.markers > 0) {
+        r.vmark = s.allDeleted && r.isDir ? `\u26D4 ${t('del.all')}` : `\u26D4 ${s.markers}`;
+        r.vmarkTip = `${s.allDeleted && r.isDir ? `${t('del.all')} — ` : ''}${t('del.tip', { v: s.versions, m: s.markers })}`;
+      } else {
+        r.vmark = '';
+        r.vmarkTip = '';
+      }
+    }
+    this.render();
+  }
+
   selectAll() {
     this.sel = new Set(this.rows.map((r) => r.key));
-    this.render(true);
-    this.on.select?.(this.selectedRows());
+    this.render(true); // force: emits select once (render's own re-emit)
   }
 
   clearSelection() {
     this.sel.clear();
     this.focusKey = null;
-    this.render(true);
-    this.on.select?.([]);
+    this.render(true); // force: emits select once (render's own re-emit)
   }
 
   // ---------- rendering ----------
@@ -241,7 +259,7 @@ export class Grid {
     while (this.pool.length < need) {
       const row = el('div', { class: 'grid-row', draggable: 'true', role: 'option' });
       row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox' })));
-      const nameCell = el('div', { class: 'gc name' }, el('span', { class: 'icon' }), el('span', { class: 'tname' }));
+      const nameCell = el('div', { class: 'gc name' }, el('span', { class: 'icon' }), el('span', { class: 'tname' }), el('span', { class: 'vmark' }));
       row.appendChild(nameCell);
       row.appendChild(el('div', { class: 'gc num size' }));
       row.appendChild(el('div', { class: 'gc lastModified' }));
@@ -268,6 +286,9 @@ export class Grid {
       cb.setAttribute('aria-label', `Select ${m.name}`);
       cells[1].children[0].textContent = fileIcon(m.name, m.isDir);
       cells[1].children[1].textContent = m.name;
+      const vm = cells[1].children[2];
+      vm.textContent = m.vmark || '';
+      vm.title = m.vmarkTip || '';
       cells[2].textContent = m.isDir ? '' : fmtBytes(m.size);
       cells[3].textContent = m.isDir ? '' : fmtDate(m.lastModified || m.modTime);
       cells[4].textContent = m.isDir ? '' : (m.storageClass || '');
