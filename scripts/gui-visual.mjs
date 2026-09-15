@@ -1125,10 +1125,28 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /always use the delete window/i.test(x))
       && rows.some((x) => /require typing/i.test(x))
       && rows.some((x) => /delete without prompting/i.test(x))
+      && rows.some((x) => /show version count icons/i.test(x))
       && rows.some((x) => /show delete marker icons/i.test(x))
+      && rows.some((x) => /show delete markers in content versions/i.test(x))
       && rows.some((x) => /show hidden \(delete-marked\) objects/i.test(x));
   }));
   await shot('settings-new-rows');
+  // badge rows default OFF (the shim wipes every s3b-* key at boot): tick
+  // both icon toggles — the apply thunk persists the keys and re-renders
+  // the grid, which the version-marker-badges / marker-window walks assert
+  await ok('version + marker badges default off', evalPage(() => localStorage.getItem('s3b-show-versions') === null
+    && localStorage.getItem('s3b-show-markers') === null));
+  const tick = (needle) => evalPage((q) => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => (x.querySelector('.set-name')?.textContent || '').includes(q));
+    const cb = row?.querySelector('input[type=checkbox]');
+    if (!cb || cb.checked) return false;
+    cb.click();
+    return true;
+  }, needle);
+  await ok('both icon toggles ticked', await tick('version count icons') && await tick('delete marker icons'));
+  await ok('toggles persisted', evalPage(() => localStorage.getItem('s3b-show-versions') === '1'
+    && localStorage.getItem('s3b-show-markers') === '1'));
   // ticking a level in the file-log filter persists via SetLogSettings;
   // the current mode rides along unchanged (file-only filters)
   await resetCalls();
@@ -1545,9 +1563,16 @@ await step('delete-window-marker', async () => {
     const t = document.getElementById('modal-root').textContent;
     return t.includes('s3://testijotain/readme.md') && /1 object\(s\)/.test(t);
   }));
-  await ok('typed partition greyed out by default', evalPage(() => {
-    const c = document.querySelector('#modal-root .delw-confirm');
-    return c.classList.contains('off') && c.querySelector('input').disabled;
+  await ok('typed partition hidden by default; button reads Delete, unlocked', evalPage(() => {
+    const b = document.querySelector('#modal-root .modal-foot .btn.danger');
+    return !document.querySelector('#modal-root .delw-confirm')
+      && b && b.textContent.trim() === 'Delete' && !b.disabled;
+  }));
+  // the safe default mode explains itself in its radio hint — the amber
+  // note line stays empty for it (and :empty CSS collapses it entirely)
+  await ok('safe default mode carries no amber note', evalPage(() => {
+    const w = document.querySelector('#modal-root .delw-warn');
+    return !!w && w.textContent.trim() === '';
   }));
   await shot('delete-window');
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
@@ -1562,9 +1587,10 @@ await step('delete-window-marker', async () => {
 });
 
 await step('delete-window-keepcurrent', async () => {
-  // the third delete type: everything but the current version goes. It is
-  // an L3 mode — the typed word is forced on and the danger button stays
-  // locked until the literal 'delete'.
+  // the third delete type: everything but the current version goes. With
+  // the typed partition off (the default — it is a Settings opt-in), the
+  // pre-counted summary plus the explicit mode choice are the guard: one
+  // Delete click runs it.
   await clickRow('readme.md');
   await page.keyboard.press('Delete');
   await waitFor(modalVisible, 4000, 'delete window');
@@ -1572,15 +1598,17 @@ await step('delete-window-keepcurrent', async () => {
     const kc = Array.from(document.querySelectorAll('#modal-root .vcv-row input')).find((i) => i.value === 'keepcurrent');
     kc.click();
   });
-  await ok('keep-current forces the typed word', evalPage(() => {
-    const c = document.querySelector('#modal-root .delw-confirm');
+  await ok('keep-current: no typed gate, button unlocked and reads Delete', evalPage(() => {
     const b = document.querySelector('#modal-root .modal-foot .btn.danger');
-    return !c.classList.contains('off') && !c.querySelector('input').disabled && b.disabled;
+    return !document.querySelector('#modal-root .delw-confirm')
+      && b && !b.disabled && b.textContent.trim() === 'Delete';
+  }));
+  // destructive modes keep their amber consequence line
+  await ok('keep-current mode shows the amber note', evalPage(() => {
+    const w = document.querySelector('#modal-root .delw-warn');
+    return !!w && w.textContent.trim() !== '';
   }));
   await shot('delete-keepcurrent');
-  await evalPage(() => { document.querySelector('#modal-root .delw-confirm input').focus(); });
-  await page.keyboard.type('delete');
-  await sleep(80);
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
   await waitFor(async () => (await findCall('DeleteSelectionKeepCurrent')) !== null
     || (await findCall('SourceDeleteSelectionKeepCurrent')) !== null, 4000, 'DeleteSelectionKeepCurrent');
@@ -1589,9 +1617,9 @@ await step('delete-window-keepcurrent', async () => {
 });
 
 await step('delete-window-permanent', async () => {
-  // same window, permanent branch: picking the L3 radio wakes the typed
-  // gate (always forced for destructive modes) — the button unlocks only
-  // on the literal word 'delete', then force=true reaches the backend
+  // same window, permanent branch: with the typed partition off by
+  // default, the explicit permanent radio plus the counted summary is the
+  // guard — one Delete click sends the purge to the backend
   await clickRow('budget-2026.xlsx');
   await page.keyboard.press('Delete');
   await waitFor(modalVisible, 4000, 'delete window');
@@ -1599,49 +1627,39 @@ await step('delete-window-permanent', async () => {
     const pm = Array.from(document.querySelectorAll('#modal-root .vcv-row input')).find((i) => i.value === 'permanent');
     pm.click();
   });
-  await ok('L3 mode wakes the typed gate', evalPage(() => {
-    const c = document.querySelector('#modal-root .delw-confirm');
+  await ok('permanent mode: no typed gate, button unlocked and reads Delete', evalPage(() => {
     const b = document.querySelector('#modal-root .modal-foot .btn.danger');
-    return !c.classList.contains('off') && !c.querySelector('input').disabled && b.disabled
-      && /permanently/i.test(b.textContent);
+    return !document.querySelector('#modal-root .delw-confirm')
+      && b && !b.disabled && b.textContent.trim() === 'Delete';
   }));
-  // wrong word: the gate must not unlock
-  await evalPage(() => { document.querySelector('#modal-root .delw-confirm input').focus(); });
-  await page.keyboard.type('nope');
-  await sleep(80);
-  await ok('wrong word keeps the button locked', evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').disabled));
-  await page.keyboard.press('Control+A');
-  await page.keyboard.type('delete');
-  await sleep(80);
+  await ok('permanent mode shows the amber note', evalPage(() => {
+    const w = document.querySelector('#modal-root .delw-warn');
+    return !!w && w.textContent.trim() !== '';
+  }));
+  await shot('delete-permanent');
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
   // the view may be source-pinned: the plain and Source-pinned backends are
   // equivalent here — accept whichever fired
   await waitFor(async () => (await findCall('DeleteSelectionPermanent')) !== null
     || (await findCall('SourceDeleteSelectionPermanent')) !== null, 4000, 'DeleteSelectionPermanent');
   const c = (await findCall('DeleteSelectionPermanent')) || (await findCall('SourceDeleteSelectionPermanent'));
-  // force now mirrors the preview's requiresL2 — the window itself already
-  // collected the L3 confirmation — so assert the key routing only
   await ok('permanent got the key', c && JSON.stringify(c.args).includes('budget-2026.xlsx'));
 });
 
 await step('shift-del-permanent-directory', async () => {
-  // Shift+Del opens the window PRESET to the permanent mode — the typed
-  // partition is live from the start. A DIRECTORY key must reach the
-  // backend intact — purge-everything semantics, not the old per-key
-  // folder-marker-only delete.
+  // Shift+Del opens the window PRESET to the permanent mode — with the
+  // typed partition off by default there is nothing else to clear. A
+  // DIRECTORY key must reach the backend intact — purge-everything
+  // semantics, not the old per-key folder-marker-only delete.
   await resetCalls();
   await clickRow('photos');
   await page.keyboard.press('Shift+Delete');
   await waitFor(modalVisible, 4000, 'shift+del window');
-  await ok('preset to permanent with a live typed gate', evalPage(() => {
+  await ok('preset to permanent, gate-free', evalPage(() => {
     const rs = Array.from(document.querySelectorAll('#modal-root .vcv-row input[type=radio]'));
-    const c = document.querySelector('#modal-root .delw-confirm');
     return rs.length === 3 && rs.find((r) => r.value === 'permanent').checked
-      && !c.classList.contains('off') && !c.querySelector('input').disabled;
+      && !document.querySelector('#modal-root .delw-confirm');
   }));
-  await evalPage(() => { document.querySelector('#modal-root .delw-confirm input').focus(); });
-  await page.keyboard.type('delete');
-  await sleep(80);
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
   await waitFor(async () => (await findCall('DeleteSelectionPermanent')) !== null
     || (await findCall('SourceDeleteSelectionPermanent')) !== null, 4000, 'Shift+Del permanent');
@@ -1650,8 +1668,10 @@ await step('shift-del-permanent-directory', async () => {
 });
 
 await step('version-marker-badges', async () => {
-  // count badges: file rows carry their own version/marker counts, folder
-  // rows the aggregate beneath them, and an all-delete-marked folder is
+  // count badges (Settings opt-in — both toggles were ticked in the
+  // settings step): file rows carry their own version count and a
+  // count-free marker flag (one object holds at most one marker), folder
+  // rows the aggregates beneath them, and an all-delete-marked folder is
   // ghosted (its rows count as hidden, shown greyed when un-hidden)
   await navObjects('testijotain');
   await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .vbadge, #grid-body .mbadge'))
@@ -1668,7 +1688,8 @@ await step('version-marker-badges', async () => {
     };
   }, label);
   const rd = await badges('readme.md');
-  await ok('file row shows version + marker counts', rd && rd.v.includes('4') && rd.m.includes('1') && rd.mt.includes('1'));
+  await ok('file row: version count + count-free marker flag', rd && rd.v.includes('4')
+    && rd.m.includes('⛔') && !/\d/.test(rd.m) && rd.mt.toLowerCase().includes('delete marker'));
   const bare = await badges('scan.png');
   await ok('version-free rows stay bare', bare && bare.v === '' && bare.m === '' && !bare.ghost);
   const docs = await badges('docs');
@@ -1682,8 +1703,10 @@ await step('version-marker-badges', async () => {
 });
 
 await step('marker-window', async () => {
-  // clicking the marker badge opens the Delete Marker window: listed
-  // markers newest first, per-row Remove (undo delete), bulk Remove all
+  // clicking the marker badge opens the Delete Marker window — titled in
+  // the singular for a file (one object carries at most one marker). Rows
+  // are checkbox-selectable (bulk Remove selected), plus per-row Remove
+  // (undo delete) and bulk Remove all
   await navObjects('testijotain');
   await resetCalls();
   await evalPage(() => {
@@ -1695,6 +1718,30 @@ await step('marker-window', async () => {
   await ok('markers listed with version ids', evalPage(() => document.querySelectorAll('#modal-root .ver-row').length === 2
     && /vm-0001/.test(document.getElementById('modal-root').textContent)
     && /latest/.test(document.getElementById('modal-root').textContent)));
+  await ok('file window titled singular, rows checkbox-selectable', evalPage(() => {
+    const h = document.querySelector('#modal-root .modal-head span')?.textContent || '';
+    return /^delete marker — s3:\/\//i.test(h)
+      && document.querySelectorAll('#modal-root .ver-check input').length === 2;
+  }));
+  await ok('Remove selected wakes on selection', evalPage(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+      .find((b) => /remove selected/i.test(b.textContent));
+    if (!sel || !sel.disabled) return false;
+    document.querySelector('#modal-root .ver-check input').click();
+    return !sel.disabled;
+  }));
+  // polish locks: "latest" is a tag pill (not sub-text suffix), and Remove
+  // all is NOT danger-styled — removing a marker restores the object
+  await ok('latest earns a tag pill; Remove all is calm', evalPage(() => {
+    const pills = Array.from(document.querySelectorAll('#modal-root .ver-row .tag'));
+    const subs = Array.from(document.querySelectorAll('#modal-root .ver-row .ver-sub'))
+      .map((s) => s.textContent);
+    const all = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+      .find((b) => /remove all/i.test(b.textContent));
+    return pills.length === 1 && pills[0].textContent.trim() === 'latest'
+      && subs.every((s) => !/latest/i.test(s))
+      && !!all && !all.classList.contains('danger');
+  }));
   await ok('marker window layout clean', (await layoutAudit()).ok);
   await shot('marker-window');
   await evalPage(() => Array.from(document.querySelectorAll('#modal-root .ver-row .btn'))
@@ -1705,10 +1752,12 @@ await step('marker-window', async () => {
   await closeModal();
 });
 
-await step('dir-versions-window', async () => {
-  // clicking the version badge on a FOLDER opens Directory Versions:
-  // structured totals + per-child aggregates; it must never hang on
-  // "Loading…" (the old subtree timeline did)
+await step('content-versions-window', async () => {
+  // clicking the version badge on a FOLDER opens Content Versions: stat
+  // cards (markers included while the Settings toggle is on — the default)
+  // plus per-child rows with direct controls (Open / Versions… / Markers…)
+  // and NO refresh button — every action reloads what it changed. It must
+  // never hang on "Loading…" (the old subtree timeline did).
   await navObjects('testijotain');
   await resetCalls();
   await evalPage(() => {
@@ -1716,17 +1765,24 @@ await step('dir-versions-window', async () => {
     r.querySelector('.vbadge').click();
   });
   await waitFor(async () => (await findCall('PrefixVersionStats')) !== null, 4000, 'PrefixVersionStats');
-  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .dirv-stat').length)) >= 5, 4000, 'dir version stats');
-  await ok('stats replaced Loading with numbers', evalPage(() => {
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .dirv-stat').length)) >= 5, 4000, 'content version stats');
+  await ok('titled Content versions; stats replaced Loading with numbers', evalPage(() => {
+    const h = document.querySelector('#modal-root .modal-head span')?.textContent || '';
     const t = document.getElementById('modal-root').textContent;
-    return !t.trimStart().startsWith('Loading') && /Current objects/.test(t) && t.includes('9');
+    return /^content versions — s3:\/\//i.test(h) && !t.trimStart().startsWith('Loading')
+      && /Current objects/.test(t) && t.includes('9');
   }));
   await ok('child aggregates listed, all-deleted child ghosted', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#modal-root .ver-row'));
     return rows.length === 2 && rows.some((r) => /legacy/.test(r.textContent) && r.classList.contains('ghost'));
   }));
-  await ok('dir versions layout clean', (await layoutAudit()).ok);
-  await shot('dir-versions');
+  await ok('per-object controls offered, refresh retired', evalPage(() => {
+    const foot = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).map((b) => b.textContent.trim());
+    return document.querySelectorAll('#modal-root .ver-row .ver-actions .btn').length >= 2
+      && foot.length === 1 && /^close$/i.test(foot[0]);
+  }));
+  await ok('content versions layout clean', (await layoutAudit()).ok);
+  await shot('content-versions');
   await closeModal();
 });
 
@@ -1786,7 +1842,7 @@ await step('delete-settings-modes', async () => {
   await ok('typed partition armed by Settings', evalPage(() => {
     const c = document.querySelector('#modal-root .delw-confirm');
     const b = document.querySelector('#modal-root .modal-foot .btn.danger');
-    return !c.classList.contains('off') && !c.querySelector('input').disabled && b.disabled;
+    return !!c && !c.querySelector('input').disabled && b.disabled;
   }));
   await evalPage(() => { document.querySelector('#modal-root .delw-confirm input').focus(); });
   await page.keyboard.type('delete');
@@ -1867,6 +1923,12 @@ await step('side-pane-delete-window', async () => {
   await ok('remote window shows the counted summary', evalPage(() => {
     const t = document.getElementById('modal-root').textContent;
     return t.includes('/db.dump') && /1 object\(s\)/.test(t);
+  }));
+  // single-mode window: the no-version-history callout stands in for the
+  // mode hints (the other branch of the delete-window warn ternary)
+  await ok('single-mode window shows the no-history note', evalPage(() => {
+    const w = document.querySelector('#modal-root .delw-warn');
+    return !!w && w.textContent.trim() !== '';
   }));
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
   await waitFor(async () => (await findCall('RemoteRemove')) !== null, 4000, 'RemoteRemove');

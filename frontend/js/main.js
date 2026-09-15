@@ -7,7 +7,7 @@ import { Tree } from './tree.js';
 import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
   sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
-  versionsDialog, dirVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
+  versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   deleteWindow,
 } from './dialogs.js';
@@ -67,7 +67,9 @@ function applyColumnPrefs() {
   };
   grid.setColumns(parse(localStorage.getItem('s3b-cols')));
   localPane.grid.setColumns(parse(localStorage.getItem('s3b-cols-local')));
-  grid.showMarkers = localStorage.getItem('s3b-show-markers') !== '0';
+  // version/marker badges are opt-in (Settings → View); both default off
+  grid.showMarkers = localStorage.getItem('s3b-show-markers') === '1';
+  grid.showVersions = localStorage.getItem('s3b-show-versions') === '1';
 }
 
 // ============================ boot ============================
@@ -845,13 +847,13 @@ function wireGrid() {
     }
   };
   grid.on.context = (e, rows) => showContextMenu(e, rows);
-  // name-cell badges: ⟲ opens the Versions window (files) or the Directory
+  // name-cell badges: ⟲ opens the Versions window (files) or the Content
   // Versions window (folders — the object-timeline dialog would paginate the
   // whole subtree); ⛔ opens the Delete Marker window for either.
   grid.on.badgeV = (row) => {
     const loc = nav.current;
     if (!loc || loc.kind !== 'objects') return;
-    if (row.isDir) dirVersionsDialog(loc.bucket, row.key, refreshCurrent);
+    if (row.isDir) contentVersionsDialog(loc.bucket, row.key, refreshCurrent, dirvMarkersOn());
     else versionsDialog(loc.bucket, row.key, refreshCurrent);
   };
   grid.on.badgeM = (row) => {
@@ -1072,15 +1074,18 @@ function showContextMenu(e, rows) {
     }
     if (sel && !rows.some((r) => r.isDir)) items.push(['Pre-sign URL\u2026', '', () => presign(rows)]);
     if (sel === 1) {
-      // Files open the object timeline; folders the Directory Versions
-      // window (bounded stats + per-child aggregates — the timeline dialog
-      // would page the whole subtree and hang on "Loading…").
+      // Files open the object timeline; folders the Content Versions
+      // window (bounded stats + per-child aggregates and controls — the
+      // timeline dialog would page the whole subtree and hang on
+      // "Loading…").
       items.push(['Versions\u2026', '', () => (rows[0].isDir
-        ? dirVersionsDialog(loc.bucket, rows[0].key, refreshCurrent)
+        ? contentVersionsDialog(loc.bucket, rows[0].key, refreshCurrent, dirvMarkersOn())
         : versionsDialog(loc.bucket, rows[0].key, refreshCurrent))]);
+      // "Delete marker(s)…" — only on versioned S3 and only when the row
+      // actually carries marker(s); single objects use the singular.
       const g = guardCache.get(guardKey(loc.source, loc.bucket));
-      if (g?.versioning === 'Enabled') {
-        items.push(['Delete markers\u2026', '', () => markersDialog(loc.bucket, rows[0].key, rows[0].isDir, refreshCurrent)]);
+      if (g?.versioning === 'Enabled' && rows[0].mcount > 0) {
+        items.push([`${t(rows[0].isDir ? 'markw.title' : 'markw.titleOne')}\u2026`, '', () => markersDialog(loc.bucket, rows[0].key, rows[0].isDir, refreshCurrent)]);
       }
     }
     if (sel) items.push(['Storage class\u2026', '', () => classDialog(loc.bucket, rows, refreshCurrent)]);
@@ -1631,15 +1636,21 @@ function parentRemoteDir(p) {
 // ---- unified Delete Window (all sources) ----
 // Delete preferences (Settings → Delete): the window itself (default on —
 // it shows exactly what would be removed), the typed-"delete" partition
-// (default off; the destructive modes force it regardless), and
-// auto-confirm (default off — single-type deletes then run unprompted).
+// (default off — the pre-counted window is the guard; enabling adds the
+// typed word to every delete), and auto-confirm (default off —
+// single-type deletes then run unprompted).
 const delWindowOn = () => localStorage.getItem('s3b-del-window') !== '0';
 const delTypedOn = () => localStorage.getItem('s3b-del-typeconfirm') === '1';
 const delAutoConfirm = () => localStorage.getItem('s3b-del-autoconfirm') === '1';
 
+// Content Versions shows delete-marker information unless disabled in
+// Settings (default on).
+const dirvMarkersOn = () => localStorage.getItem('s3b-dirv-markers') !== '0';
+
 // S3_DEL_MODES lists a versioned bucket's delete types (the window's radio
 // list). The marker delete is the safe default; keep-current and permanent
-// destroy history (ladder L3) and always force the typed partition.
+// destroy history (ladder L3) — the window's explicit choice and summary
+// are their guard.
 const S3_DEL_MODES = [
   { id: '', label: 'delm.marker', hint: 'delm.markerHint' },
   { id: 'keepcurrent', label: 'delm.keep', hint: 'delm.keepHint' },
@@ -2922,7 +2933,9 @@ async function openSettings() {
       cols: () => grid.visibleCols().map((c) => c.id),
       colsLocal: () => localPane.grid.visibleCols().map((c) => c.id),
       showHidden: () => localStorage.getItem('s3b-show-hidden') === '1',
-      showMarkers: () => localStorage.getItem('s3b-show-markers') !== '0',
+      showMarkers: () => localStorage.getItem('s3b-show-markers') === '1',
+      showVersions: () => localStorage.getItem('s3b-show-versions') === '1',
+      dirvMarkers: () => localStorage.getItem('s3b-dirv-markers') !== '0',
       delWindow: delWindowOn,
       delTypeConfirm: delTypedOn,
       delAutoConfirm: delAutoConfirm,
@@ -2943,6 +2956,8 @@ async function openSettings() {
       colsLocal: (v) => { localPane.grid.setColumns(v); localStorage.setItem('s3b-cols-local', v.join(',')); },
       showHidden: (v) => { localStorage.setItem('s3b-show-hidden', v ? '1' : '0'); refreshCurrent(); },
       showMarkers: (v) => { localStorage.setItem('s3b-show-markers', v ? '1' : '0'); grid.showMarkers = v; grid.render(); },
+      showVersions: (v) => { localStorage.setItem('s3b-show-versions', v ? '1' : '0'); grid.showVersions = v; grid.render(); },
+      dirvMarkers: (v) => localStorage.setItem('s3b-dirv-markers', v ? '1' : '0'),
       delWindow: (v) => localStorage.setItem('s3b-del-window', v ? '1' : '0'),
       delTypeConfirm: (v) => localStorage.setItem('s3b-del-typeconfirm', v ? '1' : '0'),
       delAutoConfirm: (v) => localStorage.setItem('s3b-del-autoconfirm', v ? '1' : '0'),

@@ -153,8 +153,10 @@ export function settingsDialog(ctx) {
     el('div', { class: 'set-section', text: t('settings.view') }),
     row(t('settings.panes'), checkbox(s.panes(), (v) => a.panes(v)), 'F9'),
     row(t('settings.log'), checkbox(s.log(), (v) => a.log(v)), 'Ctrl+L'),
+    row(t('settings.showVersions'), checkbox(s.showVersions?.() || false, (v) => a.showVersions?.(v)), t('settings.showVersionsHint')),
+    row(t('settings.showMarkers'), checkbox(s.showMarkers?.() || false, (v) => a.showMarkers?.(v)), t('settings.showMarkersHint')),
+    row(t('settings.dirvMarkers'), checkbox(s.dirvMarkers?.() ?? true, (v) => a.dirvMarkers?.(v)), t('settings.dirvMarkersHint')),
     row(t('settings.showHidden'), checkbox(s.showHidden?.() || false, (v) => a.showHidden?.(v)), t('settings.showHiddenHint')),
-    row(t('settings.showMarkers'), checkbox(s.showMarkers?.() ?? true, (v) => a.showMarkers?.(v)), t('settings.showMarkersHint')),
 
     ...colSection('settings.colsMain', s.cols?.() || [], (v) => a.cols?.(v)),
     ...colSection('settings.colsSide', s.colsLocal?.() || [], (v) => a.colsLocal?.(v)),

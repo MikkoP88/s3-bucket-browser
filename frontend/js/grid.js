@@ -279,9 +279,11 @@ export class Grid {
   // setMarkers decorates rows from a PrefixVersionSummary pass (versioned
   // buckets only): map keys `${isDir?'d':'f'}:${name}` → ChildSummary
   // {versions, markers, allDeleted}. The version badge (⟲ n) shows the
-  // row's version count; the marker badge (⛔ n) its delete-marker count —
-  // directories aggregate everything beneath them. All-deleted folders are
-  // dimmed like ghost rows. null clears the decorations.
+  // row's version count when enabled in Settings (hidden when nothing is
+  // counted); the marker badge flags delete-marked objects — ⛔ without a
+  // number on files (an object carries at most one marker), ⛔ n on
+  // directories, which aggregate everything beneath them. All-deleted
+  // folders are dimmed like ghost rows. null clears the decorations.
   setMarkers(map) {
     for (const r of this.all) {
       const s = map ? (map.get(`${r.isDir ? 'd' : 'f'}:${r.name}`) || null) : null;
@@ -363,17 +365,20 @@ export class Grid {
         if (c.id === 'name') {
           cell.children[0].textContent = fileIcon(m.name, m.isDir);
           cell.children[1].textContent = m.name;
-          // version badge: count + tooltip (counts only); click opens the
-          // Versions window (file) / Directory Versions window (folder)
+          // version badge: count + tooltip (counts only), rendered when
+          // enabled in Settings and something is counted; click opens the
+          // Versions window (file) / Content Versions window (folder)
           const vb = cell.children[2];
-          vb.textContent = m.vcount ? `\u27F2 ${m.vcount}` : '';
-          vb.title = m.vcount ? t('ver.count', { n: m.vcount }) : '';
-          // marker badge: count + tooltip (counts only); click opens the
-          // Delete Marker window
+          const vn = this.showVersions === true && m.vcount ? m.vcount : 0;
+          vb.textContent = vn ? `\u27F2 ${vn}` : '';
+          vb.title = vn ? t('ver.count', { n: vn }) : '';
+          // marker badge: files carry at most one marker so they show the
+          // bare flag; directories aggregate a count. Rendered when
+          // enabled in Settings; click opens the Delete Marker window
           const mb = cell.children[3];
-          const showM = this.showMarkers !== false;
-          mb.textContent = showM && m.mcount ? `\u26D4 ${m.mcount}` : '';
-          mb.title = showM && m.mcount ? t('mark.count', { n: m.mcount }) : '';
+          const hasM = this.showMarkers === true && !!m.mcount;
+          mb.textContent = hasM ? (m.isDir ? `\u26D4 ${m.mcount}` : '\u26D4') : '';
+          mb.title = hasM ? (m.isDir ? t('mark.count', { n: m.mcount }) : t('mark.has')) : '';
         } else if (c.id === 'type') {
           cell.textContent = typeOf(m);
         } else if (c.id === 'etag') {
