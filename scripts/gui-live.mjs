@@ -575,6 +575,28 @@ async function walk() {
     await shot('03-objects');
   });
 
+  await step('copy-as → OS clipboard bridge', async () => {
+    // Copy path / Copy S3 URI run through the real backend binding; the
+    // harness seam records the text, served back at /__live/clipboard
+    const clip = () => evalPage(async () => {
+      const r = await fetch('/__live/clipboard');
+      return ((await r.json()).text) || '';
+    });
+    await clickRow(SEED); // select so the copy items are enabled
+    await rightClickRow(SEED);
+    await sleep(80);
+    await ctxItem(/^copy path$/i);
+    await ok(`copy path → "${await clip()}"`, (await clip()) === `${BUCKET}/${SEED}/`);
+    await rightClickRow(SEED);
+    await sleep(80);
+    await ctxItem(/copy s3 uri/i);
+    await ok(`copy s3 uri → "${await clip()}"`, (await clip()) === `s3://${BUCKET}/${SEED}/`);
+    await rightClickRow(SEED);
+    await sleep(80);
+    await ctxItem(/^copy name$/i);
+    await ok(`copy name → "${await clip()}"`, (await clip()) === SEED);
+  });
+
   await step('admin dialog (tree guard icon → real bucket info)', async () => {
     await page.locator('#tree .tguard').first().click();
     await waitFor(async () => (await modalText()).length > 20, 10000, 'admin dialog');

@@ -89,6 +89,12 @@ export class Grid {
     this.on = {}; // callbacks: select, activate, context, dragstart, drop, badgeV, badgeM
     this.setColumns(DEFAULT_COLS);
     this.body.addEventListener('scroll', () => this.render());
+    // Right-click on a header cell opens the column picker (same catalog as
+    // Settings); wired by the host pane via on.headerMenu.
+    this.head.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (this.on.headerMenu) this.on.headerMenu(e);
+    });
   }
 
   // ---------- columns ----------
@@ -302,6 +308,14 @@ export class Grid {
   clearSelection() {
     this.sel.clear();
     this.focusKey = null;
+    this.render(true); // force: emits select once (render's own re-emit)
+  }
+
+  // invertSelection flips membership of every visible row (Ctrl+I, Edit
+  // menu) — the complement of the current selection, Explorer-style.
+  invertSelection() {
+    this.sel = new Set(this.rows.map((r) => r.key).filter((k) => !this.sel.has(k)));
+    if (this.focusKey && !this.sel.has(this.focusKey)) this.focusKey = null;
     this.render(true); // force: emits select once (render's own re-emit)
   }
 

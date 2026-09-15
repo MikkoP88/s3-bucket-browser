@@ -847,6 +847,9 @@ function wireGrid() {
     }
   };
   grid.on.context = (e, rows) => showContextMenu(e, rows);
+  // Right-click on a header cell: the column picker (Settings' catalog one
+  // click closer — Explorer's header menu pattern).
+  grid.on.headerMenu = (e) => columnMenu(e, grid, 's3b-cols');
   // name-cell badges: ⟲ opens the Versions window (files) or the Content
   // Versions window (folders — the object-timeline dialog would paginate the
   // whole subtree); ⛔ opens the Delete Marker window for either.
@@ -968,6 +971,7 @@ function wireLocalPane() {
   localPane.on.activateRemoteFile = (_source, row) => downloadSideRows([row]);
   localPane.on.activateS3File = (_bucket, row) => downloadSideRows([row]);
   localPane.grid.on.context = (e, rows) => showLocalRowMenu(e, rows);
+  localPane.grid.on.headerMenu = (e) => columnMenu(e, localPane.grid, 's3b-cols-local');
   localPane.on.contextEmpty = (e, dir) => {
     if (localPane.binding.kind === 'remote') { sideRemoteEmptyMenu(e); return; }
     if (localPane.binding.kind === 's3') { sideS3EmptyMenu(e); return; }
@@ -1022,6 +1026,29 @@ function openMenu(anchor, items) {
 }
 
 // ============================ context menu ============================
+// columnMenu: right-click menu on a grid header — the column picker as a
+// check list against the COLUMNS catalog ('name' is locked on), the same
+// control Settings exposes, one click closer. lsKey is the pane's
+// localStorage persistence key.
+function columnMenu(e, g, lsKey) {
+  const cur = new Set(g.visibleCols().map((c) => c.id));
+  openMenu(e, COLUMNS.map((c) => {
+    const on = cur.has(c.id);
+    return [
+      `${on ? '\u2713 ' : ''}${t(c.labelKey)}`,
+      '',
+      () => {
+        const next = new Set(cur);
+        if (on) next.delete(c.id);
+        else next.add(c.id);
+        g.setColumns([...next]);
+        localStorage.setItem(lsKey, g.visibleCols().map((x) => x.id).join(','));
+      },
+      c.id === 'name', // the identity column is always visible
+    ];
+  }));
+}
+
 function showContextMenu(e, rows) {
   const loc = nav.current;
   const items = [];
@@ -1033,6 +1060,10 @@ function showContextMenu(e, rows) {
     items.push(['Open', 'Enter', () => nav.to({ kind: 'objects', source: loc.source, bucket: b.key, prefix: '' })]);
     items.push([isFavorite(b.key) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(b.key)]);
     items.push(['Find in bucket\u2026', '', () => findDialog(b.key, '', openSearchResult)]);
+    items.push(null);
+    items.push(['Copy name', '', () => copyAsText(rows, 'name')]);
+    items.push(['Copy S3 URI', '', () => copyAsText(rows, 'uri')]);
+    items.push(null);
     items.push(['Admin panel\u2026', '', () => adminDialog(b.key, refreshCurrent)]);
     items.push(['Doctor\u2026', '', async () => runDoctor(b.key)]);
     items.push(['Properties', '', () => bucketProperties(b.key)]);
@@ -1049,6 +1080,8 @@ function showContextMenu(e, rows) {
     if (sel === 1 && rows[0].isDir) {
       items.push(['Paste into folder', 'Ctrl+V', () => paste(rows[0].key), !clipHasItems()]);
     }
+    items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
+    items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
     items.push(null);
     items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
@@ -1064,6 +1097,9 @@ function showContextMenu(e, rows) {
     items.push(['Cut', 'Ctrl+X', () => cutSelection()]);
     items.push(['Copy', 'Ctrl+C', () => copySelection()]);
     items.push(['Paste', 'Ctrl+V', () => paste(), !clipHasItems() || !inObjects]);
+    items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
+    items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
+    items.push(['Copy S3 URI', '', () => copyAsText(rows, 'uri'), !sel]);
     items.push(null);
     items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
@@ -2440,6 +2476,8 @@ function showLocalRowMenu(e, rows) {
     null,
     ['Copy', 'Ctrl+C', () => copySelection()],
     ['Cut', 'Ctrl+X', () => cutSelection()],
+    ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'local' }), !sel],
+    ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'local' }), !sel],
     null,
     ['Delete\u2026', 'Del', () => deleteLocalSelection(rows.map((r) => r.path)), !sel],
     null,
@@ -2491,6 +2529,8 @@ function showSideRemoteRowMenu(e, rows) {
     null,
     ['Copy', 'Ctrl+C', () => copySelection(), !sel],
     ['Cut', 'Ctrl+X', () => cutSelection(), !sel],
+    ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'remote' }), !sel],
+    ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'remote' }), !sel],
     ...(sel === 1 && rows[0].isDir
       ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir: rows[0].key }), !clipHasItems()]]
       : []),
@@ -2600,6 +2640,9 @@ function showSideS3RowMenu(e, rows) {
     null,
     ['Copy', 'Ctrl+C', () => copySelection(), hasBucketRow],
     ['Cut', 'Ctrl+X', () => cutSelection(), hasBucketRow],
+    ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
+    ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
+    ['Copy S3 URI', '', () => copyAsText(rows, 'uri', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
     null,
     ['Rename', 'F2', async () => {
       const row = rows[0];
@@ -3024,8 +3067,17 @@ function mountMenubar() {
       items: [
         { label: t('menu.cut'), kbd: 'Ctrl+X', action: cutSelection, enabled: () => st().canCut },
         { label: t('menu.copy'), kbd: 'Ctrl+C', action: copySelection, enabled: () => st().canCopy },
+        {
+          label: t('menu.copyAs'),
+          items: [
+            { label: t('menu.copyName'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'name', c.ctx); }, enabled: () => st().canCopy },
+            { label: t('menu.copyPath'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'path', c.ctx); }, enabled: () => st().canCopy },
+            { label: t('menu.copyUri'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'uri', c.ctx); }, enabled: () => st().canCopy && canCopyUriFromMenu() },
+          ],
+        },
         { label: t('menu.paste'), kbd: 'Ctrl+V', action: () => paste(), enabled: () => st().canPaste },
         { label: t('menu.selectAll'), kbd: 'Ctrl+A', action: () => grid.selectAll(), enabled: inObjects },
+        { label: t('menu.invertSel'), kbd: 'Ctrl+I', action: () => grid.invertSelection(), enabled: inObjects },
         null,
         { label: t('menu.rename'), kbd: 'F2', action: () => renameSelection(), enabled: () => st().canRename },
         { label: t('menu.delete'), kbd: 'Del', action: () => deleteSelection(), enabled: () => st().canDelete },
@@ -3051,6 +3103,12 @@ function mountMenubar() {
           })),
         },
         { label: t('ar.focus'), checked: () => refreshOnFocus, action: () => setRefreshOnFocus(!refreshOnFocus) },
+        null,
+        // The three versioning/visibility toggles Settings also carries —
+        // one click closer (Explorer's View menu pattern).
+        { label: t('settings.showVersions'), checked: () => localStorage.getItem('s3b-show-versions') === '1', action: () => { const v = localStorage.getItem('s3b-show-versions') !== '1'; localStorage.setItem('s3b-show-versions', v ? '1' : '0'); grid.showVersions = v; grid.render(); } },
+        { label: t('settings.showMarkers'), checked: () => localStorage.getItem('s3b-show-markers') === '1', action: () => { const v = localStorage.getItem('s3b-show-markers') !== '1'; localStorage.setItem('s3b-show-markers', v ? '1' : '0'); grid.showMarkers = v; grid.render(); } },
+        { label: t('settings.showHidden'), checked: () => localStorage.getItem('s3b-show-hidden') === '1', action: () => { const v = localStorage.getItem('s3b-show-hidden') !== '1'; localStorage.setItem('s3b-show-hidden', v ? '1' : '0'); refreshCurrent(); } },
       ],
     },
     {
@@ -3231,6 +3289,62 @@ async function osCopyRemote(items) {
   }, 700);
 }
 
+// copyAsText puts rows on the OS clipboard as plain text (api.ClipboardSetText)
+// — the Explorer-style "copy name / copy path / copy S3 URI" actions. Ctrl+C
+// keeps mirroring the selection as real OS files for Explorer/Finder interop;
+// these copy text for editors, tickets and terminals. what: 'name' | 'path'
+// | 'uri'. ctx: {kind, bucket} — 'objects' rows format bucket/key and
+// s3://bucket/key, 'buckets' rows the bare bucket name (and s3://bucket),
+// 'remote' rows the source path, 'local' rows the absolute path. Non-S3
+// selections have no URI form — the call is a no-op then.
+async function copyAsText(rows, what, ctx = {}) {
+  if (!rows.length) return;
+  const kind = ctx.kind || nav.current?.kind || 'objects';
+  const bucket = ctx.bucket ?? nav.current?.bucket;
+  let fmt;
+  if (what === 'name') fmt = (r) => r.name;
+  else if (what === 'uri') {
+    if (kind === 'objects') fmt = (r) => `s3://${bucket}/${r.key}`;
+    else if (kind === 'buckets') fmt = (r) => `s3://${r.key}`;
+    else return;
+  } else if (kind === 'objects') fmt = (r) => `${bucket}/${r.key}`;
+  else if (kind === 'local') fmt = (r) => r.path;
+  else fmt = (r) => r.key; // buckets: name; remote: source path
+  const label = what === 'uri' ? 'URI' : what;
+  try {
+    await api.ClipboardSetText(rows.map(fmt).join('\n'));
+    toast(`Copied ${rows.length} ${label}${rows.length === 1 ? '' : 's'}`, 'ok');
+  } catch (err) {
+    toast(`Copy failed: ${err}`, 'error');
+  }
+}
+
+// copyAsFromMenu gathers what an Edit-menu copy-as action addresses: the
+// main grid's selection, else the local pane's (mirrors setClip's
+// gathering) — with the ctx copyAsText needs.
+function copyAsFromMenu() {
+  const loc = nav.current;
+  const rows = grid.selectedRows();
+  if (rows.length) return { rows, ctx: { kind: loc?.kind, bucket: loc?.bucket } };
+  if (localPane.visible) {
+    const b = localPane.binding;
+    const lrows = localPane.grid.selectedRows();
+    if (b.kind === 'local' && lrows.length) return { rows: lrows, ctx: { kind: 'local' } };
+    if (b.kind === 'remote' && lrows.length) return { rows: lrows, ctx: { kind: 'remote' } };
+    if (b.kind === 's3' && localPane.bucket) {
+      return { rows: lrows.filter((r) => !r.isBucket), ctx: { kind: 'objects', bucket: localPane.bucket } };
+    }
+  }
+  return { rows: [], ctx: {} };
+}
+
+// canCopyUriFromMenu: the s3:// form exists only for S3-addressed selections.
+function canCopyUriFromMenu() {
+  const loc = nav.current;
+  if (grid.selectedRows().length) return loc?.kind === 'objects' || loc?.kind === 'buckets';
+  return localPane.visible && localPane.binding.kind === 's3' && !!localPane.bucket;
+}
+
 // copySelection/cutSelection: shared by Ctrl+C/X and the Edit menu.
 function copySelection() { setClip('copy'); }
 
@@ -3253,6 +3367,7 @@ function wireKeys() {
     if (e.key === 'Delete') { e.preventDefault(); if (e.shiftKey) deletePermanentSelection(); else deleteSelection(); return; }
     if (e.key === 'F9') { e.preventDefault(); togglePanes(); return; }
     if (ctrl && e.key.toLowerCase() === 'a') { e.preventDefault(); grid.selectAll(); return; }
+    if (ctrl && e.key.toLowerCase() === 'i') { e.preventDefault(); grid.invertSelection(); return; }
     if (ctrl && e.key.toLowerCase() === 'c') { copySelection(); return; }
     if (ctrl && e.key.toLowerCase() === 'x') { cutSelection(); return; }
     if (ctrl && e.key.toLowerCase() === 'v') { e.preventDefault(); paste(); return; }
@@ -3298,6 +3413,18 @@ function wireEvents() {
     updateEditingStatus();
   });
   onEvent('log:line', (l) => logArea.append(l));
+  // Guarded exit: the backend refused an exit that would lose work (the X
+  // button or File → Exit while transfers run / the profile is dirty) and
+  // asks here. "Exit anyway" force-quits through ConfirmExit.
+  onEvent('exit:confirm', async (d) => {
+    const okExit = await confirm({
+      title: 'Exit s3b',
+      message: `${d?.reason || 'Work is still in progress.'}\nExit anyway?`,
+      okLabel: 'Exit anyway',
+      danger: true,
+    });
+    if (okExit) api.ConfirmExit();
+  });
   $('status-editing').onclick = () => editingDialog(updateEditingStatus);
   $('status-log').onclick = toggleLogArea;
   // The status-bar jobs indicator opens the transfer manager (the toolbar
