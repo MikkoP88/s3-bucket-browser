@@ -257,15 +257,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          # Alpha/beta/rc tags publish as GitHub pre-releases, never
-          # "latest" — stable vX.Y.Z tags stay full releases.
-          PRE=""
-          case "$TAG" in v*-alpha*|v*-beta*|v*-rc*) PRE="--prerelease" ;; esac
           # Idempotent: create the release, or — if it already exists
           # (re-pushed/moved tag) — refresh its assets in place.
           if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
             gh release upload "$TAG" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
           else
             gh release create "$TAG" dist/* --repo "${GITHUB_REPOSITORY}" \
-              --title "s3b $TAG" --generate-notes $PRE
+              --title "s3b $TAG" --generate-notes
           fi
