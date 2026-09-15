@@ -51,7 +51,7 @@ what it will do before doing it.
 | **L0** normal | Delete selection (<50 items), overwrite upload | Confirmation dialog with item count; CLI proceeds for single/piped deletes |
 | **L1** large | Delete ≥50 items, prefix delete, recursive storage-class conversion | CLI requires `--force`; GUI lists exact counts + total size and requires an "I understand" check |
 | **L2** bucket-wide | Empty or remove a non-empty bucket, purge all noncurrent versions | CLI requires `--force`; GUI requires **typing the bucket name** |
-| **L3** unrecoverable | Permanently destroy versions and delete markers | CLI requires `--versions --force` / `versions rm --all`; GUI adds an explicit "permanent" confirmation |
+| **L3** unrecoverable | Permanently destroy versions and delete markers | CLI requires `--versions --force` / `versions rm --all`; GUI Delete Window demands typing `delete` before the destructive types unlock |
 
 Additional rules:
 
@@ -59,10 +59,13 @@ Additional rules:
   and totals with zero effect.
 - On versioned buckets a plain delete always creates a *delete marker*
   (recoverable via `s3b versions undo`); permanence is never implicit.
-  The GUI makes that explicit: deleting from a versioned bucket first
-  asks between adding a delete marker (default — everything stays
-  restorable) and deleting permanently (typed "permanent" confirmation
-  required; Shift+Del jumps straight to that path).
+  The GUI makes that explicit on every source: one Delete Window
+  pre-counts the selection and, on versioned buckets, offers three
+  types — adding a delete marker (default — everything stays
+  restorable), deleting all except the current version, or deleting
+  permanently. The two destructive types always require typing
+  `delete` first, regardless of Settings (Shift+Del jumps straight to
+  the permanent path).
 - Removing a versioned bucket with `rb --force` reports and purges the full
   version history, so nothing silently survives in a bucket you deleted.
 - Enabling object lock is possible only at bucket creation and is permanent;

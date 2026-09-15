@@ -2,14 +2,14 @@
 import { api, onEvent, subscribeStream } from './api.js';
 import { el, fmtBytes, fmtDate, basename, debounce } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
-import { Grid } from './grid.js';
+import { Grid, COLUMNS, DEFAULT_COLS } from './grid.js';
 import { Tree } from './tree.js';
 import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
   sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
-  versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
+  versionsDialog, dirVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
-  deleteChoiceDialog,
+  deleteWindow,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
@@ -56,10 +56,25 @@ let listSeq = 0;
 let listStream = { token: null, off: null };
 let pendingSelect = null; // {bucket, prefix, key} — row to select after load
 
+// applyColumnPrefs restores the persisted visible-column sets (Settings →
+// View) and the delete-marker badge toggle for both grids. "name" is the
+// identity column — the grid forces it in; an unknown/empty stored value
+// falls back to the default layout.
+function applyColumnPrefs() {
+  const parse = (v) => {
+    const ids = (v || '').split(',').map((s) => s.trim()).filter((id) => COLUMNS.some((c) => c.id === id));
+    return ids.length ? ids : DEFAULT_COLS;
+  };
+  grid.setColumns(parse(localStorage.getItem('s3b-cols')));
+  localPane.grid.setColumns(parse(localStorage.getItem('s3b-cols-local')));
+  grid.showMarkers = localStorage.getItem('s3b-show-markers') !== '0';
+}
+
 // ============================ boot ============================
 async function boot() {
   setLang(detectLang());
   initTheme();
+  applyColumnPrefs();
   $('status-version').textContent = `s3b v${await api.GetVersion()}`;
   wireToolbar();
   mountMenubar();
@@ -537,11 +552,14 @@ function cancelListStream() {
 // ListObjectVersions pass costs more than the badges are worth.
 const vmarkRowCap = 500;
 
-// decorateVersionMarkers badges the folder view with delete-marker state
-// (versioned buckets only): files with markers in their history, folders
-// with markers beneath, folders whose every file is delete-marked. One
-// extra ListObjectVersions pass, best-effort — a failure simply leaves the
-// view undecorated. seq guards against painting a stale folder.
+// decorateVersionMarkers badges the folder view with version + delete-marker
+// counts (versioned buckets only): the ⟲ badge carries each row's version
+// count, the ⛔ badge its marker count (directories aggregate everything
+// beneath), and all-deleted folders are dimmed. With "show hidden" on
+// (Settings → View, default off) it also appends ghost rows — children whose
+// newest state is a delete marker, which a plain listing never returns.
+// One extra ListObjectVersions pass, best-effort — a failure simply leaves
+// the view undecorated. seq guards against painting a stale folder.
 async function decorateVersionMarkers(loc, seq) {
   try {
     const g = await ensureGuard(loc.source, loc.bucket);
@@ -549,6 +567,23 @@ async function decorateVersionMarkers(loc, seq) {
     if (seq !== listSeq || grid.all.length > vmarkRowCap) return;
     const kids = await api.PrefixVersionSummary(loc.bucket, loc.prefix || '');
     if (seq !== listSeq) return; // navigated away while listing versions
+    if (localStorage.getItem('s3b-show-hidden') === '1') {
+      const prefix = loc.prefix || '';
+      const have = new Set(grid.all.map((r) => `${r.isDir ? 'd' : 'f'}:${r.name}`));
+      const ghosts = kids
+        .filter((c) => c.allDeleted && !have.has(`${c.isDir ? 'd' : 'f'}:${c.name}`))
+        .map((c) => ({
+          name: c.name,
+          key: prefix + c.name + (c.isDir ? '/' : ''),
+          isDir: c.isDir,
+          size: 0,
+          ghost: true,
+        }));
+      if (ghosts.length) {
+        grid.appendRows(ghosts);
+        grid.apply(); // canonical folders-first ordering for the appended ghosts
+      }
+    }
     grid.setMarkers(new Map(kids.map((c) => [`${c.isDir ? 'd' : 'f'}:${c.name}`, c])));
   } catch { /* decoration is best-effort */ }
 }
@@ -810,6 +845,20 @@ function wireGrid() {
     }
   };
   grid.on.context = (e, rows) => showContextMenu(e, rows);
+  // name-cell badges: ⟲ opens the Versions window (files) or the Directory
+  // Versions window (folders — the object-timeline dialog would paginate the
+  // whole subtree); ⛔ opens the Delete Marker window for either.
+  grid.on.badgeV = (row) => {
+    const loc = nav.current;
+    if (!loc || loc.kind !== 'objects') return;
+    if (row.isDir) dirVersionsDialog(loc.bucket, row.key, refreshCurrent);
+    else versionsDialog(loc.bucket, row.key, refreshCurrent);
+  };
+  grid.on.badgeM = (row) => {
+    const loc = nav.current;
+    if (!loc || loc.kind !== 'objects') return;
+    markersDialog(loc.bucket, row.key, row.isDir, refreshCurrent);
+  };
   grid.on.drop = (targetRow, data, e) => {
     const loc = nav.current;
     if (loc.kind === 'objects') dropToTarget({ kind: 's3', source: loc.source || viewSource, bucket: loc.bucket, dir: targetRow.key }, data, e);
@@ -1022,11 +1071,21 @@ function showContextMenu(e, rows) {
       items.push(['Edit', '', () => editObject(rows[0])]);
     }
     if (sel && !rows.some((r) => r.isDir)) items.push(['Pre-sign URL\u2026', '', () => presign(rows)]);
-    if (sel === 1) items.push(['Previous versions\u2026', '', () => versionsDialog(loc.bucket, rows[0].key, refreshCurrent)]);
+    if (sel === 1) {
+      // Files open the object timeline; folders the Directory Versions
+      // window (bounded stats + per-child aggregates — the timeline dialog
+      // would page the whole subtree and hang on "Loading…").
+      items.push(['Versions\u2026', '', () => (rows[0].isDir
+        ? dirVersionsDialog(loc.bucket, rows[0].key, refreshCurrent)
+        : versionsDialog(loc.bucket, rows[0].key, refreshCurrent))]);
+      const g = guardCache.get(guardKey(loc.source, loc.bucket));
+      if (g?.versioning === 'Enabled') {
+        items.push(['Delete markers\u2026', '', () => markersDialog(loc.bucket, rows[0].key, rows[0].isDir, refreshCurrent)]);
+      }
+    }
     if (sel) items.push(['Storage class\u2026', '', () => classDialog(loc.bucket, rows, refreshCurrent)]);
     if (sel && !rows.some((r) => r.isDir)) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows, refreshCurrent)]);
     items.push(['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, loc.prefix || '', openSearchResult)]);
-    items.push(['Delete permanently\u2026', 'Shift+Del', () => deletePermanentSelection(), !sel]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties()]);
   }
   openMenu(e, items);
@@ -1569,11 +1628,101 @@ function parentRemoteDir(p) {
   return i <= 0 ? '/' : t.slice(0, i + 1);
 }
 
-async function deleteSelection(bucketOverride, keysOverride, sourceOverride) {
+// ---- unified Delete Window (all sources) ----
+// Delete preferences (Settings → Delete): the window itself (default on —
+// it shows exactly what would be removed), the typed-"delete" partition
+// (default off; the destructive modes force it regardless), and
+// auto-confirm (default off — single-type deletes then run unprompted).
+const delWindowOn = () => localStorage.getItem('s3b-del-window') !== '0';
+const delTypedOn = () => localStorage.getItem('s3b-del-typeconfirm') === '1';
+const delAutoConfirm = () => localStorage.getItem('s3b-del-autoconfirm') === '1';
+
+// S3_DEL_MODES lists a versioned bucket's delete types (the window's radio
+// list). The marker delete is the safe default; keep-current and permanent
+// destroy history (ladder L3) and always force the typed partition.
+const S3_DEL_MODES = [
+  { id: '', label: 'delm.marker', hint: 'delm.markerHint' },
+  { id: 'keepcurrent', label: 'delm.keep', hint: 'delm.keepHint' },
+  { id: 'permanent', label: 'delm.perm', hint: 'delm.permHint' },
+];
+
+// runDeleteWindow owns the confirmation every delete passes through.
+// Multi-type sources and preset (Shift+Del) deletes always open the window —
+// the user must pick, or re-verify, the destructive type there. Single-type
+// deletes follow Settings: auto-confirm skips prompts, the window is the
+// default, and only with both off does the classic ladder run (the typed
+// word at L2 or on sources with no undo; a plain confirm otherwise).
+// Resolves the confirmed mode ('' = plain) or null (canceled).
+async function runDeleteWindow({ target, summary, modes = [], mode = '', classicTyped = false, classicMsg = '' }) {
+  const multi = modes.length > 1;
+  if (!multi && !mode && delAutoConfirm()) return '';
+  if (multi || mode || delWindowOn()) {
+    return deleteWindow({ target, summary, modes, mode, typedOn: delTypedOn() });
+  }
+  const ok = (classicTyped || summary.requiresL2)
+    ? await typedConfirm({ title: target, message: classicMsg, typeWord: 'delete', okLabel: t('delw.go') })
+    : await confirm({ title: target, message: classicMsg, okLabel: t('delw.go'), danger: true });
+  return ok ? '' : null;
+}
+
+// reportDeleteResult toasts a DeleteResult ({deleted, errors}).
+function reportDeleteResult(res, okMsg) {
+  if (!res) return;
+  if (res.errors?.length) toast(`${res.deleted} deleted, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
+  else toast(okMsg(res.deleted ?? 0), 'ok');
+}
+
+// deleteS3Keys runs the full S3 delete flow — preview, the Delete Window
+// with the bucket's delete-type list, then the matching API — for one
+// bucket. source '' addresses the view source; after() runs on success
+// (the main view refreshes, the side pane re-lists). preset forces the
+// window open at that mode (Shift+Del → 'permanent').
+async function deleteS3Keys(source, bucket, keys, preset, target, after) {
+  const p = source
+    ? await api.SourcePreviewDelete(source, bucket, keys)
+    : await api.PreviewDelete(bucket, keys);
+  // Versioned buckets offer every delete type in the window; elsewhere a
+  // marker would just be noise without a timeline to hold it.
+  const g = await ensureGuard(source, bucket).catch(() => null);
+  const versioned = g?.versioning === 'Enabled';
+  const modes = versioned ? S3_DEL_MODES : [];
+  const desc = `${p.count} object(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}${p.folders ? ` in ${p.folders} folder(s)` : ''}`;
+  const undoNote = versioned
+    ? 'Objects stay in version history and can be restored.'
+    : 'This cannot be undone.';
+  const mode = await runDeleteWindow({
+    target,
+    summary: { objects: p.objects, folders: p.folders, bytes: p.bytes, requiresL2: p.requiresL2 },
+    modes,
+    mode: preset,
+    classicMsg: `You are about to delete ${desc}.\n${undoNote}`,
+  });
+  if (mode === null) return;
+  const force = p.requiresL2; // every path above already confirmed
+  let res;
+  if (mode === 'permanent') {
+    res = source
+      ? await api.SourceDeleteSelectionPermanent(source, bucket, keys, force)
+      : await api.DeleteSelectionPermanent(bucket, keys, force);
+    reportDeleteResult(res, (n) => `Destroyed ${n} version(s)/marker(s) permanently`);
+  } else if (mode === 'keepcurrent') {
+    res = source
+      ? await api.SourceDeleteSelectionKeepCurrent(source, bucket, keys, force)
+      : await api.DeleteSelectionKeepCurrent(bucket, keys, force);
+    reportDeleteResult(res, (n) => `Deleted the history of ${n} item(s) — current versions kept`);
+  } else {
+    res = source
+      ? await api.SourceDeleteSelection(source, bucket, keys, force)
+      : await api.DeleteSelection(bucket, keys, force);
+    reportDeleteResult(res, (n) => `Deleted ${n} object(s)${versioned ? ' — restorable from version history' : ''}`);
+  }
+  after?.();
+}
+
+async function deleteSelection(bucketOverride, keysOverride, sourceOverride, presetMode = '') {
   const loc = nav.current;
   if (!bucketOverride && loc.kind === 'remote') {
-    deleteRemoteSelection();
-    return;
+    return deleteRemoteSelection(null, null, presetMode);
   }
   if (!bucketOverride && loc.kind === 'buckets') {
     const row = grid.selectedRows()[0];
@@ -1584,79 +1733,15 @@ async function deleteSelection(bucketOverride, keysOverride, sourceOverride) {
   if (!bucket || (!bucketOverride && loc.kind !== 'objects')) return;
   const keys = keysOverride || grid.selectedRows().map((r) => r.key);
   if (!keys.length) return;
+  const source = sourceOverride ?? (loc.kind === 'objects' ? loc.source : '');
+  const scheme = source ? `${source}://` : 's3://';
+  const target = keys.length === 1
+    ? `s3://${bucket}/${keys[0]}`
+    : `${scheme}${bucket}/${loc?.prefix || ''}`;
   try {
-    const p = await api.PreviewDelete(bucket, keys);
-    const desc = `${p.count} object(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}${p.folders ? ` in ${p.folders} folder(s)` : ''}`;
-    const source = sourceOverride ?? (loc.kind === 'objects' ? loc.source : '');
-    // Versioned bucket: the user picks the delete mode — the safe marker
-    // path (default) or permanent destruction (L3). Elsewhere the plain
-    // flow applies: a marker would just be noise without a timeline.
-    let mode = 'plain';
-    const g = await ensureGuard(source, bucket).catch(() => null);
-    const versioned = g?.versioning === 'Enabled';
-    if (versioned) {
-      mode = await deleteChoiceDialog({ desc: `Delete ${desc} from s3://${bucket}?` });
-      if (!mode) return; // canceled
-    }
-    if (mode === 'permanent') {
-      await deletePermanentKeys(bucket, keys, source);
-      return;
-    }
-    const undoNote = versioned
-      ? 'Objects stay in version history and can be restored.'
-      : 'This cannot be undone.';
-    let ok;
-    if (p.requiresL2) {
-      ok = await typedConfirm({
-        title: `Delete from s3://${bucket}`,
-        message: `You are about to delete ${desc}.\n${undoNote}`,
-        typeWord: 'delete',
-      });
-    } else {
-      ok = await confirm({
-        title: `Delete from s3://${bucket}`,
-        message: `Delete ${desc}? ${undoNote}`,
-        okLabel: 'Delete',
-        danger: true,
-      });
-    }
-    if (!ok) return;
-    const res = await api.DeleteSelection(bucket, keys, p.requiresL2);
-    if (res.errors?.length) toast(`${res.deleted} deleted, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-    else toast(`Deleted ${res.deleted} object(s)`, 'ok');
-    refreshCurrent();
+    await deleteS3Keys(source, bucket, keys, presetMode, target, refreshCurrent);
   } catch (err) {
     toast(`Delete failed: ${err}`, 'error');
-  }
-}
-
-// deletePermanentKeys destroys every version AND delete marker of the keys
-// (L3): file keys lose their whole timeline, folder keys purge everything
-// beneath them (a plain DeleteObject on a folder key would only touch the
-// folder marker). The typed "permanent" confirmation IS the force gate, so
-// the count-then-act backend is called with force=true. source pins the
-// call to a named source ("" = the view source).
-async function deletePermanentKeys(bucket, keys, source = '') {
-  const ok = await typedConfirm({
-    title: 'Delete permanently',
-    message: `Every version and delete marker of ${keys.length} item(s) will be destroyed.\nUnlike Delete, this erases version history too — it cannot be undone.`,
-    typeWord: 'permanent',
-  });
-  if (!ok) return false;
-  try {
-    const res = source
-      ? await api.SourceDeleteSelectionPermanent(source, bucket, keys, true)
-      : await api.DeleteSelectionPermanent(bucket, keys, true);
-    if (res?.errors?.length) {
-      toast(`${res.deleted} destroyed, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-    } else {
-      toast(`Destroyed ${res?.deleted ?? 0} version(s)/marker(s) permanently`, 'ok');
-    }
-    refreshCurrent();
-    return true;
-  } catch (err) {
-    toast(`Permanent delete failed: ${err}`, 'error');
-    return false;
   }
 }
 
@@ -1675,14 +1760,15 @@ async function editObject(row) {
 }
 
 // Shift+Del: destroy the selection including all versions and delete markers
-// (safety ladder L3) — routed through deletePermanentKeys so directory rows
-// purge EVERYTHING beneath them, not just the folder marker key.
+// (safety ladder L3) — the Delete Window opens preset to "permanent", whose
+// typed partition is always forced, so directory rows purge EVERYTHING
+// beneath them, not just the folder marker key.
 async function deletePermanentSelection() {
   const loc = nav.current;
   if (loc.kind !== 'objects') return;
   const keys = grid.selectedRows().map((r) => r.key);
   if (!keys.length) return;
-  await deletePermanentKeys(loc.bucket, keys, loc.source);
+  await deleteSelection(loc.bucket, keys, loc.source, 'permanent');
 }
 
 // sidePaneRef is the side pane's compare reference: a remote-bound pane
@@ -1810,9 +1896,11 @@ async function newFolder() {
   }
 }
 
-// deleteRemoteSelection: count-then-act delete on a remote source. Remote
-// filesystems have no trash and no versions — the typed confirm says so.
-async function deleteRemoteSelection(overrideSource, overrideKeys) {
+// deleteRemoteSelection: count-then-act delete on a remote source through
+// the unified Delete Window. Remote filesystems have no trash and no
+// versions — the window's warning (and the classic fallback's typed word)
+// says so.
+async function deleteRemoteSelection(overrideSource, overrideKeys, presetMode = '') {
   const loc = nav.current;
   const source = overrideSource || loc?.source;
   if (!source) return;
@@ -1820,18 +1908,18 @@ async function deleteRemoteSelection(overrideSource, overrideKeys) {
   if (!keys.length) return;
   try {
     const p = await api.RemoteDeletePreview(source, keys);
-    const desc = `${p.files} file(s), ${p.folders} folder(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}`;
     if (p.errors?.length) toast(`Warning: ${p.errors.slice(0, 2).join('; ')}`, 'error');
-    const ok = await typedConfirm({
-      title: `Delete from ${source}`,
-      message: `You are about to delete ${desc}.\nRemote sources have no trash or versions — this cannot be undone.`,
-      typeWord: 'delete',
-      okLabel: 'Delete',
+    const desc = `${p.files} file(s), ${p.folders} folder(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}`;
+    const mode = await runDeleteWindow({
+      target: keys.length === 1 ? `${source}:${keys[0]}` : `${source}:${loc?.path || '/'}`,
+      summary: { files: p.files, folders: p.folders, bytes: p.bytes },
+      mode: presetMode,
+      classicTyped: true, // remote deletes have no undo: always the typed word
+      classicMsg: `You are about to delete ${desc}.\nRemote sources have no trash or versions — this cannot be undone.`,
     });
-    if (!ok) return;
+    if (mode === null) return;
     const res = await api.RemoteRemove(source, keys);
-    if (res.errors?.length) toast(`${res.deleted} deleted, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-    else toast(`Deleted ${res.deleted} item(s)`, 'ok');
+    reportDeleteResult(res, (n) => `Deleted ${n} item(s)`);
     refreshCurrent();
   } catch (err) {
     toast(`Delete failed: ${err}`, 'error');
@@ -2328,7 +2416,9 @@ async function dropToLocal(payload, dir) {
 }
 
 // showLocalRowMenu: the side pane's per-row menu (open/copy/cut feed the
-// cross-source clipboard; local file management stays with Explorer).
+// cross-source clipboard). Delete runs the same Delete Window as every
+// other source — local deletion is permanent (no trash), so the window's
+// counts are the safety net.
 function showLocalRowMenu(e, rows) {
   if (localPane.binding.kind === 'remote') return showSideRemoteRowMenu(e, rows);
   if (localPane.binding.kind === 's3') return showSideS3RowMenu(e, rows);
@@ -2340,6 +2430,8 @@ function showLocalRowMenu(e, rows) {
     ['Copy', 'Ctrl+C', () => copySelection()],
     ['Cut', 'Ctrl+X', () => cutSelection()],
     null,
+    ['Delete\u2026', 'Del', () => deleteLocalSelection(rows.map((r) => r.path)), !sel],
+    null,
     ['Properties', 'Alt+Enter', () => {
       const r = rows[0];
       properties(`Properties — ${r.name}`, [
@@ -2349,6 +2441,30 @@ function showLocalRowMenu(e, rows) {
       ]);
     }, sel !== 1],
   ]);
+}
+
+// deleteLocalSelection deletes local files/folders through the unified
+// Delete Window: LocalDeletePreview expands directory trees into counts and
+// bytes first (count-then-act), roots are refused Go-side, and deletion is
+// permanent — the OS trash is not involved.
+async function deleteLocalSelection(paths) {
+  if (!paths?.length) return;
+  try {
+    const p = await api.LocalDeletePreview(paths);
+    const desc = `${p.objects} file(s)${p.folders ? ` in ${p.folders} folder(s)` : ''}${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}`;
+    const mode = await runDeleteWindow({
+      target: paths.length === 1 ? paths[0] : `${paths.length} item(s)`,
+      summary: { objects: p.objects, folders: p.folders, bytes: p.bytes, requiresL2: p.requiresL2 },
+      classicTyped: true, // permanent, no trash: always the typed word
+      classicMsg: `You are about to delete ${desc}.\nLocal deletion is permanent — the Recycle Bin is not used.`,
+    });
+    if (mode === null) return;
+    const res = await api.LocalRemove(paths);
+    reportDeleteResult(res, (n) => `Deleted ${n} item(s)`);
+    localPane.refresh();
+  } catch (err) {
+    toast(`Delete failed: ${err}`, 'error');
+  }
 }
 
 // showSideRemoteRowMenu: per-row menu for a remote-bound side pane — the
@@ -2492,33 +2608,16 @@ function showSideS3RowMenu(e, rows) {
   ]);
 }
 
-// deleteSideS3Selection deletes keys in a bucket of a named S3 source with
-// the same preview + confirm ladder as the main view.
+// deleteSideS3Selection deletes keys in a bucket of a named S3 source —
+// the same Delete Window and type list as the main view, through the
+// source-pinned Source* APIs.
 async function deleteSideS3Selection(source, bucket, keys) {
   if (!keys.length) return;
+  const target = keys.length === 1
+    ? `${source}://${bucket}/${keys[0]}`
+    : `${source}://${bucket}/${localPane.dir || ''}`;
   try {
-    const p = await api.SourcePreviewDelete(source, bucket, keys);
-    const desc = `${p.count} object(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}${p.folders ? ` in ${p.folders} folder(s)` : ''}`;
-    let ok;
-    if (p.requiresL2) {
-      ok = await typedConfirm({
-        title: `Delete from ${source}://${bucket}`,
-        message: `You are about to delete ${desc}.\nThis cannot be undone.`,
-        typeWord: 'delete',
-      });
-    } else {
-      ok = await confirm({
-        title: `Delete from ${source}://${bucket}`,
-        message: `Delete ${desc}? This cannot be undone.`,
-        okLabel: 'Delete',
-        danger: true,
-      });
-    }
-    if (!ok) return;
-    const res = await api.SourceDeleteSelection(source, bucket, keys, p.requiresL2);
-    if (res.errors?.length) toast(`${res.deleted} deleted, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-    else toast(`Deleted ${res.deleted} object(s)`, 'ok');
-    localPane.refresh();
+    await deleteS3Keys(source, bucket, keys, '', target, () => localPane.refresh());
   } catch (err) {
     toast(`Delete failed: ${err}`, 'error');
   }
@@ -2820,6 +2919,13 @@ async function openSettings() {
       showThrottle: () => localStorage.getItem('s3b-show-throttle') === '1',
       editChooseApp: () => localStorage.getItem('s3b-edit-choose-app') !== '0',
       copyVersions: () => localStorage.getItem('s3b-copy-versions') !== '0',
+      cols: () => grid.visibleCols().map((c) => c.id),
+      colsLocal: () => localPane.grid.visibleCols().map((c) => c.id),
+      showHidden: () => localStorage.getItem('s3b-show-hidden') === '1',
+      showMarkers: () => localStorage.getItem('s3b-show-markers') !== '0',
+      delWindow: delWindowOn,
+      delTypeConfirm: delTypedOn,
+      delAutoConfirm: delAutoConfirm,
     },
     apply: {
       theme: (v) => { document.documentElement.dataset.theme = v; localStorage.setItem('s3b-theme', v); },
@@ -2833,6 +2939,13 @@ async function openSettings() {
       showThrottle: (v) => localStorage.setItem('s3b-show-throttle', v ? '1' : '0'),
       editChooseApp: (v) => localStorage.setItem('s3b-edit-choose-app', v ? '1' : '0'),
       copyVersions: (v) => localStorage.setItem('s3b-copy-versions', v ? '1' : '0'),
+      cols: (v) => { grid.setColumns(v); localStorage.setItem('s3b-cols', v.join(',')); },
+      colsLocal: (v) => { localPane.grid.setColumns(v); localStorage.setItem('s3b-cols-local', v.join(',')); },
+      showHidden: (v) => { localStorage.setItem('s3b-show-hidden', v ? '1' : '0'); refreshCurrent(); },
+      showMarkers: (v) => { localStorage.setItem('s3b-show-markers', v ? '1' : '0'); grid.showMarkers = v; grid.render(); },
+      delWindow: (v) => localStorage.setItem('s3b-del-window', v ? '1' : '0'),
+      delTypeConfirm: (v) => localStorage.setItem('s3b-del-typeconfirm', v ? '1' : '0'),
+      delAutoConfirm: (v) => localStorage.setItem('s3b-del-autoconfirm', v ? '1' : '0'),
     },
     log: {
       get: () => logSet,
@@ -2869,8 +2982,16 @@ function mountMenubar() {
     {
       label: t('menu.file'),
       items: [
-        { label: 'Upload Files\u2026', kbd: 'Ctrl+U', action: uploadFiles, enabled: () => st().canUpload },
-        { label: 'Upload Folder\u2026', action: uploadFolder, enabled: () => st().canUpload },
+        // One Upload entry with a Files/Folder submenu — the same selector
+        // every other Upload surface (toolbar, context menus, empty states)
+        // opens.
+        {
+          label: 'Upload',
+          items: [
+            { label: 'Files\u2026', kbd: 'Ctrl+U', action: uploadFiles, enabled: () => st().canUpload },
+            { label: 'Folder\u2026', action: uploadFolder, enabled: () => st().canUpload },
+          ],
+        },
         null,
         { label: 'Import S3 Credential\u2026', action: importCredsUi },
         null,

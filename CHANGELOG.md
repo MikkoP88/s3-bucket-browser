@@ -4,6 +4,67 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.5] — 2026-09-15
+
+Beta cut: deletes and versioning get one unified stage — a pre-counting
+Delete Window on every source type (S3, SFTP/FTP/WebDAV, local pane)
+with a third delete type (all except current version), a typed
+"delete" gate that is always enforced for the destructive modes, and
+version/marker count badges that open per-object and per-folder
+version overviews. Grids gain user-configurable columns, hidden
+(delete-marked) objects become a toggleable ghost view, and Settings
+grows per-column checkboxes for both panes. Everything was validated
+against a real backend: a 305-check visual walk plus an 85-check live
+GUI walk (real browser, real MinIO, real transfers — exercising all
+three delete types, the marker window and the typed gate), and
+`go test -race` green across all packages.
+
+### Added
+
+- **Unified Delete Window (all sources).** Deleting from S3, an
+  SFTP/FTP/WebDAV source or the local pane now goes through one dialog
+  that pre-counts exactly what will be removed (objects/folders/bytes)
+  and names the target path. On versioned buckets it offers three
+  types: **add a delete marker** (default — everything stays
+  restorable), **delete all except current version** (new — keeps the
+  latest version of each object, clears every older version and marker
+  beneath the selection), and **delete permanently** (destroys every
+  version AND marker). The two destructive types always require typing
+  `delete` before the button unlocks — no setting can waive that. The
+  window is on by default; Settings can turn it off (the classic
+  confirm ladder returns), add the typed gate to every delete, or
+  auto-confirm single-item marker deletes. Shift+Del still jumps
+  straight to the permanent path.
+- **Version- and marker-count badges.** Every row in a versioned
+  bucket carries its numbers: ⟲ n (version count — per object, or
+  aggregated for folders) and ⛔ n (delete markers). Clicking ⟲ opens
+  the object's Versions dialog — or the new **Directory Versions**
+  window for folders: current/noncurrent/marker/bytes totals plus the
+  full per-object list, ghosted where nothing live remains. Clicking ⛔
+  opens the **Delete Marker** window with per-marker **Remove**
+  (undo delete) and a Remove-all sweep.
+- **Configurable grid columns.** The column catalog grew (Type, ETag)
+  and Settings now has per-column visibility checkboxes for both the
+  main grid and the side-panel grid (Name stays pinned). Objects whose
+  latest version is a delete marker are hidden from listings by
+  default; "Show hidden (delete-marked) objects" lists them as ghost
+  rows, and the marker icons can be turned off separately.
+
+### Fixed
+
+- **Directory Versions could stick on "Loading…"** — the window now
+  always renders the structured stats instead of a spinner that never
+  resolves.
+
+### Changed
+
+- **"Previous versions…" → "Versions…"** everywhere — the dialog shows
+  the full timeline including the current version, not just older
+  copies.
+- **Every Upload button opens the Files… / Folder… menu** — toolbar,
+  both panes' context menus and empty states now all route through the
+  same native pickers (the Windows-safe dialogs restored in beta.4).
+
 ## [1.1.0-beta.4] — 2026-09-15
 
 Beta cut: versioning takes center stage — a marker-vs-permanent choice

@@ -10,6 +10,7 @@ package versioning
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -21,6 +22,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// errWalkDone stops WalkVersions early without reporting a failure.
+var errWalkDone = errors.New("walk done")
 
 // Version is one entry of an object's version timeline (a real object
 // version or a delete marker).
@@ -354,13 +358,70 @@ func DeleteAllVersions(ctx context.Context, client *s3.Client, bucket, key strin
 	return deleteIdentifiers(ctx, client, bucket, ids)
 }
 
+// DeleteKeepCurrent permanently removes every version and delete marker of
+// exactly one key EXCEPT its current (IsLatest) entry: the object stays as
+// it is right now, its whole history is destroyed (L3). A key whose current
+// entry is a delete marker stays deleted — only the marker remains.
+func DeleteKeepCurrent(ctx context.Context, client *s3.Client, bucket, key string) (transfer.DeleteResult, error) {
+	vers, err := ListForObject(ctx, client, bucket, key)
+	if err != nil {
+		return transfer.DeleteResult{}, err
+	}
+	ids := make([]s3types.ObjectIdentifier, 0, len(vers))
+	for _, v := range vers {
+		if v.IsLatest {
+			continue
+		}
+		ids = append(ids, s3types.ObjectIdentifier{
+			Key:       aws.String(key),
+			VersionId: aws.String(v.VersionID),
+		})
+	}
+	return deleteIdentifiers(ctx, client, bucket, ids)
+}
+
+// ListMarkers returns up to cap delete markers under prefix (the Delete
+// Marker window), newest first. cap <= 0 means no cap. Truncation is not
+// hidden from the caller: compare len(out) to cap.
+func ListMarkers(ctx context.Context, client *s3.Client, bucket, prefix string, cap int) ([]Version, error) {
+	var out []Version
+	err := WalkVersions(ctx, client, bucket, prefix, func(v Version) error {
+		if !v.IsDeleteMarker {
+			return nil
+		}
+		out = append(out, v)
+		if cap > 0 && len(out) >= cap {
+			return errWalkDone
+		}
+		return nil
+	})
+	if err == errWalkDone {
+		err = nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		at, bt := time.Time{}, time.Time{}
+		if out[i].LastModified != nil {
+			at = *out[i].LastModified
+		}
+		if out[j].LastModified != nil {
+			bt = *out[j].LastModified
+		}
+		return at.After(bt)
+	})
+	return out, nil
+}
+
 // PurgeMode selects what Purge removes under a prefix.
 type PurgeMode string
 
 const (
-	PurgeNoncurrent PurgeMode = "noncurrent" // all versions that are not IsLatest
-	PurgeMarkers    PurgeMode = "markers"    // all delete markers
-	PurgeAll        PurgeMode = "all"        // every version + marker (L3: objects vanish permanently)
+	PurgeNoncurrent  PurgeMode = "noncurrent"  // all versions that are not IsLatest
+	PurgeMarkers     PurgeMode = "markers"     // all delete markers
+	PurgeAll         PurgeMode = "all"         // every version + marker (L3: objects vanish permanently)
+	PurgeKeepCurrent PurgeMode = "keepcurrent" // every version + marker EXCEPT each key's current one
 )
 
 // CountPurge reports how many versions/markers a purge would remove
@@ -373,6 +434,10 @@ func CountPurge(ctx context.Context, client *s3.Client, bucket, prefix string, m
 			n++
 		case PurgeNoncurrent:
 			if !v.IsDeleteMarker && !v.IsLatest {
+				n++
+			}
+		case PurgeKeepCurrent:
+			if !v.IsLatest {
 				n++
 			}
 		case PurgeMarkers:
@@ -393,6 +458,10 @@ func Purge(ctx context.Context, client *s3.Client, bucket, prefix string, mode P
 		case PurgeAll:
 		case PurgeNoncurrent:
 			if v.IsDeleteMarker || v.IsLatest {
+				return nil
+			}
+		case PurgeKeepCurrent:
+			if v.IsLatest {
 				return nil
 			}
 		case PurgeMarkers:

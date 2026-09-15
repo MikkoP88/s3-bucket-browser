@@ -8,6 +8,7 @@
 import { el, multiSel } from './util.js';
 import { t, languages, LANG_NAMES } from './i18n.js';
 import { openModal, confirm } from './dialogs.js';
+import { COLUMNS } from './grid.js';
 
 const AR_STEPS = [0, 5000, 10000, 30000, 60000];
 
@@ -39,6 +40,26 @@ function select(options, value, onchange) {
 
 function checkbox(checked, onchange) {
   return el('input', { type: 'checkbox', class: 'set-ctl', checked: !!checked, onchange: (e) => onchange(e.target.checked) });
+}
+
+// colSection renders one grid's column-visibility group: a checkbox per
+// column of the catalog. The identity "Name" column is always visible —
+// shown locked rather than hidden. apply receives the full visible-id list
+// on every change.
+function colSection(labelKey, cur, apply) {
+  const on = new Set(cur);
+  return [
+    el('div', { class: 'set-section', text: t(labelKey) }),
+    ...COLUMNS.map((c) => {
+      const locked = c.id === 'name';
+      const cb = el('input', { type: 'checkbox', class: 'set-ctl', checked: locked || on.has(c.id), disabled: locked });
+      cb.addEventListener('change', () => {
+        if (cb.checked) on.add(c.id); else on.delete(c.id);
+        apply(COLUMNS.filter((x) => on.has(x.id)).map((x) => x.id));
+      });
+      return row(t(c.labelKey), cb, locked ? t('settings.colLocked') : '');
+    }),
+  ];
 }
 
 // logFileRow builds the save-logs-to-file control: a select (off / app
@@ -132,6 +153,16 @@ export function settingsDialog(ctx) {
     el('div', { class: 'set-section', text: t('settings.view') }),
     row(t('settings.panes'), checkbox(s.panes(), (v) => a.panes(v)), 'F9'),
     row(t('settings.log'), checkbox(s.log(), (v) => a.log(v)), 'Ctrl+L'),
+    row(t('settings.showHidden'), checkbox(s.showHidden?.() || false, (v) => a.showHidden?.(v)), t('settings.showHiddenHint')),
+    row(t('settings.showMarkers'), checkbox(s.showMarkers?.() ?? true, (v) => a.showMarkers?.(v)), t('settings.showMarkersHint')),
+
+    ...colSection('settings.colsMain', s.cols?.() || [], (v) => a.cols?.(v)),
+    ...colSection('settings.colsSide', s.colsLocal?.() || [], (v) => a.colsLocal?.(v)),
+
+    el('div', { class: 'set-section', text: t('settings.delSection') }),
+    row(t('settings.delWindow'), checkbox(s.delWindow?.() ?? true, (v) => a.delWindow?.(v)), t('settings.delWindowHint')),
+    row(t('settings.delTypeConfirm'), checkbox(s.delTypeConfirm?.() || false, (v) => a.delTypeConfirm?.(v)), t('settings.delTypeConfirmHint')),
+    row(t('settings.delAutoConfirm'), checkbox(s.delAutoConfirm?.() || false, (v) => a.delAutoConfirm?.(v)), t('settings.delAutoConfirmHint')),
 
     el('div', { class: 'set-section', text: t('settings.editing') }),
     row(t('settings.editChooseApp'), checkbox(s.editChooseApp?.() ?? true, (v) => a.editChooseApp?.(v)), t('settings.editChooseAppHint')),

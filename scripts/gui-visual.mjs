@@ -512,10 +512,27 @@ function shim() {
     PreviewDelete: (bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
     DeleteSelection: (_bucket, keys, _l2) => ({ deleted: keys.length, errors: [] }),
     DeleteSelectionPermanent: (_bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
+    DeleteSelectionKeepCurrent: (_bucket, keys, _force) => ({ deleted: keys.length, errors: [] }),
     // delete-marker badges (versioned folders): per-immediate-child
     // aggregates keyed `${bucket}/${prefix}` — mirrors PrefixVersionSummary
     PrefixVersionSummary: (bucket, prefix) => JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || [])),
-    RemoteDeletePreview: () => ({ n: 1 }),
+    // Directory Versions window: bounded stats pass over the subtree
+    PrefixVersionStats: () => ({ currentObjects: 3, versions: 9, deleteMarkers: 2, noncurrent: 4, noncurrentBytes: 12345 }),
+    // Delete Marker window feed: two markers under a folder key, or on the
+    // exact file key itself
+    PrefixMarkers: (_bucket, key, _exact) => {
+      const k = key.endsWith('/') ? `${key}legacy/old.txt` : key;
+      return {
+        markers: [
+          { key: k, versionId: 'vm-0001', lastModified: daysAgo(2), isLatest: true },
+          { key: k, versionId: 'vm-0002', lastModified: daysAgo(9), isLatest: false },
+        ],
+        truncated: false,
+      };
+    },
+    UndoDelete: () => ({}),
+    RemoteDeletePreview: (_src, keys) => ({ files: keys.length, folders: 0, bytes: 4096 }),
+    RemoteRemove: (_src, keys) => ({ deleted: keys.length, errors: [] }),
     PresignObject: (bucket, key) => `https://${bucket}.s3.visual.shim/${key}?X-Amz-Signature=visual`,
     StatObject: (bucket, key) => (key.endsWith('/')
       ? { key, isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
@@ -557,11 +574,15 @@ function shim() {
     SourcePreviewDelete: (_src, _bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
     SourceDeleteSelection: (_src, _bucket, keys) => ({ deleted: keys.length, errors: [] }),
     SourceDeleteSelectionPermanent: (_src, _bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
+    SourceDeleteSelectionKeepCurrent: (_src, _bucket, keys, _force) => ({ deleted: keys.length, errors: [] }),
     SourcePrefixVersionSummary: (_src, bucket, prefix) => JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || [])),
     SourceRenameObject: () => ({}),
     SourceCreateFolder: () => ({}),
     // ---- OS interop ----
     PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
+    // local delete (side pane): count-then-act preview + permanent remove
+    LocalDeletePreview: (paths) => ({ objects: paths.length, folders: 0, bytes: 4096, requiresL2: false }),
+    LocalRemove: (paths) => ({ deleted: paths.length, errors: [] }),
     OsClipboardFiles: () => JSON.parse(JSON.stringify(world.osClip || [])),
     OsClipboardSetFiles: (paths) => { world.osClip = paths; return {}; },
     StageClipboardDir: () => 'C:\\Users\\demo\\AppData\\Local\\Temp\\s3b-clip-1',
@@ -1097,6 +1118,16 @@ await step('settings-dialog', async () => {
   await ok('file-log multi-select filters present', evalPage(() => document.querySelectorAll('#modal-root .ms-btn').length >= 2));
   await ok('reset-to-defaults offered', evalPage(() => Array.from(document.querySelectorAll('#modal-root button'))
     .some((b) => /reset to defaults/i.test(b.textContent))));
+  await ok('delete + column + visibility settings rows present', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-row')).map((r) => r.textContent);
+    const secs = Array.from(document.querySelectorAll('#modal-root .set-section')).map((s) => s.textContent);
+    return secs.some((x) => /main grid columns/i.test(x)) && secs.some((x) => /side panel columns/i.test(x))
+      && rows.some((x) => /always use the delete window/i.test(x))
+      && rows.some((x) => /require typing/i.test(x))
+      && rows.some((x) => /delete without prompting/i.test(x))
+      && rows.some((x) => /show delete marker icons/i.test(x))
+      && rows.some((x) => /show hidden \(delete-marked\) objects/i.test(x));
+  }));
   await shot('settings-new-rows');
   // ticking a level in the file-log filter persists via SetLogSettings;
   // the current mode rides along unchanged (file-only filters)
@@ -1482,110 +1513,288 @@ await step('prompts-and-delete-gates', async () => {
     return i && i.value === 'new-folder';
   }));
   await closeModal();
-  // Delete gate on a VERSIONED bucket: the mode choice comes first
-  // (marker default) — cancel out of it
+  // Delete gate on a VERSIONED bucket: the unified Delete Window opens
+  // with all three delete types (marker default) — cancel out of it
   await clickRow('readme.md');
   await page.keyboard.press('Delete');
-  await waitFor(modalVisible, 4000, 'delete choice dialog');
-  await ok('delete choice shows both modes', (await evalPage(() => document.getElementById('modal-root').textContent)).length > 10);
-  await ok('delete choice layout clean', (await layoutAudit()).ok);
+  await waitFor(modalVisible, 4000, 'delete window');
+  await ok('delete window offers three types, marker default', evalPage(() => {
+    const rs = Array.from(document.querySelectorAll('#modal-root .vcv-row input[type=radio]'));
+    return rs.length === 3 && rs[0].checked && rs[0].value === '' && /marker/i.test(rs[0].closest('label').textContent);
+  }));
+  await ok('delete window layout clean', (await layoutAudit()).ok);
   await closeModal();
 });
 
-await step('delete-choice-marker', async () => {
+await step('delete-window-marker', async () => {
+  // versioned bucket: the window lists all three delete types with the
+  // marker ('') default. The typed partition is OFF by default (a Settings
+  // opt-in) — one click of the danger button runs the marker delete;
+  // there is no second confirm behind it.
   await navObjects('testijotain');
+  await resetCalls();
   await clickRow('readme.md');
   await page.keyboard.press('Delete');
-  await waitFor(modalVisible, 4000, 'delete choice dialog');
-  await ok('choice offers marker + permanent', evalPage(() => {
+  await waitFor(modalVisible, 4000, 'delete window');
+  await ok('window lists marker / keep-current / permanent', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#modal-root .vcv-row'));
-    return rows.length === 2 && /marker/i.test(rows[0].textContent) && /permanent/i.test(rows[1].textContent);
+    return rows.length === 3 && /marker/i.test(rows[0].textContent)
+      && /except current version/i.test(rows[1].textContent) && /permanent/i.test(rows[2].textContent);
   }));
-  await ok('marker is the default', evalPage(() => {
-    const mk = document.querySelectorAll('#modal-root .vcv-row input')[0];
-    return mk && mk.checked && mk.value === 'marker';
+  await ok('window states the target + counts', evalPage(() => {
+    const t = document.getElementById('modal-root').textContent;
+    return t.includes('s3://testijotain/readme.md') && /1 object\(s\)/.test(t);
   }));
-  await shot('delete-choice');
+  await ok('typed partition greyed out by default', evalPage(() => {
+    const c = document.querySelector('#modal-root .delw-confirm');
+    return c.classList.contains('off') && c.querySelector('input').disabled;
+  }));
+  await shot('delete-window');
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
-  // marker path: the confirm explains restorability (versioned bucket)
-  await waitFor(async () => (await txt('#modal-root')).includes('restored'), 4000, 'marker confirm');
-  await ok('marker confirm layout clean', (await layoutAudit()).ok);
-  await shot('delete-marker-confirm');
-  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
-  await waitFor(async () => (await findCall('DeleteSelection')) !== null, 4000, 'DeleteSelection (marker)');
-  const c = await findCall('DeleteSelection');
-  await ok('DeleteSelection got the key', c && JSON.stringify(c.args[1]).includes('readme.md'));
+  await waitFor(async () => (await findCall('DeleteSelection')) !== null
+    || (await findCall('SourceDeleteSelection')) !== null, 4000, 'DeleteSelection (marker)');
+  const c = (await findCall('DeleteSelection')) || (await findCall('SourceDeleteSelection'));
+  await ok('DeleteSelection got the key', c && JSON.stringify(c.args).includes('readme.md'));
   await ok('marker path stayed marker', (await findCall('DeleteSelectionPermanent')) === null
-    && (await findCall('SourceDeleteSelectionPermanent')) === null);
+    && (await findCall('SourceDeleteSelectionPermanent')) === null
+    && (await findCall('DeleteSelectionKeepCurrent')) === null
+    && (await findCall('SourceDeleteSelectionKeepCurrent')) === null);
 });
 
-await step('delete-choice-permanent', async () => {
-  // same dialog, permanent branch: typed 'permanent' gate, then the
-  // count-then-act backend with force=true
+await step('delete-window-keepcurrent', async () => {
+  // the third delete type: everything but the current version goes. It is
+  // an L3 mode — the typed word is forced on and the danger button stays
+  // locked until the literal 'delete'.
+  await clickRow('readme.md');
+  await page.keyboard.press('Delete');
+  await waitFor(modalVisible, 4000, 'delete window');
+  await evalPage(() => {
+    const kc = Array.from(document.querySelectorAll('#modal-root .vcv-row input')).find((i) => i.value === 'keepcurrent');
+    kc.click();
+  });
+  await ok('keep-current forces the typed word', evalPage(() => {
+    const c = document.querySelector('#modal-root .delw-confirm');
+    const b = document.querySelector('#modal-root .modal-foot .btn.danger');
+    return !c.classList.contains('off') && !c.querySelector('input').disabled && b.disabled;
+  }));
+  await shot('delete-keepcurrent');
+  await evalPage(() => { document.querySelector('#modal-root .delw-confirm input').focus(); });
+  await page.keyboard.type('delete');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('DeleteSelectionKeepCurrent')) !== null
+    || (await findCall('SourceDeleteSelectionKeepCurrent')) !== null, 4000, 'DeleteSelectionKeepCurrent');
+  const c = (await findCall('DeleteSelectionKeepCurrent')) || (await findCall('SourceDeleteSelectionKeepCurrent'));
+  await ok('keep-current got the key', c && JSON.stringify(c.args).includes('readme.md'));
+});
+
+await step('delete-window-permanent', async () => {
+  // same window, permanent branch: picking the L3 radio wakes the typed
+  // gate (always forced for destructive modes) — the button unlocks only
+  // on the literal word 'delete', then force=true reaches the backend
   await clickRow('budget-2026.xlsx');
   await page.keyboard.press('Delete');
-  await waitFor(modalVisible, 4000, 'delete choice dialog');
+  await waitFor(modalVisible, 4000, 'delete window');
   await evalPage(() => {
     const pm = Array.from(document.querySelectorAll('#modal-root .vcv-row input')).find((i) => i.value === 'permanent');
     pm.click();
   });
+  await ok('L3 mode wakes the typed gate', evalPage(() => {
+    const c = document.querySelector('#modal-root .delw-confirm');
+    const b = document.querySelector('#modal-root .modal-foot .btn.danger');
+    return !c.classList.contains('off') && !c.querySelector('input').disabled && b.disabled
+      && /permanently/i.test(b.textContent);
+  }));
+  // wrong word: the gate must not unlock
+  await evalPage(() => { document.querySelector('#modal-root .delw-confirm input').focus(); });
+  await page.keyboard.type('nope');
+  await sleep(80);
+  await ok('wrong word keeps the button locked', evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').disabled));
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type('delete');
+  await sleep(80);
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
-  await waitFor(async () => (await txt('#modal-root')).includes('to confirm'), 4000, 'typed permanent confirm');
-  // wrong word: the gate must not close
-  await evalPage(() => { document.querySelector('#modal-root input').value = 'nope'; });
-  await evalPage(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((b) => /delete/i.test(b.textContent)).click());
-  await sleep(120);
-  await ok('wrong word keeps the dialog open', await modalVisible());
-  await evalPage(() => { const i = document.querySelector('#modal-root input'); i.value = ''; i.focus(); });
-  await page.keyboard.type('permanent');
-  await evalPage(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((b) => /delete/i.test(b.textContent)).click());
   // the view may be source-pinned: the plain and Source-pinned backends are
   // equivalent here — accept whichever fired
   await waitFor(async () => (await findCall('DeleteSelectionPermanent')) !== null
     || (await findCall('SourceDeleteSelectionPermanent')) !== null, 4000, 'DeleteSelectionPermanent');
   const c = (await findCall('DeleteSelectionPermanent')) || (await findCall('SourceDeleteSelectionPermanent'));
-  await ok('permanent sent force + the key', c && c.args[c.args.length - 1] === true && JSON.stringify(c.args).includes('budget-2026.xlsx'));
+  // force now mirrors the preview's requiresL2 — the window itself already
+  // collected the L3 confirmation — so assert the key routing only
+  await ok('permanent got the key', c && JSON.stringify(c.args).includes('budget-2026.xlsx'));
 });
 
 await step('shift-del-permanent-directory', async () => {
-  // Shift+Del skips the choice: straight to the typed gate. A DIRECTORY
-  // key must reach the backend intact — purge-everything semantics, not
-  // the old per-key folder-marker-only delete.
+  // Shift+Del opens the window PRESET to the permanent mode — the typed
+  // partition is live from the start. A DIRECTORY key must reach the
+  // backend intact — purge-everything semantics, not the old per-key
+  // folder-marker-only delete.
+  await resetCalls();
   await clickRow('photos');
   await page.keyboard.press('Shift+Delete');
-  await waitFor(async () => (await txt('#modal-root')).includes('to confirm'), 4000, 'shift+del typed confirm');
-  await page.keyboard.type('permanent');
-  await evalPage(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((b) => /delete/i.test(b.textContent)).click());
+  await waitFor(modalVisible, 4000, 'shift+del window');
+  await ok('preset to permanent with a live typed gate', evalPage(() => {
+    const rs = Array.from(document.querySelectorAll('#modal-root .vcv-row input[type=radio]'));
+    const c = document.querySelector('#modal-root .delw-confirm');
+    return rs.length === 3 && rs.find((r) => r.value === 'permanent').checked
+      && !c.classList.contains('off') && !c.querySelector('input').disabled;
+  }));
+  await evalPage(() => { document.querySelector('#modal-root .delw-confirm input').focus(); });
+  await page.keyboard.type('delete');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
   await waitFor(async () => (await findCall('DeleteSelectionPermanent')) !== null
     || (await findCall('SourceDeleteSelectionPermanent')) !== null, 4000, 'Shift+Del permanent');
   const c = (await findCall('DeleteSelectionPermanent')) || (await findCall('SourceDeleteSelectionPermanent'));
   await ok('directory key routed to the purge backend', c && JSON.stringify(c.args).includes('photos/'));
 });
 
-await step('marker-badges', async () => {
-  // delete-marker badges: file rows carry a marker count, folder rows the
-  // aggregate beneath them, and an all-delete-marked folder says so
+await step('version-marker-badges', async () => {
+  // count badges: file rows carry their own version/marker counts, folder
+  // rows the aggregate beneath them, and an all-delete-marked folder is
+  // ghosted (its rows count as hidden, shown greyed when un-hidden)
   await navObjects('testijotain');
-  await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .vmark'))
-    .some((v) => v.textContent.includes('\u26D4'))), 4000, 'marker badges rendered');
-  const badge = (label) => evalPage((l) => {
+  await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .vbadge, #grid-body .mbadge'))
+    .some((v) => v.textContent.trim() !== '')), 4000, 'count badges rendered');
+  const badges = (label) => evalPage((l) => {
     const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === l);
-    const v = r?.querySelector('.vmark');
-    return v ? { text: v.textContent, title: v.title } : null;
+    if (!r) return null;
+    const v = r.querySelector('.vbadge');
+    const m = r.querySelector('.mbadge');
+    return {
+      v: v?.textContent.trim() || '', vt: v?.title || '',
+      m: m?.textContent.trim() || '', mt: m?.title || '',
+      ghost: r.classList.contains('ghost'),
+    };
   }, label);
-  const rd = await badge('readme.md');
-  await ok('file badge shows the marker count', rd && rd.text.includes('\u26D4 1') && rd.title.includes('4'));
-  const noBadge = await badge('scan.png');
-  await ok('marker-free rows stay bare', noBadge && noBadge.text === '');
-  const docs = await badge('docs');
-  await ok('folder badge aggregates markers', docs && docs.text.includes('\u26D4 2'));
+  const rd = await badges('readme.md');
+  await ok('file row shows version + marker counts', rd && rd.v.includes('4') && rd.m.includes('1') && rd.mt.includes('1'));
+  const bare = await badges('scan.png');
+  await ok('version-free rows stay bare', bare && bare.v === '' && bare.m === '' && !bare.ghost);
+  const docs = await badges('docs');
+  await ok('folder row aggregates counts', docs && docs.v.includes('6') && docs.m.includes('2'));
+  await shot('count-badges');
   await dblClickRow('docs');
   await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('legacy/')), 4000, 'docs children');
-  await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .vmark'))
-    .some((v) => v.textContent.includes('all deleted'))), 4000, 'all-deleted badge');
-  const legacy = await badge('legacy');
-  await ok('all-deleted folder badge', legacy && legacy.text.includes('all deleted') && legacy.title.includes('all deleted'));
+  const legacy = await badges('legacy');
+  await ok('all-deleted folder is ghosted with its marker count', legacy && legacy.ghost && legacy.m.includes('1') && legacy.v.includes('1'));
   await shot('marker-badges');
+});
+
+await step('marker-window', async () => {
+  // clicking the marker badge opens the Delete Marker window: listed
+  // markers newest first, per-row Remove (undo delete), bulk Remove all
+  await navObjects('testijotain');
+  await resetCalls();
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'readme.md');
+    r.querySelector('.mbadge').click();
+  });
+  await waitFor(async () => (await findCall('PrefixMarkers')) !== null, 4000, 'PrefixMarkers');
+  await waitFor(async () => (await txt('#modal-root')).includes('delete marker'), 4000, 'marker window content');
+  await ok('markers listed with version ids', evalPage(() => document.querySelectorAll('#modal-root .ver-row').length === 2
+    && /vm-0001/.test(document.getElementById('modal-root').textContent)
+    && /latest/.test(document.getElementById('modal-root').textContent)));
+  await ok('marker window layout clean', (await layoutAudit()).ok);
+  await shot('marker-window');
+  await evalPage(() => Array.from(document.querySelectorAll('#modal-root .ver-row .btn'))
+    .find((b) => /remove/i.test(b.textContent)).click());
+  await waitFor(async () => (await findCall('UndoDelete')) !== null, 4000, 'UndoDelete');
+  const u = await findCall('UndoDelete');
+  await ok('undo carries key + version id', u && JSON.stringify(u.args).includes('readme.md') && JSON.stringify(u.args).includes('vm-0001'));
+  await closeModal();
+});
+
+await step('dir-versions-window', async () => {
+  // clicking the version badge on a FOLDER opens Directory Versions:
+  // structured totals + per-child aggregates; it must never hang on
+  // "Loading…" (the old subtree timeline did)
+  await navObjects('testijotain');
+  await resetCalls();
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'docs');
+    r.querySelector('.vbadge').click();
+  });
+  await waitFor(async () => (await findCall('PrefixVersionStats')) !== null, 4000, 'PrefixVersionStats');
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .dirv-stat').length)) >= 5, 4000, 'dir version stats');
+  await ok('stats replaced Loading with numbers', evalPage(() => {
+    const t = document.getElementById('modal-root').textContent;
+    return !t.trimStart().startsWith('Loading') && /Current objects/.test(t) && t.includes('9');
+  }));
+  await ok('child aggregates listed, all-deleted child ghosted', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .ver-row'));
+    return rows.length === 2 && rows.some((r) => /legacy/.test(r.textContent) && r.classList.contains('ghost'));
+  }));
+  await ok('dir versions layout clean', (await layoutAudit()).ok);
+  await shot('dir-versions');
+  await closeModal();
+});
+
+await step('delete-settings-modes', async () => {
+  // Settings steer the confirmation ladder: auto-confirm skips every
+  // prompt for single-type sources; window-off falls back to the classic
+  // confirm; typed-confirm arms the window's typed partition.
+  const wipeKeys = () => evalPage(() => {
+    for (const k of ['s3b-del-autoconfirm', 's3b-del-window', 's3b-del-typeconfirm']) localStorage.removeItem(k);
+  });
+  // the virtual grid may still be recycling the previous view's rows when
+  // navObjects returns — wait for the actual target row before clicking
+  const awaitRow = (label) => waitFor(() => evalPage((x) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .some((r) => r.style.display !== 'none' && r._model && r._model.name === x), label), 6000, `row ${label}`);
+  await wipeKeys();
+  // auto-confirm: a single-type source deletes with NO dialog at all (the
+  // logs live inside the app/ folder — the bucket root shows only app/)
+  await navObjects('logs-2026');
+  await awaitRow('app');
+  await dblClickRow('app');
+  await awaitRow('app-2026-09-11.log');
+  await resetCalls();
+  await evalPage(() => localStorage.setItem('s3b-del-autoconfirm', '1'));
+  await clickRow('app-2026-09-11.log');
+  await page.keyboard.press('Delete');
+  await waitFor(async () => (await findCall('DeleteSelection')) !== null
+    || (await findCall('SourceDeleteSelection')) !== null, 4000, 'auto-confirm DeleteSelection');
+  await ok('no dialog on auto-confirm', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
+  await wipeKeys();
+  // window disabled + single-type source: the classic plain confirm
+  await navObjects('media-assets');
+  await awaitRow('brand');
+  await resetCalls();
+  await evalPage(() => localStorage.setItem('s3b-del-window', '0'));
+  await clickRow('brand');
+  await page.keyboard.press('Delete');
+  await waitFor(modalVisible, 4000, 'classic confirm');
+  await ok('classic confirm explains the stakes', evalPage(() => {
+    const t = document.getElementById('modal-root').textContent;
+    return /about to delete/.test(t) && /cannot be undone/.test(t);
+  }));
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('DeleteSelection')) !== null
+    || (await findCall('SourceDeleteSelection')) !== null, 4000, 'classic DeleteSelection');
+  // typed confirmation ON (window back on): the partition is armed even
+  // for the safe single-type window
+  await wipeKeys();
+  await evalPage(() => localStorage.setItem('s3b-del-typeconfirm', '1'));
+  await navObjects('logs-2026');
+  await awaitRow('app');
+  await dblClickRow('app');
+  await awaitRow('app-2026-09-10.log');
+  await resetCalls();
+  await clickRow('app-2026-09-10.log');
+  await page.keyboard.press('Delete');
+  await waitFor(modalVisible, 4000, 'typed window');
+  await ok('typed partition armed by Settings', evalPage(() => {
+    const c = document.querySelector('#modal-root .delw-confirm');
+    const b = document.querySelector('#modal-root .modal-foot .btn.danger');
+    return !c.classList.contains('off') && !c.querySelector('input').disabled && b.disabled;
+  }));
+  await evalPage(() => { document.querySelector('#modal-root .delw-confirm input').focus(); });
+  await page.keyboard.type('delete');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('DeleteSelection')) !== null
+    || (await findCall('SourceDeleteSelection')) !== null, 4000, 'typed window DeleteSelection');
+  await wipeKeys();
 });
 
 await step('transfers', async () => {
@@ -1631,6 +1840,58 @@ await step('dual-pane', async () => {
   await shot('pane-s3');
   await page.selectOption('#local-src', 'local');
   await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane back to local');
+});
+
+await step('side-pane-delete-window', async () => {
+  // remote (sftp) and local side panes route through the same unified
+  // Delete Window: count-then-act previews first, one danger click each.
+  // Wipe the delete Settings first — a leaked auto-confirm key from an
+  // aborted step would silently skip the window here.
+  await evalPage(() => {
+    for (const k of ['s3b-del-autoconfirm', 's3b-del-window', 's3b-del-typeconfirm']) localStorage.removeItem(k);
+  });
+  await page.selectOption('#local-src', 'src-box');
+  await waitFor(async () => (await sideKeys()).includes('/db.dump'), 6000, 'pane remote listing');
+  await resetCalls();
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#local-grid-body .grid-row')).find((x) => x._model && x._model.key === '/db.dump');
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  });
+  await sleep(80);
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /^delete/i.test(i.textContent.trim()));
+    it?.click();
+  });
+  await waitFor(modalVisible, 4000, 'remote delete window');
+  await ok('remote window shows the counted summary', evalPage(() => {
+    const t = document.getElementById('modal-root').textContent;
+    return t.includes('/db.dump') && /1 object\(s\)/.test(t);
+  }));
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('RemoteRemove')) !== null, 4000, 'RemoteRemove');
+  const rc = await findCall('RemoteRemove');
+  await ok('RemoteRemove got the path', rc && JSON.stringify(rc.args).includes('/db.dump'));
+  // local binding: same window, LocalDeletePreview → LocalRemove
+  await page.selectOption('#local-src', 'local');
+  await waitFor(async () => !!(await sideRow('notes.txt')), 6000, 'pane back to local');
+  await resetCalls();
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#local-grid-body .grid-row')).find((x) => x._model && x._model.name === 'notes.txt');
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  });
+  await sleep(80);
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /^delete/i.test(i.textContent.trim()));
+    it?.click();
+  });
+  await waitFor(async () => (await findCall('LocalDeletePreview')) !== null, 4000, 'LocalDeletePreview');
+  await waitFor(modalVisible, 4000, 'local delete window');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('LocalRemove')) !== null, 4000, 'LocalRemove');
+  const lc = await findCall('LocalRemove');
+  await ok('LocalRemove got the path', lc && JSON.stringify(lc.args).includes('notes.txt'));
 });
 
 await step('compare', async () => {

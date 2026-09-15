@@ -9,7 +9,7 @@
 
 | Tool | Platforms | License | S3 admin depth | Versioning UX | CLI | Main weakness |
 |---|---|---|---|---|---|---|
-| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock); SFTP/SCP, FTP/FTPS and local sources ride the same UI and CLI | First-class (timeline, restore, undo delete, marker-vs-permanent delete choice, delete-marker badges, purge, force-empty versioned buckets) | Yes — same binary, same engine | Beta: Windows artifacts are Authenticode-signed with a self-signed "s3b Project" certificate (public key at scripts/certs/s3b-signing.cer; a CA cert drops in via repo secrets); SBOM + SHA256SUMS ship per release; no CloudFront/KMS consoles; single maintainer |
+| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock); SFTP/SCP, FTP/FTPS and local sources ride the same UI and CLI | First-class (timeline, restore, undo delete, three-way marker / keep-current / permanent Delete Window, version- and marker-count badges, purge, force-empty versioned buckets) | Yes — same binary, same engine | Beta: Windows artifacts are Authenticode-signed with a self-signed "s3b Project" certificate (public key at scripts/certs/s3b-signing.cer; a CA cert drops in via repo secrets); SBOM + SHA256SUMS ship per release; no CloudFront/KMS consoles; single maintainer |
 | **S3 Browser / "CS Browser" 13.x** (s3browser.com) | Windows only | Freeware; Pro paid | Deep (policy, ACL, CORS, lifecycle, CloudFront) | Yes, incl. delete versions | No | Windows-only, closed-source, dated UI |
 | **Cyberduck** | Win, macOS | GPL-3.0 (copyleft) | Medium (versioning, lifecycle, logging, storage class, SSE) | Partial | `duck` (separate) | GPL, Java footprint, no Linux desktop, generic multi-protocol (S3 not first-class) |
 | **MSP360 (CloudBerry) Explorer** | Win, macOS | Freemium (1 account free) | Medium-deep | Yes | No (separate paid) | Paywalls for sync/encryption/multi-account |
@@ -35,13 +35,15 @@ this project fills.
    details view with sortable columns, breadcrumbs, folder tree, context
    menus — plus a WinSCP-style dual-pane local browser with directory
    compare.
-2. **Versioning done right.** Per-object version timeline ("Previous
-   Versions"), restore-as-latest, one-click undo delete for delete markers,
-   an explicit marker-vs-permanent choice on every versioned delete,
-   per-row delete-marker badges, permanent destroy of specific versions,
-   bulk purge of noncurrent versions, and force-emptying of versioned
-   buckets (markers included). The single most requested, worst-served S3
-   pain.
+2. **Versioning done right.** Per-object version timeline one click
+   away (the row's version-count badge), folder-level Directory
+   Versions overviews, restore-as-latest, one-click undo delete for
+   delete markers (per-marker window included), a three-way marker /
+   keep-current / permanent choice in a unified Delete Window,
+   per-row version- and marker-count badges, permanent destroy of
+   specific versions, bulk purge of noncurrent versions, and
+   force-emptying of versioned buckets (markers included). The single
+   most requested, worst-served S3 pain.
 3. **One binary, GUI + CLI parity.** Cyberduck's `duck` and MSP360's CLI
    are afterthoughts or paid; here the CLI is a first-class citizen with
    the same core engine, JSON output everywhere and shell completions.

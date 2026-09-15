@@ -17,8 +17,9 @@
 //   log area → settings (theme) → profile save (Ctrl+S, encrypted file on
 //   disk) → reload → close profile → open (wrong + right password) →
 //   server restart (session-only sources vanish, settings survive) →
-//   cleanup through the UI: marker delete (choice dialog, restorable) →
-//   ⛔ all-deleted folder badge → permanent purge (versions + markers gone).
+//   cleanup through the UI: marker delete via the unified Delete Window
+//   (restorable) → ⛔ marker-count folder badge → permanent purge
+//   (typed "delete", versions + markers gone).
 //
 // Credentials NEVER live here: S3B_ACCESS_KEY / S3B_SECRET_KEY must be set
 // (same envs the CLI uses). Bucket/endpoint/region via S3B_BUCKET /
@@ -29,8 +30,8 @@
 // is the "existing data" marker the browse/cleanup steps assert on, so the
 // walk also runs against a fresh bucket that only holds the seed folder.
 // The bucket MUST have versioning enabled (the versions/A-B steps need it,
-// and the cleanup step asserts the versioned delete-choice dialog, the
-// all-deleted folder badge and the permanent purge).
+// and the cleanup step asserts the three-type Delete Window, the
+// marker-count folder badge and the permanent purge).
 // The remote-engine section rides on the same local containers
 // scripts/e2e-cross.sh uses (SFTP :2222 / FTP :2121 / WebDAV :7070, all
 // e2e:e2epass) and is included per-engine only while its port answers —
@@ -356,14 +357,15 @@ async function addRemoteSource({ label, type, port, root }) {
   await waitFor(async () => txt('#breadcrumb').then((s) => s.includes(`live-${label}`)), 15000, `${label} root`);
 }
 
-// pickDeleteMode drives the versioned-bucket delete choice dialog: verify
-// both radios, pick the mode, press Delete (the follow-up confirm gate is
-// the caller's job).
-async function pickDeleteMode(mode) {
+// runDeleteWindow drives the unified Delete Window: on a versioned bucket
+// all three delete types are listed (marker default); destructive modes
+// (keepcurrent/permanent) arm the typed-"delete" partition inside the
+// window — there is no second confirm behind it.
+async function runDeleteWindow(mode = '') {
   try {
-    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) === 2, 5000, 'delete choice dialog');
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) >= 1, 5000, 'delete window');
   } catch (err) {
-    // explain the missing dialog: what (if anything) is modal instead, how
+    // explain the missing window: what (if anything) is modal instead, how
     // many rows the Ctrl+A actually selected, and which bridge calls fired
     // around the Delete keypress (see the fetch patch in main())
     const st = await evalPage(() => ({
@@ -373,16 +375,26 @@ async function pickDeleteMode(mode) {
       selRows: document.querySelectorAll('#grid-body .grid-row.sel').length,
       totalRows: document.querySelectorAll('#grid-body .grid-row').length,
     })).catch(() => null);
-    console.error(`delete choice dialog missing — state=${JSON.stringify(st)}`);
+    console.error(`delete window missing — state=${JSON.stringify(st)}`);
     const tail = await evalPage(() => (window.__calls || []).slice(-12)).catch(() => []);
     console.error('recent bridge calls (window.__calls tail):');
     for (const c of tail) console.error(`  ${c.t}ms ${c.m}(${c.args}) → ${c.res}`);
     throw err;
   }
-  await evalPage((m) => {
-    document.querySelector(`#modal-root input[name="delmode"][value="${m}"]`)?.click();
-  }, mode);
-  await clickFooter(/^delete$/i);
+  const nModes = await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length);
+  if (nModes > 1) {
+    await evalPage((m) => {
+      document.querySelector(`#modal-root input[name="delmode"][value="${m}"]`)?.click();
+    }, mode);
+  }
+  // destructive modes force the typed word on; the safe marker mode leaves
+  // it greyed out (Settings opt-in) and the button clicks through directly
+  const armed = await evalPage(() => {
+    const i = document.querySelector('#modal-root .delw-confirm input');
+    return !!i && !i.disabled;
+  });
+  if (armed) await page.locator('#modal-root .delw-confirm input').fill('delete');
+  await clickFooter(/^delete( permanently)?$/i);
 }
 
 // crumbRoot clicks the first breadcrumb segment — the source root for both
@@ -620,7 +632,7 @@ async function walk() {
     await ok(`baseline: ${base} version(s) of ${PREFIX}/live-a.txt`, base >= 1);
     await clickRow('live-a.txt');
     await rightClickRow('live-a.txt');
-    await ctxItem(/previous versions/i);
+    await ctxItem(/^versions/i);
     await waitFor(() => page.locator('#modal-root .ver-row').count().then((n) => n >= base), 15000, 'version rows');
     await ok(`versions dialog shows ${await page.locator('#modal-root .ver-row').count()} row(s)`, true);
     await closeModal();
@@ -639,7 +651,7 @@ async function walk() {
     await ok('overwrite created a new version', true);
     await clickRow('live-a.txt');
     await rightClickRow('live-a.txt');
-    await ctxItem(/previous versions/i);
+    await ctxItem(/^versions/i);
     await waitFor(async () => page.locator('#modal-root .ver-row').count().then((n) => n >= base + 1), 20000, 'two versions');
     await ok(`now ${await page.locator('#modal-root .ver-row').count()} versions`, true);
     await shot('09-versions');
@@ -879,11 +891,12 @@ async function walk() {
     await waitFor(async () => (await rowKeys()).length >= 2, 20000, 'zz-live contents');
     await page.keyboard.press('Control+A');
     await page.keyboard.press('Delete');
-    // versioned bucket → the marker-vs-permanent choice dialog comes first
-    await pickDeleteMode('marker');
-    await ok('versioned delete asks: marker or permanent (marker default)', true);
-    await shot('20-delete-choice');
-    await confirmDanger('delete');
+    // versioned bucket → the Delete Window offers all three types, marker
+    // ('') default; its typed partition stays greyed for the safe mode, so
+    // one Delete click runs the marker delete
+    await runDeleteWindow('');
+    await ok('versioned Delete Window: marker default, one click through', true);
+    await shot('20-delete-window');
     await waitFor(async () => (await rowKeys()).length === 0, 60000, 'folder emptied');
     await ok('zz-live objects deleted (markers — restorable)', true);
     await page.keyboard.press('Backspace'); // up to bucket root
@@ -891,20 +904,20 @@ async function walk() {
     // every FILE under zz-live/ is now marker-deleted — 3 markers in total
     // (the live-b.txt rename plus live-a.txt and live-renamed.txt deletes) —
     // but the zz-live/ placeholder object New folder created is still live,
-    // so the folder row badges the marker count, not "all deleted"
+    // so the folder row badges the marker count, not a fully hidden folder
     const badge = await waitFor(() => evalPage((k) => {
       const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
         .find((x) => x._model && x._model.key === k);
-      return r ? (r.querySelector('.vmark')?.textContent || '').trim() : '';
+      return r ? (r.querySelector('.mbadge')?.textContent || '').trim() : '';
     }, `${PREFIX}/`), 15000, 'marker-count badge');
     await ok(`folder badge shows "${badge}" (3 markers, folder itself live)`, badge === '⛔ 3');
     await shot('21-marker-badge');
     await clickRow(`${PREFIX}/`);
     await page.keyboard.press('Delete');
     // this time the permanent path: purges every version AND marker under
-    // zz-live/, so even the marker-synthesized folder row must vanish
-    await pickDeleteMode('permanent');
-    await confirmDanger('permanent');
+    // zz-live/, so even the marker-synthesized folder row must vanish. The
+    // destructive mode arms the typed word inside the window itself.
+    await runDeleteWindow('permanent');
     await waitFor(async () => !(await rowKeys()).includes(`${PREFIX}/`), 60000, 'folder row gone for good');
     await ok('permanent purge removed the folder row entirely', true);
     await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root relisted');

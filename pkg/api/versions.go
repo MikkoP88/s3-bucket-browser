@@ -184,6 +184,89 @@ func (a *App) prefixVersionSummaryC(c *s3client.Client, bucket, prefix string) (
 	return versioning.ChildSummaries(ctx, c.S3, bucket, dirPrefix(prefix))
 }
 
+// PrefixVersionStats aggregates the version state under one prefix (the
+// Directory Versions window): totals for current objects, noncurrent
+// versions, delete markers and noncurrent bytes. Addresses the source the
+// main view is browsing.
+func (a *App) PrefixVersionStats(bucket, prefix string) (versioning.Stats, error) {
+	c, err := a.client("")
+	if err != nil {
+		return versioning.Stats{}, err
+	}
+	return a.prefixVersionStatsC(c, bucket, prefix)
+}
+
+// SourcePrefixVersionStats is PrefixVersionStats pinned to one named S3
+// source.
+func (a *App) SourcePrefixVersionStats(idOrName, bucket, prefix string) (versioning.Stats, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return versioning.Stats{}, err
+	}
+	return a.prefixVersionStatsC(c, bucket, prefix)
+}
+
+func (a *App) prefixVersionStatsC(c *s3client.Client, bucket, prefix string) (versioning.Stats, error) {
+	ctx, cancel := a.quickCtx()
+	defer cancel()
+	return versioning.CollectStats(ctx, c.S3, bucket, dirPrefix(prefix))
+}
+
+// markerListCap bounds the Delete Marker window's listing; larger sets are
+// reported as truncated instead of streamed into the dialog.
+const markerListCap = 500
+
+// MarkerList is the Delete Marker window's payload: every delete marker
+// under a prefix (or one key's markers), newest first.
+type MarkerList struct {
+	Markers   []versioning.Version `json:"markers"`
+	Truncated bool                 `json:"truncated"`
+}
+
+// PrefixMarkers lists the delete markers under a prefix (the Delete Marker
+// window). For a file key pass the exact key with exactKey=true; otherwise
+// the prefix is treated as a folder. Addresses the source the main view is
+// browsing.
+func (a *App) PrefixMarkers(bucket, prefix string, exactKey bool) (MarkerList, error) {
+	c, err := a.client("")
+	if err != nil {
+		return MarkerList{}, err
+	}
+	return a.prefixMarkersC(c, bucket, prefix, exactKey)
+}
+
+// SourcePrefixMarkers is PrefixMarkers pinned to one named S3 source.
+func (a *App) SourcePrefixMarkers(idOrName, bucket, prefix string, exactKey bool) (MarkerList, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return MarkerList{}, err
+	}
+	return a.prefixMarkersC(c, bucket, prefix, exactKey)
+}
+
+func (a *App) prefixMarkersC(c *s3client.Client, bucket, prefix string, exactKey bool) (MarkerList, error) {
+	ctx, cancel := a.quickCtx()
+	defer cancel()
+	if exactKey {
+		vers, err := versioning.ListForObject(ctx, c.S3, bucket, prefix)
+		if err != nil {
+			return MarkerList{}, err
+		}
+		out := MarkerList{}
+		for _, v := range vers {
+			if v.IsDeleteMarker {
+				out.Markers = append(out.Markers, v)
+			}
+		}
+		return out, nil
+	}
+	ms, err := versioning.ListMarkers(ctx, c.S3, bucket, dirPrefix(prefix), markerListCap)
+	if err != nil {
+		return MarkerList{}, err
+	}
+	return MarkerList{Markers: ms, Truncated: len(ms) >= markerListCap}, nil
+}
+
 // DeleteSelectionPermanent destroys every version AND delete marker of the
 // selection (L3): file keys lose their whole timeline, folder keys purge
 // every version beneath them (a plain DeleteObject on a folder key would
@@ -240,6 +323,91 @@ func (a *App) deleteSelectionPermanentC(c *s3client.Client, bucket string, keys 
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	}
 	return out, nil
+}
+
+// DeleteSelectionKeepCurrent destroys every version AND delete marker of
+// the selection EXCEPT each key's current entry (L3): objects stay as they
+// are right now, their history is erased. Folder keys keep only the current
+// entry of every key beneath them. Same force gate as the permanent paths;
+// the frontend's Delete Window gates it behind the typed "delete"
+// confirmation. Addresses the source the main view is browsing.
+func (a *App) DeleteSelectionKeepCurrent(bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	c, err := a.client("")
+	if err != nil {
+		return transfer.DeleteResult{}, err
+	}
+	return a.deleteSelectionKeepCurrentC(c, bucket, keys, force)
+}
+
+// SourceDeleteSelectionKeepCurrent is DeleteSelectionKeepCurrent pinned to
+// one named S3 source.
+func (a *App) SourceDeleteSelectionKeepCurrent(idOrName, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return transfer.DeleteResult{}, err
+	}
+	return a.deleteSelectionKeepCurrentC(c, bucket, keys, force)
+}
+
+func (a *App) deleteSelectionKeepCurrentC(c *s3client.Client, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	ctx, cancel := a.quickCtx()
+	defer cancel()
+
+	total := 0
+	for _, k := range keys {
+		n, err := a.countKeepCurrent(ctx, c, bucket, k)
+		if err != nil {
+			return transfer.DeleteResult{}, err
+		}
+		total += n
+	}
+	if total > deleteForceThreshold && !force {
+		return transfer.DeleteResult{}, fmt.Errorf(
+			"%d version(s) would be removed — typed confirmation (force) required to delete all but the current version", total)
+	}
+	var out transfer.DeleteResult
+	for _, k := range keys {
+		res, err := a.purgeKeepCurrent(ctx, c, bucket, k)
+		out.Deleted += res.Deleted
+		out.Errors = append(out.Errors, res.Errors...)
+		if err != nil {
+			a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("deleting history of %s failed: %v", k, err))
+			return out, err
+		}
+	}
+	a.emitLogSrc(LogWarn, "versions", bucket, fmt.Sprintf(
+		"deleted all but the current version of %d selection item(s) (%d version(s)/marker(s) removed)", len(keys), out.Deleted))
+	if out.Deleted > 0 {
+		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
+	}
+	return out, nil
+}
+
+// countKeepCurrent counts the non-current versions+markers one selection
+// item would destroy.
+func (a *App) countKeepCurrent(ctx context.Context, c *s3client.Client, bucket, key string) (int, error) {
+	if strings.HasSuffix(key, "/") {
+		return versioning.CountPurge(ctx, c.S3, bucket, dirPrefix(key), versioning.PurgeKeepCurrent)
+	}
+	vers, err := versioning.ListForObject(ctx, c.S3, bucket, key)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, v := range vers {
+		if !v.IsLatest {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// purgeKeepCurrent destroys one selection item's non-current entries.
+func (a *App) purgeKeepCurrent(ctx context.Context, c *s3client.Client, bucket, key string) (transfer.DeleteResult, error) {
+	if strings.HasSuffix(key, "/") {
+		return versioning.Purge(ctx, c.S3, bucket, dirPrefix(key), versioning.PurgeKeepCurrent)
+	}
+	return versioning.DeleteKeepCurrent(ctx, c.S3, bucket, key)
 }
 
 // countPermanent counts the versions+markers one selection item would
