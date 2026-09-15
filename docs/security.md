@@ -59,6 +59,10 @@ Additional rules:
   and totals with zero effect.
 - On versioned buckets a plain delete always creates a *delete marker*
   (recoverable via `s3b versions undo`); permanence is never implicit.
+  The GUI makes that explicit: deleting from a versioned bucket first
+  asks between adding a delete marker (default — everything stays
+  restorable) and deleting permanently (typed "permanent" confirmation
+  required; Shift+Del jumps straight to that path).
 - Removing a versioned bucket with `rb --force` reports and purges the full
   version history, so nothing silently survives in a bucket you deleted.
 - Enabling object lock is possible only at bucket creation and is permanent;
@@ -68,7 +72,7 @@ Additional rules:
 
 - **Small, audited dependency set.** Runtime dependencies are permissive
   Go modules only: MIT/Apache-2.0 (Wails, aws-sdk-go-v2, cobra/pflag,
-  go-keyring, fatih/color) plus, since the remote engines (M9), ISC
+  go-keyring, fatih/color) plus, for the remote engines, ISC
   (`jlaffaye/ftp`), BSD-2-Clause (`pkg/sftp`) and BSD-3-Clause
   (`golang.org/x/{crypto,net,term}`). **Zero npm
   runtime dependencies.** The full graph is reviewed at each release and
