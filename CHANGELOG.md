@@ -4,7 +4,17 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0-beta.4] — 2026-09-15
+
+Beta cut: versioning takes center stage — a marker-vs-permanent choice
+on every versioned delete, per-row delete-marker badges in the grid, and
+version-preserving `cp`/`mv --versions` — plus the fix for the beta.3
+Windows upload regression and a new cross-source e2e matrix covering
+every local/s3/sftp/ftp/webdav pairing. Everything was validated against
+a real backend: an 85-check live GUI walk (real browser, real MinIO,
+real transfers — now exercising both delete modes and the marker
+badges), the cross-source e2e suite, and `go test -race` green across
+all packages.
 
 ### Added
 

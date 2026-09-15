@@ -2,7 +2,7 @@
 
 **A Windows-Explorer-style desktop app + CLI for S3-compatible cloud storage and remote file servers (SFTP/SCP, FTP/FTPS) — buckets, objects, versions, and everything in between.**
 
-> **Status: v1.0 released; 1.1.0 in beta.** 1.1 adds a unified data-source hierarchy (S3, SFTP/SCP, FTP/FTPS, local folders), OS clipboard/drag interop and credential import — see the [CHANGELOG](CHANGELOG.md). Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
+> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.4).** 1.1 adds a unified data-source hierarchy (S3, SFTP/SCP, FTP/FTPS, local folders), OS clipboard/drag interop, credential import, and a first-class versioned-delete flow — see the [CHANGELOG](CHANGELOG.md). Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
 
 ## Quickstart (GUI)
 
@@ -97,16 +97,16 @@ s3b bucket versioning s3://b off
 s3b bucket policy put s3://b policy.json  # also: cors | lifecycle |
 s3b bucket tags put s3://b team=infra     #      encryption | pab | website
 
-# Deep search (M5): streams matches, cancelable
+# Deep search: streams matches, cancelable
 s3b find s3://b --name 'backup*'          # glob over the full key
 s3b find s3://b/photos/ --larger 10MB --older 90d
 s3b find s3://b --class GLACIER --limit 100
 
-# Storage-class conversion (M5): server-side self-copy
+# Storage-class conversion: server-side self-copy
 s3b sc s3://b/photos/a.jpg GLACIER        # single object
 s3b sc s3://b/photos/ GLACIER -r --dry-run  # whole prefix; >50 needs --force
 
-# Object lock (M5): enable at bucket creation — permanent from then on
+# Object lock: enable at bucket creation — permanent from then on
 s3b mb s3://b --object-lock                   # the only moment lock can be enabled
 s3b bucket lock s3://b --enable --mode GOVERNANCE --days 30   # default retention rule
 s3b lock retention s3://b/report.pdf --mode GOVERNANCE --until +7d
@@ -128,7 +128,7 @@ Because none of the existing ones do it all:
 
 | | S3 Bucket Browser | S3 Browser (CS) | Cyberduck | MSP360 | AWS Console |
 |---|---|---|---|---|---|
-| Windows / macOS / Linux | yes (M2) | / – | / – | / – | browser |
+| Windows / macOS / Linux | yes | / – | / – | / – | browser |
 | Source-available (PolyForm Internal Use) | yes | no | GPL | no | – |
 | Explorer-style multi-select, drag & drop | yes (core goal) | partial | partial | partial | no |
 | Versioning management (restore, purge, force-empty versioned buckets) | first-class | partial | partial | partial | clunky |
