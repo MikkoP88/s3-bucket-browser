@@ -185,7 +185,7 @@ func (a *App) prefixVersionSummaryC(c *s3client.Client, bucket, prefix string) (
 }
 
 // PrefixVersionStats aggregates the version state under one prefix (the
-// Directory Versions window): totals for current objects, noncurrent
+// Content Versions window): totals for current objects, noncurrent
 // versions, delete markers and noncurrent bytes. Addresses the source the
 // main view is browsing.
 func (a *App) PrefixVersionStats(bucket, prefix string) (versioning.Stats, error) {

@@ -647,25 +647,36 @@ kbd {
 .ver-row:hover { background: var(--hover); }
 .ver-row.latest { border-color: var(--accent); }
 .ver-icon { flex: none; width: 18px; text-align: center; }
-.ver-main { flex: 1; min-width: 0; }
+.ver-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .ver-main > div:first-child { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ver-sub { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ver-actions { display: flex; align-items: center; gap: 6px; flex: none; }
 .ver-actions .btn { padding: 2px 10px; font-size: 12px; }
-/* all-deleted children in the Directory Versions window */
+/* per-row selection checkbox (Delete Marker window) */
+.ver-check { flex: none; display: flex; align-items: center; }
+.ver-check input { margin: 0; }
+/* all-deleted children in the Content Versions window */
 .ver-row.ghost { opacity: .55; font-style: italic; }
 
-/* ================= Directory Versions window ================= */
+/* ================= Content Versions window ================= */
+/* Totals as stat cards; auto-fit keeps one row while it fits. */
 .dirv-stats {
-  display: flex; flex-wrap: wrap; gap: 6px 16px;
-  margin: 6px 0; padding: 8px 10px;
-  border: 1px solid var(--border-soft); border-radius: 6px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 8px; margin: 6px 0;
 }
-.dirv-stat { display: inline-flex; align-items: baseline; gap: 6px; }
-.dirv-lbl { color: var(--text-dim); font-size: 12px; }
-.dirv-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+.dirv-stat {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 12px;
+  background: var(--panel-alt);
+  border: 1px solid var(--border-soft); border-radius: 8px;
+}
+.dirv-lbl { color: var(--text-dim); font-size: 11.5px; white-space: nowrap; }
+.dirv-val { font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; }
 
 /* ================= Delete Window ================= */
+/* Fixed width: the layout must not reflow when the delete-type radio
+   (and its per-mode warning text) changes. */
+.modal.delw-modal { width: 560px; min-width: min(560px, 92vw); max-width: 94vw; }
 .delw-sum {
   padding-bottom: 10px; margin-bottom: 10px;
   border-bottom: 1px solid var(--border-soft);
@@ -674,13 +685,16 @@ kbd {
 .delw-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; color: var(--text-dim); font-size: 12.5px; }
 .delw-modes { display: flex; flex-direction: column; gap: 8px; }
 .delw-modelbl { margin-bottom: -2px; }
+.delw-mode { padding: 4px 6px; border: 1px solid transparent; border-radius: 6px; }
+.delw-mode:has(input:checked) { background: var(--panel-alt); border-color: var(--border-soft); }
 .delw-mode label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .delw-mode .set-hint { margin: 2px 0 0 20px; }
-.delw-warn { margin-top: 10px; font-size: 12.5px; color: var(--warn); min-height: 16px; }
-.delw-confirm { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.delw-warn { margin-top: 12px; font-size: 12.5px; color: var(--warn); }
+/* no phantom gap under the safe default mode, which shows no warning */
+.delw-warn:empty { display: none; }
+.delw-confirm { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .delw-confirm label.field { margin: 0; flex: none; }
 .delw-confirm .input { flex: 1; }
-.delw-confirm.off { opacity: .45; }
 
 /* A/B picks + version compare (Panels v2) */
 .ver-pickbar {

@@ -4,6 +4,64 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.6] — 2026-09-15
+
+Refinement cut: the delete/versioning surfaces from beta.5 are
+re-tuned against best-practice destructive-action design — calmer
+defaults, a clearer consequence display, and version tooling that is
+now opt-in. The Delete Window keeps a fixed width with an
+always-Delete footer, the typed gate moves to Settings, badges and
+windows get quieter and more precise, and Directory Versions grows
+into Content Versions with per-object controls. Validated by a
+315-check visual walk (five new DOM-level polish locks) plus the
+live GUI walk against real MinIO and `go test -race` green across
+all packages.
+
+### Changed
+
+- **Typed delete gate is opt-in.** The Delete Window no longer
+  demands typing `delete` for the destructive types by default:
+  destructiveness is carried by the explicitly chosen delete type
+  plus the pre-counted summary, and one deliberate click runs it.
+  A Settings toggle ("typed confirmation for destructive deletes")
+  brings the gate back for every delete; enabling it shows the
+  typed partition again.
+- **Delete Window polish.** The window keeps a fixed width no
+  matter what is selected (single object, deep multi-folder
+  selection), and the footer confirm button always reads
+  **Delete**. The amber consequence line now appears only for the
+  destructive modes — the safe default explains itself in its
+  radio hint, so it no longer repeats in warning color.
+- **Badges are opt-in and precise.** The ⟲ version and ⛔ marker
+  badges default to off; two Settings toggles ("show version
+  icons", "show delete-marker icons") bring them back. The object
+  marker badge dropped its count — a single object carries at most
+  one marker, so it shows the plain icon; folder badges keep their
+  aggregated counts.
+- **Delete marker, singular.** The marker window for a single
+  object is titled "Delete marker", and its context-menu entry
+  appears only on versioned sources where the selected object
+  actually has a marker. Inside the window, rows are checkbox
+  multi-selectable (bulk **Remove selected**), each row keeps its
+  one-click Remove (undo delete), the current version earns a
+  "latest" tag pill, and **Remove all** is no longer red —
+  removing a marker restores the object, so red overstated the
+  risk. Both bulk actions still confirm before running.
+- **Directory Versions → Content Versions.** The folder-level
+  overview is renamed and rebuilt: stat cards (current objects,
+  versions, markers, bytes — marker info on by default, toggleable
+  in Settings) sit above per-child rows that each carry direct
+  controls (Open / Versions… / Markers…). The refresh button is
+  retired — every action reloads exactly what it changed.
+
+### Added
+
+- **Best-practice toggles in Settings.** Show version icons
+  (default off), show delete-marker icons (default off), Content
+  Versions marker info (default on) join the existing delete
+  confirmation knobs, so every version-UI surface is now
+  user-controllable.
+
 ## [1.1.0-beta.5] — 2026-09-15
 
 Beta cut: deletes and versioning get one unified stage — a pre-counting

@@ -51,7 +51,7 @@ what it will do before doing it.
 | **L0** normal | Delete selection (<50 items), overwrite upload | Confirmation dialog with item count; CLI proceeds for single/piped deletes |
 | **L1** large | Delete ≥50 items, prefix delete, recursive storage-class conversion | CLI requires `--force`; GUI lists exact counts + total size and requires an "I understand" check |
 | **L2** bucket-wide | Empty or remove a non-empty bucket, purge all noncurrent versions | CLI requires `--force`; GUI requires **typing the bucket name** |
-| **L3** unrecoverable | Permanently destroy versions and delete markers | CLI requires `--versions --force` / `versions rm --all`; GUI Delete Window demands typing `delete` before the destructive types unlock |
+| **L3** unrecoverable | Permanently destroy versions and delete markers | CLI requires `--versions --force` / `versions rm --all`; GUI Delete Window requires explicitly picking the destructive type against the pre-counted summary — an amber consequence line states what is lost, and a Settings toggle can additionally demand typing `delete` before the button unlocks |
 
 Additional rules:
 

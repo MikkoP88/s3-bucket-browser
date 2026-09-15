@@ -18,8 +18,8 @@
 //   disk) → reload → close profile → open (wrong + right password) →
 //   server restart (session-only sources vanish, settings survive) →
 //   cleanup through the UI: marker delete via the unified Delete Window
-//   (restorable) → ⛔ marker-count folder badge → permanent purge
-//   (typed "delete", versions + markers gone).
+//   (restorable) → ⛔ marker-count folder badge (boot-time opt-in) →
+//   permanent purge (one click, versions + markers gone).
 //
 // Credentials NEVER live here: S3B_ACCESS_KEY / S3B_SECRET_KEY must be set
 // (same envs the CLI uses). Bucket/endpoint/region via S3B_BUCKET /
@@ -358,9 +358,9 @@ async function addRemoteSource({ label, type, port, root }) {
 }
 
 // runDeleteWindow drives the unified Delete Window: on a versioned bucket
-// all three delete types are listed (marker default); destructive modes
-// (keepcurrent/permanent) arm the typed-"delete" partition inside the
-// window — there is no second confirm behind it.
+// all three delete types are listed (marker default); the danger button
+// always reads "Delete" and clicks through in one go — the typed-"delete"
+// partition is a Settings opt-in, not mode-forced.
 async function runDeleteWindow(mode = '') {
   try {
     await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) >= 1, 5000, 'delete window');
@@ -387,14 +387,14 @@ async function runDeleteWindow(mode = '') {
       document.querySelector(`#modal-root input[name="delmode"][value="${m}"]`)?.click();
     }, mode);
   }
-  // destructive modes force the typed word on; the safe marker mode leaves
-  // it greyed out (Settings opt-in) and the button clicks through directly
+  // the typed partition exists only when the Settings opt-in armed it —
+  // fill the word then; otherwise the button clicks through directly
   const armed = await evalPage(() => {
     const i = document.querySelector('#modal-root .delw-confirm input');
     return !!i && !i.disabled;
   });
   if (armed) await page.locator('#modal-root .delw-confirm input').fill('delete');
-  await clickFooter(/^delete( permanently)?$/i);
+  await clickFooter(/^delete$/i); // the danger button always reads "Delete"
 }
 
 // crumbRoot clicks the first breadcrumb segment — the source root for both
@@ -519,8 +519,13 @@ let base = 0; // version count at baseline (relative assertions survive reruns)
 async function walk() {
   await step('boot + onboarding', async () => {
     await page.goto(srv.url);
-    // pin English (host locale could be anything) and reload
-    await evalPage(() => localStorage.setItem('s3b-lang', 'en'));
+    // pin English (host locale could be anything) and opt the marker badge
+    // on (a boot-read Settings flag, default off — the cleanup walk asserts
+    // the ⛔ count badge later), then reload to re-boot with both applied
+    await evalPage(() => {
+      localStorage.setItem('s3b-lang', 'en');
+      localStorage.setItem('s3b-show-markers', '1');
+    });
     await page.reload();
     await waitFor(() => txt('#status-version').then((s) => s.includes('0.0.0-gui-live')), 15000, 'version in status bar');
     await ok('bridge binding live', true);
@@ -892,8 +897,8 @@ async function walk() {
     await page.keyboard.press('Control+A');
     await page.keyboard.press('Delete');
     // versioned bucket → the Delete Window offers all three types, marker
-    // ('') default; its typed partition stays greyed for the safe mode, so
-    // one Delete click runs the marker delete
+    // ('') default; the typed partition is hidden unless Settings opted
+    // in, so one Delete click runs the marker delete
     await runDeleteWindow('');
     await ok('versioned Delete Window: marker default, one click through', true);
     await shot('20-delete-window');
@@ -915,8 +920,8 @@ async function walk() {
     await clickRow(`${PREFIX}/`);
     await page.keyboard.press('Delete');
     // this time the permanent path: purges every version AND marker under
-    // zz-live/, so even the marker-synthesized folder row must vanish. The
-    // destructive mode arms the typed word inside the window itself.
+    // zz-live/, so even the marker-synthesized folder row must vanish —
+    // one Delete click (the typed word stays a Settings opt-in).
     await runDeleteWindow('permanent');
     await waitFor(async () => !(await rowKeys()).includes(`${PREFIX}/`), 60000, 'folder row gone for good');
     await ok('permanent purge removed the folder row entirely', true);
