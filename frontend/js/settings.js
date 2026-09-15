@@ -5,9 +5,9 @@
 // Persistence stays in the same localStorage keys the boot code has always
 // read (no migration); the apply-side actions are injected by main.js so
 // this module owns only presentation.
-import { el } from './util.js';
+import { el, multiSel } from './util.js';
 import { t, languages, LANG_NAMES } from './i18n.js';
-import { openModal } from './dialogs.js';
+import { openModal, confirm } from './dialogs.js';
 
 const AR_STEPS = [0, 5000, 10000, 30000, 60000];
 
@@ -43,13 +43,18 @@ function checkbox(checked, onchange) {
 
 // logFileRow builds the save-logs-to-file control: a select (off / app
 // settings folder / custom folder) plus a Browse button that picks the
-// custom location with the native folder dialog. ctx.log = { get, set,
+// custom location with the native folder dialog, and the two file-log
+// filters — multi-select level and scope pickers. ctx.log = { get, set,
 // browse } is injected by main.js and talks to the backend preference
 // (logsettings.json), so the choice survives restarts and `s3b log`.
+// The filters gate ONLY what is written to the log file; the in-app log
+// drawer keeps its own, independent filters.
 function logFileRow(ctx) {
-  let cur = ctx.log.get(); // { mode: 'default'|'off'|'custom', dir }
+  let cur = ctx.log.get() || {}; // { mode, dir, levels, scopes, allScopes }
   const dirOpt = el('option', { value: 'custom' });
   const sel = el('select', { class: 'input set-ctl' });
+  const levelsSel = multiSel(t('log.all'), ['info', 'warn', 'error'], cur.levels || []);
+  const scopesSel = multiSel(t('log.all'), cur.allScopes || [], cur.scopes || []);
   const sync = () => {
     dirOpt.textContent = cur.mode === 'custom' && cur.dir
       ? cur.dir
@@ -62,7 +67,16 @@ function logFileRow(ctx) {
     sel.value = cur.mode;
   };
   sync();
-  const apply = async (mode, dir) => { cur = await ctx.log.set(mode, dir); sync(); };
+  const apply = async (mode, dir) => {
+    cur = (await ctx.log.set(mode, dir, [...levelsSel.sel], [...scopesSel.sel])) || {};
+    sync();
+  };
+  const applyFilters = async () => {
+    cur = (await ctx.log.set(cur.mode || 'default', cur.dir || '', [...levelsSel.sel], [...scopesSel.sel])) || {};
+    sync();
+  };
+  levelsSel.root.addEventListener('change', applyFilters);
+  scopesSel.root.addEventListener('change', applyFilters);
   const browse = async () => {
     const dir = await ctx.log.browse();
     if (dir) await apply('custom', dir);
@@ -81,7 +95,11 @@ function logFileRow(ctx) {
     await apply(sel.value, '');
   });
   const btn = el('button', { class: 'btn set-ctl', text: t('settings.browse'), onclick: browse });
-  return row(t('settings.logFile'), el('span', { class: 'set-ctl-group' }, sel, btn), t('settings.logHint'));
+  return el('div', {},
+    row(t('settings.logFile'), el('span', { class: 'set-ctl-group' }, sel, btn), t('settings.logHint')),
+    row(t('settings.logLevels'), levelsSel.root, t('settings.logFilterHint')),
+    row(t('settings.logScopes'), scopesSel.root),
+  );
 }
 
 // settingsDialog ---------------------------------------------------------
@@ -115,6 +133,9 @@ export function settingsDialog(ctx) {
     row(t('settings.panes'), checkbox(s.panes(), (v) => a.panes(v)), 'F9'),
     row(t('settings.log'), checkbox(s.log(), (v) => a.log(v)), 'Ctrl+L'),
 
+    el('div', { class: 'set-section', text: t('settings.editing') }),
+    row(t('settings.editChooseApp'), checkbox(s.editChooseApp?.() ?? true, (v) => a.editChooseApp?.(v)), t('settings.editChooseAppHint')),
+
     el('div', { class: 'set-section', text: t('settings.refresh') }),
     row(t('settings.autorefresh'), select(
       AR_STEPS.map((ms) => [ms, ms === 0 ? t('ar.off') : `${ms / 1000} s`]),
@@ -133,6 +154,7 @@ export function settingsDialog(ctx) {
       (v) => a.conflict(v),
     ), t('settings.conflictHint')),
     row(t('settings.showThrottle'), checkbox(s.showThrottle?.() || false, (v) => a.showThrottle?.(v))),
+    row(t('settings.copyVersions'), checkbox(s.copyVersions?.() ?? true, (v) => a.copyVersions?.(v)), t('settings.copyVersionsHint')),
     row(t('settings.throttle'), select(
       RATE_STEPS.map(([v, label]) => [v, t(label)]),
       s.throttle(),
@@ -144,6 +166,22 @@ export function settingsDialog(ctx) {
     title: t('settings.title'),
     body,
     wide: true,
-    buttons: [{ label: 'Close', class: 'primary' }],
+    buttons: [
+      {
+        // Reset asks for confirmation first — it wipes every persisted
+        // shell knob (main.js ctx.reset) and reloads the UI.
+        label: t('settings.resetDefaults'),
+        onclick: async (close) => {
+          close();
+          if (await confirm({
+            title: t('settings.title'),
+            message: t('settings.resetConfirm'),
+            okLabel: t('settings.resetDefaults'),
+            danger: true,
+          })) ctx.reset?.();
+        },
+      },
+      { label: 'Close', class: 'primary' },
+    ],
   });
 }

@@ -1,12 +1,13 @@
 // Optional bottom log drawer: renders structured `log:line` events emitted
-// by the backend (pkg/api log.go). Standalone component — imports only the
-// el() DOM helper and the i18n t() so it can be mounted from main.js.
+// by the backend (pkg/api log.go). Standalone component — imports only DOM
+// helpers and the i18n t() so it can be mounted from main.js.
 //
 // Filtering happens in JS against the line buffer, so every filter
 // (level, scope, source, free text) also applies retroactively to lines
 // that arrived before it was set. Scope and source options grow as new
-// values appear in the stream.
-import { el } from './util.js';
+// values appear in the stream. Each dimension is a multi-select: any
+// combination of levels/scopes/sources can be shown at once.
+import { el, multiSel } from './util.js';
 import { t } from './i18n.js';
 
 // Buffer cap: the drawer keeps the newest MAX_LINES entries; older ones are
@@ -21,18 +22,20 @@ const fmtTime = (iso) => {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 };
 
+// pass: an empty selection disables the dimension (everything passes).
+const pass = (sel, v) => sel.size === 0 || sel.has(v || '');
+
 export function createLogArea() {
   const body = el('div', { class: 'la-body' });
   const lines = [];
   let autoscroll = true;
 
-  // Live filter values; 'all' disables a dimension.
-  const f = { level: 'all', scope: 'all', source: 'all', text: '' };
+  const f = { text: '' };
 
   const matches = (l) => {
-    if (f.level !== 'all' && l.level !== f.level) return false;
-    if (f.scope !== 'all' && (l.scope || '') !== f.scope) return false;
-    if (f.source !== 'all' && (l.source || '') !== f.source) return false;
+    if (!pass(levelSel.sel, l.level)) return false;
+    if (!pass(scopeSel.sel, l.scope)) return false;
+    if (!pass(sourceSel.sel, l.source)) return false;
     if (f.text && !String(l.message || '').toLowerCase().includes(f.text)
       && !String(l.scope || '').toLowerCase().includes(f.text)) return false;
     return true;
@@ -51,27 +54,9 @@ export function createLogArea() {
     if (autoscroll) body.scrollTop = body.scrollHeight;
   }
 
-  // addOption grows a select when a value appears for the first time.
-  function addOption(sel, value) {
-    if (!value || [...sel.options].some((o) => o.value === value)) return;
-    sel.appendChild(el('option', { value, text: value }));
-  }
-
-  const levelSel = el('select', {
-    class: 'la-filter',
-    onchange: () => { f.level = levelSel.value; render(); },
-  },
-    el('option', { value: 'all', text: t('log.all') }),
-    ...LEVELS.map((lv) => el('option', { value: lv, text: lv })),
-  );
-  const scopeSel = el('select', {
-    class: 'la-filter',
-    onchange: () => { f.scope = scopeSel.value; render(); },
-  }, el('option', { value: 'all', text: t('log.scopeAll') }));
-  const sourceSel = el('select', {
-    class: 'la-filter',
-    onchange: () => { f.source = sourceSel.value; render(); },
-  }, el('option', { value: 'all', text: t('log.sourceAll') }));
+  const levelSel = multiSel(t('log.all'), LEVELS, [], render);
+  const scopeSel = multiSel(t('log.scopeAll'), [], [], render);
+  const sourceSel = multiSel(t('log.sourceAll'), [], [], render);
   const search = el('input', {
     class: 'input la-search',
     type: 'search',
@@ -107,9 +92,9 @@ export function createLogArea() {
   const root = el('section', { class: 'logarea-inner', role: 'log', 'aria-label': t('log.title') },
     el('div', { class: 'la-head' },
       el('span', { class: 'la-title', text: t('log.title') }),
-      levelSel,
-      scopeSel,
-      sourceSel,
+      levelSel.root,
+      scopeSel.root,
+      sourceSel.root,
       search,
       el('label', { class: 'la-auto' }, auto, ` ${t('log.autoscroll')}`),
       el('button', { class: 'btn', text: t('log.copy'), onclick: copy }),
@@ -126,8 +111,8 @@ export function createLogArea() {
     if (!l) return;
     const line = LEVELS.includes(l.level) ? l : { ...l, level: 'info' };
     lines.push(line);
-    addOption(scopeSel, line.scope);
-    addOption(sourceSel, line.source);
+    scopeSel.add(line.scope);
+    sourceSel.add(line.source);
     let trimmed = false;
     if (lines.length > MAX_LINES) { lines.shift(); trimmed = true; }
     if (trimmed) { render(); return; } // re-sync: the dropped line may be anywhere

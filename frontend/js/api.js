@@ -37,3 +37,26 @@ export function onEvent(name, handler) {
   const off = window.runtime?.EventsOn(name, handler);
   return typeof off === 'function' ? off : () => {};
 }
+
+// subscribeStream pairs a List*Stream binding call with a list:page
+// subscription that exists BEFORE the call resolves. The backend goroutine
+// starts listing the moment the call returns server-side; on small folders
+// the single done page can beat the call response, and an event dispatched
+// before the subscription exists would be lost forever (the view would
+// never complete). Pages arriving before the token is known are buffered
+// and replayed by flush(), which the caller runs once it has committed its
+// own navigation state; pages of other tokens (concurrent streams, canceled
+// predecessors) never reach `handle`.
+export function subscribeStream(start, handle) {
+  let token = null;
+  const early = [];
+  const off = onEvent('list:page', (p) => {
+    if (token === null) { early.push(p); return; }
+    if (p.token === token) handle(p);
+  });
+  return {
+    off,
+    begin: start().then((t) => (token = t), (e) => { off(); throw e; }),
+    flush: () => { for (const p of early.splice(0)) if (p.token === token) handle(p); },
+  };
+}

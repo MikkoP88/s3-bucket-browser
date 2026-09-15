@@ -7,7 +7,7 @@
 import { Grid } from './grid.js';
 import { browseDirDialog, prompt } from './dialogs.js';
 import { el, fmtBytes } from './util.js';
-import { api, onEvent } from './api.js';
+import { api, subscribeStream } from './api.js';
 
 const app = () => api;
 const $ = (id) => document.getElementById(id);
@@ -326,9 +326,21 @@ export class LocalPane {
       return;
     }
     let token;
+    const stream = subscribeStream(
+      () => app().ListSourceObjectsStream(this.binding.source, bucket, prefix || ''),
+      (p) => {
+        if (seq !== this.s3Seq) return; // superseded while pages still arrived
+        if (p.error) { this.on.openFail?.(p.error); this.cancelS3Stream(); return; }
+        this.grid.appendRows((p.entries || []).map((e) => ({ ...e, bucket })));
+        this.updateStatus();
+        if (p.done) this.cancelS3Stream();
+      },
+    );
+    this.s3Off = stream.off;
     try {
-      token = await app().ListSourceObjectsStream(this.binding.source, bucket, prefix || '');
+      token = await stream.begin;
     } catch (e) {
+      if (this.s3Off === stream.off) this.s3Off = null;
       this.on.openFail?.(e);
       return;
     }
@@ -337,14 +349,8 @@ export class LocalPane {
     this.dir = prefix || '';
     this.grid.setRows([]);
     this.updateCrumb();
-    this.s3Off = onEvent('list:page', (p) => {
-      if (seq !== this.s3Seq || p.token !== token) return;
-      if (p.error) { this.on.openFail?.(p.error); this.cancelS3Stream(); return; }
-      this.grid.appendRows((p.entries || []).map((e) => ({ ...e, bucket })));
-      this.updateStatus();
-      if (p.done) this.cancelS3Stream();
-    });
     this.updateStatus();
+    stream.flush();
   }
 
   async refresh() {

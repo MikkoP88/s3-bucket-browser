@@ -6,19 +6,8 @@
 // content folders directly under the source). Legacy account-wide S3 sources
 // (no bucket) keep the bucket-list level. Node ids are namespaced per
 // source, so two sources can hold same-named buckets without colliding.
-import { api, onEvent } from './api.js';
-import { el } from './util.js';
-
-const SRC_ICON = {
-  s3: '\u{1F5C2}',
-  sftp: '\u{1F5DD}',
-  scp: '\u{1F5DD}',
-  ftp: '\u{1F517}',
-  ftps: '\u{1F517}',
-  webdav: '\u{1F310}',
-  webdavs: '\u{1F310}',
-  local: '\u{1F4BB}',
-};
+import { api, subscribeStream } from './api.js';
+import { el, srcIcon } from './util.js';
 
 export class Tree {
   // guardOf(bucket, source) returns the cached guard state for the bucket
@@ -214,21 +203,21 @@ export class Tree {
     return new Promise((resolve, reject) => {
       const dirs = [];
       let settled = false;
-      let offPage = null;
       const finish = (fn, val) => {
         if (settled) return;
         settled = true;
-        offPage?.();
+        stream.off();
         fn(val);
       };
-      api.ListSourceObjectsStream(source, bucket, prefix).then((token) => {
-        offPage = onEvent('list:page', (p) => {
-          if (p.token !== token) return;
+      const stream = subscribeStream(
+        () => api.ListSourceObjectsStream(source, bucket, prefix),
+        (p) => {
           if (p.error) { finish(reject, new Error(p.error)); return; }
           for (const e of p.entries || []) if (e.isDir) dirs.push(e);
           if (p.done) finish(resolve, dirs);
-        });
-      }).catch((e) => finish(reject, e));
+        },
+      );
+      stream.begin.then(() => stream.flush(), (e) => finish(reject, e));
     });
   }
 
@@ -346,9 +335,9 @@ export class Tree {
     });
     n.twistEl = twist;
     if (!hasKids && !n.expanded) twist.style.visibility = 'hidden';
-    const icon = n.kind === 'source' ? (SRC_ICON[n.stype] || '\u{1F5C2}')
-      : n.kind === 'rdir' ? '\u{1F4C1}'
-        : n.prefix === '' ? '\u{1F5C0}' : '\u{1F4C1}';
+    const ticon = el('span', { class: 'ticon' });
+    if (n.kind === 'source') ticon.innerHTML = srcIcon(n.stype);
+    else ticon.textContent = n.kind === 'rdir' ? '\u{1F4C1}' : n.prefix === '' ? '\u{1F5C0}' : '\u{1F4C1}';
     const row = el('div', {
       class: `tnode${this.currentId === n.id ? ' sel' : ''}`,
       style: `padding-left:${8 + n.level * 14}px`,
@@ -359,15 +348,23 @@ export class Tree {
       ondblclick: () => (n.expanded ? this.collapse(n.id) : this.expand(n.id)),
     },
       twist,
-      el('span', { class: 'ticon', text: icon }),
+      ticon,
       el('span', { class: 'tlabel', text: n.label }),
       // source rows carry their connectivity ball right after the name
       ...(n.kind === 'source' ? [this.statusBall(n.source)] : []),
       // bucket rows carry their versioning / lock state right after the name
       ...(n.bucket !== undefined && n.prefix === '' ? this.guardIcons(n.bucket, n.source) : []),
     );
-    row.dataset.bucket = n.bucket;
-    row.dataset.prefix = n.prefix;
+    // Node identity for DOM-level hit-testing (the OS file-drop handler in
+    // main.js resolves the node under the cursor from these). Attributes
+    // are set only when defined — dataset assignment stringifies
+    // undefined into "undefined" otherwise.
+    row.dataset.tkind = n.kind;
+    if (n.bucket !== undefined) row.dataset.bucket = n.bucket;
+    if (n.prefix !== undefined) row.dataset.prefix = n.prefix;
+    if (n.source) row.dataset.source = n.source;
+    if (n.stype) row.dataset.stype = n.stype;
+    if (n.kind === 'rdir') row.dataset.rdir = n.path || '/';
 
     // S3 nodes and remote directory nodes are both drop targets and carry
     // full context menus (the cross-source matrix treats them uniformly).

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -118,6 +119,47 @@ func (a *App) OpenLocal(path string) error {
 		cmd = exec.Command("xdg-open", path)
 	}
 	return cmd.Start()
+}
+
+// OpenLocalWith opens the OS application chooser for a file ("Open
+// with…") so the user picks which app handles it. Native choosers exist
+// on Windows (shell32's OpenAs dialog) and macOS (AppleScript's choose
+// application); Linux has no standard chooser, so the default app opens
+// there instead.
+func (a *App) OpenLocalWith(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		return a.OpenLocal(path) // folders have no "open with" semantics
+	}
+	switch runtime.GOOS {
+	case "windows":
+		// "How do you want to open this file?" — app list + More apps;
+		// rundll32 owns the dialog and launches the picked app itself.
+		return exec.Command("rundll32", "shell32.dll,OpenAs_RunDLL", path).Start()
+	case "darwin":
+		return openWithChoose(path)
+	default:
+		return a.OpenLocal(path)
+	}
+}
+
+// openWithChoose asks for an application via AppleScript and opens the
+// file with it. Blocking is fine: bindings run on their own goroutine, and
+// a cancel simply returns the osascript error.
+func openWithChoose(path string) error {
+	out, err := exec.Command("osascript", "-e",
+		`choose application with prompt "Choose the application to edit with" as string`).Output()
+	if err != nil {
+		return err // user canceled — nothing opened
+	}
+	app := strings.TrimSpace(string(out))
+	if app == "" {
+		return errors.New("no application chosen")
+	}
+	return exec.Command("open", "-a", app, path).Start()
 }
 
 // OpenTerminal opens a new terminal window at dir (local-pane context

@@ -10,11 +10,15 @@
 //
 //   onboarding → add+test source → browse → guard chips → admin → doctor →
 //   dual pane → New folder → DnD upload → versions + A/B diff → conflict
-//   overwrite → DnD download (bytes verified) → rename → transfer manager →
+//   overwrite → DnD download (bytes verified) → rename → remote engines
+//   (SFTP/FTP/WebDAV sources added + tested in the UI, nested-tree folder
+//   DnD upload, grid-walked structure fidelity, byte-compared download
+//   round-trip, cross-engine remote→remote DnD) → transfer manager →
 //   log area → settings (theme) → profile save (Ctrl+S, encrypted file on
 //   disk) → reload → close profile → open (wrong + right password) →
 //   server restart (session-only sources vanish, settings survive) →
-//   cleanup through the UI.
+//   cleanup through the UI: marker delete (choice dialog, restorable) →
+//   ⛔ all-deleted folder badge → permanent purge (versions + markers gone).
 //
 // Credentials NEVER live here: S3B_ACCESS_KEY / S3B_SECRET_KEY must be set
 // (same envs the CLI uses). Bucket/endpoint/region via S3B_BUCKET /
@@ -24,7 +28,13 @@
 // S3B_SEED (optional) names a pre-existing prefix in the bucket; when set it
 // is the "existing data" marker the browse/cleanup steps assert on, so the
 // walk also runs against a fresh bucket that only holds the seed folder.
-// The bucket MUST have versioning enabled (the versions/A-B steps need it).
+// The bucket MUST have versioning enabled (the versions/A-B steps need it,
+// and the cleanup step asserts the versioned delete-choice dialog, the
+// all-deleted folder badge and the permanent purge).
+// The remote-engine section rides on the same local containers
+// scripts/e2e-cross.sh uses (SFTP :2222 / FTP :2121 / WebDAV :7070, all
+// e2e:e2epass) and is included per-engine only while its port answers —
+// against a cloud bucket with no containers up it skips cleanly.
 // Native pickers (upload menus, OS file drops) cannot
 // be scripted in a plain browser — DnD covers the transfer paths; the native
 // dialogs remain covered by gui-visual + manual passes.
@@ -34,8 +44,9 @@
 // encrypted profile, browser profile — wiped fresh every run).
 
 import { spawn, execFileSync } from 'node:child_process';
-import { rm, mkdir, writeFile, readFile, stat } from 'node:fs/promises';
+import { rm, mkdir, writeFile, readFile, stat, readdir } from 'node:fs/promises';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
@@ -66,6 +77,34 @@ const PREFIX = 'zz-live';
 const V1 = 'gui-live upload v1 — hello from the live harness\n';
 const V2 = 'gui-live upload v2 — overwritten through the conflict dialog\n';
 const B_TXT = 'second fixture file for the live walk\n';
+
+// Local cross-engine containers (see scripts/e2e-cross.sh header for the
+// docker run lines). Each engine joins the walk only while its port
+// answers; creds overridable for custom containers.
+const E2E_USER = process.env.S3B_E2E_USER || 'e2e';
+const E2E_PASS = process.env.S3B_E2E_PASS || 'e2epass';
+const ENGINES = [
+  { label: 'sftp', type: 'sftp', port: +(process.env.S3B_SFTP_PORT || 2222), root: '/upload' },
+  { label: 'ftp', type: 'ftp', port: +(process.env.S3B_FTP_PORT || 2121), root: '' },
+  { label: 'webdav', type: 'webdav', port: +(process.env.S3B_WEBDAV_PORT || 7070), root: '' },
+];
+// Nested fixture tree: every axis a transfer can silently flatten — root
+// files, multi-level dirs, a space, unicode, an empty file (9 files).
+const TREE_FILES = {
+  'readme.md': 'tree readme\n',
+  'root-1.txt': 'root file one\n',
+  'docs/a.md': 'docs alpha\n',
+  'docs/b with space.txt': 'space in the name\n',
+  'docs/uni-åäö.txt': 'unicode åäö content\n',
+  'docs/nested/deep-file.txt': 'deep file\n',
+  'docs/empty.txt': '',
+  'logs/l1.log': 'log one\n',
+  'logs/l2.log': 'log two\n',
+};
+// Per-run namespace on the remote engines: those containers persist between
+// runs, so fixed dir names would make every "row appeared" wait pass on
+// stale leftovers from an older run.
+const RUNID = `g${Date.now().toString(36)}`;
 
 if (!KEY || !SECRET) {
   console.error('refusing to run without credentials: set S3B_ACCESS_KEY and S3B_SECRET_KEY (same envs as the CLI)');
@@ -121,9 +160,11 @@ const rowKeys = () => evalPage(() => Array.from(document.querySelectorAll('#grid
 // prefix while the row shows the basename; appearance checks use names
 const names = () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
   .filter((r) => r.style.display !== 'none' && r._model).map((r) => r._model.name || r._model.key));
-// local rows carry full paths as keys (S3/remote side bindings use their own)
+// local rows carry full paths as keys (S3/remote side bindings use their
+// own); remote folder keys end in a separator, which must be stripped or
+// the basename would come out '' for every folder
 const sideKeys = () => evalPage(() => Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
-  .filter((r) => r.style.display !== 'none' && r._model).map((r) => String(r._model.key).split(/[\\/]/).pop()));
+  .filter((r) => r.style.display !== 'none' && r._model).map((r) => String(r._model.key).replace(/[\\/]+$/, '').split(/[\\/]/).pop()));
 // folder rows render .tname WITHOUT the trailing slash their keys carry
 // (inlined per helper: evaluate callbacks run in the browser, no closures)
 const gridRow = (label) => elOrNull((l) => {
@@ -267,6 +308,105 @@ async function bodyCtx() {
   await sleep(80);
 }
 
+// ---------- remote-engine helpers ----------
+// TCP probe for the local e2e containers (see ENGINES above).
+const portOpen = (port) => new Promise((res) => {
+  const s = net.connect({ host: '127.0.0.1', port, timeout: 1500 });
+  s.once('connect', () => { s.destroy(); res(true); });
+  s.once('error', () => res(false));
+  s.once('timeout', () => { s.destroy(); res(false); });
+});
+
+// treeOf walks a local directory into a sorted [relpath, bytes, content]
+// list — the byte-exact fidelity contract for the GUI round-trips.
+async function treeOf(dir, base = dir) {
+  const out = [];
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...await treeOf(p, base));
+    else {
+      const b = await readFile(p);
+      out.push([path.relative(base, p).split(path.sep).join('/'), b.length, b.toString('utf8')]);
+    }
+  }
+  return out.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+}
+
+// addRemoteSource drives the source editor for one local container: type,
+// host/port/user/pass/root, a real Test dial, then Save (which navigates
+// the main view to the fresh source's root).
+async function addRemoteSource({ label, type, port, root }) {
+  await page.locator('#sidebar-head .side-add').click();
+  await waitFor(() => page.locator('#modal-root .modal select').count().then((n) => n > 0), 5000, 'source editor');
+  await page.locator('#modal-root .modal select').selectOption(type);
+  const inputs = page.locator('#modal-root .modal input.input');
+  // name host port username password root (S3's field set is replaced on
+  // the type switch; the count wait covers the re-render)
+  await waitFor(() => inputs.count().then((n) => n >= 6), 5000, 'remote fields');
+  await inputs.nth(0).fill(`live-${label}`);
+  await inputs.nth(1).fill('127.0.0.1');
+  await inputs.nth(2).fill(String(port));
+  await inputs.nth(3).fill(E2E_USER);
+  await inputs.nth(4).fill(E2E_PASS);
+  await inputs.nth(5).fill(root);
+  await clickFooter(/^test$/i);
+  await waitFor(async () => /✅|❌/.test(await modalText()), 20000, `test ${label}`);
+  await ok(`${label}: source test passed`, (await modalText()).includes('✅'));
+  await clickFooter(/^save$/i);
+  await waitFor(async () => txt('#breadcrumb').then((s) => s.includes(`live-${label}`)), 15000, `${label} root`);
+}
+
+// pickDeleteMode drives the versioned-bucket delete choice dialog: verify
+// both radios, pick the mode, press Delete (the follow-up confirm gate is
+// the caller's job).
+async function pickDeleteMode(mode) {
+  try {
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) === 2, 5000, 'delete choice dialog');
+  } catch (err) {
+    // explain the missing dialog: what (if anything) is modal instead, how
+    // many rows the Ctrl+A actually selected, and which bridge calls fired
+    // around the Delete keypress (see the fetch patch in main())
+    const st = await evalPage(() => ({
+      visible: !!document.querySelector('#modal-root .modal') && !document.getElementById('modal-root').classList.contains('hidden'),
+      title: document.querySelector('#modal-root .modal-head span')?.textContent?.trim() || '',
+      text: (document.querySelector('#modal-root .modal')?.textContent || '').replace(/\s+/g, ' ').slice(0, 180),
+      selRows: document.querySelectorAll('#grid-body .grid-row.sel').length,
+      totalRows: document.querySelectorAll('#grid-body .grid-row').length,
+    })).catch(() => null);
+    console.error(`delete choice dialog missing — state=${JSON.stringify(st)}`);
+    const tail = await evalPage(() => (window.__calls || []).slice(-12)).catch(() => []);
+    console.error('recent bridge calls (window.__calls tail):');
+    for (const c of tail) console.error(`  ${c.t}ms ${c.m}(${c.args}) → ${c.res}`);
+    throw err;
+  }
+  await evalPage((m) => {
+    document.querySelector(`#modal-root input[name="delmode"][value="${m}"]`)?.click();
+  }, mode);
+  await clickFooter(/^delete$/i);
+}
+
+// crumbRoot clicks the first breadcrumb segment — the source root for both
+// remote and S3 views.
+async function crumbRoot() {
+  await evalPage(() => document.querySelector('#breadcrumb .crumb')?.click());
+  await sleep(120);
+}
+
+// treeOpen clicks the sidebar tree node whose label is exactly `label`.
+// Needed after profile reopen: the app lands on whichever source sorts
+// first (ListSources is name-sorted), which is live-sftp once the remote
+// engines have been added — not the s3 source the walk wants.
+async function treeOpen(label) {
+  await waitFor(() => evalPage((l) => Array.from(document.querySelectorAll('#tree .tnode'))
+    .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), label), 10000, `tree node "${label}"`);
+  await evalPage((l) => {
+    Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l)
+      ?.querySelector('.tlabel')?.click();
+  }, label);
+  await sleep(300);
+}
+
 // ---------- backend + browser lifecycle ----------
 function startServer() {
   return new Promise((resolve, reject) => {
@@ -311,6 +451,12 @@ async function main() {
   fs.writeFileSync(SRVLOG, '');
   await writeFile(path.join(FIX, 'live-a.txt'), V1);
   await writeFile(path.join(FIX, 'live-b.txt'), B_TXT);
+  // the nested structure-fidelity tree for the remote-engine section
+  for (const [rel, content] of Object.entries(TREE_FILES)) {
+    const p = path.join(FIX, 'tree', rel);
+    await mkdir(path.dirname(p), { recursive: true });
+    await writeFile(p, content);
+  }
 
   console.log('building tools/gui-live …');
   execFileSync('go', ['build', '-o', SRV_EXE, './tools/gui-live'], { cwd: ROOT, stdio: 'inherit' });
@@ -323,6 +469,27 @@ async function main() {
   page.on('console', (m) => { consoleTail.push(`[${m.type()}] ${m.text()}`); consoleTail = consoleTail.slice(-40); });
   page.on('pageerror', (e) => { consoleTail.push(`[pageerror] ${e.message}`); consoleTail = consoleTail.slice(-40); });
   page.setDefaultTimeout(20000);
+
+  // bridge-call log (window.__calls): patch fetch before any app script so
+  // a failed/missing UI state can be traced to the call — or error — behind
+  // it (pickDeleteMode dumps the tail when its dialog never shows). Init
+  // scripts re-run on every navigation, so the log is per-page-world.
+  await context.addInitScript(() => {
+    window.__calls = [];
+    const of = window.fetch.bind(window);
+    window.fetch = async (...a) => {
+      let body = null;
+      try { body = a[1]?.body ? JSON.parse(a[1].body) : null; } catch { /* not a bridge call */ }
+      const r = await of(...a);
+      if (body !== null && body.m) {
+        let res = '';
+        try { const j = await r.clone().json(); res = j.ok ? JSON.stringify(j.result) : `ERR ${j.error}`; } catch { res = '(unreadable)'; }
+        window.__calls.push({ t: Math.round(performance.now()), m: body.m, args: JSON.stringify(body.args).slice(0, 120), res: res.slice(0, 160) });
+        if (window.__calls.length > 500) window.__calls.splice(0, window.__calls.length - 500);
+      }
+      return r;
+    };
+  });
 
   await walk();
 
@@ -347,6 +514,9 @@ async function walk() {
     await ok('bridge binding live', true);
     await waitFor(() => evalPage(() => Array.from(document.querySelectorAll('#empty-actions .btn')).length > 0), 10000, 'onboarding actions');
     await ok('onboarding empty state shown', await modalVisible() === false);
+    // Zero sources + no stored interval: auto refresh must be fully off.
+    await ok('auto refresh off at boot (no sources, default off)',
+      await evalPage(() => document.getElementById('status-auto').classList.contains('hidden')));
     await shot('01-onboarding');
   });
 
@@ -513,6 +683,105 @@ async function walk() {
     await ok('renamed to live-renamed.txt', true);
   });
 
+  await step('remote engines: structure-fidelity DnD round-trips', async () => {
+    const engines = [];
+    for (const e of ENGINES) if (await portOpen(e.port)) engines.push(e);
+    if (!engines.length) {
+      console.log('   (no local e2e containers reachable — remote engine checks skipped)');
+      await ok('remote engine section skipped (no containers up)', true);
+      return;
+    }
+    for (const e of engines) {
+      await addRemoteSource(e);
+      await shot(`r0-${e.label}-root`);
+      // run-unique destination dir (New folder on a REMOTE view = real mkdir)
+      await bodyCtx();
+      await ctxItem(/new folder/i);
+      await answerPrompt(RUNID);
+      await waitFor(async () => (await names()).includes(RUNID), 20000, `${e.label}: ${RUNID} dir`);
+      await dblClickRow(RUNID);
+      await waitFor(async () => (await rowKeys()).length === 0, 10000, `${e.label}: empty run dir`);
+      // upload the whole nested fixture tree by dragging its FOLDER row
+      await page.locator('#local-crumb').click();
+      await answerPrompt(FIX);
+      await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'fixture tree on the local side');
+      await dnd(await sideRow('tree'), await bodyH());
+      await startIfAsked(8000);
+      await waitFor(async () => (await names()).includes('tree'), 90000, `${e.label}: tree uploaded`);
+      await ok(`${e.label}: nested tree uploaded via folder-row DnD`, true);
+      // structure fidelity — walk the tree in the remote grid
+      await dblClickRow('tree');
+      await waitFor(async () => {
+        const n = await names();
+        return ['docs', 'logs', 'readme.md', 'root-1.txt'].every((x) => n.includes(x));
+      }, 20000, `${e.label}: tree root`);
+      await ok(`${e.label}: root files + dirs intact`, true);
+      await dblClickRow('docs');
+      await waitFor(async () => {
+        const n = await names();
+        return ['a.md', 'b with space.txt', 'uni-åäö.txt', 'nested', 'empty.txt'].every((x) => n.includes(x));
+      }, 20000, `${e.label}: docs/`);
+      await ok(`${e.label}: space, unicode, empty file and nested dir intact`, true);
+      await dblClickRow('nested');
+      await waitFor(async () => (await names()).includes('deep-file.txt'), 20000, `${e.label}: nested/`);
+      await ok(`${e.label}: deep nesting intact`, true);
+      // download the folder BACK into a fresh local dir and byte-compare
+      await crumbRoot();
+      await waitFor(async () => (await names()).includes(RUNID), 10000, `${e.label}: back at root`);
+      await dblClickRow(RUNID);
+      await waitFor(async () => (await names()).includes('tree'), 10000, `${e.label}: run dir`);
+      const dst = path.join(FIX, `rt-${e.label}`);
+      await mkdir(dst, { recursive: true });
+      await page.locator('#local-crumb').click();
+      await answerPrompt(dst);
+      await waitFor(async () => (await sideKeys()).length === 0, 10000, `${e.label}: empty local dst`);
+      await dnd(await rowAction('tree', 'grid'), await sideBodyH());
+      await startIfAsked(8000);
+      await waitFor(async () => (await sideKeys()).includes('tree'), 90000, `${e.label}: tree downloaded`);
+      const a = await treeOf(path.join(dst, 'tree'));
+      const b = await treeOf(path.join(FIX, 'tree'));
+      await ok(`${e.label}: round-trip byte-identical (${a.length} files)`, JSON.stringify(a) === JSON.stringify(b));
+      await shot(`r1-${e.label}-roundtrip`);
+      // leave the main view at this engine's root (the cross-engine drop
+      // below targets the last engine)
+      await crumbRoot();
+      await waitFor(async () => (await names()).includes(RUNID), 10000, `${e.label}: root again`);
+    }
+    // cross-engine remote → remote through the GUI: side pane bound to the
+    // FIRST engine, main view inside a fresh dir on the LAST — the DnD
+    // counterpart of e2e-cross's any→any matrix.
+    if (engines.length >= 2) {
+      const from = engines[0];
+      await bodyCtx();
+      await ctxItem(/new folder/i);
+      await answerPrompt(`x-${RUNID}`);
+      await waitFor(async () => (await names()).includes(`x-${RUNID}`), 20000, 'cross-engine dir');
+      await dblClickRow(`x-${RUNID}`);
+      await waitFor(async () => (await rowKeys()).length === 0, 10000, 'empty cross dir');
+      await page.locator('#local-src').selectOption({ label: `live-${from.label} (${from.type})` });
+      await waitFor(async () => (await sideKeys()).includes(RUNID), 15000, `${from.label} on the side`);
+      const runDir = await rowAction(RUNID, 'side');
+      await runDir.dblclick();
+      await waitFor(async () => (await sideKeys()).includes('tree'), 15000, `${from.label}: run dir on side`);
+      await dnd(await sideRow('tree'), await bodyH());
+      await startIfAsked(8000);
+      await waitFor(async () => (await names()).includes('tree'), 90000, 'cross-engine tree landed');
+      await dblClickRow('tree');
+      await waitFor(async () => (await names()).includes('docs'), 20000, 'cross-engine docs/');
+      await dblClickRow('docs');
+      await waitFor(async () => (await names()).includes('nested'), 20000, 'cross-engine nested/');
+      await dblClickRow('nested');
+      await waitFor(async () => (await names()).includes('deep-file.txt'), 20000, 'cross-engine deep file');
+      await ok(`${from.label} → last engine: cross-engine DnD keeps the tree`, true);
+      await shot('r2-cross-engine');
+      // back to a local side binding for the rest of the walk
+      await page.locator('#local-src').selectOption('local');
+      await page.locator('#local-crumb').click();
+      await answerPrompt(FIX);
+      await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'local side restored');
+    }
+  });
+
   await step('transfer manager', async () => {
     await menuClick(/view/i, /transfers/i);
     await waitFor(() => modalVisible(), 5000, 'transfer manager');
@@ -581,6 +850,9 @@ async function walk() {
     await menuClick(/^file$/i, /open profile file/i);
     await waitFor(() => page.locator('#modal-root .modal input[type="password"]').count().then((n) => n > 0), 5000, 'password prompt');
     await answerPrompt(PASSWORD);
+    // profile open lands on the alphabetically-first source (live-sftp once
+    // the remote engines exist) — click the s3 source explicitly
+    await treeOpen(SRCNAME);
     await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root after reopen');
     await ok('sources restored from encrypted file', true);
     await ok('profile chip back', (await txt('#status-pfile')).includes(LOCK));
@@ -601,31 +873,40 @@ async function walk() {
     await menuClick(/^file$/i, /open profile file/i);
     await waitFor(() => page.locator('#modal-root .modal input[type="password"]').count().then((n) => n > 0), 5000, 'password prompt');
     await answerPrompt(PASSWORD);
+    await treeOpen(SRCNAME); // same alphabetical-first landing as above
     await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root');
     await dblClickRow(`${PREFIX}/`);
     await waitFor(async () => (await rowKeys()).length >= 2, 20000, 'zz-live contents');
     await page.keyboard.press('Control+A');
     await page.keyboard.press('Delete');
-    await waitFor(() => modalVisible(), 5000, 'delete confirm');
+    // versioned bucket → the marker-vs-permanent choice dialog comes first
+    await pickDeleteMode('marker');
+    await ok('versioned delete asks: marker or permanent (marker default)', true);
+    await shot('20-delete-choice');
     await confirmDanger('delete');
     await waitFor(async () => (await rowKeys()).length === 0, 60000, 'folder emptied');
-    await ok('zz-live objects deleted', true);
+    await ok('zz-live objects deleted (markers — restorable)', true);
     await page.keyboard.press('Backspace'); // up to bucket root
     await waitFor(async () => (await rowKeys()).includes(`${PREFIX}/`), 20000, 'bucket root');
+    // every FILE under zz-live/ is now marker-deleted — 3 markers in total
+    // (the live-b.txt rename plus live-a.txt and live-renamed.txt deletes) —
+    // but the zz-live/ placeholder object New folder created is still live,
+    // so the folder row badges the marker count, not "all deleted"
+    const badge = await waitFor(() => evalPage((k) => {
+      const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+        .find((x) => x._model && x._model.key === k);
+      return r ? (r.querySelector('.vmark')?.textContent || '').trim() : '';
+    }, `${PREFIX}/`), 15000, 'marker-count badge');
+    await ok(`folder badge shows "${badge}" (3 markers, folder itself live)`, badge === '⛔ 3');
+    await shot('21-marker-badge');
     await clickRow(`${PREFIX}/`);
     await page.keyboard.press('Delete');
-    await waitFor(() => modalVisible(), 5000, 'folder delete confirm');
-    await confirmDanger('delete');
-    // AWS drops the folder row at once; versioned MinIO keeps synthesizing
-    // the DIR entry from delete-marker versions until they are purged —
-    // accept either (the marker itself must be gone either way, and the
-    // final object-level assertion below catches real leftovers).
-    let gone = false;
-    try {
-      await waitFor(async () => !(await rowKeys()).includes(`${PREFIX}/`), 20000, 'folder gone');
-      gone = true;
-    } catch { /* versioned store keeps the synthetic prefix row */ }
-    await ok(gone ? 'zz-live folder row deleted' : 'zz-live emptied (row synthesized from delete markers)', true);
+    // this time the permanent path: purges every version AND marker under
+    // zz-live/, so even the marker-synthesized folder row must vanish
+    await pickDeleteMode('permanent');
+    await confirmDanger('permanent');
+    await waitFor(async () => !(await rowKeys()).includes(`${PREFIX}/`), 60000, 'folder row gone for good');
+    await ok('permanent purge removed the folder row entirely', true);
     await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root relisted');
     const left = await rowKeys();
     const leftover = left.filter((k) => k.startsWith(PREFIX) && !k.endsWith('/'));

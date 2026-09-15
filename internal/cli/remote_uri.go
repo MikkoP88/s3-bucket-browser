@@ -2,7 +2,10 @@
 // scheme. Any saved non-S3 data source (local/sftp/scp/ftp/ftps) can be
 // addressed as NAME://path, e.g. `s3b ls vault://media` or
 // `s3b cp vault://media/a.txt s3://b/`. S3 sources keep their s3:// URIs
-// and resolve by name via --profile (the store mirrors them).
+// for browsing (they resolve by name via --profile; the store mirrors
+// them), but cp/mv accept them as NAME:// operands too: a per-bucket
+// source scopes the path to its bucket (NAME://dir/file), an account-wide
+// source reads the bucket from the first segment (NAME://bucket/dir/file).
 package cli
 
 import (
@@ -80,7 +83,7 @@ func dialSourceURI(ctx context.Context, arg string) (*remoteRef, error) {
 		return nil, usageErr("%q is not a saved data source (see `s3b source list`)", name)
 	}
 	if src.Type == profile.TypeS3 {
-		return nil, usageErr("source %q is S3 — use s3://bucket/prefix with --profile %s", name, name)
+		return nil, usageErr("source %q is S3 — browse it as s3://bucket/prefix with --profile %q (cp/mv also take %s:// operands)", name, name, name)
 	}
 	fs, err := remotefs.Dial(ctx, src)
 	if err != nil {
@@ -89,14 +92,115 @@ func dialSourceURI(ctx context.Context, arg string) (*remoteRef, error) {
 	return &remoteRef{src: src, path: remotefs.CleanPath(rest), fs: fs}, nil
 }
 
+// ---- S3 source URIs (cp/mv operands) ----
+
+// s3SourceRef is a dialed S3 source URI: the source's own client plus the
+// anchored bucket/key. A per-bucket source scopes the whole path to its
+// bucket; an account-wide source reads the bucket from the first segment.
+type s3SourceRef struct {
+	src    profile.Source
+	c      *s3client.Client
+	bucket string
+	key    string // "" = bucket root; never slash-terminated
+	folder bool   // operand named a folder (trailing slash)
+}
+
+// s3URI mirrors the ref into the s3:// shape every copy path already
+// understands, so enumeration and destination semantics stay identical
+// for source URIs and plain s3:// operands.
+func (r *s3SourceRef) s3URI() s3URI {
+	u := s3URI{Bucket: r.bucket, Key: r.key}
+	if u.Key != "" {
+		u.HasPrefix = true
+		u.IsPrefix = r.folder
+	}
+	return u
+}
+
+// uriStr renders the ref as an s3:// URI string — copyS3ToS3 parses its
+// operands, and the synthesized URI drives the exact same folder/exact
+// destination rules as a typed s3:// one.
+func (r *s3SourceRef) uriStr() string {
+	s := "s3://" + r.bucket
+	if r.key != "" {
+		s += "/" + r.key
+		if r.folder {
+			s += "/"
+		}
+	}
+	return s
+}
+
+// s3SourcePath splits the URI path per the source's scope: a per-bucket
+// source uses the whole path as the key, an account-wide source takes the
+// bucket from the first path segment.
+func s3SourcePath(src profile.Source, rest string) (bucket, key string, err error) {
+	rest = strings.Trim(rest, "/")
+	if src.Bucket != "" {
+		return src.Bucket, rest, nil
+	}
+	bucket, key, _ = strings.Cut(rest, "/")
+	if bucket == "" {
+		return "", "", usageErr("source %q spans the whole account — address it as %s://bucket[/key]", src.Name, src.Name)
+	}
+	return bucket, key, nil
+}
+
+// dialS3SourceURI resolves NAME://path for an S3-type source into a
+// dialed client plus bucket/key. Returns (nil, nil) for everything else
+// (plain paths, s3:// URIs, non-S3 sources — dialSourceURI takes those),
+// letting cp/mv probe both dialers on each operand.
+func dialS3SourceURI(ctx context.Context, arg string) (*s3SourceRef, error) {
+	name, rest, ok := sourceURI(arg)
+	if !ok || name == "s3" {
+		return nil, nil
+	}
+	s, err := store()
+	if err != nil {
+		return nil, err
+	}
+	src, err := s.GetSource(name)
+	if err != nil {
+		return nil, usageErr("%q is not a saved data source (see `s3b source list`)", name)
+	}
+	if src.Type != profile.TypeS3 || src.S3 == nil {
+		return nil, nil
+	}
+	bucket, key, err := s3SourcePath(src, rest)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s3client.New(ctx, *src.S3, s3client.Options{Timeout: flagTimeout})
+	if err != nil {
+		return nil, opErr(err)
+	}
+	return &s3SourceRef{
+		src:    src,
+		c:      c,
+		bucket: bucket,
+		key:    key,
+		folder: strings.HasSuffix(rest, "/"),
+	}, nil
+}
+
 // remoteLs implements `ls NAME://dir` (one view; --recursive walks).
 func remoteLs(ctx context.Context, r *remoteRef, recursive bool) error {
 	if recursive {
-		return remotefs.Walk(ctx, r.fs, r.path, func(e listing.Entry) error {
+		var rows []listing.Entry
+		if err := remotefs.Walk(ctx, r.fs, r.path, func(e listing.Entry) error {
 			e.Name = strings.TrimPrefix(e.Key, "/")
-			printEntry(e)
+			rows = append(rows, e)
 			return nil
-		})
+		}); err != nil {
+			return opErr(err)
+		}
+		if flagJSON {
+			return printJSON(rows)
+		}
+		for _, e := range rows {
+			printEntry(e)
+		}
+		return nil
 	}
 	entries, err := r.fs.List(ctx, r.path)
 	if err != nil {
@@ -481,17 +585,18 @@ func remoteDstTarget(ctx context.Context, r *remoteRef, uri string, files []copy
 }
 
 // copyRemoteDispatch handles every cp/mv with at least one source-URI
-// operand; the other side may be a source URI, s3:// or a local path.
-func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string, srcRef, dstRef *remoteRef, opts copyOptions) (int, error) {
-	srcS3 := strings.HasPrefix(src, "s3://")
-
+// operand; the other side may be a source URI (remote or S3), s3:// or a
+// local path.
+func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string, srcRef, dstRef *remoteRef, srcS3, dstS3 *s3SourceRef, opts copyOptions) (int, error) {
 	var files []copyFile
 	var srcIsDir bool
 	var err error
 	switch {
 	case srcRef != nil:
 		files, srcIsDir, err = remoteCopyFiles(ctx, srcRef, opts.Recursive)
-	case srcS3:
+	case srcS3 != nil:
+		files, srcIsDir, err = s3CopyFiles(ctx, srcS3.c, srcS3.s3URI(), opts.Recursive)
+	case strings.HasPrefix(src, "s3://"):
 		var u s3URI
 		u, err = parseS3URI(src)
 		if err != nil {
@@ -548,17 +653,46 @@ func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string
 				}
 			}
 		}
-		return n, nil
+		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n)
 	}
 
+	if dstS3 != nil {
+		n, err := copyFilesToS3(ctx, dstS3.c, files, srcIsDir, dstS3.s3URI(), opts)
+		if err != nil {
+			return n, err
+		}
+		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n)
+	}
 	if strings.HasPrefix(dst, "s3://") {
 		du, err := parseS3URI(dst)
 		if err != nil {
 			return 0, err
 		}
-		return copyFilesToS3(ctx, c, files, srcIsDir, du, opts)
+		n, err := copyFilesToS3(ctx, c, files, srcIsDir, du, opts)
+		if err != nil {
+			return n, err
+		}
+		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n)
 	}
-	return copyFilesToLocal(ctx, files, srcIsDir, dst, opts)
+	n, err := copyFilesToLocal(ctx, files, srcIsDir, dst, opts)
+	if err != nil {
+		return n, err
+	}
+	return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n)
+}
+
+// pruneMovedDir completes mv semantics for remote directory sources: the
+// per-file removes delete files only, so the emptied directory skeleton
+// stays behind. Every engine's Remove(dir) takes a whole tree — by this
+// point only empty dirs remain, so removing the root prunes the skeleton
+// without touching moved data.
+func pruneMovedDir(ctx context.Context, srcRef *remoteRef, srcIsDir bool, opts copyOptions, n int) (int, error) {
+	if opts.Move && !opts.DryRun && srcRef != nil && srcIsDir {
+		if err := srcRef.fs.Remove(ctx, srcRef.path); err != nil {
+			return n, opErr(err)
+		}
+	}
+	return n, nil
 }
 
 // copyFilesToS3 uploads enumerated files; folder batches land under the

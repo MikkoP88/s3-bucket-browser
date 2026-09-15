@@ -31,6 +31,8 @@ type copyOptions struct {
 	NoClobber    bool
 	DryRun       bool
 	Move         bool
+	Versions     bool // recreate the source's version timeline (S3→S3)
+	Force        bool // mv --versions: allow purging >50 source versions
 }
 
 func (o copyOptions) uploadOptions() transfer.UploadOptions {
@@ -55,12 +57,16 @@ func copyLikeCmd(name, short string, move bool) *cobra.Command {
 		Use:   fmt.Sprintf("%s SRC DST", name),
 		Short: short,
 		Long: "Directions: local→s3:// (upload), s3://→local (download), s3://→s3:// (server-side copy),\n" +
-			"plus NAME:// source URIs (any saved non-S3 source) on either side.\n" +
+			"plus NAME:// source URIs on either side — any saved data source, S3 sources too:\n" +
+			"NAME://bucket/key for account-wide S3 sources, NAME://key for per-bucket ones.\n" +
+			"Both sides on the same S3 source copy server-side; anything else streams.\n" +
+			"--versions (S3→S3) recreates the source's version timeline at the destination,\n" +
+			"delete markers included; mv --versions then purges the sources (L3, --force gates).\n" +
 			"SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The S3 client is only needed when one side is s3:// — source-
-			// URI-only copies work without any configured S3 profile.
+			// URI operands dial their own engines (S3 sources included).
 			var c *s3client.Client
 			if strings.HasPrefix(args[0], "s3://") || strings.HasPrefix(args[1], "s3://") {
 				var err error
@@ -91,26 +97,56 @@ func copyLikeCmd(name, short string, move bool) *cobra.Command {
 	f.StringVar(&opts.SSE, "sse", "", "server-side encryption (AES256)")
 	f.BoolVar(&opts.NoClobber, "no-clobber", false, "skip uploads when the object already exists")
 	f.BoolVar(&opts.DryRun, "dry-run", false, "show what would transfer, do nothing")
+	f.BoolVar(&opts.Versions, "versions", false,
+		"recreate the full version timeline (both sides must be S3; destination must be versioned)")
+	f.BoolVar(&opts.Force, "force", false,
+		fmt.Sprintf("with mv --versions: allow purging more than %d source versions", rmForceThreshold))
 	return cmd
 }
 
 // runCopy dispatches on direction and returns the item count. Source URIs
-// (NAME:// — any saved non-S3 source, M10.5) take the remotefs pipeline;
-// everything else keeps its historical path.
+// (NAME:// — any saved source, M10.5) take the remotefs pipeline; S3
+// sources dial their own client (cross-cloud streaming — or server-side
+// when both sides are the same source); everything else keeps its
+// historical path.
 func runCopy(ctx context.Context, c *s3client.Client, src, dst string, opts copyOptions) (int, error) {
-	srcRef, err := dialSourceURI(ctx, src)
+	srcS3Ref, err := dialS3SourceURI(ctx, src)
 	if err != nil {
 		return 0, err
 	}
-	dstRef, err := dialSourceURI(ctx, dst)
+	dstS3Ref, err := dialS3SourceURI(ctx, dst)
 	if err != nil {
-		srcRef.Close()
 		return 0, err
+	}
+	// One operand is one kind of source URI — skip the remotefs dialer
+	// when the S3 dialer already claimed it.
+	var srcRef, dstRef *remoteRef
+	if srcS3Ref == nil {
+		srcRef, err = dialSourceURI(ctx, src)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if dstS3Ref == nil {
+		dstRef, err = dialSourceURI(ctx, dst)
+		if err != nil {
+			srcRef.Close()
+			return 0, err
+		}
 	}
 	defer srcRef.Close()
 	defer dstRef.Close()
-	if srcRef != nil || dstRef != nil {
-		return copyRemoteDispatch(ctx, c, src, dst, srcRef, dstRef, opts)
+	if opts.Versions {
+		return runCopyVersions(ctx, c, src, dst, srcS3Ref, dstS3Ref, opts)
+	}
+	if srcS3Ref != nil && dstS3Ref != nil && srcS3Ref.src.ID == dstS3Ref.src.ID {
+		// Both sides are the same S3 source (one client): plain
+		// server-side copy under synthesized URIs — mv's deletes and the
+		// exact-object gates included.
+		return copyS3ToS3(ctx, srcS3Ref.c, srcS3Ref.uriStr(), dstS3Ref.uriStr(), opts)
+	}
+	if srcRef != nil || dstRef != nil || srcS3Ref != nil || dstS3Ref != nil {
+		return copyRemoteDispatch(ctx, c, src, dst, srcRef, dstRef, srcS3Ref, dstS3Ref, opts)
 	}
 	srcS3 := strings.HasPrefix(src, "s3://")
 	dstS3 := strings.HasPrefix(dst, "s3://")

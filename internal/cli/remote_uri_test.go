@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/eventlog"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
 // appendTestEvent simulates GUI activity landing in the shared event log.
@@ -226,6 +227,109 @@ func TestLogCommand(t *testing.T) {
 	}
 	if code := Execute([]string{"log", "--level", "bogus"}); code != exitUsage {
 		t.Fatalf("bad level: exit %d", code)
+	}
+}
+
+// ---- S3 source URIs (cp/mv operands) ----
+
+func TestS3SourcePathSplit(t *testing.T) {
+	scoped := profile.Source{Name: "lab", Type: profile.TypeS3, Bucket: "scoped"}
+	for _, tc := range []struct {
+		rest, bucket, key string
+	}{
+		{rest: "/", bucket: "scoped", key: ""},
+		{rest: "docs", bucket: "scoped", key: "docs"},
+		{rest: "docs/", bucket: "scoped", key: "docs"},
+		{rest: "/docs/a.txt", bucket: "scoped", key: "docs/a.txt"},
+	} {
+		b, k, err := s3SourcePath(scoped, tc.rest)
+		if err != nil || b != tc.bucket || k != tc.key {
+			t.Fatalf("scoped %q: got (%q,%q,%v), want (%q,%q)", tc.rest, b, k, err, tc.bucket, tc.key)
+		}
+	}
+
+	acct := profile.Source{Name: "lab", Type: profile.TypeS3}
+	for _, tc := range []struct {
+		rest, bucket, key string
+	}{
+		{rest: "b1", bucket: "b1", key: ""},
+		{rest: "b1/", bucket: "b1", key: ""},
+		{rest: "b1/a.txt", bucket: "b1", key: "a.txt"},
+		{rest: "/b1/docs/b.txt", bucket: "b1", key: "docs/b.txt"},
+	} {
+		b, k, err := s3SourcePath(acct, tc.rest)
+		if err != nil || b != tc.bucket || k != tc.key {
+			t.Fatalf("account-wide %q: got (%q,%q,%v), want (%q,%q)", tc.rest, b, k, err, tc.bucket, tc.key)
+		}
+	}
+	if _, _, err := s3SourcePath(acct, "/"); err == nil {
+		t.Fatal("account-wide root must demand a bucket segment")
+	}
+}
+
+func TestS3SourceRefURIForms(t *testing.T) {
+	for _, tc := range []struct {
+		ref      s3SourceRef
+		bucket   string
+		key      string
+		isPrefix bool
+		hasKey   bool
+		uri      string
+	}{
+		{ref: s3SourceRef{bucket: "b"}, bucket: "b", uri: "s3://b"},                                                                             // bucket root
+		{ref: s3SourceRef{bucket: "b", key: "docs", folder: true}, bucket: "b", key: "docs", isPrefix: true, hasKey: true, uri: "s3://b/docs/"}, // folder
+		{ref: s3SourceRef{bucket: "b", key: "docs/a.txt"}, bucket: "b", key: "docs/a.txt", hasKey: true, uri: "s3://b/docs/a.txt"},              // object
+		{ref: s3SourceRef{bucket: "b", folder: true}, bucket: "b", uri: "s3://b"},                                                               // root w/ slash == bucket root
+	} {
+		u := tc.ref.s3URI()
+		if u.Bucket != tc.bucket || u.Key != tc.key || u.IsPrefix != tc.isPrefix || u.HasPrefix != tc.hasKey {
+			t.Fatalf("s3URI(%+v): got %+v", tc.ref, u)
+		}
+		if got := tc.ref.uriStr(); got != tc.uri {
+			t.Fatalf("uriStr(%+v): got %q want %q", tc.ref, got, tc.uri)
+		}
+	}
+}
+
+// addS3Source stores an S3 source without touching the network.
+func addS3Source(t *testing.T, name, bucket string) {
+	t.Helper()
+	args := []string{"source", "add", name, "--type", "s3",
+		"--endpoint", "http://127.0.0.1:1", "--access-key", "test", "--secret-key", "test"}
+	if bucket != "" {
+		args = append(args, "--bucket", bucket)
+	}
+	if code := Execute(args); code != 0 {
+		t.Fatalf("source add %s: exit %d", name, code)
+	}
+}
+
+func TestS3SourceURIReadCommandsRejected(t *testing.T) {
+	cliEnv(t)
+	addS3Source(t, "s3lab", "scoped")
+
+	// Browsing stays on s3:// URIs — the error points both ways.
+	if code := Execute([]string{"ls", "s3lab://"}); code != exitUsage {
+		t.Fatalf("ls s3lab://: exit %d (want usage %d)", code, exitUsage)
+	}
+}
+
+func TestS3SourceCopyGrammar(t *testing.T) {
+	cliEnv(t)
+	addS3Source(t, "pb", "my-bucket") // per-bucket
+	addS3Source(t, "acct", "")        // account-wide
+	dst := t.TempDir()
+
+	if code := Execute([]string{"cp", "ghost://x", dst}); code != exitUsage {
+		t.Fatalf("cp unknown source: exit %d (want usage %d)", code, exitUsage)
+	}
+	if code := Execute([]string{"cp", "acct://", dst}); code != exitUsage {
+		t.Fatalf("cp account-wide root: exit %d (want usage %d)", code, exitUsage)
+	}
+	// Same source, same synthesized object: the server-side path's own
+	// same-object gate fires before any network call.
+	if code := Execute([]string{"cp", "pb://x.txt", "pb://x.txt"}); code != exitUsage {
+		t.Fatalf("cp same object: exit %d (want usage %d)", code, exitUsage)
 	}
 }
 

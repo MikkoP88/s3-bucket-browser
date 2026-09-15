@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -43,9 +44,15 @@ func Path() (string, error) {
 // in the config dir, written by the GUI Settings dialog). Mode:
 // "" / "default" = events.jsonl beside profiles.json (what `s3b log`
 // tails), "off" = no file logging, "custom" = the user-picked Dir.
+// Levels/Scopes filter what is WRITTEN to the file (empty = everything).
+// They are deliberately independent of the in-app log drawer, which
+// filters client-side on its own controls — file logging must never
+// change what the user sees on screen.
 type Settings struct {
-	Mode string `json:"logFileMode"`
-	Dir  string `json:"logFileDir"`
+	Mode   string   `json:"logFileMode"`
+	Dir    string   `json:"logFileDir"`
+	Levels []string `json:"logFileLevels,omitempty"`
+	Scopes []string `json:"logFileScopes,omitempty"`
 }
 
 func settingsPath() (string, error) {
@@ -92,7 +99,10 @@ func SaveSettings(s Settings) error {
 // logging is off. Read per call (no cache) so tests with isolated config
 // dirs and live GUI changes take effect immediately.
 func sinkPath() (string, bool) {
-	s := LoadSettings()
+	return sinkPathFrom(LoadSettings())
+}
+
+func sinkPathFrom(s Settings) (string, bool) {
 	if s.Mode == "off" {
 		return "", false
 	}
@@ -108,8 +118,16 @@ func sinkPath() (string, bool) {
 
 // Append writes one line, rotating first when the file outgrew the cap.
 // Best effort: logging must never take the app down, errors are dropped.
+// Lines the saved level/scope filters reject never reach the file.
 func Append(level, scope, msg string) {
-	p, ok := sinkPath()
+	s := LoadSettings()
+	if s.Mode == "off" {
+		return
+	}
+	if !fileFilterMatches(s, level, scope) {
+		return
+	}
+	p, ok := sinkPathFrom(s)
 	if !ok {
 		return
 	}
@@ -128,6 +146,19 @@ func Append(level, scope, msg string) {
 		return
 	}
 	f.Write(append(b, '\n'))
+}
+
+// fileFilterMatches applies the saved level/scope filters (exact match;
+// empty list = dimension unrestricted). File-only by design: the in-app
+// drawer never consults these.
+func fileFilterMatches(s Settings, level, scope string) bool {
+	if len(s.Levels) > 0 && !slices.Contains(s.Levels, level) {
+		return false
+	}
+	if len(s.Scopes) > 0 && !slices.Contains(s.Scopes, scope) {
+		return false
+	}
+	return true
 }
 
 // rotateIfBig rewrites the file with its newest half when it exceeds the

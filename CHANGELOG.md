@@ -6,6 +6,66 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Delete mode choice (versioned buckets).** Deleting from a versioned
+  bucket now asks first: **Delete (add a delete marker)** — the safe
+  default, everything stays restorable in version history — or
+  **Delete permanently**, which destroys every version AND marker of the
+  selection (the typed "permanent" confirmation is the force gate;
+  folder selections purge everything beneath them). Shift+Del still jumps
+  straight to the permanent path.
+- **Delete-marker badges.** In versioned buckets the grid badges
+  delete-marker state per row: files show how many markers their history
+  carries (⛔ n), folders aggregate everything beneath them and read
+  "all deleted" when nothing live remains. Costs one extra
+  ListObjectVersions pass per folder view (skipped beyond 500 rows).
+- **Version-preserving transfers.** `cp --versions` (S3→S3) recreates the
+  source's full version timeline at the destination, delete markers
+  included — the destination bucket must be versioned. `mv --versions`
+  then purges the sources (L3; `--force` gates >50 versions). The GUI's
+  S3→S3 conflict dialog gained the same choice.
+- **Cross-source e2e suite.** `scripts/e2e-cross.sh` (+ CI job `e2e-cross`):
+  every local/s3/sftp/ftp/webdav pairing must reproduce the exact source
+  tree at the destination (tree-diff per cell + byte round-trips), plus
+  the version-preservation contract above. Hetzner cells stay
+  env-gated and skip when no credentials are configured.
+
+### Fixed
+
+- **GUI upload on Windows.** The beta.3 "one dialog picks files AND
+  folders" experiment regressed hard on real Win10/11 desktops: with
+  `FOS_PICKFOLDERS` set, the common-file dialog greys the file rows out,
+  so only directories could be selected — and uploads went nowhere. The
+  proven v1.0.0 pickers are restored and now sit under one **Upload**
+  menu everywhere (toolbar, context menus, empty states):
+  **Files… (Ctrl+U)** opens the native multi-select file dialog,
+  **Folder…** the directory dialog. The backend walks directories on
+  either path, and drag & drop / paste keep working unchanged.
+- **Auto refresh is opt-in.** The GUI no longer polls on a timer by
+  default: auto refresh starts OFF (View menu / Settings to enable) and
+  is fully disabled while no data source is configured — no background
+  traffic the user never asked for.
+- **Streamed listings could miss early pages.** The grid subscribed to
+  `list:page` events after issuing the list call — a fast first page
+  could beat the subscription and vanish. The app now subscribes before
+  calling and replays anything the backend flushed in between
+  (`subscribeStream`, also applied to deep-search results).
+- **Grid double-fired selection events** on select-all, set-rows and
+  clear-selection — one Ctrl+A or Escape requested drag URLs twice.
+
+### Changed
+
+- **Data-source icons.** The sidebar now draws a purpose-made, license-
+  free SVG glyph per source type (original artwork, no external icon
+  set): a storage bucket for S3, the SSH terminal prompt for
+  SFTP/SCP, a folder with transfer arrows for FTP, a locked folder for
+  FTPS, a globe for WebDAV (padlock-badged for WebDAVs) and a disk
+  drive for local sources. Glyphs follow the theme color.
+- **CI: vsftpd containers run with `REVERSE_LOOKUP_ENABLE=NO`.** The
+  image default (reverse DNS of the client IP) stalled every fresh FTP
+  control connection ~15 s before the greeting, starving the e2e suites.
+
 ## [1.1.0-beta.3] — 2026-09-14
 
 Beta cut: transfer conflict preview, per-bucket S3 sources, Windows code

@@ -1,5 +1,5 @@
 // S3 Bucket Browser — application shell (Explorer layout).
-import { api, onEvent } from './api.js';
+import { api, onEvent, subscribeStream } from './api.js';
 import { el, fmtBytes, fmtDate, basename, debounce } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid } from './grid.js';
@@ -8,7 +8,8 @@ import {
   confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
   sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
-  usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill,
+  usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
+  deleteChoiceDialog,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
@@ -73,9 +74,10 @@ async function boot() {
   $('logarea').replaceChildren(logArea.root);
   if (localStorage.getItem('s3b-log') === '1') $('logarea').classList.remove('hidden');
 
-  // Auto refresh: on by default (5 s) unless explicitly turned off;
-  // restore interval + refresh-on-focus from the last session.
-  const ar = parseInt(localStorage.getItem('s3b-autorefresh') || '5000', 10);
+  // Auto refresh: OFF by default — a deliberate opt-in (View menu / Settings)
+  // rather than a background poller the user never asked for; restore the
+  // interval + refresh-on-focus from the last session.
+  const ar = parseInt(localStorage.getItem('s3b-autorefresh') || '0', 10);
   if (ar > 0) setAutoRefresh(ar);
   refreshOnFocus = localStorage.getItem('s3b-refresh-focus') === '1';
 
@@ -102,10 +104,12 @@ let autoRefreshMs = 0;
 let refreshOnFocus = false;
 
 // autoRefreshBlocked: conditions under which a background refresh must not
-// fire — a modal or context menu is open, or transfers are running (the
-// status-bar jobs indicator is visible exactly then; uploads also refresh
-// views via s3:changed on their own).
+// fire — no data source is configured (nothing to poll), a modal or context
+// menu is open, or transfers are running (the status-bar jobs indicator is
+// visible exactly then; uploads also refresh views via s3:changed on their
+// own).
 function autoRefreshBlocked() {
+  if (sources.length === 0) return true; // fully off until a source exists
   if (!$('modal-root').classList.contains('hidden')) return true;
   if (!$('ctxmenu').classList.contains('hidden')) return true;
   if (!$('status-jobs').classList.contains('hidden')) return true;
@@ -333,9 +337,12 @@ async function importCredsUi() {
   });
 }
 
-function afterSourceSaved() {
+function afterSourceSaved(saved) {
   refreshSources().then((ok) => {
-    if (ok) nav.to(sourceHomeLoc(sources[sources.length - 1]));
+    // ListSources is name-sorted, so "the last entry" is NOT reliably the
+    // source just saved — navigate to the saved one (falling back for
+    // callers without a source object).
+    if (ok) nav.to(sourceHomeLoc(saved || sources[sources.length - 1]));
   });
   refreshPfState(); // a container edit flips the dirty flag
   toast('Source saved', 'ok');
@@ -470,53 +477,80 @@ async function loadObjectsStream(loc, silent = false) {
     grid.setRows([]);
   }
   grid.setFilter(view.filter);
+  // silent: pages buffer off-screen; the grid swaps once, when done.
+  const buffered = [];
+  const stream = subscribeStream(
+    () => api.ListObjectsStream(loc.bucket, loc.prefix || ''),
+    (p) => {
+      if (seq !== listSeq) return; // superseded while pages still arrived
+      if (p.error) {
+        if (!silent) showEmpty('Could not list', p.error, []);
+        return;
+      }
+      if (silent) {
+        buffered.push(...p.entries);
+        currentEntries = buffered;
+      } else {
+        currentEntries.push(...p.entries);
+        grid.appendRows(p.entries);
+      }
+      updateStatus();
+      if (p.done) {
+        listStream.token = null;
+        listStream.off?.();
+        listStream.off = null;
+        if (silent) grid.setRows(buffered);
+        grid.apply(); // canonical folders-first ordering + active sort/filter
+        decorateVersionMarkers(loc, seq);
+        if (!currentEntries.length && !view.filter) {
+          showEmpty(t('emptyFolder'), t('dropToUpload'), [
+            el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: (ev) => openMenu(ev.currentTarget, uploadMenu(uploadFiles, uploadFolder)) }),
+          ]);
+        }
+        consumePendingSelect();
+        updateStatus();
+      }
+    },
+  );
+  listStream.off = stream.off;
   let token;
   try {
-    token = await api.ListObjectsStream(loc.bucket, loc.prefix || '');
+    token = await stream.begin;
   } catch (err) {
+    if (listStream.off === stream.off) listStream.off = null;
     if (seq !== listSeq || silent) return;
     showEmpty('Could not list', String(err), []);
     return;
   }
   if (seq !== listSeq) { api.CancelList(token).catch(() => {}); return; }
   listStream.token = token;
-  // silent: pages buffer off-screen; the grid swaps once, when done.
-  const buffered = [];
-  listStream.off = onEvent('list:page', (p) => {
-    if (seq !== listSeq || p.token !== token) return;
-    if (p.error) {
-      if (!silent) showEmpty('Could not list', p.error, []);
-      return;
-    }
-    if (silent) {
-      buffered.push(...p.entries);
-      currentEntries = buffered;
-    } else {
-      currentEntries.push(...p.entries);
-      grid.appendRows(p.entries);
-    }
-    updateStatus();
-    if (p.done) {
-      listStream.token = null;
-      listStream.off?.();
-      listStream.off = null;
-      if (silent) grid.setRows(buffered);
-      grid.apply(); // canonical folders-first ordering + active sort/filter
-      if (!currentEntries.length && !view.filter) {
-        showEmpty(t('emptyFolder'), t('dropToUpload'), [
-          el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: upload }),
-        ]);
-      }
-      consumePendingSelect();
-      updateStatus();
-    }
-  });
+  stream.flush();
 }
 
 function cancelListStream() {
   if (listStream.token) { api.CancelList(listStream.token).catch(() => {}); listStream.token = null; }
   listStream.off?.();
   listStream.off = null;
+}
+
+// vmarkRowCap bounds delete-marker decoration: beyond it the extra
+// ListObjectVersions pass costs more than the badges are worth.
+const vmarkRowCap = 500;
+
+// decorateVersionMarkers badges the folder view with delete-marker state
+// (versioned buckets only): files with markers in their history, folders
+// with markers beneath, folders whose every file is delete-marked. One
+// extra ListObjectVersions pass, best-effort — a failure simply leaves the
+// view undecorated. seq guards against painting a stale folder.
+async function decorateVersionMarkers(loc, seq) {
+  try {
+    const g = await ensureGuard(loc.source, loc.bucket);
+    if (!g || g.versioning !== 'Enabled') return;
+    if (seq !== listSeq || grid.all.length > vmarkRowCap) return;
+    const kids = await api.PrefixVersionSummary(loc.bucket, loc.prefix || '');
+    if (seq !== listSeq) return; // navigated away while listing versions
+    grid.setMarkers(new Map(kids.map((c) => [`${c.isDir ? 'd' : 'f'}:${c.name}`, c])));
+  } catch { /* decoration is best-effort */ }
 }
 
 // consumePendingSelect focuses a row requested by an earlier action
@@ -678,33 +712,45 @@ const guardKey = (source, bucket) => `${source || viewSource || ''}/${bucket}`;
 // ensureGuards fetches the guard state of one source's buckets the tree
 // just drew (skips cached ones), then re-renders the tree once so the
 // icons appear. SourceGetBucketGuard pins the source — the buckets may
-// belong to any configured source, not just the view source. A failure
-// caches the zero guard so it is not retried every render.
+// belong to any configured source, not just the view source. Fetch
+// failures are NOT cached — a transient error must not permanently hide
+// the versioning/lock icons or gate the delete-mode dialog — but retried
+// a few times with backoff, then left cold (later calls still retry).
+const guardTries = new Map();
+const GUARD_MAX_TRIES = 4;
 function ensureGuards(source, names) {
   const missing = names.filter((b) => !guardCache.has(guardKey(source, b)));
   if (!missing.length) return;
   let pending = missing.length;
   for (const b of missing) {
+    const k = guardKey(source, b);
     api.SourceGetBucketGuard(source, b)
-      .then((g) => guardCache.set(guardKey(source, b), g))
-      .catch(() => guardCache.set(guardKey(source, b), { versioning: '', lockEnabled: false }))
+      .then((g) => { guardCache.set(k, g); guardTries.delete(k); })
+      .catch(() => {
+        const tries = (guardTries.get(k) || 0) + 1;
+        guardTries.set(k, tries);
+        if (tries < GUARD_MAX_TRIES) {
+          setTimeout(() => { if (!guardCache.has(k)) ensureGuards(source, [b]); }, 4000 * tries);
+        }
+      })
       .finally(() => {
         pending -= 1;
-        if (pending === 0) tree.render();
+        if (pending === 0 && missing.some((b) => guardCache.has(guardKey(source, b)))) tree.render();
       });
   }
 }
 
 // ensureGuard returns one bucket's guard state, fetching it once when the
 // cache is cold (properties dialogs use it; the tree batch-fetches via
-// ensureGuards on its own).
+// ensureGuards on its own). A failed fetch returns the zero guard without
+// caching, so the next call retries.
 async function ensureGuard(source, bucket) {
   const k = guardKey(source, bucket);
   if (!guardCache.has(k)) {
     try {
       guardCache.set(k, await api.SourceGetBucketGuard(source || viewSource, bucket));
     } catch {
-      guardCache.set(k, { versioning: '', lockEnabled: false });
+      return { versioning: '', lockEnabled: false };
     }
   }
   return guardCache.get(k);
@@ -903,16 +949,17 @@ function wireLocalPane() {
 }
 
 // openMenu renders items in the shared #ctxmenu popup. An item is
-// [label, kbd, fn, disabled?] or null for a separator. The anchor is a mouse
-// event (menu at the pointer) or an element (menu below its rect).
+// [label, kbd, fn, disabled?, cls?] or null for a separator; fn=null makes
+// an inert row (menu headers like Upload). The anchor is a mouse event
+// (menu at the pointer) or an element (menu below its rect).
 function openMenu(anchor, items) {
   const menu = $('ctxmenu');
   menu.replaceChildren(...items.map((it) => {
     if (!it) return el('div', { class: 'sep' });
-    const [label, kbd, fn, disabled] = it;
+    const [label, kbd, fn, disabled, cls] = it;
     return el('div', {
-      class: `item${disabled ? ' disabled' : ''}`,
-      onclick: () => { hideContextMenu(); fn(); },
+      class: `item${disabled ? ' disabled' : ''}${cls ? ` ${cls}` : ''}`,
+      onclick: () => { if (disabled || !fn) return; hideContextMenu(); fn(); },
     }, el('span', { text: label }), kbd ? el('span', { class: 'kbd', text: kbd }) : null);
   }));
   menu.classList.remove('hidden');
@@ -1004,7 +1051,7 @@ function showEmptyAreaMenu(e) {
     openMenu(e, [
       ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
       null,
-      ['Upload\u2026', 'Ctrl+U', () => upload()],
+      ...uploadMenu(uploadFiles, uploadFolder),
       ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
       null,
       ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
@@ -1017,7 +1064,7 @@ function showEmptyAreaMenu(e) {
   openMenu(e, [
     ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
     null,
-    ['Upload\u2026', 'Ctrl+U', () => upload(), !st.canUpload],
+    ...uploadMenu(uploadFiles, uploadFolder, !st.canUpload),
     ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
     null,
     ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
@@ -1134,7 +1181,7 @@ function showTreeMenu(e, node) {
       ['Open', '', go],
       [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
       null,
-      ['Upload here\u2026', 'Ctrl+U', () => uploadTo('', node.bucket, node.source), !st.hasProfile],
+      ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
       ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && clipboard.keys.length)],
       null,
       ['Find in bucket\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, '', openSearchResult)), !st.hasProfile],
@@ -1182,10 +1229,10 @@ function showTreeMenu(e, node) {
     openMenu(e, [
       ['Open', '', () => nav.to({ kind: 'remote', source: node.source, path: node.path })],
       null,
-      ['Upload here\u2026', 'Ctrl+U', async () => {
-        const paths = await api.PickUploadItems();
-        if (paths?.length) uploadToRemote(paths, node.source, node.path);
-      }],
+      ...uploadMenu(
+        async () => { const paths = await api.PickUploadFiles(); if (paths?.length) uploadToRemote(paths, node.source, node.path); },
+        async () => { const dir = await api.PickFolder('Choose a folder to upload'); if (dir) uploadToRemote([dir], node.source, node.path); },
+      ),
       ['Download\u2026', '', async () => {
         const dest = await api.PickFolder('Choose download folder');
         if (dest) startTransfer({
@@ -1224,7 +1271,7 @@ function showTreeMenu(e, node) {
       ['Open', '', go],
       [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
       null,
-      ['Upload here\u2026', 'Ctrl+U', () => uploadTo('', node.bucket, node.source), !st.hasProfile],
+      ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
       ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && clipboard.keys.length)],
       null,
       ['Find in bucket\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, '', openSearchResult)), !st.hasProfile],
@@ -1233,6 +1280,8 @@ function showTreeMenu(e, node) {
       ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
       null,
       ['Delete bucket\u2026', '', goThen(() => deleteBucket(node.bucket)), !st.hasProfile],
+      null,
+      ['Open buckets view', '', () => nav.to({ kind: 'buckets', source: node.source })],
     ]);
     return;
   }
@@ -1241,7 +1290,7 @@ function showTreeMenu(e, node) {
   openMenu(e, [
     ['Open', '', go],
     null,
-    ['Upload here\u2026', 'Ctrl+U', () => uploadTo(node.prefix, node.bucket, node.source), !st.hasProfile],
+    ...uploadMenu(() => uploadTo(node.prefix, node.bucket, node.source), () => uploadFolderTo(node.prefix, node.bucket, node.source), !st.hasProfile),
     ['Download\u2026', '', () => downloadTreeEntry(node), !st.hasProfile],
     null,
     ['Copy', 'Ctrl+C', clipCopy, !st.hasProfile],
@@ -1249,18 +1298,22 @@ function showTreeMenu(e, node) {
     ['Paste into folder', 'Ctrl+V', () => paste(node.prefix, node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: node.prefix }), !(st.hasProfile && clipboard.keys.length)],
     null,
     ['Rename\u2026', 'F2', goThen(() => renameTreeFolder(node)), !st.hasProfile],
-    ['Delete\u2026', 'Del', goThen(() => deleteSelection(node.bucket, [node.prefix])), !st.hasProfile],
+    ['Delete\u2026', 'Del', goThen(() => deleteSelection(node.bucket, [node.prefix], node.source)), !st.hasProfile],
     null,
     ['Find here\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, node.prefix, openSearchResult)), !st.hasProfile],
     ['Properties', '', goThen(() => treeProperties(node)), !st.hasProfile],
   ]);
 }
 
-// uploadTo picks files AND folders in one OS dialog and uploads them into
-// a bucket/prefix of any S3 source (tree context menus).
+// uploadTo/uploadFolderTo push picked files or one directory into a
+// bucket/prefix of any S3 source (tree context menus' Upload menu).
 async function uploadTo(prefix, bucket, source) {
-  const paths = await api.PickUploadItems();
+  const paths = await api.PickUploadFiles();
   if (paths?.length) uploadPaths(paths, prefix, bucket, source);
+}
+async function uploadFolderTo(prefix, bucket, source) {
+  const dir = await api.PickFolder('Choose a folder to upload');
+  if (dir) uploadPaths([dir], prefix, bucket, source);
 }
 
 async function downloadTreeEntry(node) {
@@ -1361,18 +1414,38 @@ async function uploadPaths(paths, prefixOverride, bucketOverride, sourceOverride
   }
 }
 
-// upload is the ONE upload command: a single OS dialog that selects files
-// AND folders together (Ctrl+U, toolbar, menus). Destination follows the
-// active pane: a remote view uploads into its directory, an objects view
-// into the bucket prefix.
-async function upload() {
+// uploadFiles and uploadFolder are the two leaves of the Upload menu —
+// the proven v1.0.0 pair of native pickers (multi-select files, one
+// directory), restored after the beta.3 one-dialog mixed picker proved
+// unable to select files on Windows. Destination follows the active pane:
+// a remote view uploads into its directory, an objects view into the
+// bucket prefix; the backend walks directories either way.
+async function uploadFiles() {
   const loc = nav.current;
-  const paths = await api.PickUploadItems();
+  const paths = await api.PickUploadFiles();
   if (!paths?.length) return;
   if (loc?.kind === 'remote') return uploadToRemote(paths, loc.source, loc.path || '/');
   if (loc?.kind === 'objects') return uploadPaths(paths, loc.prefix || '', loc.bucket, loc.source);
   toast('Open a bucket or folder first');
 }
+
+async function uploadFolder() {
+  const loc = nav.current;
+  const dir = await api.PickFolder('Choose a folder to upload');
+  if (!dir) return;
+  if (loc?.kind === 'remote') return uploadToRemote([dir], loc.source, loc.path || '/');
+  if (loc?.kind === 'objects') return uploadPaths([dir], loc.prefix || '', loc.bucket, loc.source);
+  toast('Open a bucket or folder first');
+}
+
+// uploadMenu builds the one Upload hierarchy shown everywhere (toolbar,
+// context menus, empty states): a header with Files (Ctrl+U) and Folder
+// beneath it. disabled applies to both leaves.
+const uploadMenu = (filesFn, folderFn, disabled = false) => ([
+  ['Upload', '', null, false, 'hdr'],
+  ['Files\u2026', 'Ctrl+U', filesFn, disabled, 'sub'],
+  ['Folder\u2026', '', folderFn, disabled, 'sub'],
+]);
 
 async function downloadSelection(overrideRows) {
   const loc = nav.current;
@@ -1496,7 +1569,7 @@ function parentRemoteDir(p) {
   return i <= 0 ? '/' : t.slice(0, i + 1);
 }
 
-async function deleteSelection(bucketOverride, keysOverride) {
+async function deleteSelection(bucketOverride, keysOverride, sourceOverride) {
   const loc = nav.current;
   if (!bucketOverride && loc.kind === 'remote') {
     deleteRemoteSelection();
@@ -1514,17 +1587,35 @@ async function deleteSelection(bucketOverride, keysOverride) {
   try {
     const p = await api.PreviewDelete(bucket, keys);
     const desc = `${p.count} object(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}${p.folders ? ` in ${p.folders} folder(s)` : ''}`;
+    const source = sourceOverride ?? (loc.kind === 'objects' ? loc.source : '');
+    // Versioned bucket: the user picks the delete mode — the safe marker
+    // path (default) or permanent destruction (L3). Elsewhere the plain
+    // flow applies: a marker would just be noise without a timeline.
+    let mode = 'plain';
+    const g = await ensureGuard(source, bucket).catch(() => null);
+    const versioned = g?.versioning === 'Enabled';
+    if (versioned) {
+      mode = await deleteChoiceDialog({ desc: `Delete ${desc} from s3://${bucket}?` });
+      if (!mode) return; // canceled
+    }
+    if (mode === 'permanent') {
+      await deletePermanentKeys(bucket, keys, source);
+      return;
+    }
+    const undoNote = versioned
+      ? 'Objects stay in version history and can be restored.'
+      : 'This cannot be undone.';
     let ok;
     if (p.requiresL2) {
       ok = await typedConfirm({
         title: `Delete from s3://${bucket}`,
-        message: `You are about to delete ${desc}.\nThis cannot be undone.`,
+        message: `You are about to delete ${desc}.\n${undoNote}`,
         typeWord: 'delete',
       });
     } else {
       ok = await confirm({
         title: `Delete from s3://${bucket}`,
-        message: `Delete ${desc}? This cannot be undone.`,
+        message: `Delete ${desc}? ${undoNote}`,
         okLabel: 'Delete',
         danger: true,
       });
@@ -1539,10 +1630,43 @@ async function deleteSelection(bucketOverride, keysOverride) {
   }
 }
 
+// deletePermanentKeys destroys every version AND delete marker of the keys
+// (L3): file keys lose their whole timeline, folder keys purge everything
+// beneath them (a plain DeleteObject on a folder key would only touch the
+// folder marker). The typed "permanent" confirmation IS the force gate, so
+// the count-then-act backend is called with force=true. source pins the
+// call to a named source ("" = the view source).
+async function deletePermanentKeys(bucket, keys, source = '') {
+  const ok = await typedConfirm({
+    title: 'Delete permanently',
+    message: `Every version and delete marker of ${keys.length} item(s) will be destroyed.\nUnlike Delete, this erases version history too — it cannot be undone.`,
+    typeWord: 'permanent',
+  });
+  if (!ok) return false;
+  try {
+    const res = source
+      ? await api.SourceDeleteSelectionPermanent(source, bucket, keys, true)
+      : await api.DeleteSelectionPermanent(bucket, keys, true);
+    if (res?.errors?.length) {
+      toast(`${res.deleted} destroyed, errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
+    } else {
+      toast(`Destroyed ${res?.deleted ?? 0} version(s)/marker(s) permanently`, 'ok');
+    }
+    refreshCurrent();
+    return true;
+  } catch (err) {
+    toast(`Permanent delete failed: ${err}`, 'error');
+    return false;
+  }
+}
+
 async function editObject(row) {
   const loc = nav.current;
   try {
-    await api.EditObject(loc.bucket, row.key);
+    // Settings → Editing: ask which app edits the file via the OS
+    // "Open with" chooser (default on; off = OS default app).
+    const chooseApp = localStorage.getItem('s3b-edit-choose-app') !== '0';
+    await api.EditObject(loc.bucket, row.key, chooseApp);
     toast(`Opening ${row.name} — saves upload automatically`, 'ok');
     updateEditingStatus();
   } catch (err) {
@@ -1551,33 +1675,14 @@ async function editObject(row) {
 }
 
 // Shift+Del: destroy the selection including all versions and delete markers
-// (safety ladder L3).
+// (safety ladder L3) — routed through deletePermanentKeys so directory rows
+// purge EVERYTHING beneath them, not just the folder marker key.
 async function deletePermanentSelection() {
   const loc = nav.current;
   if (loc.kind !== 'objects') return;
-  const rows = grid.selectedRows();
-  if (!rows.length) return;
-  const ok = await typedConfirm({
-    title: 'Delete permanently',
-    message: `Every version of ${rows.length} object(s) will be destroyed.\nUnlike Delete, this erases version history too — it cannot be undone.`,
-    typeWord: 'permanent',
-  });
-  if (!ok) return;
-  try {
-    let failed = 0;
-    for (const r of rows) {
-      try {
-        await api.DeleteObjectPermanently(loc.bucket, r.key);
-      } catch (e) {
-        failed++;
-        toast(`${r.name}: ${e}`, 'error');
-      }
-    }
-    if (!failed) toast(`Destroyed ${rows.length} object(s) including all versions`, 'ok');
-    refreshCurrent();
-  } catch (err) {
-    toast(`Permanent delete failed: ${err}`, 'error');
-  }
+  const keys = grid.selectedRows().map((r) => r.key);
+  if (!keys.length) return;
+  await deletePermanentKeys(loc.bucket, keys, loc.source);
 }
 
 // sidePaneRef is the side pane's compare reference: a remote-bound pane
@@ -1803,26 +1908,58 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
   const move = clipboard.mode === 'cut';
   // S3 → S3 within the view source keeps the synchronous server-side copy
   // path; any other source pairing streams through TransferCross (which
-  // still copies server-side when both sides share a client).
+  // still copies server-side when both sides share a client). Both S3→S3
+  // pairings offer the per-task version choice first.
   if (clipboard.kind === 's3' && dest.kind === 's3'
     && clipboard.source === dest.source && dest.source === viewSource) {
     const prefix = prefixOverride !== undefined ? prefixOverride : (loc?.prefix || '');
-    try {
-      const res = await api.CopySelection(clipboard.bucket, clipboard.keys, dest.bucket, prefix, move);
-      if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-      else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} item(s)`, 'ok');
-      if (move) clipboard.keys = [];
+    const status = await copyS3Selection(
+      { source: '', bucket: clipboard.bucket, keys: clipboard.keys },
+      { kind: 's3', source: '', bucket: dest.bucket, dir: prefix },
+      move,
+      async () => {
+        try {
+          const res = await api.CopySelection(clipboard.bucket, clipboard.keys, dest.bucket, prefix, move);
+          if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
+          else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} item(s)`, 'ok');
+          if (move) clipboard.keys = [];
+          updateCommandState();
+          refreshCurrent();
+        } catch (err) {
+          toast(`Paste failed: ${err}`, 'error');
+        }
+      },
+    );
+    // A versioned move skips the plain callback — clear the clipboard here.
+    if (status === 'versioned' && move) {
+      clipboard.keys = [];
+      clipboard.mode = null;
       updateCommandState();
       refreshCurrent();
-    } catch (err) {
-      toast(`Paste failed: ${err}`, 'error');
     }
     return;
   }
-  const { items, localPaths } = clipboardToXfer();
-  const started = await startTransfer({ items, localPaths, dest, move });
-  if (started && move) { clipboard.keys = []; clipboard.paths = []; clipboard.mode = null; }
-  updateCommandState();
+  const runXfer = async () => {
+    const { items, localPaths } = clipboardToXfer();
+    const started = await startTransfer({ items, localPaths, dest, move });
+    if (started && move) { clipboard.keys = []; clipboard.paths = []; clipboard.mode = null; }
+    updateCommandState();
+  };
+  if (clipboard.kind === 's3' && dest.kind === 's3') {
+    const status = await copyS3Selection(
+      { source: clipboard.source || '', bucket: clipboard.bucket, keys: clipboard.keys },
+      dest, move, runXfer,
+    );
+    // A versioned move skips runXfer — clear the clipboard here.
+    if (status === 'versioned' && move) {
+      clipboard.keys = [];
+      clipboard.paths = [];
+      clipboard.mode = null;
+      updateCommandState();
+    }
+    return;
+  }
+  await runXfer();
 }
 
 async function presign(rowsOverride) {
@@ -2013,10 +2150,57 @@ function wireDrop() {
         return;
       }
     }
+    // Sidebar tree nodes are full drop targets: the node under the cursor
+    // decides the destination (a bucket root or folder, a remote
+    // directory, a non-S3 source's root) — never the accidentally-open
+    // main view. Account-wide S3 roots still need a bucket picked.
+    const tnode = hit?.closest('#tree .tnode');
+    if (tnode) {
+      const d = tnode.dataset;
+      if (d.rdir !== undefined) { uploadToRemote(paths, d.source, d.rdir); return; }
+      if (d.bucket !== undefined) {
+        startTransfer({ localPaths: paths, dest: { kind: 's3', source: d.source || '', bucket: d.bucket, dir: d.prefix || '' } });
+        return;
+      }
+      if (d.stype && d.stype !== 's3') { uploadToRemote(paths, d.source, '/'); return; }
+      toast('Open a bucket first — this source is account-wide');
+      return;
+    }
     const loc = nav.current;
     if (loc?.kind === 'remote') { uploadToRemote(paths, loc.source, loc.path || '/'); return; }
     uploadPaths(paths);
   });
+}
+
+// copyS3Selection runs an S3→S3 copy/move with the per-task version
+// choice. When the destination bucket has versioning enabled the user
+// picks "preserve the full history" (checkbox pre-set from the Settings
+// toggle) or a plain latest-version copy; non-versioned destinations skip
+// the question — the timeline would collapse anyway. plain() runs the
+// copy exactly the old way. Returns 'versioned' | 'plain' | 'canceled'.
+async function copyS3Selection(origin, dest, move, plain) {
+  let guard = null;
+  try { guard = await ensureGuard(dest.source || viewSource, dest.bucket); } catch { /* unknown guard → plain */ }
+  if (guard?.versioning === 'Enabled') {
+    const preserve = await versionChoiceDialog({
+      move,
+      defaultOn: localStorage.getItem('s3b-copy-versions') !== '0',
+    });
+    if (preserve === null) return 'canceled'; // user closed the dialog
+    if (preserve) {
+      try {
+        await api.CopySelectionVersions(origin.source || '', origin.bucket, origin.keys,
+          dest.source || '', dest.bucket, dest.dir || '', move);
+        toast(`${move ? 'Moving' : 'Copying'} version history — see Transfers`, 'ok');
+        return 'versioned';
+      } catch (err) {
+        toast(`Versioned ${move ? 'move' : 'copy'} failed: ${err}`, 'error');
+        return 'canceled';
+      }
+    }
+  }
+  await plain();
+  return 'plain';
 }
 
 // dropToTarget is the single drop dispatcher: target is
@@ -2062,18 +2246,27 @@ async function dropToTarget(target, data, e) {
     return;
   }
   if (dest.kind === 's3' && srcTag === viewSource && (dest.source || viewSource) === viewSource) {
-    // S3 → S3 within the view source keeps the synchronous server-side copy path
+    // S3 → S3 within the view source keeps the synchronous server-side copy
+    // path (behind the per-task version choice when the destination keeps
+    // versioning)
     const move = sameS3
       ? !e.ctrlKey || e.shiftKey         // same bucket: move (Shift forces)
       : e.shiftKey;                      // cross bucket: copy (Shift forces move)
-    try {
-      const res = await api.CopySelection(srcBucket, data.keys, dest.bucket, dest.dir || '', move);
-      if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-      else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} object(s)`, 'ok');
-      refreshCurrent();
-    } catch (err) {
-      toast(`Drag & drop ${move ? 'move' : 'copy'} failed: ${err}`, 'error');
-    }
+    await copyS3Selection(
+      { source: '', bucket: srcBucket, keys: data.keys },
+      { kind: 's3', source: '', bucket: dest.bucket, dir: dest.dir || '' },
+      move,
+      async () => {
+        try {
+          const res = await api.CopySelection(srcBucket, data.keys, dest.bucket, dest.dir || '', move);
+          if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
+          else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} object(s)`, 'ok');
+          refreshCurrent();
+        } catch (err) {
+          toast(`Drag & drop ${move ? 'move' : 'copy'} failed: ${err}`, 'error');
+        }
+      },
+    );
     return;
   }
   // S3 origin on a named source (side pane), or S3 → remote/local: stream
@@ -2081,6 +2274,15 @@ async function dropToTarget(target, data, e) {
   const items = (data.entries || []).map((en) => ({ source: srcTag, bucket: srcBucket, key: en.key, size: en.size || 0, isDir: !!en.isDir }));
   if (!items.length) return;
   const move = sameS3 ? (!e.ctrlKey || e.shiftKey) : e.shiftKey;
+  if (dest.kind === 's3') {
+    // cross-source S3→S3 still deserves the version choice
+    await copyS3Selection(
+      { source: srcTag, bucket: srcBucket, keys: data.keys },
+      dest, move,
+      async () => { await startTransfer({ items, dest, move }); },
+    );
+    return;
+  }
   await startTransfer({ items, dest, move });
 }
 
@@ -2192,10 +2394,10 @@ function sideRemoteEmptyMenu(e) {
   openMenu(e, [
     ['Paste', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir }), !clipHasItems()],
     null,
-    ['Upload\u2026', 'Ctrl+U', async () => {
-      const paths = await api.PickUploadItems();
-      if (paths?.length) uploadToRemote(paths, b.source, dir);
-    }],
+    ...uploadMenu(
+      async () => { const paths = await api.PickUploadFiles(); if (paths?.length) uploadToRemote(paths, b.source, dir); },
+      async () => { const d = await api.PickFolder('Choose a folder to upload'); if (d) uploadToRemote([d], b.source, dir); },
+    ),
     ['New folder', 'Ctrl+Shift+N', async () => {
       const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
       if (!name) return;
@@ -2333,10 +2535,11 @@ function sideS3EmptyMenu(e) {
   openMenu(e, [
     ['Paste', 'Ctrl+V', () => paste(null, null, dest), !clipHasItems() || !inBucket],
     null,
-    ['Upload\u2026', 'Ctrl+U', async () => {
-      const paths = await api.PickUploadItems();
-      if (paths?.length) startTransfer({ localPaths: paths, dest });
-    }, !inBucket],
+    ...uploadMenu(
+      async () => { const paths = await api.PickUploadFiles(); if (paths?.length) startTransfer({ localPaths: paths, dest }); },
+      async () => { const d = await api.PickFolder('Choose a folder to upload'); if (d) startTransfer({ localPaths: [d], dest }); },
+      !inBucket,
+    ),
     ['New folder', 'Ctrl+Shift+N', async () => {
       const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
       if (!name) return;
@@ -2427,7 +2630,7 @@ function wireToolbar() {
   $('btn-forward').onclick = () => { if (nav.canForward()) nav.forwardGo(); };
   $('btn-up').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
   $('btn-refresh').onclick = refreshCurrent;
-  $('btn-upload').onclick = upload;
+  $('btn-upload').onclick = () => openMenu($('btn-upload'), uploadMenu(uploadFiles, uploadFolder));
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = togglePanes;
   $('btn-find').onclick = findFromHere;
@@ -2615,6 +2818,8 @@ async function openSettings() {
       conflict: () => localStorage.getItem('s3b-conflict') || 'ask',
       throttle: () => localStorage.getItem('s3b-throttle') || '0',
       showThrottle: () => localStorage.getItem('s3b-show-throttle') === '1',
+      editChooseApp: () => localStorage.getItem('s3b-edit-choose-app') !== '0',
+      copyVersions: () => localStorage.getItem('s3b-copy-versions') !== '0',
     },
     apply: {
       theme: (v) => { document.documentElement.dataset.theme = v; localStorage.setItem('s3b-theme', v); },
@@ -2626,17 +2831,29 @@ async function openSettings() {
       conflict: (v) => localStorage.setItem('s3b-conflict', v),
       throttle: (v) => localStorage.setItem('s3b-throttle', String(v)),
       showThrottle: (v) => localStorage.setItem('s3b-show-throttle', v ? '1' : '0'),
+      editChooseApp: (v) => localStorage.setItem('s3b-edit-choose-app', v ? '1' : '0'),
+      copyVersions: (v) => localStorage.setItem('s3b-copy-versions', v ? '1' : '0'),
     },
     log: {
       get: () => logSet,
-      set: async (mode, dir) => {
-        try { logSet = await api.SetLogSettings(mode, dir); }
+      set: async (mode, dir, levels, scopes) => {
+        try { logSet = await api.SetLogSettings(mode, dir, levels || [], scopes || []); }
         catch (e) { toast(String(e), 'error'); }
         return logSet;
       },
       browse: async () => {
         try { return await api.PickFolder('Choose the log folder'); } catch { return ''; }
       },
+    },
+    // Reset to defaults: wipe every persisted shell knob and reload.
+    // Favorites are data, not settings — they survive. The file-log
+    // preference (logsettings.json, Go-side) resets through its binding.
+    reset: () => {
+      const favs = localStorage.getItem('s3b-favs');
+      localStorage.clear();
+      if (favs !== null) localStorage.setItem('s3b-favs', favs);
+      try { api.SetLogSettings('default', '', [], []); } catch { /* best effort */ }
+      window.location.reload();
     },
   });
 }
@@ -2652,7 +2869,8 @@ function mountMenubar() {
     {
       label: t('menu.file'),
       items: [
-        { label: 'Upload\u2026', kbd: 'Ctrl+U', action: upload, enabled: () => st().canUpload },
+        { label: 'Upload Files\u2026', kbd: 'Ctrl+U', action: uploadFiles, enabled: () => st().canUpload },
+        { label: 'Upload Folder\u2026', action: uploadFolder, enabled: () => st().canUpload },
         null,
         { label: 'Import S3 Credential\u2026', action: importCredsUi },
         null,
@@ -2905,7 +3123,7 @@ function wireKeys() {
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); findFromHere(); return; }
     if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); $('filter').focus(); $('filter').select(); return; }
     if (ctrl && e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLogArea(); return; }
-    if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); upload(); return; }
+    if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); uploadFiles(); return; }
     if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); saveProfileFileUi(); return; }
     if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); downloadSelection(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newFolder(); return; }

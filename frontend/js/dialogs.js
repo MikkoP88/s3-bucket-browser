@@ -1,6 +1,6 @@
 // Modal framework + every dialog: confirmations (L1/L2 ladder), prompts,
 // properties, doctor, profile editor, transfer manager, help sheet.
-import { api, onEvent } from './api.js';
+import { api, onEvent, subscribeStream } from './api.js';
 import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, parentPrefix } from './util.js';
 import { t } from './i18n.js';
 
@@ -78,6 +78,69 @@ export function confirm({ title, message, okLabel = 'OK', danger = false }) {
         { label: okLabel, class: danger ? 'danger' : 'primary', onclick: (close) => { done(true); close(); } },
       ],
       onClose: () => done(false),
+    });
+  });
+}
+
+// versionChoiceDialog is the per-task S3→S3 question: preserve the full
+// version timeline (CopySelectionVersions background job) or copy latest
+// versions only. Resolves true = preserve, false = plain copy, null =
+// canceled. defaultOn seeds the checkbox from the Settings toggle.
+export function versionChoiceDialog({ move = false, defaultOn = true } = {}) {
+  let settled = false;
+  return new Promise((resolve) => {
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const chk = el('input', { type: 'checkbox', checked: !!defaultOn });
+    openModal({
+      title: t('cv.title'),
+      body: el('div', {},
+        el('label', { class: 'vcv-row' }, chk, ` ${t('cv.preserve')}`),
+        el('div', { class: 'set-hint', text: t('cv.preserveHint') }),
+        move ? el('div', { class: 'set-hint', text: t('cv.moveWarn') }) : null,
+      ),
+      buttons: [
+        { label: 'Cancel', onclick: (c) => { done(null); c(); } },
+        {
+          label: move ? t('cv.move') : t('cv.copy'),
+          class: 'primary',
+          onclick: (c) => { done(!!chk.checked); c(); },
+        },
+      ],
+      onClose: () => done(null),
+    });
+  });
+}
+
+// deleteChoiceDialog asks how to delete from a VERSIONED bucket: the safe
+// marker path (default — objects stay restorable in version history) or the
+// permanent one (L3 — destroys every version and delete marker). Resolves
+// 'marker' | 'permanent' | null (canceled). Non-versioned buckets never
+// reach this dialog.
+export function deleteChoiceDialog({ desc = '' } = {}) {
+  let settled = false;
+  return new Promise((resolve) => {
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const mk = el('input', { type: 'radio', name: 'delmode', value: 'marker' });
+    const pm = el('input', { type: 'radio', name: 'delmode', value: 'permanent' });
+    mk.checked = true;
+    openModal({
+      title: t('del.title'),
+      body: el('div', {},
+        desc ? el('div', { text: desc }) : null,
+        el('label', { class: 'vcv-row' }, mk, ` ${t('del.marker')}`),
+        el('div', { class: 'set-hint', text: t('del.markerHint') }),
+        el('label', { class: 'vcv-row' }, pm, ` ${t('del.perm')}`),
+        el('div', { class: 'set-hint', text: t('del.permHint') }),
+      ),
+      buttons: [
+        { label: 'Cancel', onclick: (c) => { done(null); c(); } },
+        {
+          label: t('del.go'),
+          class: 'danger',
+          onclick: (c) => { done(pm.checked ? 'permanent' : 'marker'); c(); },
+        },
+      ],
+      onClose: () => done(null),
     });
   });
 }
@@ -692,7 +755,7 @@ export function sourceEditor(existing, onSaved) {
           try {
             await api.SaveSource(src);
             close();
-            onSaved?.();
+            onSaved?.(src);
           } catch (err) {
             status.textContent = `\u274C ${err}`;
             status.style.color = 'var(--danger)';
@@ -710,7 +773,7 @@ export function helpSheet() {
   const rows = [
     ['Enter', 'Open bucket / folder / download object'],
     ['F2', 'Rename'],
-    ['Del', 'Delete selection'],
+    ['Del', 'Delete selection — versioned buckets ask: marker (restorable) or permanent'],
     ['Shift+Del', 'Delete permanently (all versions)'],
     ['Ctrl+C / X / V', 'Copy / cut / paste'],
     ['Ctrl+A', 'Select all'],
@@ -752,7 +815,7 @@ const GUIDE_SECTIONS = [
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here.'],
   ]],
   ['Transfers', [
-    ['Upload', 'Toolbar ▲, Ctrl+U, the context menu — or just drag files/folders from the OS anywhere onto the window.'],
+    ['Upload', 'Toolbar ▲ and the context menus open one Upload menu: Files… (Ctrl+U) picks files, Folder… a whole directory tree — or just drag files/folders from the OS anywhere onto the window.'],
     ['Download', 'Toolbar ▼, Ctrl+D, Enter, or the context menu. Multistep downloads/uploads are multipart and resumable per file.'],
     ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move.'],
     ['Conflicts & speed', 'Every transfer asks for a conflict policy (overwrite / skip / rename) unless a default is set in Settings, and can be throttled (256 kB/s … 10 MB/s).'],
@@ -760,7 +823,7 @@ const GUIDE_SECTIONS = [
   ]],
   ['Versions & safety', [
     ['Versioning', 'Buckets with versioning show a 🔄 icon in the tree. Open an object\u2019s context menu → Versions for the timeline: restore a previous version as latest, view text diffs, or purge old versions.'],
-    ['Undo delete', 'Deleted objects leave a delete marker — "Versions → undo delete" brings the object back in one click. Shift+Del destroys all versions permanently.'],
+    ['Undo delete', 'Deleted objects leave a delete marker — "Versions → undo delete" brings the object back in one click. On versioned buckets Del asks marker-vs-permanent; Shift+Del goes straight to permanent. Rows with markers in their history carry a ⛔ badge; a folder whose every file is delete-marked shows ⛔ all deleted.'],
     ['Object Lock', 'Locked buckets show a 🔒 icon; retention (GOVERNANCE/COMPLIANCE) and legal hold are per version, with the same confirm gates as the CLI.'],
     ['Safety ladder', 'Deletes count first and act second; large selections require a typed confirmation; removing a bucket means typing its name.'],
   ]],
@@ -1875,24 +1938,41 @@ export function findDialog(bucket, prefix = '', onOpen) {
           list.replaceChildren();
           stop(); // cancel any previous run
           running = true;
-          const myToken = await api.DeepSearch(bucket, prefix, opts);
-          if (!running) { api.CancelSearch(myToken); return; } // closed meanwhile
-          token = myToken;
-          offPage = onEvent('search:page', (p) => {
-            if (p.token !== token) return;
+          // Subscribe BEFORE the call: a search over a small bucket can
+          // finish (search:done) before the call resolving with the token
+          // reaches the page, and events dispatched to no listener would
+          // leave the dialog stuck on "running". Early events buffer and
+          // replay once the token is known; foreign tokens drop out.
+          const onPage = (p) => {
             for (const r of p.entries || []) list.appendChild(fmtRes(r));
             status.textContent = t('findRunning', { matched: p.matched });
             list.scrollTop = list.scrollHeight;
-          });
-          offDone = onEvent('search:done', (d) => {
-            if (d.token !== token) return;
+          };
+          const onDone = (d) => {
             token = null;
             running = false;
             status.textContent = d.error
               ? d.error
               : t('findDone', { matched: d.matched, scanned: d.scanned, bucket, prefix: prefix || '' });
             if (d.error) status.style.color = 'var(--danger)';
+          };
+          const early = [];
+          let tok = null;
+          offPage = onEvent('search:page', (p) => {
+            if (tok === null) { early.push({ page: p }); return; }
+            if (p.token === tok) onPage(p);
           });
+          offDone = onEvent('search:done', (d) => {
+            if (tok === null) { early.push({ done: d }); return; }
+            if (d.token === tok) onDone(d);
+          });
+          const myToken = await api.DeepSearch(bucket, prefix, opts);
+          tok = myToken;
+          if (!running) { api.CancelSearch(myToken); return; } // closed meanwhile
+          token = myToken;
+          for (const e of early.splice(0)) {
+            if (e.page) onPage(e.page); else onDone(e.done);
+          }
         },
       },
       { label: 'Close', onclick: (c) => { stop(); c(); } },
@@ -2135,17 +2215,17 @@ export function browseDirDialog({ title, kind, source = '', name = '', draft = n
 
     const listS3Dirs = (src, bucket, prefix) => new Promise((res, rej) => {
       const dirs = [];
-      let off = null;
       let settled = false;
-      const finish = (fn, v) => { if (settled) return; settled = true; off?.(); fn(v); };
-      api.ListSourceObjectsStream(src, bucket, prefix).then((token) => {
-        off = onEvent('list:page', (p) => {
-          if (p.token !== token) return;
+      const finish = (fn, v) => { if (settled) return; settled = true; stream.off(); fn(v); };
+      const stream = subscribeStream(
+        () => api.ListSourceObjectsStream(src, bucket, prefix),
+        (p) => {
           if (p.error) { finish(rej, new Error(p.error)); return; }
           for (const e of p.entries || []) if (e.isDir) dirs.push(e);
           if (p.done) finish(res, dirs);
-        });
-      }).catch((e) => finish(rej, e));
+        },
+      );
+      stream.begin.then(() => stream.flush(), (e) => finish(rej, e));
     });
 
     async function load() {
