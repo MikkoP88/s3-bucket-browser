@@ -8,12 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // Wails event names emitted by the service layer.
@@ -58,6 +58,8 @@ type App struct {
 
 	viewMu     sync.Mutex
 	viewSource string // the S3 source the main view is browsing ("" = none)
+
+	exitOK atomic.Bool // guarded-exit latch: set once the busy-exit ask was answered (exit.go)
 
 	pendingMu    sync.Mutex
 	pendingCreds map[string]pendingCred // import-candidate stash (secrets stay Go-side)
@@ -105,13 +107,6 @@ func (a *App) Shutdown(ctx context.Context) {
 // GetVersion returns the application version string.
 func (a *App) GetVersion() string {
 	return a.version
-}
-
-// ExitApp quits the application (menu bar / toolbar "Exit").
-func (a *App) ExitApp() {
-	if a.ctx != nil {
-		runtime.Quit(a.ctx)
-	}
 }
 
 // quickCtx returns a context for fast operations (list/stat/presign/test).

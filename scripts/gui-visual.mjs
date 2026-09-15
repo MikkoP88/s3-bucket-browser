@@ -882,6 +882,69 @@ await step('folder-ctxmenu', async () => {
   await closeCtx();
 });
 
+await step('copy-as-ctxmenu', async () => {
+  await resetCalls();
+  await clickRow('readme.md');
+  await openCtx('readme.md');
+  const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+    .map((i) => i.textContent.trim()));
+  await ok('row menu offers copy-as actions', ['copy name', 'copy path', 'copy s3 uri']
+    .every((s) => items.some((x) => x.toLowerCase() === s)));
+  await ctxItem(/^copy path$/i);
+  let c = await findCall('ClipboardSetText');
+  await ok('copy path puts bucket/key on the clipboard', !!c && c.args[0] === 'testijotain/readme.md');
+  await openCtx('readme.md');
+  await ctxItem(/copy s3 uri/i);
+  c = await findCall('ClipboardSetText');
+  await ok('copy s3 uri formats s3://bucket/key', !!c && c.args[0] === 's3://testijotain/readme.md');
+  await openCtx('readme.md');
+  await ctxItem(/^copy name$/i);
+  c = await findCall('ClipboardSetText');
+  await ok('copy name copies the bare name', !!c && c.args[0] === 'readme.md');
+  await closeCtx();
+});
+
+await step('header-column-menu', async () => {
+  const openHead = () => evalPage(() => {
+    document.getElementById('grid-head')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 30 }));
+  });
+  await openHead();
+  await sleep(80);
+  const n = await evalPage(() => document.querySelectorAll('#ctxmenu:not(.hidden) .item').length);
+  await ok('header menu lists the whole column catalog', n >= 6);
+  await ok('name column is checked and locked', evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /^\u2713 name$/i.test(i.textContent.trim()));
+    return !!it && it.classList.contains('disabled');
+  }));
+  await shot('ctx-columns');
+  await ctxItem(/etag/i); // default off — toggling adds the column
+  await ok('etag column appears', evalPage(() => Array.from(document.querySelectorAll('#grid-head .gh span'))
+    .some((s) => /etag/i.test(s.textContent))));
+  await ok('column choice persisted', evalPage(() => (localStorage.getItem('s3b-cols') || '').split(',').includes('etag')));
+  await openHead();
+  await sleep(60);
+  await ctxItem(/etag/i); // toggle back off
+  await ok('etag column removed again', evalPage(() => !Array.from(document.querySelectorAll('#grid-head .gh span'))
+    .some((s) => /etag/i.test(s.textContent))));
+  await evalPage(() => localStorage.removeItem('s3b-cols')); // back to boot defaults
+  await closeCtx();
+});
+
+await step('invert-selection', async () => {
+  await clickRow('readme.md');
+  const total = (await rowKeys()).length;
+  await ok('fixture has multiple rows', total >= 3);
+  await page.keyboard.press('Control+i');
+  await sleep(80);
+  await ok('ctrl+i inverts to all-but-one', (await txt('#status-selection')).trim().startsWith(`${total - 1} of ${total} `));
+  await page.keyboard.press('Control+i');
+  await sleep(80);
+  await ok('second ctrl+i restores the single selection', (await txt('#status-selection')).trim().startsWith('1 of '));
+  await shot('invert-selection');
+});
+
 await step('empty-ctxmenu', async () => {
   await evalPage(() => {
     const b = document.getElementById('grid-body');
@@ -1023,6 +1086,51 @@ await step('menubar-walk', async () => {
   await ok('disabled items rendered greyed', evalPage(() => document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item.disabled').length > 0));
   await shot('menu-disabled');
   await page.keyboard.press('Escape');
+  await sleep(60);
+});
+
+await step('view-menu-toggles', async () => {
+  const openView = async () => {
+    await page.locator('#menubar .mb-title', { hasText: /^view$/i }).first().click();
+    await sleep(80);
+  };
+  const toggleItem = () => elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /show version count icons/i.test(i.textContent)) || null);
+  await openView();
+  await ok('View menu lists the version-icons toggle', !!(await toggleItem()));
+  await shot('menu-view');
+  const it = await toggleItem();
+  if (it) await it.asElement().click();
+  await sleep(80);
+  await ok('toggle flips the setting on', evalPage(() => localStorage.getItem('s3b-show-versions') === '1'));
+  await openView();
+  const it2 = await toggleItem();
+  if (it2) await it2.asElement().click();
+  await sleep(80);
+  await ok('toggle flips the setting back off', evalPage(() => localStorage.getItem('s3b-show-versions') === '0'));
+  // restore the untouched-boot state — the settings-dialog walk asserts the
+  // badge keys start as null
+  await evalPage(() => localStorage.removeItem('s3b-show-versions'));
+});
+
+await step('exit-guard', async () => {
+  await resetCalls();
+  await evalPage(() => window.__emit('exit:confirm', { reason: '2 transfer job(s) still running (e.g. transfer: 1/3 file(s))' }));
+  await waitFor(modalVisible, 4000, 'exit confirm dialog');
+  await ok('exit dialog states the busy reason', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('still running'));
+  await shot('exit-confirm');
+  const cancel = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^cancel$/i.test(b.textContent.trim())) || null);
+  await ok('cancel button offered', !!cancel);
+  if (cancel) { await cancel.asElement().click(); await sleep(80); }
+  await ok('cancel does not confirm the exit', (await findCall('ConfirmExit')) === null);
+  await evalPage(() => window.__emit('exit:confirm', { reason: 'unsaved changes' }));
+  await waitFor(modalVisible, 4000, 'exit confirm dialog (again)');
+  const go = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /exit anyway/i.test(b.textContent)) || null);
+  await ok('exit-anyway button offered', !!go);
+  if (go) { await go.asElement().click(); await sleep(80); }
+  await ok('exit anyway force-quits via ConfirmExit', (await findCall('ConfirmExit')) !== null);
 });
 
 await step('help-guide', async () => {

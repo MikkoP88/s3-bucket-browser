@@ -47,7 +47,10 @@ func Run(version string) error {
 		AssetServer: &assetserver.Options{Assets: assets},
 		OnStartup:   app.Startup,
 		OnShutdown:  app.Shutdown,
-		Bind:        []interface{}{app},
+		// The X button asks before losing work (running transfers, unsaved
+		// profile) — the frontend confirms through exit:confirm/ConfirmExit.
+		OnBeforeClose: app.ShouldClose,
+		Bind:          []interface{}{app},
 		DragAndDrop: &options.DragAndDrop{
 			EnableFileDrop:     true, // native OS file drops -> wails:file-drop
 			DisableWebViewDrop: true, // don't let the webview "open" dropped files

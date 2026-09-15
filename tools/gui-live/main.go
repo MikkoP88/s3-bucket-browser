@@ -5,8 +5,9 @@
 // Server-Sent Events — and serves the real frontend/ with that bridge
 // injected, so scripts/gui-live.mjs can walk the GUI against real S3, real
 // files and real transfers. Wails' own runtime (native dialogs, in-app
-// event bus) is unreachable outside wails.Run, so pkg/api exposes two
-// harness seams instead: SetEventSink and SetProfileDialogs.
+// event bus) is unreachable outside wails.Run, so pkg/api exposes harness
+// seams instead: SetEventSink, SetProfileDialogs, SetPickers and
+// SetClipboardTextSink.
 //
 // Usage (scripts/gui-live.mjs does this for you):
 //
@@ -299,6 +300,15 @@ func main() {
 		func() ([]string, error) { return nil, errors.New("native upload picker unavailable under gui-live") },
 		func(string) (string, error) { return "", errors.New("native folder picker unavailable under gui-live") },
 	)
+	// Copy-as-text would likewise hit the runtime; record it instead so the
+	// live walk can assert what "Copy path" put on the clipboard.
+	var clipMu sync.Mutex
+	var clipText string
+	api.SetClipboardTextSink(func(text string) {
+		clipMu.Lock()
+		clipText = text
+		clipMu.Unlock()
+	})
 
 	app := api.New("0.0.0-gui-live")
 	app.Startup(context.Background())
@@ -310,6 +320,12 @@ func main() {
 		fmt.Fprint(w, bridgeJS)
 	})
 	mux.HandleFunc("GET /__live/events", bus.serve)
+	mux.HandleFunc("GET /__live/clipboard", func(w http.ResponseWriter, r *http.Request) {
+		clipMu.Lock()
+		text := clipText
+		clipMu.Unlock()
+		jsonResp(w, map[string]any{"text": text})
+	})
 	mux.HandleFunc("POST /__live/call", func(w http.ResponseWriter, r *http.Request) {
 		var req callRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

@@ -31,10 +31,12 @@ this project fills.
 ## The seven gaps we exploit
 
 1. **Windows-Explorer-grade UX.** True Explorer semantics: marquee +
-   Ctrl/Shift selection, Ctrl+A, type-to-jump, keyboard-first operation,
-   details view with sortable columns, breadcrumbs, folder tree, context
-   menus — plus a WinSCP-style dual-pane local browser with directory
-   compare.
+   Ctrl/Shift selection, Ctrl+A, Ctrl+I invert, type-to-jump,
+   keyboard-first operation, details view with sortable and
+   user-pickable columns, breadcrumbs, folder tree, context menus
+   (copy-as name/path/URI included) — plus a WinSCP-style dual-pane
+   local browser with directory compare, and a guarded exit that
+   never silently drops running transfers or unsaved profile work.
 2. **Versioning done right.** Per-object version timeline one click
    away (the row's version-count badge), folder-level Directory
    Versions overviews, restore-as-latest, one-click undo delete for

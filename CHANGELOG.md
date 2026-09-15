@@ -4,6 +4,44 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.7] — 2026-09-16
+
+Desktop-UX alignment cut: the small Explorer/WinSCP-grade
+affordances the menus were missing — copy-as-text, a header column
+picker, View-menu quick toggles, invert selection — plus a guarded
+exit that refuses to lose running transfers or unsaved profile
+work. Validated by a 335-check visual walk (five new steps covering
+every new surface) and the live GUI walk against real MinIO, where
+copy-as is verified through the real OS-clipboard bridge; `go test
+-race` green across all packages.
+
+### Added
+
+- **Copy name / Copy path / Copy S3 URI.** Every row context menu
+  (S3 objects, buckets, remote engines, local pane, side S3 pane)
+  and a new Edit ▸ Copy as submenu put plain text on the OS
+  clipboard: the bare name, the full path (`bucket/key`, the
+  remote source path, or the absolute local path), or an
+  `s3://bucket/key` URI — multi-row selections copy one per line.
+  Ctrl+C keeps mirroring the selection as real OS file objects for
+  Explorer/Finder interop.
+- **Header column picker.** Right-clicking a grid header (main
+  grid or side panel) opens a checklist of the column catalog —
+  the same control Settings exposes, one click closer. The name
+  column stays locked on, and choices persist per pane.
+- **View-menu quick toggles.** Show version icons, show
+  delete-marker icons and reveal hidden (delete-marked) objects
+  flip straight from the View menu — checkmarked, no Settings
+  round-trip.
+- **Invert selection (Ctrl+I).** Complements the selection over
+  the visible rows, Explorer-style; also in the Edit menu and on
+  the F1 keyboard map.
+- **Guarded exit.** Closing the window (X) or File ▸ Exit while
+  transfer jobs are running, the profile file has unsaved changes,
+  or session sources are not saved asks first, stating the concrete
+  reason; **Exit anyway** quits past it. A clean state closes
+  without asking.
+
 ## [1.1.0-beta.6] — 2026-09-15
 
 Refinement cut: the delete/versioning surfaces from beta.5 are
