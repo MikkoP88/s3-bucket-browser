@@ -250,8 +250,11 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
       ]);
       stats.textContent = t('dirv.versionCount', { n: st.versions })
         + (markersOn && st.deleteMarkers ? ` \u00b7 ${t('dirv.markers')}: ${st.deleteMarkers}` : '');
-      kids.replaceChildren(...(ch.length
-        ? ch.map((c) => {
+      // Marker-deleted children (ghost rows) render only when the marker
+      // setting is on — the same toggle that shows the grid's ⛔ badges.
+      const rows = markersOn ? ch : ch.filter((c) => !c.allDeleted);
+      kids.replaceChildren(...(rows.length
+        ? rows.map((c) => {
             const childKey = (prefix || '') + c.name + (c.isDir ? '/' : '');
             return el('div', { class: `ver-row${c.allDeleted ? ' ghost' : ''}` },
               el('span', { class: 'ver-icon', text: c.isDir ? '\u{1F4C2}' : (c.allDeleted ? '\u26D4' : '\u25CF') }),

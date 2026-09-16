@@ -1996,14 +1996,17 @@ await step('content-versions-window', async () => {
   await ok('content versions layout clean', (await layoutAudit()).ok);
   await shot('content-versions');
   await closeModal();
-  // opted out (the DEFAULT): the marker segment, the child marker counts
-  // and the Markers… buttons all fold away — versions only
+  // opted out (the DEFAULT): the marker segment, the child marker counts,
+  // the Markers… buttons and the ghost rows for deleted children all fold
+  // away — versions only
   await evalPage(() => localStorage.setItem('s3b-show-markers', '0'));
   await openDocs();
   await waitFor(async () => /^9 version\(s\)$/.test(await evalPage(() => document.querySelector('#modal-root .field')?.textContent || '')), 4000, 'marker-free count line');
   await ok('markers fold away when the toggle is off', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .ver-row'));
     const t = document.getElementById('modal-root').textContent;
-    return !/markers/i.test(t) && !/delete marker/i.test(t);
+    return rows.length === 1 && !rows.some((r) => r.classList.contains('ghost'))
+      && !/legacy/.test(t) && !/markers/i.test(t) && !/delete marker/i.test(t);
   }));
   await shot('content-versions-clean');
   await closeModal();
