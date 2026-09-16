@@ -159,6 +159,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .crumb:hover { background: var(--hover); }
 .crumb.current { font-weight: 600; }
 .crumb-sep { color: var(--text-dim); padding: 0 1px; }
+/* source-type glyph (sidebar rows, breadcrumb root crumb): strokes use
+   currentColor, so an inline color paints the source's accent */
+.src-ic { display: inline-flex; line-height: 0; }
+.crumb .src-ic { margin-right: 5px; }
 .filter {
   width: 220px; font: var(--font);
   background: var(--panel-alt); color: var(--text);

@@ -4,6 +4,30 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.11] — 2026-09-16
+
+Data-source identity pass: a redrawn icon set, the accent color you
+picked actually painting it, and the same icon leading the path bar.
+Validated by the 351-check visual walk (three new checks: every source
+row carries its SVG glyph, glyphs paint in the source's accent color,
+the breadcrumb root carries the same colored glyph).
+
+### Changed
+
+- **Improved data-source icons — now in color.** All eight type glyphs
+  redrawn (the S3 bucket gains a rim rib, SFTP/SCP a proper terminal
+  window with title bar, FTP a folder flanked by opposing transfer
+  arrows, tighter padlock badges on FTPS/WebDAVS, cleaner globe, drive
+  and server glyphs) — still original inline SVGs, no external icon
+  set. The accent color chosen in the source editor now actually
+  paints them: sidebar rows carry their source's glyph in its own
+  color, making the color-coded connections the README always promised.
+- **Same icon on the path bar.** The breadcrumb's root crumb leads
+  with the identical type glyph in the identical color as the sidebar
+  row (both surfaces build on one shared helper, so they cannot drift
+  apart), replacing the generic key/folder emoji. Works on every
+  source kind — S3, SFTP/SCP, FTP/FTPS, WebDAV(S), local.
+
 ## [1.1.0-beta.10] — 2026-09-16
 
 Marker-visibility patch: the Content Versions window honors its own

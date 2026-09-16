@@ -194,11 +194,11 @@ function shim() {
 
   const world = {
     sources: EMPTY ? [] : [
-      { id: 'src-hetzner', name: 'hetzner', type: 's3' }, // legacy: account-wide
-      { id: 'src-one', name: 'one-bucket', type: 's3', bucket: 'singleton' },
-      { id: 'src-fresh', name: 'fresh-single', type: 's3', bucket: 'lone-bucket' },
-      { id: 'src-box', name: 'backup-box', type: 'sftp' },
-      { id: 'src-dav', name: 'dav-claims', type: 'webdav' },
+      { id: 'src-hetzner', name: 'hetzner', type: 's3', color: '#0b63ce' }, // legacy: account-wide
+      { id: 'src-one', name: 'one-bucket', type: 's3', bucket: 'singleton', color: '#9a6700' },
+      { id: 'src-fresh', name: 'fresh-single', type: 's3', bucket: 'lone-bucket', color: '#b3261e' },
+      { id: 'src-box', name: 'backup-box', type: 'sftp', color: '#1b7f3b' },
+      { id: 'src-dav', name: 'dav-claims', type: 'webdav', color: '#7c3aed' },
     ],
     buckets: [
       { name: 'testijotain', createdAt: daysAgo(220) },
@@ -1001,6 +1001,16 @@ await step('tree-lazy', async () => {
   // prefix listings carry anchored keys ('docs/notes.md'), not bare names
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'docs objects');
   await ok('tree click navigates into docs', (await txt('#breadcrumb')).includes('docs'));
+  // the breadcrumb's root crumb carries the SAME type glyph as the sidebar
+  // row, painted in the source's accent color
+  await ok('breadcrumb root carries the source glyph in color', evalPage(() => {
+    const root = document.querySelector('#breadcrumb .crumb');
+    const ic = root?.querySelector('.src-ic');
+    // style.color serializes '#0b63ce' to rgb() in Chromium — accept both
+    const c = ic?.style.color || '';
+    return !!ic && !!ic.querySelector('svg') && ['#0b63ce', 'rgb(11, 99, 206)'].includes(c)
+      && (root.textContent || '').includes('hetzner');
+  }));
   await shot('tree-docs');
   await page.keyboard.press('Escape');
 });
@@ -1448,6 +1458,19 @@ await step('conflict-view', async () => {
 await step('sources-in-tree', async () => {
   await ok('source listed in sidebar tree', (await txt('#tree')).includes('backup-box'));
   await ok('sidebar header says Data sources', (await txt('#sidebar-head')).toLowerCase().includes('data sources'));
+  // every source row carries its SVG type glyph (bucket/terminal/globe/…)
+  // painted in the source's own accent color
+  await ok('source rows carry SVG type glyphs', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
+    return rows.length >= 3 && rows.every((r) => !!r.querySelector('.ticon svg'));
+  }));
+  await ok('glyphs painted in the source accent color', evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'))
+      .find((x) => x.dataset.source === 'backup-box');
+    // style.color serializes '#1b7f3b' to rgb() in Chromium — accept both
+    const c = r?.querySelector('.ticon')?.style.color || '';
+    return !!r && ['#1b7f3b', 'rgb(27, 127, 59)'].includes(c);
+  }));
   await shot('sources-tree');
 });
 

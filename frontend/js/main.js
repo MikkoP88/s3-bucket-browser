@@ -1,6 +1,6 @@
 // S3 Bucket Browser — application shell (Explorer layout).
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtDate, basename, debounce } from './util.js';
+import { el, fmtBytes, fmtDate, basename, debounce, srcIconEl } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS } from './grid.js';
 import { Tree } from './tree.js';
@@ -634,8 +634,9 @@ function renderBreadcrumb() {
   const loc = nav.current || { kind: 'buckets', source: viewSource };
   if (loc.kind === 'remote') {
     const atRoot = !loc.path || loc.path === '/';
-    const root = el('span', { class: `crumb${atRoot ? ' current' : ''}`, text: `\u{1F5DD} ${loc.source}` });
-    root.title = `${loc.source}://${loc.path || '/'}`;
+    const s = sources.find((x) => x.name === loc.source);
+    const root = el('span', { class: `crumb${atRoot ? ' current' : ''}`, title: `${loc.source}://${loc.path || '/'}` },
+      srcIconEl(s?.type, s?.color), loc.source);
     root.onclick = () => nav.to({ kind: 'remote', source: loc.source, path: '' });
     bc.appendChild(root);
     if (loc.path && loc.path !== '/') {
@@ -654,8 +655,9 @@ function renderBreadcrumb() {
     return;
   }
   const srcName = loc.source || viewSource;
-  const root = el('span', { class: `crumb${loc.kind === 'buckets' ? ' current' : ''}`, text: `\u{1F5C2} ${srcName}` });
-  root.title = `${srcName}://`;
+  const s = sources.find((x) => x.name === srcName);
+  const root = el('span', { class: `crumb${loc.kind === 'buckets' ? ' current' : ''}`, title: `${srcName}://` },
+    srcIconEl(s?.type || 's3', s?.color), srcName);
   root.onclick = () => nav.to({ kind: 'buckets', source: srcName });
   bc.appendChild(root);
   if (loc.kind !== 'objects') return;
