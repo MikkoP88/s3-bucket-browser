@@ -397,6 +397,21 @@ async function runDeleteWindow(mode = '') {
   await clickFooter(/^delete$/i); // the danger button always reads "Delete"
 }
 
+// dumpDeleteState explains a stalled post-delete view: what rows remain,
+// what (if anything) is modal or toasted, and the tail of recorded bridge
+// calls — enough to tell a lost refresh from a failed delete call.
+async function dumpDeleteState(label) {
+  const st = await evalPage(() => ({
+    rows: Array.from(document.querySelectorAll('#grid-body .grid-row .tname')).map((x) => x.textContent),
+    modal: (document.querySelector('#modal-root .modal')?.textContent || '').replace(/\s+/g, ' ').slice(0, 160),
+    toasts: Array.from(document.querySelectorAll('#toasts > *')).map((x) => x.textContent.trim()).slice(0, 5),
+  })).catch(() => null);
+  console.error(`${label} — rows=${JSON.stringify(st?.rows)} modal="${st?.modal}" toasts=${JSON.stringify(st?.toasts)}`);
+  const tail = await evalPage(() => (window.__calls || []).slice(-15)).catch(() => []);
+  console.error('bridge calls tail:');
+  for (const c of tail) console.error(`  ${c.t}ms ${c.m}(${c.args}) → ${c.res}`);
+}
+
 // crumbRoot clicks the first breadcrumb segment — the source root for both
 // remote and S3 views.
 async function crumbRoot() {
@@ -924,7 +939,12 @@ async function walk() {
     await runDeleteWindow('');
     await ok('versioned Delete Window: marker default, one click through', true);
     await shot('20-delete-window');
-    await waitFor(async () => (await rowKeys()).length === 0, 60000, 'folder emptied');
+    try {
+      await waitFor(async () => (await rowKeys()).length === 0, 60000, 'folder emptied');
+    } catch (err) {
+      await dumpDeleteState('folder emptied failed');
+      throw err;
+    }
     await ok('zz-live objects deleted (markers — restorable)', true);
     await page.keyboard.press('Backspace'); // up to bucket root
     await waitFor(async () => (await rowKeys()).includes(`${PREFIX}/`), 20000, 'bucket root');

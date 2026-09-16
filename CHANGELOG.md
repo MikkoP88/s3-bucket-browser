@@ -4,6 +4,60 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.8] — 2026-09-16
+
+Consistency and trust cut: windows stop resizing as you flip their
+controls, Upload collapses into the single Explorer-style command it
+always should have been, context menus stop offering actions the
+target cannot take, and the version windows default to the calm
+view. Validated by a 348-check visual walk (thirteen new checks
+covering the upload flyout, menu-gating negatives, dialog height
+stability, marker visibility A/B and the first-import auto-open)
+plus an 89-check live GUI walk against real MinIO and `go test -race`
+green across all packages.
+
+### Changed
+
+- **Dialogs keep their size.** The Delete Window no longer grows and
+  shrinks as you switch delete type: the consequence line's slot is
+  pinned at open to the tallest possible note (measured per locale),
+  so the radio switch swaps text without moving the buttons. The
+  keyboard-map guide pins its height across all six tabs, and the
+  bucket-admin panel keeps a stable body height while cycling tabs.
+- **One Upload command.** The toolbar Upload button opens the native
+  file picker directly, and every context menu carries a single
+  **Upload ▸** flyout with exactly two entries — **Files… (Ctrl+U)**
+  and **Folder…** — Explorer-style, flipping leftwards when it would
+  otherwise leave the screen. The old pair of separate menu rows is
+  gone from every menu on every source.
+- **Menus show only what the target supports.** A deep sweep across
+  every target and source type: **Versions**, **Content versions**
+  and **Delete marker** need a versioning-enabled bucket and a
+  single selection (suspended or unversioned buckets lose them),
+  **Object lock** appears only on lock-enabled S3 buckets for file
+  selections, **Find in this folder** is offered only on a single
+  folder, and files never grow folder-only entries.
+- **Content Versions: one line, not four cards.** The folder-level
+  overview drops its stat cards for a single count line in the same
+  format as the Delete marker window ("9 version(s) · Delete
+  markers: 2"); the per-child Open / Versions / Markers controls
+  stay.
+- **Calm version windows.** The Versions timeline and Content
+  Versions hide delete-marker rows by default — the same "show
+  delete-marker icons" toggle that reveals the ⛔ badges on the grid
+  reveals them here too; the separate Content-Versions marker
+  setting is gone.
+- **First import opens the bucket.** Importing the very first data
+  source — including straight from the welcome screen — opens the
+  imported bucket's content immediately, and the "No data source
+  yet" welcome never lingers once any source exists.
+
+### Removed
+
+- **"latest" pill in the Delete marker window.** The window exists
+  to undo deletes; the tag restated what the window already implies
+  and added visual noise.
+
 ## [1.1.0-beta.7] — 2026-09-16
 
 Desktop-UX alignment cut: the small Explorer/WinSCP-grade

@@ -350,6 +350,13 @@ async function importCredsUi() {
     if (res?.imported?.length) {
       await refreshSources();
       refreshPfState();
+      // The first import happens on the welcome screen ("No data sources
+      // yet") — open the imported source's content instead of leaving the
+      // stale call to action on screen.
+      if (nav.current?.kind === 'onboarding') {
+        const first = sources.find((s) => s.name === res.imported[0]);
+        if (first) nav.to(sourceHomeLoc(first));
+      }
     }
   });
 }
@@ -521,7 +528,7 @@ async function loadObjectsStream(loc, silent = false) {
         decorateVersionMarkers(loc, seq);
         if (!currentEntries.length && !view.filter) {
           showEmpty(t('emptyFolder'), t('dropToUpload'), [
-            el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: (ev) => openMenu(ev.currentTarget, uploadMenu(uploadFiles, uploadFolder)) }),
+            el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: (ev) => openMenu(ev.currentTarget, uploadChoices(uploadFiles, uploadFolder)) }),
           ]);
         }
         consumePendingSelect();
@@ -856,7 +863,7 @@ function wireGrid() {
   grid.on.badgeV = (row) => {
     const loc = nav.current;
     if (!loc || loc.kind !== 'objects') return;
-    if (row.isDir) contentVersionsDialog(loc.bucket, row.key, refreshCurrent, dirvMarkersOn());
+    if (row.isDir) contentVersionsDialog(loc.bucket, row.key, refreshCurrent);
     else versionsDialog(loc.bucket, row.key, refreshCurrent);
   };
   grid.on.badgeM = (row) => {
@@ -1004,25 +1011,50 @@ function wireLocalPane() {
 }
 
 // openMenu renders items in the shared #ctxmenu popup. An item is
-// [label, kbd, fn, disabled?, cls?] or null for a separator; fn=null makes
-// an inert row (menu headers like Upload). The anchor is a mouse event
-// (menu at the pointer) or an element (menu below its rect).
+// [label, kbd, fn, disabled?, cls?, sub?] or null for a separator; fn=null
+// makes an inert row, and sub (an array of items in the same tuple shape)
+// turns the row into an Explorer-style cascading flyout parent — hover or
+// click reveals it, hovering (or opening) a sibling removes it. The anchor
+// is a mouse event (menu at the pointer) or an element (menu below its
+// rect).
 function openMenu(anchor, items) {
   const menu = $('ctxmenu');
-  menu.replaceChildren(...items.map((it) => {
-    if (!it) return el('div', { class: 'sep' });
-    const [label, kbd, fn, disabled, cls] = it;
-    return el('div', {
-      class: `item${disabled ? ' disabled' : ''}${cls ? ` ${cls}` : ''}`,
-      onclick: () => { if (disabled || !fn) return; hideContextMenu(); fn(); },
-    }, el('span', { text: label }), kbd ? el('span', { class: 'kbd', text: kbd }) : null);
-  }));
+  menu.replaceChildren(...menuItems(menu, items));
   menu.classList.remove('hidden');
   const r = anchor?.getBoundingClientRect?.();
   const x = r ? r.left : anchor.clientX;
   const y = r ? r.bottom + 4 : anchor.clientY;
   menu.style.left = `${Math.min(x, innerWidth - 220)}px`;
   menu.style.top = `${Math.min(y, innerHeight - menu.offsetHeight - 10)}px`;
+}
+
+// menuItems builds the item rows of one menu (or flyout) level; scope is
+// the element whose direct children these rows become, so closing a
+// flyout only ever touches the levels below it.
+function menuItems(scope, items) {
+  const closeSubs = () => scope.querySelectorAll('.submenu').forEach((s) => s.remove());
+  return items.map((it) => {
+    if (!it) return el('div', { class: 'sep' });
+    const [label, kbd, fn, disabled, cls, sub] = it;
+    const node = el('div', {
+      class: `item${disabled ? ' disabled' : ''}${cls ? ` ${cls}` : ''}${sub?.length ? ' has-sub' : ''}`,
+      onclick: () => { if (disabled || !fn) return; hideContextMenu(); fn(); },
+    }, el('span', { text: label }), kbd ? el('span', { class: 'kbd', text: kbd }) : null);
+    if (sub?.length && !disabled) {
+      const open = () => {
+        closeSubs();
+        const fly = el('div', { class: 'submenu' });
+        fly.replaceChildren(...menuItems(fly, sub));
+        node.appendChild(fly);
+        if (fly.getBoundingClientRect().right > innerWidth - 8) fly.classList.add('flip');
+      };
+      node.addEventListener('mouseenter', open);
+      node.addEventListener('click', (e) => { e.stopPropagation(); if (!node.querySelector(':scope > .submenu')) open(); });
+    } else {
+      node.addEventListener('mouseenter', closeSubs);
+    }
+    return node;
+  });
 }
 
 // ============================ context menu ============================
@@ -1109,24 +1141,30 @@ function showContextMenu(e, rows) {
       items.push(['Edit', '', () => editObject(rows[0])]);
     }
     if (sel && !rows.some((r) => r.isDir)) items.push(['Pre-sign URL\u2026', '', () => presign(rows)]);
-    if (sel === 1) {
+    // Version-grade entries appear only where the bucket supports them:
+    // guardCache carries the bucket's versioning/lock state (populated on
+    // view load), so unversioned buckets show no Versions entry and
+    // lock-less buckets no Object lock entry.
+    const g = guardCache.get(guardKey(loc.source, loc.bucket));
+    if (sel === 1 && g?.versioning === 'Enabled') {
       // Files open the object timeline; folders the Content Versions
       // window (bounded stats + per-child aggregates and controls — the
       // timeline dialog would page the whole subtree and hang on
       // "Loading…").
       items.push(['Versions\u2026', '', () => (rows[0].isDir
-        ? contentVersionsDialog(loc.bucket, rows[0].key, refreshCurrent, dirvMarkersOn())
+        ? contentVersionsDialog(loc.bucket, rows[0].key, refreshCurrent)
         : versionsDialog(loc.bucket, rows[0].key, refreshCurrent))]);
-      // "Delete marker(s)…" — only on versioned S3 and only when the row
-      // actually carries marker(s); single objects use the singular.
-      const g = guardCache.get(guardKey(loc.source, loc.bucket));
-      if (g?.versioning === 'Enabled' && rows[0].mcount > 0) {
+      // "Delete marker(s)…" — only when the row actually carries
+      // marker(s); single objects use the singular.
+      if (rows[0].mcount > 0) {
         items.push([`${t(rows[0].isDir ? 'markw.title' : 'markw.titleOne')}\u2026`, '', () => markersDialog(loc.bucket, rows[0].key, rows[0].isDir, refreshCurrent)]);
       }
     }
     if (sel) items.push(['Storage class\u2026', '', () => classDialog(loc.bucket, rows, refreshCurrent)]);
-    if (sel && !rows.some((r) => r.isDir)) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows, refreshCurrent)]);
-    items.push(['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, loc.prefix || '', openSearchResult)]);
+    if (sel && !rows.some((r) => r.isDir) && g?.lockEnabled) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows, refreshCurrent)]);
+    // Find targets a folder: the single selected one (its own subtree), or
+    // via the empty-area menu the folder already open. Files never offer it.
+    if (sel === 1 && rows[0].isDir) items.push(['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, rows[0].key, openSearchResult)]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties()]);
   }
   openMenu(e, items);
@@ -1538,13 +1576,16 @@ async function uploadFolder() {
   toast('Open a bucket or folder first');
 }
 
-// uploadMenu builds the one Upload hierarchy shown everywhere (toolbar,
-// context menus, empty states): a header with Files (Ctrl+U) and Folder
-// beneath it. disabled applies to both leaves.
+// uploadChoices are the two upload leaves — Files… (Ctrl+U) and Folder… —
+// shared by every surface that offers uploads. The toolbar and the
+// empty-folder card open them directly; context menus embed them under one
+// cascading "Upload ▸" row via uploadMenu. disabled applies to both leaves.
+const uploadChoices = (filesFn, folderFn, disabled = false) => ([
+  ['Files\u2026', 'Ctrl+U', filesFn, disabled],
+  ['Folder\u2026', '', folderFn, disabled],
+]);
 const uploadMenu = (filesFn, folderFn, disabled = false) => ([
-  ['Upload', '', null, false, 'hdr'],
-  ['Files\u2026', 'Ctrl+U', filesFn, disabled, 'sub'],
-  ['Folder\u2026', '', folderFn, disabled, 'sub'],
+  ['Upload', '', null, false, '', disabled ? null : uploadChoices(filesFn, folderFn)],
 ]);
 
 async function downloadSelection(overrideRows) {
@@ -1678,10 +1719,6 @@ function parentRemoteDir(p) {
 const delWindowOn = () => localStorage.getItem('s3b-del-window') !== '0';
 const delTypedOn = () => localStorage.getItem('s3b-del-typeconfirm') === '1';
 const delAutoConfirm = () => localStorage.getItem('s3b-del-autoconfirm') === '1';
-
-// Content Versions shows delete-marker information unless disabled in
-// Settings (default on).
-const dirvMarkersOn = () => localStorage.getItem('s3b-dirv-markers') !== '0';
 
 // S3_DEL_MODES lists a versioned bucket's delete types (the window's radio
 // list). The marker delete is the safe default; keep-current and permanent
@@ -2783,7 +2820,7 @@ function wireToolbar() {
   $('btn-forward').onclick = () => { if (nav.canForward()) nav.forwardGo(); };
   $('btn-up').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
   $('btn-refresh').onclick = refreshCurrent;
-  $('btn-upload').onclick = () => openMenu($('btn-upload'), uploadMenu(uploadFiles, uploadFolder));
+  $('btn-upload').onclick = () => openMenu($('btn-upload'), uploadChoices(uploadFiles, uploadFolder));
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = togglePanes;
   $('btn-find').onclick = findFromHere;
@@ -2978,7 +3015,6 @@ async function openSettings() {
       showHidden: () => localStorage.getItem('s3b-show-hidden') === '1',
       showMarkers: () => localStorage.getItem('s3b-show-markers') === '1',
       showVersions: () => localStorage.getItem('s3b-show-versions') === '1',
-      dirvMarkers: () => localStorage.getItem('s3b-dirv-markers') !== '0',
       delWindow: delWindowOn,
       delTypeConfirm: delTypedOn,
       delAutoConfirm: delAutoConfirm,
@@ -3000,7 +3036,6 @@ async function openSettings() {
       showHidden: (v) => { localStorage.setItem('s3b-show-hidden', v ? '1' : '0'); refreshCurrent(); },
       showMarkers: (v) => { localStorage.setItem('s3b-show-markers', v ? '1' : '0'); grid.showMarkers = v; grid.render(); },
       showVersions: (v) => { localStorage.setItem('s3b-show-versions', v ? '1' : '0'); grid.showVersions = v; grid.render(); },
-      dirvMarkers: (v) => localStorage.setItem('s3b-dirv-markers', v ? '1' : '0'),
       delWindow: (v) => localStorage.setItem('s3b-del-window', v ? '1' : '0'),
       delTypeConfirm: (v) => localStorage.setItem('s3b-del-typeconfirm', v ? '1' : '0'),
       delAutoConfirm: (v) => localStorage.setItem('s3b-del-autoconfirm', v ? '1' : '0'),
