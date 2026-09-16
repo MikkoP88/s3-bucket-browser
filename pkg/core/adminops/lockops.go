@@ -6,6 +6,7 @@ package adminops
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -27,6 +28,12 @@ func GetLockConfig(ctx context.Context, client *s3.Client, bucket string) (LockC
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
+		// A bucket that never configured object lock is answered with an
+		// error, not an empty body — AWS and Ceph RGW even use different
+		// codes for it. Both mean the zero config.
+		if isNoLockConfigured(err) {
+			return LockConfig{}, nil
+		}
 		return LockConfig{}, mapUnsupported(err, "object lock")
 	}
 	cfg := LockConfig{}
@@ -93,7 +100,7 @@ func GetObjectLock(ctx context.Context, client *s3.Client, bucket, key, versionI
 			t := ret.Retention.RetainUntilDate.UTC()
 			out.RetainUntil = &t
 		}
-	} else if err != nil && !isCode(err, "NoSuchObjectLockConfiguration") {
+	} else if err != nil && !isNoLockConfigured(err) {
 		return out, mapUnsupported(err, "object lock")
 	}
 	hold, err := client.GetObjectLegalHold(ctx, &s3.GetObjectLegalHoldInput{
@@ -101,10 +108,28 @@ func GetObjectLock(ctx context.Context, client *s3.Client, bucket, key, versionI
 	})
 	if err == nil && hold.LegalHold != nil {
 		out.LegalHold = string(hold.LegalHold.Status)
-	} else if err != nil && !isCode(err, "NoSuchObjectLockConfiguration") {
+	} else if err != nil && !isNoLockConfigured(err) {
 		return out, mapUnsupported(err, "object lock")
 	}
 	return out, nil
+}
+
+// isNoLockConfigured reports whether err is a provider's "this bucket or
+// object simply has no lock state" answer — an ordinary empty state, not a
+// failure. AWS says NoSuchObjectLockConfiguration on objects and
+// ObjectLockConfigurationNotFoundError on buckets; Ceph RGW (Hetzner and
+// other Ceph fronts) answers ObjectLockConfigurationNotFoundError for both.
+// HTTP 404 is the common denominator, so any 404 that is not a plainly
+// missing object/version also counts as "nothing set".
+func isNoLockConfigured(err error) bool {
+	if isCode(err, "NoSuchObjectLockConfiguration", "ObjectLockConfigurationNotFoundError") {
+		return true
+	}
+	var httpErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &httpErr) && httpErr.HTTPStatusCode() == 404 {
+		return !isCode(err, "NoSuchKey", "NoSuchVersion", "NoSuchBucket")
+	}
+	return false
 }
 
 // PutObjectRetention sets retention on one object version. mode must be

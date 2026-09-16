@@ -4,6 +4,26 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.9] — 2026-09-16
+
+Provider-dialect patch: the Object lock windows and commands work on
+Ceph-based providers. Unit-tested against both error dialects plus the
+generic 404 fallback; `go test -race` green across all packages.
+
+### Fixed
+
+- **Object lock window on Ceph (Hetzner Object Storage, and other RGW
+  fronts).** Reading lock state for an object that simply has no
+  retention or legal hold errored out — AWS answers that ordinary
+  empty state with `NoSuchObjectLockConfiguration`, but Ceph RGW with
+  `ObjectLockConfigurationNotFoundError`, and only the AWS code was
+  tolerated. Both dialects (and any other 404 variant that is not a
+  plainly missing object/version/bucket) now read as "nothing set".
+  The same normalization covers the bucket-level lock configuration:
+  `s3b bucket lock` (status) and the admin Lock tab previously errored
+  on every never-locked bucket — AWS's own bucket-level answer is the
+  Ceph code — instead of showing the zero configuration they promised.
+
 ## [1.1.0-beta.8] — 2026-09-16
 
 Consistency and trust cut: windows stop resizing as you flip their
