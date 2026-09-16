@@ -15,11 +15,11 @@ type fakeAPIError struct {
 	status int
 }
 
-func (e fakeAPIError) Error() string        { return fmt.Sprintf("api error %s: boom", e.code) }
-func (e fakeAPIError) ErrorCode() string    { return e.code }
-func (e fakeAPIError) ErrorMessage() string { return "boom" }
+func (e fakeAPIError) Error() string                 { return fmt.Sprintf("api error %s: boom", e.code) }
+func (e fakeAPIError) ErrorCode() string             { return e.code }
+func (e fakeAPIError) ErrorMessage() string          { return "boom" }
 func (e fakeAPIError) ErrorFault() smithy.ErrorFault { return smithy.FaultClient }
-func (e fakeAPIError) HTTPStatusCode() int  { return e.status }
+func (e fakeAPIError) HTTPStatusCode() int           { return e.status }
 
 // TestIsNoLockConfigured pins the provider-dialect contract: "this bucket
 // or object has no lock state" is an empty state, not an error — whatever
