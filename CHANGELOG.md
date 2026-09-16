@@ -4,6 +4,24 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.10] — 2026-09-16
+
+Marker-visibility patch: the Content Versions window honors its own
+default. Covered by a strengthened A/B check in the 348-check visual
+walk (markers-off now asserts the deleted child is absent, markers-on
+that it is present).
+
+### Fixed
+
+- **Content Versions listed delete-marked children by default.** The
+  window already gated the marker counts and the Markers… buttons
+  behind the "show delete markers" setting, but the ghost rows for
+  marker-deleted children (⛔ icon, "deleted" tag) rendered
+  unconditionally — exactly the rows that setting promises to keep
+  out of sight. Marker-deleted children now appear only with the
+  marker setting on, the same toggle that reveals the grid's ⛔
+  badges; live children are unaffected.
+
 ## [1.1.0-beta.9] — 2026-09-16
 
 Provider-dialect patch: the Object lock windows and commands work on
