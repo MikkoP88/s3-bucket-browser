@@ -1,8 +1,35 @@
 # S3 Bucket Browser
 
-**A Windows-Explorer-style desktop app + CLI for S3-compatible cloud storage and remote file servers (SFTP/SCP, FTP/FTPS) — buckets, objects, versions, and everything in between.**
+**A Windows-Explorer-style desktop app + CLI for S3-compatible cloud storage and remote file servers — S3 buckets and objects, SFTP/SCP, FTP/FTPS, WebDAV and local folders — with first-class versioning, bucket administration and security.**
 
-> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.11).** 1.1 adds a unified data-source hierarchy (S3, SFTP/SCP, FTP/FTPS, local folders), OS clipboard/drag interop, credential import, and a first-class versioned-delete flow — one unified Delete Window with three delete types on every source — see the [CHANGELOG](CHANGELOG.md). Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
+> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.12).** 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
+
+![Main window](docs/screenshots/main-view.png)
+
+*One binary, two faces: run `s3b` with no arguments for the GUI, with arguments for the CLI — same engine, full parity.*
+
+## Why s3b
+
+| | |
+|---|---|
+| **Easy to use** | True Windows-Explorer semantics: multi-select (Ctrl/Shift, Ctrl+A, Ctrl+I, marquee, type-to-jump), drag & drop everywhere, context menus, breadcrumbs, folder tree, sortable details grid with pickable columns, dual-pane local browser, keyboard-first operation (F1 shows the full map). A guarded exit never silently drops running transfers or unsaved profile work. |
+| **Every source, one app** | S3-compatible (AWS, MinIO, Wasabi, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, IBM COS, Hetzner, Ceph, Dell ECS, StorageGRID), SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs and local folders — color-coded in one sidebar, browsable with the same UI and `NAME://` URIs on the CLI. |
+| **Migration across sources** | Any-to-any transfers: drag rows between sources, panes or the tree, or `s3b cp s3://bucket/ vault://dst/ -r` on the terminal. Same-source S3 copies run server-side; cross-source copies stream through the same transfer manager with conflict pre-checks and throttling. |
+| **S3 versioning done right** | Per-object timelines with restore-as-latest and text diffs, one-click undo delete for markers, a three-way marker / keep-current / permanent Delete Window, version- and marker-count badges, folder-level version overviews, bulk purge of noncurrent versions, force-emptying of versioned buckets. |
+| **Import your credentials** | AWS shared files (`~/.aws/credentials` + `~/.aws/config`, `endpoint_url` entries become MinIO/R2/Wasabi/… sources), rclone, JSON, `.env`, encrypted `.s3bprofile` containers — or a KMS/secrets service (Vault, AWS Secrets Manager, Azure Key Vault, GCP), including fully custom HTTP endpoints. Live bucket-count test before you commit. |
+| **Savable encrypted profiles** | Ctrl+S writes the whole workspace — every source and connection — into one password-encrypted `.s3bprofile` (scrypt + AES-256-GCM) you can reopen, keep or share. |
+| **Security features** | Secrets in the OS keyring (Windows Credential Manager / macOS Keychain / Linux SecretService), masked everywhere, never logged; opt-in **Secure Storage** mode that seals the whole store as an AES-256-GCM envelope and hardens temp workspaces; **zero telemetry**. See [docs/security.md](docs/security.md). |
+| **Fast at scale** | Streaming page-by-page listings (the Go side holds one page at a time), virtualized rendering, cancelable deep search — responsive on million-object buckets. |
+
+More screenshots:
+
+| | |
+|---|---|
+| ![Data sources](docs/screenshots/sources-tree.png) | ![Dual pane compare](docs/screenshots/dual-pane-compare.png) |
+| ![Versions](docs/screenshots/versions.png) | ![Delete window](docs/screenshots/delete-window.png) |
+| ![Admin panel](docs/screenshots/admin-panel.png) | ![Dark theme](docs/screenshots/dark-theme.png) |
+
+The full tour with screenshots lives in the **[usage guide](docs/usage.md)**; the app carries the same guide (Help → User guide, F1).
 
 ## Quickstart (GUI)
 
@@ -18,25 +45,21 @@ go build -tags desktop,production -o s3b ./cmd/s3b && ./s3b   # no arguments -> 
 # go build -tags desktop,production -ldflags "-H windowsgui" -o s3b.exe ./cmd/s3b
 ```
 
-- **Deep search** (Ctrl+Shift+F): filter every object under a bucket/folder by name glob, size, age or storage class — results stream in and are cancelable; click a result to jump straight to the object.
-- **Storage class & object lock**: convert objects between classes (server-side self-copy) from the context menu; per-object retention (GOVERNANCE/COMPLIANCE) and legal hold, plus the bucket-level Lock tab — with the same confirm gates as the CLI.
-- **Streaming listing**: huge folders stream page-by-page into the grid (Go side holds one page at a time), so million-object buckets stay responsive.
-- **Favorites**: star buckets and folders for one-click jumps from the sidebar.
-- **Secrets in the OS keyring** (Windows Credential Manager / macOS Keychain / Linux SecretService), with automatic fallback to the `0600` config file on headless hosts.
-- **Explorer layout**: toolbar, back/forward/up history, breadcrumb, folder tree sidebar, sortable details grid with per-column visibility (main grid and side panel — pick columns in Settings or by right-clicking the header), status bar.
-- **Dual-pane local browser** (F9): a full local-filesystem pane beside the S3 pane, WinSCP-style — cross-pane drag & drop uploads/downloads, synchronized browsing, and one-click **directory compare** (color-coded newer/older/size-diff/only-here).
-- **Open in external editor**: edit remote files in your editor of choice; s3b watches for saves and re-uploads automatically (✎ indicator in the status bar).
-- **Versions**: optional version-count badges (⟲ n, ⛔ — both opt-in via Settings) open the object's timeline or the folder-level **Content Versions** overview (a one-line version count plus per-child controls); restore-as-latest, one-click **undo delete** for delete markers (also from the marker window, with checkbox bulk-select), permanent destroy and bulk purge of noncurrent versions — in the GUI dialog and via Shift+Del. Delete-marker rows stay hidden in the version windows until the marker-icon toggle reveals them — the same setting that shows the ⛔ badges.
-- **Bucket administration**: versioning toggle, bucket policy, CORS, lifecycle rules, default encryption, public-access block, static website and tags — all in one tabbed admin panel (also `s3b bucket …` on the CLI).
+- **Data sources**: color-coded connections in one sidebar hierarchy — S3 sources (account-wide, or bucket-scoped via `--bucket` / `s3b source add s3://bucket`), SFTP/SCP, FTP/FTPS servers, WebDAV/WebDAVs shares and local folders, all browsable with the same Explorer UI. **Import credentials** from files or KMS/secrets services — with a live bucket-count test; the very first import, straight from the welcome screen, opens the imported bucket's content.
+- **Explorer layout**: toolbar, back/forward/up history, breadcrumb (type `source://bucket/prefix` to jump), folder tree sidebar, sortable details grid with per-column visibility, status bar, favorites.
 - **Multi-select everything**: click / Ctrl+click / Shift+click / Ctrl+A / Ctrl+I (invert), marquee drag-select, type-to-jump, full keyboard map (F1 in-app).
-- **Drag & drop**: drop files or folders from the OS onto the window to upload into the open folder; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket).
-- **Upload**: one command everywhere — the toolbar button opens the pickers directly and every context menu carries a single **Upload ▸** flyout (Explorer-style; it flips leftwards at the screen edge): **Files… (Ctrl+U)** for the native multi-select file dialog, **Folder…** for a whole directory tree (walked and uploaded recursively).
-- **OS interop**: Ctrl+C mirrors the selection to the real OS clipboard, Ctrl+V uploads files copied in Explorer/Finder, and rows drag out of the window as downloadable URLs. **Copy name / Copy path / Copy S3 URI** (row context menu or Edit ▸ Copy as) put plain text on the OS clipboard.
-- **Transfer manager**: per-file and byte-level progress, speed, cancel — powered by multipart upload/download, with an optional **bandwidth throttle** (512 kB/s … 10 MB/s). Closing the window or quitting while transfers still run — or with an unsaved profile — asks first, so no accidental exit loses work.
-- **Unified Delete Window**: deletes count first and act second — one fixed-width dialog on every source (S3, SFTP/FTP/WebDAV, local pane), footer button always **Delete**. On versioned buckets it offers three types: **add a delete marker** (default, everything restorable), **delete all except current version** (keeps the latest, clears the history), and **delete permanently** (purges every version and marker under the selection); the destructive types carry an amber consequence line, and Settings can add a typed `delete` gate to any delete, turn the window off, or auto-confirm single items. Bucket removal demands typing the bucket name; removing a versioned bucket with `--force` purges the whole version history, markers included. Version/marker badges on the grid are opt-in (Settings), and delete-marked objects stay hidden unless revealed as ghost rows via Settings.
-- **Data sources**: color-coded connections in one sidebar hierarchy — S3 sources (each scoped to a single bucket, via `--bucket` or the `s3b source add s3://bucket` shorthand), SFTP/SCP, FTP/FTPS servers and local folders, all browsable with the same Explorer UI (and `NAME://` URIs on the CLI). **Import credentials** from local files or KMS/secrets services — including fully custom HTTP endpoints (URL / JSON path / headers) — with a live bucket-count test; plus import from the AWS shared files (`~/.aws/credentials` + `~/.aws/config`, where `endpoint_url` entries become MinIO/R2/Wasabi/… sources), built-in connectivity test and connection doctor. The very first import — straight from the welcome screen — opens the imported bucket's content, and the welcome never lingers once a source exists.
-- **Light/dark theme**, conflict policies (overwrite / skip / rename) on upload and download — with a **live pre-check** that lists exactly which files collide (both sides' size and time) and lets you resolve per file, or transfers silently when the destination is clean — pre-signed URLs, server-side copy/move, rename, new folder.
-- **i18n ready** (15 languages built in — English, Suomi, Svenska, Deutsch, Français, Español, Português, Italiano, Nederlands, Polski, Русский, Türkçe, 中文， 日本語， 한국어; English by default with optional auto-detect, switchable in Settings), accessibility pass on the grid and dialogs (ARIA roles, focus trap), portable mode (drop a `s3b-portable` marker file next to the binary to keep config beside it).
+- **Drag & drop + OS interop**: drop files or folders from the OS to upload; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket); rows drag out of the window as downloadable URLs; Ctrl+C mirrors the selection to the real OS clipboard and Ctrl+V uploads files copied in Explorer/Finder; **Copy name / Copy path / Copy S3 URI** put plain text on the clipboard.
+- **Upload**: one **Upload ▸** flyout everywhere — **Files… (Ctrl+U)** for the native multi-select dialog, **Folder…** for a whole directory tree.
+- **Transfer manager**: per-file and byte-level progress, speed, cancel — multipart and resumable, with an optional bandwidth throttle (256 kB/s … 10 MB/s) and conflict policies (overwrite / skip / rename) backed by a live pre-check that lists exactly which files collide.
+- **Versions**: opt-in version-count badges (⟲ n, ⛔) open the object's timeline or the folder-level **Content Versions** overview; restore-as-latest, one-click **undo delete** for markers, permanent destroy and bulk purge — in the dialog or via Shift+Del.
+- **Unified Delete Window**: deletes count first and act second — one dialog on every source; on versioned buckets it offers **add a delete marker** (default, everything restorable), **delete all except current version**, or **delete permanently**, with amber consequence lines and an optional typed `delete` gate.
+- **Bucket administration**: versioning, policy, CORS, lifecycle, default encryption, public-access block, static website and tags in one tabbed admin panel (also `s3b bucket …`).
+- **Deep search** (Ctrl+Shift+F): filter every object under a bucket/folder by name glob, size, age or storage class — streaming, cancelable, click-to-jump.
+- **Storage class & object lock**: server-side class conversion from the context menu; per-object retention (GOVERNANCE/COMPLIANCE), legal hold and the bucket-level Lock tab.
+- **Connection doctor**: DNS → TCP → TLS → auth → policy/ACL checks with plain-language remediation (`s3b doctor`).
+- **Open in external editor**: edit remote files in your editor of choice; s3b watches for saves and re-uploads automatically.
+- **Secure Storage** (Settings → Security): the shared-host hardening that encrypts the whole store, protects temp workspaces and auto-clears pre-signed URLs from the clipboard — see [docs/security.md](docs/security.md).
+- **Light/dark theme**, 15 languages built in (English default, optional auto-detect), accessibility pass (ARIA roles, focus trap), portable mode (`s3b-portable` marker keeps config beside the binary).
 
 Headless Linux servers can build a pure-Go CLI without GTK dependencies:
 
@@ -70,6 +93,7 @@ s3b cp report.pdf s3://b/docs/            # upload
 s3b cp -r ./site s3://b/site/             # recursive upload
 s3b cp s3://b/docs/report.pdf ./out/      # download
 s3b cp s3://b/a.jpg s3://b/copy/a.jpg    # server-side copy
+s3b cp -r s3://b/site/ vault://site/      # migrate S3 -> SFTP
 s3b mv s3://b/old.txt s3://b/new.txt
 s3b sync ./site s3://b/site/ --delete     # two-way safe sync
 s3b presign s3://b/docs/report.pdf --expires 1h
@@ -121,6 +145,14 @@ Every command takes `--json` for machine-readable output, `--profile` to pick a 
 
 Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), standalone zips/tarballs for Windows/Linux, and macOS dmg images — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
 
+## Documentation
+
+- **[Usage guide](docs/usage.md)** — the full walkthrough with screenshots (same content as the in-app guide)
+- **[CLI reference](docs/cli.md)** — every command, generated from the cobra tree
+- **[Security model](docs/security.md)** — keyring, Secure Storage, safety ladder, supply chain
+- **[Competitive comparison](docs/comparison.md)** — the S3-browser landscape, fact-checked
+- **[CHANGELOG](CHANGELOG.md)** · **[CONTRIBUTING](CONTRIBUTING.md)** · **[Portable edition](README-portable.md)**
+
 ## Why another S3 browser?
 
 Because none of the existing ones do it all:
@@ -132,6 +164,7 @@ Because none of the existing ones do it all:
 | Explorer-style multi-select, drag & drop | yes (core goal) | partial | partial | partial | no |
 | Versioning management (restore, purge, force-empty versioned buckets) | first-class | partial | partial | partial | clunky |
 | GUI **and** CLI in one binary | yes | no | separate | no | – |
+| Remote file servers (SFTP/FTP/WebDAV) in the same UI and CLI | yes | no | yes | no | – |
 | Provider-quirk awareness (R2, MinIO, B2, Wasabi, …) | yes | minimal | profiles | minimal | AWS only |
 | Connection doctor with fix suggestions | yes | no | no | no | no |
 | Telemetry | **none** | – | – | – | – |

@@ -35,6 +35,19 @@ Manager, macOS Keychain or the Linux secret service — never in files, by
 design. They stay on the machine that saved them, so on a new computer
 you re-enter each credential once. Everything else is portable.
 
+## Shared sticks and machines: Secure Storage
+
+The portable `config` folder (profiles, sources, the activity log) is
+plaintext by default — convenient, but on a USB stick or shared folder
+every account on the machine can read your whole storage topology. Turn
+on **Settings → Security → Secure storage** and the store file becomes
+one AES-256-GCM envelope keyed from *this machine's* credential store: a
+lost or stolen stick carries ciphertext, not your infrastructure map
+(secrets were never on it to begin with). Temp workspaces also move into
+the config folder and are wiped at every launch. See
+[docs/security.md](docs/security.md) for the full model, failure modes
+and recovery paths.
+
 ## Build notes
 
 - `linux-amd64` is the full GUI build and needs the usual webkit2gtk

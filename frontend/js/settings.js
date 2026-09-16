@@ -123,6 +123,42 @@ function logFileRow(ctx) {
   );
 }
 
+// securitySection builds the Secure Storage group (docs/security.md): the
+// global at-rest hardening toggle plus a live status readout. The toggle
+// round-trips the backend (pkg/api/secure.go) — enabling encrypts the
+// data-source store, moves the temp workspaces into the config dir and
+// turns file logging off — and the returned SecureStatus re-syncs every
+// row. ctx.security = { get, set } is injected by main.js.
+function securitySection(ctx) {
+  let cur = ctx.security?.get() || {};
+  const backend = el('span', { class: 'set-val' });
+  const editDir = el('span', { class: 'set-val' });
+  const spoolDir = el('span', { class: 'set-val' });
+  const cb = el('input', { type: 'checkbox', class: 'set-ctl' });
+  const sync = () => {
+    backend.textContent = cur.keyringAvailable
+      ? (cur.keyringBackend || '—')
+      : t('settings.secKeyringNone');
+    editDir.textContent = cur.editorDir || '—';
+    spoolDir.textContent = cur.spoolDir || '—';
+    cb.checked = !!cur.enabled;
+    cb.disabled = !cur.keyringAvailable;
+  };
+  sync();
+  cb.addEventListener('change', async () => {
+    const on = cb.checked;
+    cb.disabled = true;
+    try { cur = (await ctx.security.set(on)) || cur; }
+    finally { sync(); } // true on-disk state, whatever happened
+  });
+  return el('div', {},
+    row(t('settings.secure'), cb, t('settings.secureHint')),
+    row(t('settings.secKeyring'), backend),
+    row(t('settings.secEditor'), editDir),
+    row(t('settings.secSpool'), spoolDir),
+  );
+}
+
 // settingsDialog ---------------------------------------------------------
 
 // ctx = {
@@ -178,6 +214,9 @@ export function settingsDialog(ctx) {
 
     el('div', { class: 'set-section', text: t('settings.logging') }),
     logFileRow(ctx),
+
+    el('div', { class: 'set-section', text: t('settings.secSection') }),
+    securitySection(ctx),
 
     el('div', { class: 'set-section', text: t('settings.transfers') }),
     row(t('settings.conflict'), select(
