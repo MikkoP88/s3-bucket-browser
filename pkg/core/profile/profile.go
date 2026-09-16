@@ -67,10 +67,15 @@ func Mask(s string) string {
 // Store is a collection of profiles persisted to a JSON file. Since M8 it
 // also carries Sources (connections of any type); the legacy Profiles array
 // stays the S3 specialization the CLI and the browsing stack resolve.
+// With Secure Storage enabled (secure.go) the file is one AES-256-GCM
+// envelope instead of JSON; the unexported flag rides the Store so Save
+// keeps the format it was loaded in.
 type Store struct {
 	Path     string
 	Profiles []Profile `json:"profiles"`
 	Sources  []Source  `json:"sources,omitempty"`
+
+	secure bool // secure-storage mode (envelope on disk); never serialized
 }
 
 // ErrNotFound is returned when a profile name is unknown.
@@ -112,7 +117,9 @@ func Load() (*Store, error) {
 }
 
 // LoadFrom reads the store from a specific path. Keyring-stored secrets
-// are hydrated back into the in-memory profiles.
+// are hydrated back into the in-memory profiles. An encrypted store
+// (secure storage) is decrypted here — which requires the OS keyring;
+// without one the load fails loudly with remediation, never silently.
 func LoadFrom(path string) (*Store, error) {
 	s := &Store{Path: path}
 	data, err := os.ReadFile(path)
@@ -121,6 +128,24 @@ func LoadFrom(path string) (*Store, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if isSecureEnvelope(data) {
+		if !keyringAvailable() {
+			return nil, fmt.Errorf("%w — the profile store %s is encrypted; log into a desktop session (or unset S3B_NO_KEYRING) and retry, or disable secure storage on a host with a keyring", ErrSecureNeedsKeyring, path)
+		}
+		key, err := loadMasterKey()
+		if err != nil {
+			return nil, err
+		}
+		if key == nil {
+			return nil, fmt.Errorf("cannot decrypt the secure store %s: the master key is missing from the OS keyring", path)
+		}
+		plain, err := openSecure(key, data)
+		if err != nil {
+			return nil, err
+		}
+		data = plain
+		s.secure = true
 	}
 	if err := json.Unmarshal(data, s); err != nil {
 		return nil, fmt.Errorf("invalid profile store %s: %w", path, err)
@@ -150,7 +175,9 @@ func (s *Store) ensureSourceIDs() {
 }
 
 // Save persists the store (0600). When an OS keyring is available,
-// plaintext secrets are migrated out of the JSON file first (M5).
+// plaintext secrets are migrated out of the JSON file first (M5). With
+// secure storage enabled the marshaled store is sealed into the s3bsf1
+// envelope before it touches disk.
 func (s *Store) Save() error {
 	if s.Path == "" {
 		return errors.New("store path not set")
@@ -162,6 +189,15 @@ func (s *Store) Save() error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
+	}
+	if s.secure {
+		key, err := secureMasterKey()
+		if err != nil {
+			return err
+		}
+		if data, err = sealSecure(key, data); err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(s.Path, data, 0o600)
 }

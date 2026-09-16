@@ -2999,6 +2999,8 @@ function setLanguage(v) {
 async function openSettings() {
   let logSet = { mode: 'default', dir: '' };
   try { logSet = await api.GetLogSettings(); } catch { /* binding missing pre-Startup */ }
+  let secSet = { enabled: false, keyringAvailable: false, keyringBackend: '', editorDir: '', spoolDir: '' };
+  try { secSet = await api.GetSecureStorage(); } catch { /* binding missing pre-Startup */ }
   settingsDialog({
     state: {
       theme: () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'),
@@ -3051,6 +3053,23 @@ async function openSettings() {
       },
       browse: async () => {
         try { return await api.PickFolder('Choose the log folder'); } catch { return ''; }
+      },
+    },
+    // Secure Storage (pkg/api/secure.go): the toggle is honored Go-side,
+    // so round-trip the binding and re-sync from the on-disk truth. A
+    // failed switch re-fetches the status; a success refreshes the cached
+    // file-log settings too (enabling turns file logging off).
+    security: {
+      get: () => secSet,
+      set: async (on) => {
+        try {
+          secSet = await api.SetSecureStorage(on);
+          try { logSet = await api.GetLogSettings(); } catch { /* keep last */ }
+        } catch (e) {
+          toast(String(e), 'error');
+          try { secSet = await api.GetSecureStorage(); } catch { /* keep last */ }
+        }
+        return secSet;
       },
     },
     // Reset to defaults: wipe every persisted shell knob and reload.

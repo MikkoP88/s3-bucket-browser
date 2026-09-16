@@ -83,6 +83,7 @@ func New(version string) *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	a.jobs.setContext(ctx)
+	a.wipeWorkspaces() // secure.go: crash leftovers never survive a launch
 	a.emitLog(LogInfo, "app", "started "+a.version)
 }
 
@@ -101,7 +102,8 @@ func (a *App) Shutdown(ctx context.Context) {
 		cancel()
 	}
 	a.streamMu.Unlock()
-	a.closeEngines() // live SFTP/FTP connections
+	a.retryPresignScrub() // clipboard.go: last chance to clear a pre-signed URL
+	a.closeEngines()      // live SFTP/FTP connections
 }
 
 // GetVersion returns the application version string.

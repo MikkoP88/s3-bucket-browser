@@ -46,6 +46,11 @@ for dep in $(go list -m -f '{{if and (not .Indirect) (ne .Path "'"${main_mod}"'"
 done
 
 echo
+echo "Embedded frontend assets (inline SVG path data, not a runtime dependency):"
+echo "  bootstrap-icons 1.13.1 (MIT) — pc-display, hdd-network, terminal-fill,"
+echo "    lock-fill, globe, bucket-fill, hdd-rack-fill"
+echo "    · https://github.com/twbs/icons"
+echo
 echo "Complete pinned module graph as module@version (per-module license"
 echo "declarations are inventoried in the release SBOM, spdx-json):"
 echo

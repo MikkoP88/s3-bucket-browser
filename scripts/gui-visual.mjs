@@ -107,10 +107,58 @@ async function ok(desc, cond) {
   if (!v) console.log(`  FAIL  ${desc}`);
   return v;
 }
+// Let the UI reach a visually settled state before a capture: finite CSS
+// animations/transitions run to completion (capped — an infinite spinner
+// must never hang the walk) and two rAFs land the final paint, so a shot
+// cannot catch a dialog half-faded-in or a repaint mid-frame.
+async function settlePaint(p = page) {
+  try {
+    await p.evaluate(() => new Promise((res) => {
+      const cap = setTimeout(res, 400);
+      Promise.all(document.getAnimations().map((a) => {
+        try { return a.finished.then(() => {}, () => {}); } catch { return null; }
+      })).then(() => { clearTimeout(cap); res(); });
+    }));
+    await p.evaluate(() => new Promise((res) => {
+      let n = 0;
+      const tick = () => (n += 1) >= 2 ? res() : requestAnimationFrame(tick);
+      requestAnimationFrame(tick);
+    }));
+  } catch { /* page busy — capture as-is */ }
+}
 async function shot(name) {
   shotNo += 1;
   const file = path.join(OUT, String(shotNo).padStart(2, '0') + '-' + name + '.png');
+  await settlePaint();
   await page.screenshot({ path: file });
+}
+// Curated-shot capture (the ones docs/screenshots/ republish): scrolls the
+// subject into view where needed, verifies as a real check that the subject
+// is fully on screen, and waits out transient toasts — a shot whose subject
+// is clipped below the fold or smothered by a toast from the harness's own
+// clicking is a broken shot, not a stylistic choice.
+async function shotOf(name, cls, textRe = null) {
+  const found = await evalPage((c, t) => {
+    const el = t == null
+      ? document.querySelector(c)
+      : Array.from(document.querySelectorAll(c)).find((e) => new RegExp(t, 'i').test(e.textContent));
+    if (!el) return false;
+    el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    return true;
+  }, cls, textRe);
+  await sleep(80);
+  await ok(`shot "${name}": subject on screen`, found && evalPage((c, t) => {
+    const el = t == null
+      ? document.querySelector(c)
+      : Array.from(document.querySelectorAll(c)).find((e) => new RegExp(t, 'i').test(e.textContent));
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0
+      && r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth;
+  }, cls, textRe));
+  await waitFor(() => evalPage(() => document.getElementById('toasts').children.length === 0),
+    4600, 'toasts to clear').catch(() => {});
+  await shot(name);
 }
 async function step(name, fn) {
   if (FILTER && !FILTER.test(name)) return;
@@ -195,13 +243,13 @@ function shim() {
   const world = {
     sources: EMPTY ? [] : [
       { id: 'src-hetzner', name: 'hetzner', type: 's3', color: '#0b63ce' }, // legacy: account-wide
-      { id: 'src-one', name: 'one-bucket', type: 's3', bucket: 'singleton', color: '#9a6700' },
-      { id: 'src-fresh', name: 'fresh-single', type: 's3', bucket: 'lone-bucket', color: '#b3261e' },
+      { id: 'src-one', name: 'website-prod', type: 's3', bucket: 'www-assets', color: '#9a6700' },
+      { id: 'src-fresh', name: 'nightly', type: 's3', bucket: 'db-dumps', color: '#b3261e' },
       { id: 'src-box', name: 'backup-box', type: 'sftp', color: '#1b7f3b' },
       { id: 'src-dav', name: 'dav-claims', type: 'webdav', color: '#7c3aed' },
     ],
     buckets: [
-      { name: 'testijotain', createdAt: daysAgo(220) },
+      { name: 'team-files', createdAt: daysAgo(220) },
       { name: 'logs-2026', createdAt: daysAgo(120) },
       { name: 'media-assets', createdAt: daysAgo(90) },
       { name: 'archive-cold', createdAt: daysAgo(30) },
@@ -213,7 +261,7 @@ function shim() {
       'cand-kms1': ['hetzner-kms'],
     },
     objects: {
-      testijotain: [
+      'team-files': [
         { key: 'docs/', isDir: true },
         { key: 'photos/', isDir: true },
         { key: 'reports/', isDir: true },
@@ -239,11 +287,11 @@ function shim() {
         { key: 'brand/logo.svg', size: 8192, lastModified: daysAgo(60) },
       ],
       'archive-cold': [],
-      singleton: [
+      'www-assets': [
         { key: 'assets/', isDir: true },
         { key: 'index.html', size: 512, lastModified: daysAgo(2), storageClass: 'STANDARD' },
       ],
-      'lone-bucket': [
+      'db-dumps': [
         { key: 'data/', isDir: true },
         { key: 'hello.txt', size: 42, lastModified: daysAgo(1), storageClass: 'STANDARD' },
       ],
@@ -292,24 +340,29 @@ function shim() {
     },
     guards: {
       // lock enabled: the Object lock ctx entry + lock dialog walk needs it
-      testijotain: { versioning: 'Enabled', lockEnabled: true, lockMode: 'GOVERNANCE', lockDays: 1 },
+      'team-files': { versioning: 'Enabled', lockEnabled: true, lockMode: 'GOVERNANCE', lockDays: 1 },
       'logs-2026': { versioning: 'Suspended', lockEnabled: false, lockMode: '', lockDays: 0 },
-      singleton: { versioning: 'Enabled', lockEnabled: false, lockMode: '', lockDays: 0 },
+      'www-assets': { versioning: 'Enabled', lockEnabled: false, lockMode: '', lockDays: 0 },
     },
     // PrefixVersionSummary fixture: delete-marker aggregates per folder view.
     // readme.md has a marker in its history; docs/ aggregates markers under
     // it; docs/legacy/ is entirely delete-marked ("all deleted").
     versionKids: {
-      'testijotain/': [
+      'team-files/': [
         { name: 'docs', isDir: true, versions: 6, markers: 2, allDeleted: false },
         { name: 'readme.md', isDir: false, versions: 4, markers: 1, allDeleted: false },
       ],
-      'testijotain/docs/': [
+      'team-files/docs/': [
         { name: 'legacy', isDir: true, versions: 1, markers: 1, allDeleted: true },
         { name: 'notes.md', isDir: false, versions: 2, markers: 0, allDeleted: false },
       ],
     },
-    pfState: { open: false, name: '', path: '', dirty: false, sourceCount: EMPTY ? 0 : 4 },
+    // Non-empty world boots with a saved (encrypted) profile file open —
+    // the realistic steady state, and what the status bar should show in
+    // screenshots (🔐 work.s3bprofile, not "unsaved sources" walk debris).
+    pfState: EMPTY
+      ? { open: false, name: '', path: '', dirty: false, sourceCount: 0 }
+      : { open: true, name: 'work.s3bprofile', path: 'C:\\Users\\demo\\Documents\\work.s3bprofile', dirty: false, sourceCount: 5 },
     transfers: [
       { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
       // failed/skipped ride the same record: the manager counts them aloud
@@ -324,6 +377,14 @@ function shim() {
     logSettings: {
       mode: 'default', dir: '', levels: [], scopes: [],
       allScopes: ['admin', 'app', 'copy', 'delete', 'doctor', 'download', 'import', 'list', 'mkdir', 'profile', 'rename', 'settings', 'share', 'sources', 'transfer', 'upload', 'versions'],
+    },
+    // secure-storage status (Settings → Security): off by default; the
+    // toggle flips the mock and relocates the workspaces the way the real
+    // backend does (config dir under secure storage, system temp otherwise)
+    secure: {
+      enabled: false, keyringAvailable: true, keyringBackend: 'Windows Credential Manager',
+      editorDir: 'C:\\Users\\vis\\AppData\\Local\\Temp\\s3b-edit',
+      spoolDir: 'C:\\Users\\vis\\AppData\\Local\\Temp\\s3b-tmp',
     },
     versions: [
       { versionId: '', isLatest: true, isDeleteMarker: false, size: 1234, storageClass: 'STANDARD', etag: '"v3"', lastModified: daysAgo(1) },
@@ -443,7 +504,7 @@ function shim() {
   // Methods whose return values drive rendering get explicit handlers;
   // everything else falls through to record + benign default.
   const H = {
-    GetVersion: () => '0.9.0-visual',
+    GetVersion: () => '1.1.0-beta.12',
     ListSources: () => JSON.parse(JSON.stringify(world.sources)),
     ListBuckets: () => JSON.parse(JSON.stringify(world.buckets)),
     ListSourceBuckets: (_src) => JSON.parse(JSON.stringify(world.buckets)),
@@ -542,11 +603,23 @@ function shim() {
     RemoteStat: (source, key) => ({ key, isDir: false, size: 4096, lastModified: daysAgo(3) }),
     CopySelection: (src, keys, dst, prefix, move) => ({ copied: keys.length, errors: [] }),
     CopySelectionVersions: (srcS, srcB, keys, dstS, dstB, prefix, move) => 'vcopy-1',
-    EditingFiles: () => [{ bucket: 'testijotain', key: 'docs/notes.md' }],
+    EditingFiles: () => [{ bucket: 'team-files', key: 'docs/notes.md' }],
     GetLogSettings: () => JSON.parse(JSON.stringify(world.logSettings)),
     SetLogSettings: (mode, dir, levels, scopes) => {
       world.logSettings = { ...world.logSettings, mode, dir, levels: levels || [], scopes: scopes || [] };
       return JSON.parse(JSON.stringify(world.logSettings));
+    },
+    GetSecureStorage: () => JSON.parse(JSON.stringify(world.secure)),
+    SetSecureStorage: (on) => {
+      const cfg = 'C:\\Users\\vis\\AppData\\Roaming\\s3b';
+      const tmp = 'C:\\Users\\vis\\AppData\\Local\\Temp';
+      world.secure = {
+        ...world.secure,
+        enabled: !!on,
+        editorDir: on ? `${cfg}\\edit` : `${tmp}\\s3b-edit`,
+        spoolDir: on ? `${cfg}\\tmp` : `${tmp}\\s3b-tmp`,
+      };
+      return JSON.parse(JSON.stringify(world.secure));
     },
     DeepSearch: (bucket, prefix) => {
       const t = token();
@@ -814,22 +887,22 @@ await step('boot', async () => {
 });
 
 await step('buckets-ctxmenu', async () => {
-  const n = await openCtx('testijotain');
+  const n = await openCtx('team-files');
   await ok('bucket menu has items', n >= 5);
   await shot('ctx-bucket');
   await closeCtx();
 });
 
 await step('objects-view', async () => {
-  await dblClickRow('testijotain');
-  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects of testijotain');
-  await ok('breadcrumb shows bucket', (await txt('#breadcrumb')).includes('testijotain'));
+  await dblClickRow('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects of team-files');
+  await ok('breadcrumb shows bucket', (await txt('#breadcrumb')).includes('team-files'));
   // guard state lives as icons after the bucket name in the tree now
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .tguard').length)) > 0, 6000, 'tree guard icons');
   await ok('tree shows versioning icon', (await evalPage(() => Array.from(document.querySelectorAll('#tree .tguard')).map((i) => i.title).join(' '))).toLowerCase().includes('versioning enabled'));
   await ok('toolbar upload enabled', evalPage(() => !document.getElementById('btn-upload').disabled));
   await ok('toolbar download disabled without selection', evalPage(() => document.getElementById('btn-download').disabled));
-  await shot('objects');
+  await shotOf('objects', '#grid-wrap');
 });
 
 await step('filter', async () => {
@@ -873,7 +946,7 @@ await step('file-ctxmenu-versions', async () => {
   if (!has) console.log(`  menu items: ${items.join(' | ')}`);
   await ok('menu offers Versions', has);
   // deep-sweep gating: Object lock only on lock-enabled buckets (the
-  // testijotain guard has it on); Find in this folder targets folders only
+  // team-files guard has it on); Find in this folder targets folders only
   await ok('file menu: Object lock offered, Find targets folders only',
     items.some((x) => /object lock/i.test(x))
       && !items.some((x) => /find in this folder/i.test(x)));
@@ -904,7 +977,7 @@ await step('file-ctxmenu-versions', async () => {
     && items3.some((x) => /find in this folder/i.test(x))
     && !items3.some((x) => /versions/i.test(x)));
   await closeCtx();
-  await navObjects('testijotain'); // back for the folder-ctxmenu walk below
+  await navObjects('team-files'); // back for the folder-ctxmenu walk below
 });
 
 await step('folder-ctxmenu', async () => {
@@ -924,11 +997,11 @@ await step('copy-as-ctxmenu', async () => {
     .every((s) => items.some((x) => x.toLowerCase() === s)));
   await ctxItem(/^copy path$/i);
   let c = await findCall('ClipboardSetText');
-  await ok('copy path puts bucket/key on the clipboard', !!c && c.args[0] === 'testijotain/readme.md');
+  await ok('copy path puts bucket/key on the clipboard', !!c && c.args[0] === 'team-files/readme.md');
   await openCtx('readme.md');
   await ctxItem(/copy s3 uri/i);
   c = await findCall('ClipboardSetText');
-  await ok('copy s3 uri formats s3://bucket/key', !!c && c.args[0] === 's3://testijotain/readme.md');
+  await ok('copy s3 uri formats s3://bucket/key', !!c && c.args[0] === 's3://team-files/readme.md');
   await openCtx('readme.md');
   await ctxItem(/^copy name$/i);
   c = await findCall('ClipboardSetText');
@@ -991,7 +1064,7 @@ await step('empty-ctxmenu', async () => {
 await step('tree-lazy', async () => {
   // navigation already ran reveal() on the bucket node (expanded); only
   // expand when the folder level is not rendered yet
-  if (!(await treeRow('docs'))) await evalHandleClickTwist('testijotain'); // bucket node → folder level
+  if (!(await treeRow('docs'))) await evalHandleClickTwist('team-files'); // bucket node → folder level
   await waitFor(async () => !!(await treeRow('docs')), 6000, 'bucket children');
   await ok('bucket expanded to folders', !!(await treeRow('docs')) && !!(await treeRow('photos')));
   if (!(await treeRow('legacy'))) await evalHandleClickTwist('docs');
@@ -1048,38 +1121,38 @@ await step('tree-single-bucket-first-click', async () => {
   // the source definition, so no listing round trip may intervene — if
   // the tree asked for the bucket list first, this world answers with
   // hetzner's four buckets and the assertion below fails.
-  await clickTree('fresh-single');
+  await clickTree('nightly');
   await waitFor(async () => (await rowKeys()).includes('hello.txt'), 6000, 'first-click contents');
-  await ok('first click opens bucket contents', (await txt('#breadcrumb')).includes('lone-bucket'));
+  await ok('first click opens bucket contents', (await txt('#breadcrumb')).includes('db-dumps'));
 });
 
 await step('tree-bucket-scoped-source', async () => {
   // a bucket-scoped S3 source: the node IS the bucket — definition-carried,
   // so it renders the same structure as every other source type (content
   // folders directly under the source) and inherits the bucket's features.
-  await evalHandleClickTwist('one-bucket');
+  await evalHandleClickTwist('website-prod');
   await waitFor(async () => !!(await treeRow('assets')), 6000, 'bucket-scoped children');
-  await ok('no bucket row under the bucket-scoped source', !(await treeRow('singleton')));
+  await ok('no bucket row under the bucket-scoped source', !(await treeRow('www-assets')));
   await ok('folders sit directly under the source node', !!(await treeRow('assets')));
   // the source node inherits the bucket's guard icons (versioning on)
   await waitFor(async () => (await evalPage((l) => {
     const n = Array.from(document.querySelectorAll('#tree .tnode'))
       .find((r) => r.querySelector('.tlabel')?.textContent === l);
     return n ? n.querySelectorAll('.tguard').length : 0;
-  }, 'one-bucket')) > 0, 6000, 'bucket-scoped guard icons');
+  }, 'website-prod')) > 0, 6000, 'bucket-scoped guard icons');
   await ok('versioning icon on the source node', evalPage((l) => {
     const n = Array.from(document.querySelectorAll('#tree .tnode'))
       .find((r) => r.querySelector('.tlabel')?.textContent === l);
     return Array.from(n?.querySelectorAll('.tguard') || []).some((i) => /versioning enabled/i.test(i.title));
-  }, 'one-bucket'));
+  }, 'website-prod'));
   // clicking the source node opens the bucket contents, not the buckets view
-  await clickTree('one-bucket');
+  await clickTree('website-prod');
   await waitFor(async () => (await rowKeys()).includes('index.html'), 6000, 'bucket-scoped navigate');
-  await ok('click opens bucket contents directly', (await txt('#breadcrumb')).includes('singleton'));
+  await ok('click opens bucket contents directly', (await txt('#breadcrumb')).includes('www-assets'));
   await ok('bucket-scoped source row highlighted', evalPage(() => Array.from(document.querySelectorAll('#tree .tnode'))
-    .some((r) => r.classList.contains('sel') && r.querySelector('.tlabel')?.textContent === 'one-bucket')));
+    .some((r) => r.classList.contains('sel') && r.querySelector('.tlabel')?.textContent === 'website-prod')));
   // bucket-scoped context menu: full bucket feature set + source management
-  const h = await treeRow('one-bucket');
+  const h = await treeRow('website-prod');
   await rightClick(h);
   await sleep(80);
   const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item')).map((i) => i.textContent).join(' | '));
@@ -1312,6 +1385,36 @@ await step('settings-dialog', async () => {
   await ok('both icon toggles ticked', await tick('version count icons') && await tick('delete marker icons'));
   await ok('toggles persisted', evalPage(() => localStorage.getItem('s3b-show-versions') === '1'
     && localStorage.getItem('s3b-show-markers') === '1'));
+  // secure-storage section (Settings → Security): the status readout and
+  // the global toggle round-tripping the recorded backend call
+  await ok('security section + toggle row rendered', evalPage(() => {
+    const secs = Array.from(document.querySelectorAll('#modal-root .set-section')).map((s) => s.textContent);
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-row'));
+    return secs.some((x) => /security/i.test(x))
+      && rows.some((r) => /secure storage/i.test(r.querySelector('.set-name')?.textContent || ''));
+  }));
+  await ok('secure status names the keyring backend', evalPage(() => Array.from(document.querySelectorAll('#modal-root .set-val'))
+    .some((v) => /credential manager/i.test(v.textContent))));
+  await evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => /secure storage/i.test(x.querySelector('.set-name')?.textContent || ''));
+    const cb = row?.querySelector('input[type=checkbox]');
+    if (cb && !cb.disabled && !cb.checked) cb.click();
+  });
+  await waitFor(async () => (await findCall('SetSecureStorage')) !== null, 4000, 'SetSecureStorage on toggle');
+  const sc = await findCall('SetSecureStorage');
+  await ok('secure toggle calls the backend with true', sc && sc.args[0] === true);
+  await ok('status re-syncs from the returned SecureStatus', evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => /secure storage/i.test(x.querySelector('.set-name')?.textContent || ''));
+    const cb = row?.querySelector('input[type=checkbox]');
+    const vals = Array.from(document.querySelectorAll('#modal-root .set-val')).map((v) => v.textContent);
+    return !!cb && cb.checked && vals.some((v) => /Roaming/.test(v));
+  }));
+  // the Security section sits below the fold in the scrolling settings body
+  // — shotOf scrolls it into view and verifies it is on screen, so the
+  // shot shows security settings, not the top of an unrelated section
+  await shotOf('settings-secure-on', '.set-section', 'security');
   // ticking a level in the file-log filter persists via SetLogSettings;
   // the current mode rides along unchanged (file-only filters)
   await resetCalls();
@@ -1335,7 +1438,7 @@ await step('upload', async () => {
   // the toolbar Upload button opens a flat two-leaf picker menu — Files…
   // (Ctrl+U) and Folder… — the v1.0.0 pair of native pickers feeding the
   // same Upload pipe
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await resetCalls();
   await page.click('#btn-upload');
   await ok('upload menu: exactly the Files and Folder leaves', evalPage(() => {
@@ -1348,7 +1451,7 @@ await step('upload', async () => {
   await page.locator('#ctxmenu .item', { hasText: 'Files' }).click();
   await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'upload');
   const c = await findCall('Upload');
-  await ok('Files leaf uploads the picked paths', c && c.args[1] === 'testijotain'
+  await ok('Files leaf uploads the picked paths', c && c.args[1] === 'team-files'
     && c.args[0].length === 2 && /invoice\.pdf$/.test(c.args[0][0]) && /photos$/.test(c.args[0][1]));
   await ok('PickUploadFiles backed the dialog', (await findCall('PickUploadFiles')) !== null);
   await ok('no context menu', evalPage(() => document.getElementById('ctxmenu').classList.contains('hidden')));
@@ -1360,7 +1463,7 @@ await step('upload', async () => {
   await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'folder upload');
   const c2 = await findCall('Upload');
   await ok('Folder leaf uploads the picked directory', c2 && c2.args[0].length === 1
-    && /Downloads$/.test(c2.args[0][0]) && c2.args[1] === 'testijotain');
+    && /Downloads$/.test(c2.args[0][0]) && c2.args[1] === 'team-files');
   // context menus carry ONE "Upload ▸" row with an Explorer-style flyout
   // (mouseenter opens it); opened near the right viewport edge the flyout
   // must flip to open leftwards instead of spilling off-screen
@@ -1402,7 +1505,7 @@ await step('conflict-view', async () => {
     localStorage.setItem('s3b-conflict', 'ask');
     window.__shim.world.conflicts = cs;
   }, seeded);
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await resetCalls();
   await page.click('#btn-upload');
   await page.locator('#ctxmenu .item', { hasText: 'Files' }).click();
@@ -1471,7 +1574,7 @@ await step('sources-in-tree', async () => {
     const c = r?.querySelector('.ticon')?.style.color || '';
     return !!r && ['#1b7f3b', 'rgb(27, 127, 59)'].includes(c);
   }));
-  await shot('sources-tree');
+  await shotOf('sources-tree', '#tree');
 });
 
 await step('source-editor-autoname', async () => {
@@ -1539,19 +1642,19 @@ await step('doctor', async () => {
     await run.asElement().click();
     await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('warn'), 4000, 'report');
   }
-  await shot('doctor');
+  await shotOf('doctor', '#modal-root .modal');
   await closeModal();
 });
 
 await step('admin-panel', async () => {
   // deterministic: the default S3 source's tree node lands on its buckets view
   await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view');
-  const n = await openCtx('testijotain');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+  const n = await openCtx('team-files');
   await ok('bucket menu has items', n >= 5);
   await ctxItem(/admin panel/i);
   await waitFor(modalVisible, 4000, 'admin modal');
-  await ok('title names the bucket', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).startsWith('Admin panel — testijotain'));
+  await ok('title names the bucket', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).startsWith('Admin panel — team-files'));
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('.tabstrip .tab').length)) === 11, 4000, 'admin tabs');
   await ok('admin modal uses the wide size class', evalPage(() => document.querySelector('#modal-root .modal.admin-modal') !== null));
   await ok('full tab strip fits without clipping', evalPage(() => {
@@ -1563,7 +1666,7 @@ await step('admin-panel', async () => {
       return tr.width > 0 && tr.left >= r.left - 0.5 && tr.right <= r.right + 0.5;
     });
   }));
-  await shot('admin-panel');
+  await shotOf('admin-panel', '#modal-root .modal.admin-modal');
   // walk ALL 11 tabs: each must render real content (not stuck on Loading…)
   // and keep the geometry audit clean — tabs render synchronously from the
   // already-loaded panel, so the strip handles stay valid across clicks.
@@ -1592,7 +1695,7 @@ await step('admin-panel', async () => {
 await step('deep-search', async () => {
   // Find opens from an objects view (or a selected row) only — anywhere else
   // it just toasts "Open a bucket first"
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await page.click('#btn-find');
   await waitFor(modalVisible, 4000, 'search modal');
   const start = await elOrNull(() => document.querySelector('#modal-root button.primary') || null);
@@ -1602,12 +1705,12 @@ await step('deep-search', async () => {
     await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('readme.md'), 4000, 'results');
     await ok('search results rendered', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('docs/notes.md'));
   }
-  await shot('deep-search');
+  await shotOf('deep-search', '#modal-root .modal');
   await closeModal();
 });
 
 await step('versions-diff', async () => {
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await clickRow('scan.png'); // single selection so the Versions entry is offered
   // marker visibility rides on the Settings toggle (default OFF — it was
   // ticked earlier in this run): opted out, the timeline lists only the 3
@@ -1629,7 +1732,7 @@ await step('versions-diff', async () => {
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) >= 4, 4000, 'versions with markers');
   await ok('4 versions listed', evalPage(() => document.querySelectorAll('#modal-root .ver-row').length === 4));
   await ok('delete marker shown', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Delete marker'));
-  await shot('versions');
+  await shotOf('versions', '#modal-root .modal');
   // pick A on row 2, B on row 3, then Compare
   const picks = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .ver-row')).map((r) => !!r.querySelector('.ver-pick')));
   await ok('A/B pick buttons on old versions', picks.filter(Boolean).length >= 2);
@@ -1662,7 +1765,7 @@ await step('versions-diff', async () => {
 });
 
 await step('presign-class-lock', async () => {
-  await navObjects('testijotain');
+  await navObjects('team-files');
   // Pre-sign URL
   await clickRow('readme.md');
   await openCtx('readme.md');
@@ -1691,7 +1794,7 @@ await step('presign-class-lock', async () => {
 });
 
 await step('props-dialogs', async () => {
-  await navObjects('testijotain');
+  await navObjects('team-files');
   // folder properties (grid row — the tree node handle can go stale when
   // guard icons re-render the tree mid-step; the grid row is stable)
   const n = await openCtx('docs');
@@ -1712,8 +1815,8 @@ await step('props-dialogs', async () => {
   await closeModal();
   // bucket properties (buckets view)
   await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view');
-  await openCtx('testijotain');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+  await openCtx('team-files');
   await ctxItem(/properties/i);
   await waitFor(modalVisible, 4000, 'bucket props');
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .kv .k').length)) >= 6, 4000, 'bucket props rows');
@@ -1731,7 +1834,7 @@ await step('props-dialogs', async () => {
 });
 
 await step('prompts-and-delete-gates', async () => {
-  await navObjects('testijotain');
+  await navObjects('team-files');
   // Rename prompt comes pre-filled; cancel without changing anything
   await clickRow('readme.md');
   await page.keyboard.press('F2');
@@ -1769,7 +1872,7 @@ await step('delete-window-marker', async () => {
   // marker ('') default. The typed partition is OFF by default (a Settings
   // opt-in) — one click of the danger button runs the marker delete;
   // there is no second confirm behind it.
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await resetCalls();
   await clickRow('readme.md');
   await page.keyboard.press('Delete');
@@ -1781,7 +1884,7 @@ await step('delete-window-marker', async () => {
   }));
   await ok('window states the target + counts', evalPage(() => {
     const t = document.getElementById('modal-root').textContent;
-    return t.includes('s3://testijotain/readme.md') && /1 object\(s\)/.test(t);
+    return t.includes('s3://team-files/readme.md') && /1 object\(s\)/.test(t);
   }));
   await ok('typed partition hidden by default; button reads Delete, unlocked', evalPage(() => {
     const b = document.querySelector('#modal-root .modal-foot .btn.danger');
@@ -1807,7 +1910,7 @@ await step('delete-window-marker', async () => {
     inputs[0].click(); // back to the marker default
     return inputs.length === 3 && Math.max(...hs, h0) - Math.min(...hs, h0) <= 1;
   }));
-  await shot('delete-window');
+  await shotOf('delete-window', '#modal-root .modal');
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
   await waitFor(async () => (await findCall('DeleteSelection')) !== null
     || (await findCall('SourceDeleteSelection')) !== null, 4000, 'DeleteSelection (marker)');
@@ -1906,7 +2009,7 @@ await step('version-marker-badges', async () => {
   // count-free marker flag (one object holds at most one marker), folder
   // rows the aggregates beneath them, and an all-delete-marked folder is
   // ghosted (its rows count as hidden, shown greyed when un-hidden)
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .vbadge, #grid-body .mbadge'))
     .some((v) => v.textContent.trim() !== '')), 4000, 'count badges rendered');
   const badges = (label) => evalPage((l) => {
@@ -1940,7 +2043,7 @@ await step('marker-window', async () => {
   // the singular for a file (one object carries at most one marker). Rows
   // are checkbox-selectable (bulk Remove selected), plus per-row Remove
   // (undo delete) and bulk Remove all
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await resetCalls();
   await evalPage(() => {
     const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'readme.md');
@@ -1987,7 +2090,7 @@ await step('content-versions-window', async () => {
   // window) plus per-child rows with direct controls (Open / Versions… /
   // Markers…) and NO refresh button — every action reloads what it
   // changed. Marker extras appear only while the Settings toggle is on.
-  await navObjects('testijotain');
+  await navObjects('team-files');
   const openDocs = () => evalPage(() => {
     const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'docs');
     r?.querySelector('.vbadge').click();
@@ -2123,7 +2226,7 @@ await step('transfers', async () => {
   await ok('failed and skipped counted aloud', evalPage(() => /1 failed/.test(document.getElementById('modal-root').textContent)
     && /2 skipped/.test(document.getElementById('modal-root').textContent)));
   await ok('running job offers Cancel', evalPage(() => !!document.querySelector('#modal-root .tr-job.running .btn')));
-  await shot('transfers');
+  await shotOf('transfers', '#modal-root .modal');
   await closeModal();
 });
 
@@ -2207,14 +2310,14 @@ await step('side-pane-delete-window', async () => {
 });
 
 await step('compare', async () => {
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await page.click('#local-compare');
   await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
     .some((r) => (r.dataset.cmp || '') !== '')), 4000, 'cmp decorations');
   await ok('compare decorations painted', evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
     .some((r) => ['newer-remote', 'size-diff', 'only-remote', 'diff-below', 'same'].includes(r.dataset.cmp))));
   await ok('CompareAny called with both sides', (await findCall('CompareAny')) !== null);
-  await shot('compare');
+  await shotOf('compare', '#grid-wrap');
 });
 
 await step('log-area', async () => {
@@ -2268,6 +2371,7 @@ await step('onboarding-empty', async () => {
   await ok('empty actions offer add-source', p2.evaluate(() => document.getElementById('empty-actions').textContent.length > 0));
   await ok('upload greyed without sources', p2.evaluate(() => document.getElementById('btn-upload').disabled));
   await ok('doctor greyed without sources', p2.evaluate(() => window.__s3bCmdState?.canDoctor === false));
+  await settlePaint(p2);
   await p2.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-onboarding-empty.png') });
   // first import straight from the welcome: the app must open the imported
   // source's content, and the welcome never shows again once any source
@@ -2297,6 +2401,7 @@ await step('onboarding-empty', async () => {
       .some((r) => r.querySelector('.tname')?.textContent === 'img-1.jpg'),
     null, { timeout: 8000 }).then(() => true).catch(() => false));
   await ok('welcome hidden once any source exists', await p2.evaluate(() => document.getElementById('empty-state').classList.contains('hidden')));
+  await settlePaint(p2);
   await p2.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-onboarding-autoopen.png') });
   await p2.close();
 });
@@ -2306,14 +2411,14 @@ await step('onboarding-empty', async () => {
 // real target element; assertions read the recorded backend call.
 
 await step('dnd-s3-to-s3-tree', async () => {
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await resetCalls();
   const from = await gridRow('readme.md');
   const to = await treeRow('logs-2026');
   await dnd(from, to);
   const c = await findCall('CopySelection');
   await ok('routes to CopySelection', !!c);
-  await ok('args: src testijotain → dst logs-2026', c && c.args[0] === 'testijotain' && c.args[2] === 'logs-2026');
+  await ok('args: src team-files → dst logs-2026', c && c.args[0] === 'team-files' && c.args[2] === 'logs-2026');
   await ok('copy by default (move=false)', c && c.args[4] === false);
   await ok('toast confirms copy', (await txt('#toasts')).length > 0);
 });
@@ -2334,7 +2439,7 @@ await step('dnd-s3-to-remote-tree', async () => {
   await dnd(from, to);
   const c = await findCall('TransferCross');
   await ok('routes to TransferCross', !!c);
-  await ok('items pin the originating S3 source', c && c.args[0][0].bucket === 'testijotain' && c.args[0][0].source === 'hetzner');
+  await ok('items pin the originating S3 source', c && c.args[0][0].bucket === 'team-files' && c.args[0][0].source === 'hetzner');
   await ok('dest is the remote source', c && c.args[2].kind === 'remote' && c.args[2].source === 'backup-box');
   await shot('dnd-s3-remote');
 });
@@ -2344,7 +2449,7 @@ await step('dnd-s3-onto-folder-move', async () => {
   const from = await gridRow('readme.md');
   const to = await gridRow('docs');
   await dnd(from, to);
-  // testijotain keeps versioning → the per-task version choice appears;
+  // team-files keeps versioning → the per-task version choice appears;
   // keep it plain (latest versions only)
   await vcvChoose(false);
   const c = await findCall('CopySelection');
@@ -2362,7 +2467,7 @@ await step('dnd-s3-onto-itself-rejected', async () => {
 });
 
 await step('dnd-local-to-s3', async () => {
-  // pane on local Downloads, main grid on testijotain objects.
+  // pane on local Downloads, main grid on team-files objects.
   // sideKeys returns absolute paths ('C:\Users\demo\Downloads') — match the
   // visible .tname label instead
   await page.selectOption('#local-src', 'local');
@@ -2376,7 +2481,7 @@ await step('dnd-local-to-s3', async () => {
   await dnd(from, to);
   const c = await findCall('Upload');
   await ok('routes to Upload', !!c);
-  await ok('uploads into bucket+folder', c && c.args[1] === 'testijotain' && c.args[2] === 'docs/');
+  await ok('uploads into bucket+folder', c && c.args[1] === 'team-files' && c.args[2] === 'docs/');
   await ok('carries the local path', c && /invoice\.pdf$/.test(c.args[0][0]));
 });
 
@@ -2394,7 +2499,7 @@ await step('dnd-s3-to-local-pane', async () => {
   const c = await findCall('DownloadRefs');
   await ok('routes to DownloadRefs', !!c);
   await ok('downloads into the folder', c && /Documents$/.test(c.args[2]));
-  await ok('carries the bucket', c && c.args[0] === 'testijotain');
+  await ok('carries the bucket', c && c.args[0] === 'team-files');
 });
 
 await step('dnd-remote-to-webdav-tree', async () => {
@@ -2411,7 +2516,7 @@ await step('dnd-remote-to-webdav-tree', async () => {
 });
 
 await step('dnd-os-file-drop', async () => {
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await resetCalls();
   await page.evaluate(() => {
     const r = document.getElementById('grid-body').getBoundingClientRect();
@@ -2419,7 +2524,7 @@ await step('dnd-os-file-drop', async () => {
   });
   await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'OS-drop upload');
   const c = await findCall('Upload');
-  await ok('OS drop over grid uploads into current view', c && c.args[1] === 'testijotain' && /photos\.zip$/.test(c.args[0][0]));
+  await ok('OS drop over grid uploads into current view', c && c.args[1] === 'team-files' && /photos\.zip$/.test(c.args[0][0]));
 });
 
 await step('dnd-os-file-drop-tree', async () => {
@@ -2435,11 +2540,11 @@ await step('dnd-os-file-drop-tree', async () => {
     }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
   };
   await resetCalls();
-  await overTreeNode('testijotain');
+  await overTreeNode('team-files');
   await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'bucket-node drop');
   let c = await findCall('TransferCross');
   await ok('drop on bucket node uploads to that bucket root', c
-    && c.args[2].bucket === 'testijotain' && c.args[2].dir === '' && /photos\.zip$/.test(c.args[1][0]));
+    && c.args[2].bucket === 'team-files' && c.args[2].dir === '' && /photos\.zip$/.test(c.args[1][0]));
   await ok('bucket node carries its source', c && c.args[2].source === 'hetzner');
   await resetCalls();
   await overTreeNode('dav-claims');
@@ -2452,7 +2557,7 @@ await step('dnd-os-file-drop-tree', async () => {
 await step('edit-choose-app', async () => {
   // Settings → Editing (default ON): Edit routes through the OS
   // "Open with…" chooser — EditObject(bucket, key, chooseApp)
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await resetCalls();
   await openCtx('readme.md');
   await ctxItem(/^edit$/i);
@@ -2482,7 +2587,7 @@ await step('paste-parity', async () => {
   await page.keyboard.press('Control+v');
   await sleep(200);
   let c = await findCall('CopySelection');
-  await ok('Ctrl+C/V copies across buckets', c && c.args[0] === 'testijotain' && c.args[2] === 'logs-2026' && c.args[4] === false);
+  await ok('Ctrl+C/V copies across buckets', c && c.args[0] === 'team-files' && c.args[2] === 'logs-2026' && c.args[4] === false);
   // cut → move (the logs-2026 root collapses prefixes into the app/ folder
   // row — enter the folder to reach the file rows)
   await resetCalls();
@@ -2492,25 +2597,25 @@ await step('paste-parity', async () => {
   // prefix), not the full anchored key
   await clickRow('app-2026-09-11.log');
   await page.keyboard.press('Control+x');
-  await clickTree('testijotain');
-  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back to testijotain');
+  await clickTree('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back to team-files');
   await page.keyboard.press('Control+v');
-  await vcvChoose(false); // testijotain is versioned — decline the history copy
+  await vcvChoose(false); // team-files is versioned — decline the history copy
   await sleep(200);
   c = await findCall('CopySelection');
-  await ok('Ctrl+X/V moves', c && c.args[4] === true && c.args[2] === 'testijotain');
+  await ok('Ctrl+X/V moves', c && c.args[4] === true && c.args[2] === 'team-files');
   // remote clipboard → paste into S3 streams through TransferCross
   await resetCalls();
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'remote listing');
   await clickRow('backup.sh');
   await page.keyboard.press('Control+c');
-  await clickTree('testijotain');
+  await clickTree('team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects view');
   await page.keyboard.press('Control+v');
   await sleep(200);
   c = await findCall('TransferCross');
-  await ok('remote paste routes through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[2].bucket === 'testijotain');
+  await ok('remote paste routes through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[2].bucket === 'team-files');
 });
 
 await step('copy-versions-choice', async () => {
@@ -2518,7 +2623,7 @@ await step('copy-versions-choice', async () => {
   // destination bucket has versioning enabled; the checkbox pre-sets
   // from the Settings toggle (default on).
   // (a) Suspended destination → straight plain copy, no dialog at all
-  await navObjects('testijotain');
+  await navObjects('team-files');
   await resetCalls();
   let from = await gridRow('readme.md');
   await dnd(from, await treeRow('logs-2026'));
@@ -2532,7 +2637,7 @@ await step('copy-versions-choice', async () => {
   await waitFor(async () => (await rowKeys()).includes('app/'), 6000, 'logs objects');
   await resetCalls();
   from = await gridRow('app');
-  await dnd(from, await treeRow('testijotain'));
+  await dnd(from, await treeRow('team-files'));
   await waitFor(modalVisible, 4000, 'version choice dialog');
   await ok('checkbox pre-set from Settings (on)', evalPage(() => document.querySelector('#modal-root .vcv-row input')?.checked === true));
   await shot('copy-versions-choice');
@@ -2541,18 +2646,18 @@ await step('copy-versions-choice', async () => {
   c = await findCall('CopySelectionVersions');
   await ok('versioned job args', c && c.args[0] === '' && c.args[1] === 'logs-2026'
     && c.args[2][0] === 'app/' && ['hetzner', ''].includes(c.args[3])
-    && c.args[4] === 'testijotain' && c.args[6] === false);
+    && c.args[4] === 'team-files' && c.args[6] === false);
   // (c) Settings default off → checkbox starts unchecked → falls back to
   // the plain latest-version copy
   await evalPage(() => localStorage.setItem('s3b-copy-versions', '0'));
   await resetCalls();
   from = await gridRow('app');
-  await dnd(from, await treeRow('testijotain'));
+  await dnd(from, await treeRow('team-files'));
   await waitFor(modalVisible, 4000, 'dialog again');
   await ok('checkbox pre-set off with Settings off', evalPage(() => document.querySelector('#modal-root .vcv-row input')?.checked === false));
   await vcvChoose(false);
   c = await findCall('CopySelection');
-  await ok('unchecked falls back to plain copy', !!c && c.args[2] === 'testijotain'
+  await ok('unchecked falls back to plain copy', !!c && c.args[2] === 'team-files'
     && (await calls()).every((x) => x.m !== 'CopySelectionVersions'));
   await evalPage(() => localStorage.removeItem('s3b-copy-versions'));
 });
@@ -2578,7 +2683,7 @@ await step('import-creds-file', async () => {
   await waitFor(async () => !!(await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row'))
     .find((r) => r.textContent.includes('from-file')) || null)), 4000, 'cred row');
   await ok('parsed candidate listed for review', true);
-  await shot('import-creds');
+  await shotOf('import-creds', '#modal-root .modal');
   // Test → connectivity check + ok badge
   const test = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row button'))
     .find((b) => /^test$/i.test(b.textContent.trim())) || null);
@@ -2675,7 +2780,7 @@ await step('view-source-switch', async () => {
   await ok('opening a source pins it as the view source', c && c.args[0] === 'from-file-photos');
   await ok('status bar mirrors the active source', (await txt('#status-profile')).includes('from-file-photos'));
   await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'back to hetzner buckets');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'back to hetzner buckets');
   const c2 = await findCall('SetViewSource');
   await ok('switching back re-pins hetzner', c2 && c2.args[0] === 'hetzner');
 });
@@ -2688,12 +2793,12 @@ await step('status-balls', async () => {
 });
 
 await step('breadcrumb-path-nav', async () => {
-  await navObjectsOf('hetzner', 'testijotain');
+  await navObjectsOf('hetzner', 'team-files');
   // clicking the navbar's empty area opens the inline path editor holding
   // the canonical Source://bucket/prefix path
   await evalPage(() => document.querySelector('.navbar').dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit')), 4000, 'path editor');
-  await ok('path field holds the canonical path', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 'hetzner://testijotain/'));
+  await ok('path field holds the canonical path', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 'hetzner://team-files/'));
   await shot('path-edit');
   // type another location and press Enter — parsePath navigates
   await page.fill('#breadcrumb input.path-edit', 'hetzner://logs-2026/');
@@ -2754,14 +2859,14 @@ await step('os-clipboard-paste', async () => {
   await p3.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
   await p3.evaluate(() => { window.__shim.world.osClip = ['C:\\Users\\demo\\Downloads\\photos.zip']; });
   await p3.evaluate(() => Array.from(document.querySelectorAll('#tree .tnode'))
-    .find((n) => n.querySelector('.tlabel')?.textContent === 'testijotain')?.click());
+    .find((n) => n.querySelector('.tlabel')?.textContent === 'team-files')?.click());
   await p3.waitForFunction(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
     .some((r) => r._model && r._model.key === 'readme.md'), null, { timeout: 8000 });
   await p3.evaluate(() => { window.__shim.calls.length = 0; });
   await p3.keyboard.press('Control+v');
   await p3.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'Upload'), null, { timeout: 6000 });
   const c = await p3.evaluate(() => window.__shim.calls.filter((x) => x.m === 'Upload').at(-1));
-  await ok('Explorer-copied paths paste into a bucket', c && c.args[1] === 'testijotain' && /photos\.zip$/.test(c.args[0][0]));
+  await ok('Explorer-copied paths paste into a bucket', c && c.args[1] === 'team-files' && /photos\.zip$/.test(c.args[0][0]));
   const sawOs = await p3.evaluate(() => window.__shim.calls.some((x) => x.m === 'OsClipboardFiles'));
   await ok('OS clipboard read through the binding', sawOs);
   await p3.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-os-paste.png') });
@@ -2771,12 +2876,12 @@ await step('os-clipboard-paste', async () => {
 await step('drag-urls', async () => {
   // selecting files precomputes drag-out URLs (OS drag needs synchronous
   // data in dragstart)
-  await navObjectsOf('hetzner', 'testijotain');
+  await navObjectsOf('hetzner', 'team-files');
   await resetCalls();
   await clickRow('readme.md');
   await waitFor(async () => (await findCall('MakeDragUrls')) !== null, 4000, 'drag urls');
   const c = await findCall('MakeDragUrls');
-  await ok('selection precomputes drag-out URLs', c && c.args[0][0].bucket === 'testijotain'
+  await ok('selection precomputes drag-out URLs', c && c.args[0][0].bucket === 'team-files'
     && c.args[0][0].key === 'readme.md' && c.args[0][0].name === 'readme.md');
   await ok('drag items tag the originating source', c && c.args[0][0].source === 'hetzner');
 });
@@ -2785,7 +2890,7 @@ await step('drag-urls', async () => {
 await step('toolbar-nav', async () => {
   // back/forward/up through BOTH the toolbar buttons and the Alt-key
   // shortcuts, plus F5 — the canonical file-manager navigation set
-  await navObjectsOf('hetzner', 'testijotain');
+  await navObjectsOf('hetzner', 'team-files');
   await dblClickRow('docs');
   await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 6000, 'inside docs');
   await ok('Back enabled after navigating', evalPage(() => !document.getElementById('btn-back').disabled));
@@ -2807,7 +2912,7 @@ await step('toolbar-nav', async () => {
 
 await step('crumb-click', async () => {
   // clicking a breadcrumb segment navigates straight to it
-  await navObjectsOf('hetzner', 'testijotain');
+  await navObjectsOf('hetzner', 'team-files');
   await dblClickRow('docs');
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'docs rows');
   // one level deeper so the docs crumb is not the current location
@@ -2831,23 +2936,23 @@ await step('crumb-click', async () => {
 await step('favorites', async () => {
   // star a bucket from its context menu, jump in from the sidebar, unstar
   await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
   await ok('favorites hidden while empty', evalPage(() => document.getElementById('fav-section').classList.contains('hidden')));
-  await openCtx('testijotain');
+  await openCtx('team-files');
   await ctxItem(/add to favorites/i);
   await waitFor(async () => !!(await elOrNull(() => document.querySelector('#favorites .fav-row') || null)), 4000, 'fav row');
-  await ok('favorite appears in the sidebar', evalPage(() => document.querySelector('#favorites .fav-label')?.textContent === 'testijotain'));
-  await ok('favorite persisted', (await evalPage(() => localStorage.getItem('s3b-favs'))).includes('testijotain'));
+  await ok('favorite appears in the sidebar', evalPage(() => document.querySelector('#favorites .fav-label')?.textContent === 'team-files'));
+  await ok('favorite persisted', (await evalPage(() => localStorage.getItem('s3b-favs'))).includes('team-files'));
   await shot('favorites');
   await resetCalls();
   await page.click('#favorites .fav-row');
-  await waitFor(async () => (await txt('#breadcrumb')).includes('testijotain')
+  await waitFor(async () => (await txt('#breadcrumb')).includes('team-files')
     && (await rowKeys()).some((k) => k === 'readme.md'), 6000, 'fav navigation');
   await ok('clicking a favorite opens the bucket', true);
   // remove again — the section hides
   await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view again');
-  await openCtx('testijotain');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view again');
+  await openCtx('team-files');
   await ctxItem(/remove from favorites/i);
   await ok('unstar hides the section', waitFor(async () => evalPage(() => document.getElementById('fav-section').classList.contains('hidden')), 4000, 'fav hidden'));
   await ok('favorites emptied', (await evalPage(() => localStorage.getItem('s3b-favs'))) === '[]');
@@ -2859,7 +2964,14 @@ await step('theme-toggle', async () => {
   const after = await evalPage(() => document.documentElement.dataset.theme);
   await ok('toolbar toggles the theme', before !== after);
   await ok('choice persisted', (await evalPage(() => localStorage.getItem('s3b-theme'))) === after);
-  await shot(`theme-${after}`);
+  // the curated theme shot shows the plain main view — the dual pane
+  // (left open by the compare/DnD matrix steps, carrying whatever source
+  // it was last bound to) is closed for the capture and reopened after,
+  // so the rest of the walk runs against identical state
+  const paneOpen = await evalPage(() => !document.getElementById('local-pane').classList.contains('hidden'));
+  if (paneOpen) await page.click('#btn-panes');
+  await shotOf(`theme-${after}`, '#grid-wrap');
+  if (paneOpen) await page.click('#btn-panes');
   await page.click('#btn-theme');
   await ok('second click restores', evalPage((b) => document.documentElement.dataset.theme === b, before));
 });
@@ -2872,7 +2984,7 @@ await step('auto-refresh', async () => {
   await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'done' }));
   await waitFor(async () => evalPage(() => document.getElementById('status-jobs').classList.contains('hidden')), 4000, 'jobs badge retired');
   await page.bringToFront();
-  await navObjectsOf('hetzner', 'testijotain');
+  await navObjectsOf('hetzner', 'team-files');
   // Default is OFF: with no stored interval the indicator must stay hidden.
   await ok('auto refresh default OFF (no indicator)', evalPage(() => document.getElementById('status-auto').classList.contains('hidden')));
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
@@ -2910,7 +3022,7 @@ await step('auto-refresh', async () => {
 
 await step('marquee-select', async () => {
   // rubber-band starting in the empty area below the rows, dragged up
-  await navObjectsOf('hetzner', 'testijotain');
+  await navObjectsOf('hetzner', 'team-files');
   const keys = await rowKeys();
   const geo = await evalPage(() => {
     const r = document.getElementById('grid-body').getBoundingClientRect();
@@ -2949,13 +3061,13 @@ await step('editors-manager', async () => {
 await step('download-selection', async () => {
   // Ctrl+D (and the toolbar button) download through DownloadRefs after
   // a destination folder pick
-  await navObjectsOf('hetzner', 'testijotain');
+  await navObjectsOf('hetzner', 'team-files');
   await clickRow('readme.md');
   await resetCalls();
   await page.keyboard.press('Control+d');
   await waitFor(async () => (await findCall('DownloadRefs')) !== null, 4000, 'DownloadRefs');
   const c = await findCall('DownloadRefs');
-  await ok('Ctrl+D downloads through DownloadRefs', c && c.args[0] === 'testijotain'
+  await ok('Ctrl+D downloads through DownloadRefs', c && c.args[0] === 'team-files'
     && c.args[1]?.[0]?.key === 'readme.md' && /Downloads$/.test(c.args[2] || ''));
   await shot('download');
 });
@@ -2970,7 +3082,7 @@ await step('shortcut-keys', async () => {
   await page.keyboard.press('Control+u');
   await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'Ctrl+U upload');
   const up = await findCall('Upload');
-  await ok('Ctrl+U runs the Files picker', up && up.args[1] === 'testijotain');
+  await ok('Ctrl+U runs the Files picker', up && up.args[1] === 'team-files');
   // F9 toggles the dual pane (normalize to closed first — earlier steps
   // leave the pane open)
   if (!(await evalPage(() => document.getElementById('local-pane').classList.contains('hidden')))) {
@@ -3015,8 +3127,8 @@ await step('layout-audit', async () => {
   await sleep(150);
   await ok('main view fits at 1024×640', evalPage(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
   await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('testijotain'), 6000, 'buckets view');
-  await openCtx('testijotain');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+  await openCtx('team-files');
   await ctxItem(/admin panel/i);
   await waitFor(modalVisible, 4000, 'admin modal');
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('.tabstrip .tab').length)) === 11, 4000, 'admin tabs');

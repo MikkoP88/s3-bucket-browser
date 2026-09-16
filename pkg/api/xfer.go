@@ -709,7 +709,11 @@ func s3Open(ctx context.Context, c *s3client.Client, bucket, key string) (io.Rea
 // throttle on this half), write half streams the temp file into the
 // destination (throttle only — progress was already reported).
 func (a *App) xferViaTemp(ctx context.Context, r io.ReadCloser, size int64, f *xferFile, dst xferDestSide, fn transfer.ProgressFn, maxBPS int64, madeDirs map[string]bool) (string, error) {
-	tmp, err := os.CreateTemp("", "s3b-xfer-*")
+	spool := workspaceBase("tmp") // secure.go: config dir (0700) under secure storage
+	if err := os.MkdirAll(spool, 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(spool, spoolPattern)
 	if err != nil {
 		return "", err
 	}

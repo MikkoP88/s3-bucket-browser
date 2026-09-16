@@ -4,6 +4,80 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.12] — 2026-09-16
+
+Security and presentation release: the opt-in Secure Storage mode for
+multi-user hosts, a full dependency refresh, and a documentation
+overhaul — a new usage guide, a rewritten README with a tracked
+screenshot set, and comparison tables re-verified against live sources.
+Validated by the 367-check visual walk, which now boots with a realistic
+version string and a saved profile file in the status bar, waits for the
+UI to settle before every capture (no dialog caught half-faded or toast
+mid-show), and verifies each curated shot's subject is actually on
+screen.
+
+### Added
+
+- **Secure Storage — opt-in hardening for multi-user hosts**
+  (Settings → Security, documented in `docs/security.md`): the whole
+  profile/data-source store becomes one AES-256-GCM envelope (`s3bsf1`)
+  keyed by a random 32-byte master key held in the OS keyring, the temp
+  workspaces for external editing, cross-source transfers and clipboard
+  staging move from the shared system temp dir into the 0700 config dir
+  and are wiped on every launch (crash leftovers never survive a
+  restart), file logging turns itself off while the mode is on, and
+  pre-signed URLs copied to the clipboard are auto-cleared after 60
+  seconds. The toggle is global and off by default because it adds a
+  keyring dependency and a small per-write cost; the store file itself
+  carries the mode (self-describing envelope), so the CLI and the GUI can
+  never disagree, and an encrypted store on a host without a keyring
+  fails loudly with remediation instead of silently degrading to
+  plaintext.
+- **Usage guide** (`docs/usage.md`) — the long-form walkthrough with
+  screenshots, aligned with the in-app guide (Help → User guide, F1) and
+  linked from the README.
+- **Tracked screenshot set** (`docs/screenshots/`) — 13 curated 1440×900
+  captures straight from the visual harness (main view, sources, import,
+  versions, delete window, dual-pane compare, admin panel, doctor,
+  transfers, secure storage, deep search, dark theme, onboarding), all
+  showing professional fixture names and verified subjects.
+
+### Security
+
+- **Editor workspace directory was world-readable on multi-user systems**
+  (`os.TempDir()/s3b-edit` created `0755`): now `0700` with `0600` object
+  files in every mode, not just under Secure Storage.
+
+### Changed
+
+- **Data-source icons redrawn from professional icon sets** — every type
+  now uses a real-world metaphor embedded as inline SVG (license-free,
+  dependency-free), all in one consistent style: Bootstrap Icons (MIT)
+  filled glyphs — a bucket for S3, a PC display for local, the network
+  drive for FTP/SFTP, the globe for WebDAV, a server rack for the
+  unknown fallback. The secured variants are composites: the base glyph
+  shrinks to 75% and a corner badge marks the transport (terminal = SSH
+  for SFTP/SCP, padlock = TLS for FTPS/WebDAVS), knocked out of the base
+  with an SVG mask so it stays readable on any background, theme, hover
+  state, or source tint. Icons still render in `currentColor`, so the
+  source's accent color keeps painting them. Attributed in `NOTICE` and
+  `docs/security.md`.
+- **Dependency refresh** — Wails v2.16.0, the aws-sdk-go-v2 family,
+  `golang.org/x/{crypto,net,sys,term}`, cobra/pflag, go-keyring and the
+  rest all updated to current; `go mod tidy` clean, full test suite and
+  race detector green on the new graph (`NOTICE` is regenerated per
+  release from `go.mod`, so license attribution follows automatically).
+- **README rewritten and fact-checked** — a "Why s3b" highlights table
+  (ease of use, one app for every source type including WebDAV, any-to-
+  any migration, versioning, credential import, encrypted profiles,
+  security, scale), hero screenshot and gallery, a documentation index,
+  and long-standing gaps fixed: WebDAV/WebDAVs is now listed as a
+  supported source everywhere it was missing, the transfer-throttle
+  range matches the UI (256 kB/s … 10 MB/s), and `docs/comparison.md`
+  was re-verified against live vendor pages and the GitHub API on
+  2026-09-16 (S3 Browser 13.5.7, MSP360 Explorer pricing, the MinIO
+  console repository's disappearance, new entrants brows3/BucketDock).
+
 ## [1.1.0-beta.11] — 2026-09-16
 
 Data-source identity pass: a redrawn icon set, the accent color you

@@ -39,9 +39,14 @@ func (a *App) PickUploadFiles() ([]string, error) {
 	})
 }
 
-// StageClipboardDir creates a fresh staging directory (temp) used to
-// materialize an app selection before it is placed on the OS clipboard
-// (remote/S3 rows are not files until downloaded).
+// StageClipboardDir creates a fresh staging directory used to materialize
+// an app selection before it is placed on the OS clipboard (remote/S3 rows
+// are not files until downloaded). Under secure storage the staging area
+// lives inside the config dir (0700) instead of the shared system temp.
 func (a *App) StageClipboardDir() (string, error) {
-	return os.MkdirTemp("", "s3b-clip-")
+	base := workspaceBase("clip")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(base, "s3b-clip-")
 }

@@ -38,9 +38,10 @@ type EditInfo struct {
 	Dirty  bool   `json:"dirty"`
 }
 
-// editDir is the temp workspace for edited objects.
+// editDir is the temp workspace for edited objects: the config dir
+// (0700, secure.go) under secure storage, else the system temp dir.
 func editDir(bucket string) string {
-	return filepath.Join(os.TempDir(), "s3b-edit", bucket)
+	return filepath.Join(workspaceBase("edit"), bucket)
 }
 
 // watcherPoll is the file-watch interval; a change is uploaded after it
@@ -58,7 +59,7 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 		return EditInfo{}, err
 	}
 	dir := editDir(bucket)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { // owner-only even on shared /tmp
 		return EditInfo{}, err
 	}
 	local := filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(key, "/")))
@@ -70,6 +71,7 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 		transfer.DownloadOptions{}); err != nil {
 		return EditInfo{}, err
 	}
+	_ = os.Chmod(local, 0o600) // object contents: owner-only in every mode
 	st, err := os.Stat(local)
 	if err != nil {
 		return EditInfo{}, err
