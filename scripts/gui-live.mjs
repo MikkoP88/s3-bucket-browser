@@ -10,7 +10,11 @@
 //
 //   onboarding → add+test source → browse → guard chips → admin → doctor →
 //   dual pane → New folder → DnD upload → versions + A/B diff → conflict
-//   overwrite → DnD download (bytes verified) → rename → remote engines
+//   overwrite → DnD download (bytes verified) → rename → Explorer
+//   clipboard round-trips on the REAL OS clipboard (Set-Clipboard -Path ≡
+//   Ctrl+C in File Explorer → Ctrl+V upload; in-app Ctrl+C mirror →
+//   Ctrl+V app-payload precedence; last-copy-wins over the stale app
+//   clipboard; the Settings toggle off/on live) → remote engines
 //   (SFTP/FTP/WebDAV sources added + tested in the UI, nested-tree folder
 //   DnD upload, grid-walked structure fidelity, byte-compared download
 //   round-trip, cross-engine remote→remote DnD) → transfer manager →
@@ -78,6 +82,11 @@ const PREFIX = 'zz-live';
 const V1 = 'gui-live upload v1 — hello from the live harness\n';
 const V2 = 'gui-live upload v2 — overwritten through the conflict dialog\n';
 const B_TXT = 'second fixture file for the live walk\n';
+// Explorer-clipboard round-trip fixtures (Set-Clipboard -Path writes the
+// same CF_HDROP payload Ctrl+C in File Explorer produces)
+const EX1_TXT = 'explorer clipboard round-trip v1\n';
+const EX2_TXT = 'the explorer copy is newer than the app clipboard\n';
+const EX3_TXT = 'explorer copy made while sharing was off\n';
 
 // Local cross-engine containers (see scripts/e2e-cross.sh header for the
 // docker run lines). Each engine joins the walk only while its port
@@ -199,6 +208,31 @@ const verCount = () => evalPage(async ([b, k]) => {
   const j = await r.json();
   return (j.result || []).length;
 }, [BUCKET, `${PREFIX}/live-a.txt`]);
+// real CF_HDROP contents via the bridge (read-only — never bumps the seq)
+const osFiles = () => evalPage(async () => {
+  const r = await fetch('/__live/call', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ m: 'OsClipboardFiles', args: [] }) });
+  const j = await r.json();
+  return j.result || [];
+});
+// an Explorer-style copy: CF_HDROP + a sequence-number bump, exactly what
+// Ctrl+C in File Explorer does (powershell native, no shell quoting games)
+const explorerCopy = (p) => execFileSync('powershell.exe',
+  ['-NoProfile', '-Command', `Set-Clipboard -Path '${String(p).replace(/'/g, "''")}'`]);
+// Ctrl+V into the versioned live bucket: the per-paste version-choice
+// dialog appears with the checkbox pre-set from Settings — keep it plain
+// (latest versions only) and start (the live twin of the visual walk's
+// vcvChoose(false))
+async function plainPaste() {
+  await page.keyboard.press('Control+v');
+  await waitFor(modalVisible, 5000, 'version choice dialog');
+  await evalPage(() => {
+    const chk = document.querySelector('#modal-root .vcv-row input');
+    if (!chk) throw new Error('version dialog: no .vcv-row input');
+    if (chk.checked) chk.click(); // plain copy — latest versions only
+  });
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await sleep(120);
+}
 
 async function shot(name) {
   try { await page.screenshot({ path: path.join(SHOTS, `${name}.png`) }); } catch { /* non-fatal */ }
@@ -403,10 +437,14 @@ async function runDeleteWindow(mode = '') {
 async function dumpDeleteState(label) {
   const st = await evalPage(() => ({
     rows: Array.from(document.querySelectorAll('#grid-body .grid-row .tname')).map((x) => x.textContent),
+    // same filter rowKeys() uses — separates stale/hidden rows (e.g. a dual
+    // pane or previous view) from rows the wait actually counts
+    visRows: Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .filter((r) => r.style.display !== 'none' && r._model).map((r) => r._model.key),
     modal: (document.querySelector('#modal-root .modal')?.textContent || '').replace(/\s+/g, ' ').slice(0, 160),
     toasts: Array.from(document.querySelectorAll('#toasts > *')).map((x) => x.textContent.trim()).slice(0, 5),
   })).catch(() => null);
-  console.error(`${label} — rows=${JSON.stringify(st?.rows)} modal="${st?.modal}" toasts=${JSON.stringify(st?.toasts)}`);
+  console.error(`${label} — rows=${JSON.stringify(st?.rows)} visRows=${JSON.stringify(st?.visRows)} modal="${st?.modal}" toasts=${JSON.stringify(st?.toasts)}`);
   const tail = await evalPage(() => (window.__calls || []).slice(-15)).catch(() => []);
   console.error('bridge calls tail:');
   for (const c of tail) console.error(`  ${c.t}ms ${c.m}(${c.args}) → ${c.res}`);
@@ -737,6 +775,145 @@ async function walk() {
     await ok('renamed to live-renamed.txt', true);
   });
 
+  // ---------- Explorer clipboard (real CF_HDROP round-trips) ----------
+  if (process.platform !== 'win32') {
+    await step('Explorer clipboard (skipped: non-Windows)', async () => {
+      await ok('clipboard section needs Windows CF_HDROP', true);
+    });
+  } else {
+    await step('Explorer copy → app paste (Ctrl+V, real OS clipboard)', async () => {
+      // the headline bug fix: copying files in File Explorer and pressing
+      // Ctrl+V in the app used to be a silent no-op — now the OS payload
+      // uploads into the open folder
+      const src = path.join(FIX, 'explorer-src.txt');
+      await writeFile(src, EX1_TXT);
+      explorerCopy(src);
+      await sleep(150); // the OS write must settle before the page reads the seq
+      await page.keyboard.press('Control+v');
+      await startIfAsked(6000); // clean destination = silent
+      await waitFor(async () => (await names()).includes('explorer-src.txt'), 60000, 'explorer-src.txt uploaded');
+      await ok('Explorer-copied file pasted into the bucket', true);
+      await shot('e0-explorer-paste');
+    });
+
+    await step('in-app copy → paste + Explorer mirror (regression)', async () => {
+      // Ctrl+C/Ctrl+V inside the app must keep working exactly as before:
+      // the copy also mirrors to the REAL Windows clipboard (staging
+      // download → CF_HDROP), and with the seq unchanged by anything
+      // external the app payload keeps precedence on paste
+      await clickRow('live-a.txt');
+      await page.keyboard.press('Control+c');
+      await waitFor(async () => (await toasts()).some((t) => /copied 1 item/i.test(t)), 5000, 'copied toast');
+      await waitFor(async () => (await osFiles()).some((p) => /live-a\.txt$/i.test(p || '')), 90000, 'staged mirror on the OS clipboard');
+      await ok('in-app copy mirrored to the real OS clipboard', true);
+      await bodyCtx();
+      await ctxItem(/new folder/i);
+      await answerPrompt('paste-into');
+      await waitFor(async () => (await names()).includes('paste-into'), 20000, 'paste-into folder');
+      await dblClickRow('paste-into');
+      await waitFor(async () => (await rowKeys()).length === 0, 10000, 'empty paste-into');
+      await plainPaste();
+      await waitFor(async () => (await names()).includes('live-a.txt'), 60000, 'pasted row');
+      await ok('in-app copy → Ctrl+V still pastes the app payload', true);
+      await shot('e1-in-app-paste');
+    });
+
+    await step('Explorer copy outranks the stale app clipboard', async () => {
+      // last copy wins: a NEW Explorer copy must beat the app payload still
+      // holding live-a.txt — pasting the stale payload instead would open
+      // the conflict dialog (live-a.txt exists here) and never produce
+      // explorer-later.txt
+      const src = path.join(FIX, 'explorer-later.txt');
+      await writeFile(src, EX2_TXT);
+      explorerCopy(src);
+      await sleep(150);
+      await page.keyboard.press('Control+v'); // still inside paste-into/
+      const how = await startIfAsked(6000);
+      await waitFor(async () => (await names()).includes('explorer-later.txt'), 60000, 'explorer-later.txt uploaded');
+      await ok('last copy wins: the Explorer file was pasted', true);
+      await ok(`went through Upload, not a stale copy (${how})`, how === 'silent');
+      await shot('e2-precedence');
+    });
+
+    await step('settings: Explorer copy & paste toggle (live)', async () => {
+      // OFF: the OS clipboard is ignored entirely; in-app clipboard
+      // semantics are untouched. ON again: the Explorer copy made while
+      // off is still the newest write and pastes without a reload.
+      // NOTE: the winning Explorer paste in the step above CLEARED the
+      // app clipboard (the Explorer copy supersedes it, Explorer-style),
+      // so this step makes a fresh in-app copy while sharing is off.
+      const src = path.join(FIX, 'explorer-off.txt');
+      await writeFile(src, EX3_TXT);
+      explorerCopy(src);
+      await sleep(150);
+      const clipRow = () => elOrNull(() => {
+        const r = Array.from(document.querySelectorAll('#modal-root .set-row'))
+          .find((x) => /explorer copy & paste/i.test(x.querySelector('.set-name')?.textContent || ''));
+        return r?.querySelector('input[type="checkbox"]') || null;
+      });
+      await menuClick(/^settings$/i, /settings/i);
+      await waitFor(() => page.locator('#modal-root .set-row').count().then((n) => n > 0), 5000, 'settings dialog');
+      const off = await clipRow();
+      if (!off) throw new Error('Explorer copy & paste row missing from Settings');
+      await off.asElement().uncheck();
+      await sleep(150);
+      await closeModal();
+      await ok('setting persisted off', await evalPage(() => localStorage.getItem('s3b-os-clip')) === '0');
+      // fresh in-app copy with sharing off: the Ctrl+C must NOT stage/mirror
+      // to the OS clipboard (no "Preparing OS clipboard" toast may appear)
+      await clickRow('live-a.txt'); // inside paste-into/
+      await page.keyboard.press('Control+c');
+      await waitFor(async () => (await toasts()).some((t) => /copied 1 item/i.test(t)), 5000, 'copied toast');
+      await sleep(600);
+      await ok('no OS staging while sharing is off', !(await toasts()).some((t) => /preparing os clipboard/i.test(t)));
+      await page.keyboard.press('Backspace'); // paste-into/ → zz-live/
+      await waitFor(async () => (await names()).includes('paste-into'), 20000, 'zz-live root');
+      await bodyCtx();
+      await ctxItem(/new folder/i);
+      await answerPrompt('paste-off');
+      await waitFor(async () => (await names()).includes('paste-off'), 20000, 'paste-off folder');
+      await dblClickRow('paste-off');
+      await waitFor(async () => (await rowKeys()).length === 0, 10000, 'empty paste-off');
+      await page.keyboard.press('Control+v'); // the fresh app payload pastes
+      await plainPaste();
+      await waitFor(async () => (await names()).includes('live-a.txt'), 60000, 'app payload pasted');
+      await ok('in-app clipboard still pastes with sharing off', true);
+      await sleep(300);
+      await ok('the Explorer file was ignored while off', !(await names()).includes('explorer-off.txt'));
+      await menuClick(/^settings$/i, /settings/i);
+      await waitFor(() => page.locator('#modal-root .set-row').count().then((n) => n > 0), 5000, 'settings dialog');
+      const on = await clipRow();
+      if (!on) throw new Error('Explorer copy & paste row missing (re-open)');
+      await on.asElement().check();
+      await sleep(150);
+      await closeModal();
+      await ok('setting persisted on', await evalPage(() => localStorage.getItem('s3b-os-clip')) === '1');
+      await page.keyboard.press('Control+v'); // the pending Explorer copy is still newest
+      await startIfAsked(6000);
+      await waitFor(async () => (await names()).includes('explorer-off.txt'), 60000, 'explorer-off.txt uploaded');
+      await ok('re-enabled: Explorer paste works again, no reload', true);
+      await shot('e3-toggle');
+    });
+
+    await step('clipboard debris: permanent purge', async () => {
+      // remove this section's objects WITHOUT markers so the later
+      // marker-count badge assertion (exactly 3) stays deterministic
+      await page.keyboard.press('Backspace'); // up to zz-live/
+      await waitFor(async () => (await names()).includes('paste-into'), 20000, 'zz-live root');
+      await clickRow('explorer-src.txt');
+      for (const folder of ['paste-into', 'paste-off']) {
+        await (await rowAction(folder, 'grid')).click({ modifiers: ['Control'] });
+      }
+      await page.keyboard.press('Delete');
+      await runDeleteWindow('permanent');
+      await waitFor(async () => {
+        const n = await names();
+        return !n.some((x) => ['explorer-src.txt', 'paste-into', 'paste-off'].includes(x.replace(/\/+$/, '')));
+      }, 60000, 'debris purged');
+      await ok('clipboard debris permanently purged (no markers)', true);
+    });
+  }
+
   await step('remote engines: structure-fidelity DnD round-trips', async () => {
     const engines = [];
     for (const e of ENGINES) if (await portOpen(e.port)) engines.push(e);
@@ -989,6 +1166,9 @@ main()
     process.exit(1);
   })
   .finally(async () => {
+    // the walk rode the user's real clipboard — leave it empty, not holding
+    // harness fixtures
+    try { execFileSync('powershell.exe', ['-NoProfile', '-Command', "Set-Clipboard -Value ' '"]); } catch { /* best effort */ }
     await stopServer(srv);
     if (context) await context.close().catch(() => {});
   });

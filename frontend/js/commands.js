@@ -12,6 +12,7 @@ let ctx = {
   hasProfile: () => false,
   localSelectionCount: () => 0,
   localPaneOpen: () => false,
+  osClipFiles: () => false, // Explorer files waiting on the OS clipboard
 };
 
 export function setCommandContext(sources) {
@@ -42,7 +43,9 @@ export function commandState() {
     canRename: ((inObjects && hasProfile) || inRemote) && sel === 1,
     canCopy: (((inObjects && hasProfile) || inRemote) && sel >= 1) || localSel >= 1,
     canCut: (((inObjects && hasProfile) || inRemote) && sel >= 1) || localSel >= 1,
-    canPaste: hasClipboard && ((inObjects && hasProfile) || inRemote || ctx.localPaneOpen()),
+    // Paste acts on the app clipboard OR Explorer files waiting on the OS
+    // clipboard (Ctrl+C in Explorer — see main.js osClipPayload).
+    canPaste: (hasClipboard || ctx.osClipFiles()) && ((inObjects && hasProfile) || inRemote || ctx.localPaneOpen()),
     hasSelection: sel >= 1,
     selectionCount: sel,
     canFind: hasProfile,
