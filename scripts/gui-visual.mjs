@@ -291,7 +291,8 @@ function shim() {
       ],
     },
     guards: {
-      testijotain: { versioning: 'Enabled', lockEnabled: false, lockMode: '', lockDays: 0 },
+      // lock enabled: the Object lock ctx entry + lock dialog walk needs it
+      testijotain: { versioning: 'Enabled', lockEnabled: true, lockMode: 'GOVERNANCE', lockDays: 1 },
       'logs-2026': { versioning: 'Suspended', lockEnabled: false, lockMode: '', lockDays: 0 },
       singleton: { versioning: 'Enabled', lockEnabled: false, lockMode: '', lockDays: 0 },
     },
@@ -871,8 +872,39 @@ await step('file-ctxmenu-versions', async () => {
   const has = items.some((x) => /versions/i.test(x));
   if (!has) console.log(`  menu items: ${items.join(' | ')}`);
   await ok('menu offers Versions', has);
+  // deep-sweep gating: Object lock only on lock-enabled buckets (the
+  // testijotain guard has it on); Find in this folder targets folders only
+  await ok('file menu: Object lock offered, Find targets folders only',
+    items.some((x) => /object lock/i.test(x))
+      && !items.some((x) => /find in this folder/i.test(x)));
   await shot('ctx-file');
   await closeCtx();
+  // negative: logs-2026 has versioning Suspended and no object lock — its
+  // file menu must drop Versions / markers / lock / Find and keep the rest
+  // (Storage class stays: folders and files support it on any S3 bucket)
+  await navObjects('logs-2026');
+  await dblClickRow('app');
+  await waitFor(async () => (await rowKeys()).includes('app/app-2026-09-11.log'), 4000, 'app logs');
+  await clickRow('app-2026-09-10.log'); // rows carry bare names; keys are anchored
+  await openCtx('app-2026-09-11.log');
+  const items2 = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+    .map((i) => i.textContent.trim()));
+  await ok('suspended bucket: file menu drops versions / markers / lock / find',
+    !items2.some((x) => /versions/i.test(x) || /object lock/i.test(x) || /find in this folder/i.test(x))
+      && items2.some((x) => /storage class/i.test(x)));
+  await closeCtx();
+  // folder menu in the same bucket: Find in this folder IS offered (a single
+  // dir selection targets that folder); Versions stays correctly absent
+  await page.keyboard.press('Backspace'); // up from app/ to the bucket root
+  await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('app/')), 4000, 'back to bucket root');
+  const n2 = await openCtx('app');
+  const items3 = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+    .map((i) => i.textContent.trim()));
+  await ok('folder menu keeps Find, drops versions (suspended)', n2 >= 3
+    && items3.some((x) => /find in this folder/i.test(x))
+    && !items3.some((x) => /versions/i.test(x)));
+  await closeCtx();
+  await navObjects('testijotain'); // back for the folder-ctxmenu walk below
 });
 
 await step('folder-ctxmenu', async () => {
@@ -1041,7 +1073,9 @@ await step('tree-bucket-scoped-source', async () => {
   await rightClick(h);
   await sleep(80);
   const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item')).map((i) => i.textContent).join(' | '));
-  await ok('bucket-scoped menu has bucket-grade items', /upload/i.test(items) && /files/i.test(items) && /folder/i.test(items) && /admin panel/i.test(items) && /delete bucket/i.test(items) && /paste here/i.test(items));
+  // one Upload row now (Files/Folder live behind its flyout — the upload
+  // step covers the flyout itself)
+  await ok('bucket-scoped menu has bucket-grade items', /upload/i.test(items) && /admin panel/i.test(items) && /delete bucket/i.test(items) && /paste here/i.test(items));
   await ok('bucket-scoped menu keeps source management', /edit source/i.test(items) && /reconnect/i.test(items) && /remove source/i.test(items));
   await ok('bucket-scoped menu can reach the buckets view', /open buckets view/i.test(items));
   await shot('tree-bucket-scoped');
@@ -1144,6 +1178,19 @@ await step('help-guide', async () => {
     await waitFor(modalVisible, 4000, 'guide modal');
     await ok('guide has six section tabs', waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .tabstrip .tab').length)) === 6, 4000, 'guide tabs'));
     await ok('getting-started content rendered', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Import existing credentials'));
+    // tab switches must not resize the dialog: the tallest static section
+    // is measured at open and pinned as the body's min-height
+    await ok('guide height pinned across all six tabs', evalPage(() => {
+      const modal = document.querySelector('#modal-root .modal');
+      if (!modal) return false;
+      const h0 = modal.getBoundingClientRect().height;
+      const hs = [];
+      for (const tb of Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))) {
+        tb.click();
+        hs.push(modal.getBoundingClientRect().height);
+      }
+      return hs.length === 6 && Math.max(...hs, h0) - Math.min(...hs, h0) <= 1;
+    }));
     await shot('guide');
     const tab = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))
       .find((t) => /^transfers$/i.test(t.textContent.trim())) || null);
@@ -1234,8 +1281,8 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /require typing/i.test(x))
       && rows.some((x) => /delete without prompting/i.test(x))
       && rows.some((x) => /show version count icons/i.test(x))
-      && rows.some((x) => /show delete marker icons/i.test(x))
-      && rows.some((x) => /show delete markers in content versions/i.test(x))
+      && rows.some((x) => /show delete marker icons/i.test(x)
+        && /versions and content versions windows/i.test(x))
       && rows.some((x) => /show hidden \(delete-marked\) objects/i.test(x));
   }));
   await shot('settings-new-rows');
@@ -1275,16 +1322,17 @@ await step('settings-dialog', async () => {
 });
 
 await step('upload', async () => {
-  // the Upload menu: one header, Files (Ctrl+U) and Folder leaves — the
-  // restored v1.0.0 pair of native pickers feeding the same Upload pipe
+  // the toolbar Upload button opens a flat two-leaf picker menu — Files…
+  // (Ctrl+U) and Folder… — the v1.0.0 pair of native pickers feeding the
+  // same Upload pipe
   await navObjects('testijotain');
   await resetCalls();
   await page.click('#btn-upload');
-  await ok('upload menu: Upload header over Files and Folder leaves', evalPage(() => {
-    const items = Array.from(document.querySelectorAll('#ctxmenu .item'));
+  await ok('upload menu: exactly the Files and Folder leaves', evalPage(() => {
+    const items = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) > .item'));
     const label = (i) => items[i]?.textContent || '';
-    return items.length >= 3 && /Upload/.test(label(0)) && /Files/.test(label(1))
-      && /Folder/.test(label(2)) && items[1].classList.contains('sub');
+    return items.length === 2 && /Files/.test(label(0)) && /Ctrl\+U/.test(label(0))
+      && /Folder/.test(label(1));
   }));
   await shot('upload-menu');
   await page.locator('#ctxmenu .item', { hasText: 'Files' }).click();
@@ -1303,6 +1351,32 @@ await step('upload', async () => {
   const c2 = await findCall('Upload');
   await ok('Folder leaf uploads the picked directory', c2 && c2.args[0].length === 1
     && /Downloads$/.test(c2.args[0][0]) && c2.args[1] === 'testijotain');
+  // context menus carry ONE "Upload ▸" row with an Explorer-style flyout
+  // (mouseenter opens it); opened near the right viewport edge the flyout
+  // must flip to open leftwards instead of spilling off-screen
+  await resetCalls();
+  await evalPage(() => {
+    document.getElementById('grid-body')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: innerWidth - 30, clientY: 500 }));
+  });
+  await sleep(80);
+  const bgItems = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) > .item'))
+    .map((i) => ({ t: i.textContent.trim(), sub: i.classList.contains('has-sub') })));
+  const ups = bgItems.filter((x) => /upload/i.test(x.t));
+  await ok('ctx menu: a single Upload row carrying the flyout', ups.length === 1 && ups[0].sub);
+  const up = page.locator('#ctxmenu:not(.hidden) .item.has-sub', { hasText: /upload/i });
+  await up.first().hover();
+  await sleep(100);
+  await ok('flyout opens on hover with the Files/Folder leaves', evalPage(() => {
+    const fly = document.querySelector('#ctxmenu .submenu');
+    return !!fly && fly.querySelectorAll('.item').length === 2
+      && /Files/.test(fly.textContent) && /Folder/.test(fly.textContent);
+  }));
+  await shot('upload-flyout');
+  await ok('flyout flips at the right viewport edge', evalPage(() => !!document.querySelector('#ctxmenu .submenu.flip')));
+  await page.locator('#ctxmenu .submenu .item', { hasText: 'Files' }).click();
+  await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'upload via flyout');
+  await ok('flyout Files leaf reaches the Upload pipe', (await findCall('PickUploadFiles')) !== null);
 });
 
 await step('conflict-view', async () => {
@@ -1512,9 +1586,24 @@ await step('deep-search', async () => {
 await step('versions-diff', async () => {
   await navObjects('testijotain');
   await clickRow('scan.png'); // single selection so the Versions entry is offered
+  // marker visibility rides on the Settings toggle (default OFF — it was
+  // ticked earlier in this run): opted out, the timeline lists only the 3
+  // real versions and the delete-marker row stays hidden
+  await evalPage(() => localStorage.setItem('s3b-show-markers', '0'));
   await openCtx('readme.md');
   await ctxItem(/versions/i);
-  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) >= 4, 4000, 'versions');
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) >= 3, 4000, 'versions');
+  await ok('markers hidden by default: 3 real versions listed', evalPage(() => {
+    const t = document.getElementById('modal-root').textContent;
+    return document.querySelectorAll('#modal-root .ver-row').length === 3 && !t.includes('Delete marker');
+  }));
+  await closeModal();
+  // opted in: the marker row returns to the timeline (4 entries)
+  await evalPage(() => localStorage.setItem('s3b-show-markers', '1'));
+  await clickRow('scan.png');
+  await openCtx('readme.md');
+  await ctxItem(/versions/i);
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) >= 4, 4000, 'versions with markers');
   await ok('4 versions listed', evalPage(() => document.querySelectorAll('#modal-root .ver-row').length === 4));
   await ok('delete marker shown', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Delete marker'));
   await shot('versions');
@@ -1677,10 +1766,23 @@ await step('delete-window-marker', async () => {
       && b && b.textContent.trim() === 'Delete' && !b.disabled;
   }));
   // the safe default mode explains itself in its radio hint — the amber
-  // note line stays empty for it (and :empty CSS collapses it entirely)
+  // note line stays empty for it (its height stays reserved via CSS so
+  // the window cannot grow/shrink when a mode serves a note)
   await ok('safe default mode carries no amber note', evalPage(() => {
     const w = document.querySelector('#modal-root .delw-warn');
     return !!w && w.textContent.trim() === '';
+  }));
+  // mode switches must not resize the window: the warn slot keeps its
+  // reserved height whether or not a mode serves an amber note
+  await ok('window height stable across mode switches', evalPage(() => {
+    const modal = document.querySelector('#modal-root .modal');
+    if (!modal) return false;
+    const h0 = modal.getBoundingClientRect().height;
+    const inputs = Array.from(document.querySelectorAll('#modal-root .vcv-row input'));
+    const hs = [];
+    for (const i of inputs) { i.click(); hs.push(modal.getBoundingClientRect().height); }
+    inputs[0].click(); // back to the marker default
+    return inputs.length === 3 && Math.max(...hs, h0) - Math.min(...hs, h0) <= 1;
   }));
   await shot('delete-window');
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
@@ -1824,8 +1926,7 @@ await step('marker-window', async () => {
   await waitFor(async () => (await findCall('PrefixMarkers')) !== null, 4000, 'PrefixMarkers');
   await waitFor(async () => (await txt('#modal-root')).includes('delete marker'), 4000, 'marker window content');
   await ok('markers listed with version ids', evalPage(() => document.querySelectorAll('#modal-root .ver-row').length === 2
-    && /vm-0001/.test(document.getElementById('modal-root').textContent)
-    && /latest/.test(document.getElementById('modal-root').textContent)));
+    && /vm-0001/.test(document.getElementById('modal-root').textContent)));
   await ok('file window titled singular, rows checkbox-selectable', evalPage(() => {
     const h = document.querySelector('#modal-root .modal-head span')?.textContent || '';
     return /^delete marker — s3:\/\//i.test(h)
@@ -1838,17 +1939,14 @@ await step('marker-window', async () => {
     document.querySelector('#modal-root .ver-check input').click();
     return !sel.disabled;
   }));
-  // polish locks: "latest" is a tag pill (not sub-text suffix), and Remove
-  // all is NOT danger-styled — removing a marker restores the object
-  await ok('latest earns a tag pill; Remove all is calm', evalPage(() => {
+  // polish: no per-row tag pills any more (a marker is by definition the
+  // key's latest version — the "latest" badge said nothing), and Remove all
+  // is NOT danger-styled — removing a marker restores the object
+  await ok('no tag pills; Remove all is calm', evalPage(() => {
     const pills = Array.from(document.querySelectorAll('#modal-root .ver-row .tag'));
-    const subs = Array.from(document.querySelectorAll('#modal-root .ver-row .ver-sub'))
-      .map((s) => s.textContent);
     const all = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
       .find((b) => /remove all/i.test(b.textContent));
-    return pills.length === 1 && pills[0].textContent.trim() === 'latest'
-      && subs.every((s) => !/latest/i.test(s))
-      && !!all && !all.classList.contains('danger');
+    return pills.length === 0 && !!all && !all.classList.contains('danger');
   }));
   await ok('marker window layout clean', (await layoutAudit()).ok);
   await shot('marker-window');
@@ -1861,28 +1959,34 @@ await step('marker-window', async () => {
 });
 
 await step('content-versions-window', async () => {
-  // clicking the version badge on a FOLDER opens Content Versions: stat
-  // cards (markers included while the Settings toggle is on — the default)
-  // plus per-child rows with direct controls (Open / Versions… / Markers…)
-  // and NO refresh button — every action reloads what it changed. It must
-  // never hang on "Loading…" (the old subtree timeline did).
+  // clicking the version badge on a FOLDER opens Content Versions: a
+  // one-line version count up top (the same format as the Delete Marker
+  // window) plus per-child rows with direct controls (Open / Versions… /
+  // Markers…) and NO refresh button — every action reloads what it
+  // changed. Marker extras appear only while the Settings toggle is on.
   await navObjects('testijotain');
-  await resetCalls();
-  await evalPage(() => {
+  const openDocs = () => evalPage(() => {
     const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'docs');
-    r.querySelector('.vbadge').click();
+    r?.querySelector('.vbadge').click();
   });
+  await resetCalls();
+  await openDocs();
   await waitFor(async () => (await findCall('PrefixVersionStats')) !== null, 4000, 'PrefixVersionStats');
-  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .dirv-stat').length)) >= 5, 4000, 'content version stats');
-  await ok('titled Content versions; stats replaced Loading with numbers', evalPage(() => {
+  // the settings step ticked the marker toggle: the count line carries the
+  // marker segment and marked children grow a Markers… button
+  await waitFor(async () => /version\(s\)/.test(await evalPage(() => document.querySelector('#modal-root .field')?.textContent || '')), 4000, 'content version count');
+  await ok('one-line count with marker segment while opted in', evalPage(() => {
+    const stats = document.querySelector('#modal-root .field')?.textContent || '';
     const h = document.querySelector('#modal-root .modal-head span')?.textContent || '';
-    const t = document.getElementById('modal-root').textContent;
-    return /^content versions — s3:\/\//i.test(h) && !t.trimStart().startsWith('Loading')
-      && /Current objects/.test(t) && t.includes('9');
+    return /^content versions — s3:\/\//i.test(h)
+      && /^9 version\(s\) · Delete markers: 2$/.test(stats)
+      && !document.querySelector('#modal-root .dirv-stats');
   }));
-  await ok('child aggregates listed, all-deleted child ghosted', evalPage(() => {
+  await ok('child aggregates listed, marked child grows a Markers button', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#modal-root .ver-row'));
-    return rows.length === 2 && rows.some((r) => /legacy/.test(r.textContent) && r.classList.contains('ghost'));
+    return rows.length === 2 && rows.some((r) => /legacy/.test(r.textContent) && r.classList.contains('ghost'))
+      && Array.from(document.querySelectorAll('#modal-root .ver-actions .btn'))
+        .some((b) => /markers/i.test(b.textContent));
   }));
   await ok('per-object controls offered, refresh retired', evalPage(() => {
     const foot = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).map((b) => b.textContent.trim());
@@ -1892,6 +1996,18 @@ await step('content-versions-window', async () => {
   await ok('content versions layout clean', (await layoutAudit()).ok);
   await shot('content-versions');
   await closeModal();
+  // opted out (the DEFAULT): the marker segment, the child marker counts
+  // and the Markers… buttons all fold away — versions only
+  await evalPage(() => localStorage.setItem('s3b-show-markers', '0'));
+  await openDocs();
+  await waitFor(async () => /^9 version\(s\)$/.test(await evalPage(() => document.querySelector('#modal-root .field')?.textContent || '')), 4000, 'marker-free count line');
+  await ok('markers fold away when the toggle is off', evalPage(() => {
+    const t = document.getElementById('modal-root').textContent;
+    return !/markers/i.test(t) && !/delete marker/i.test(t);
+  }));
+  await shot('content-versions-clean');
+  await closeModal();
+  await evalPage(() => localStorage.setItem('s3b-show-markers', '1')); // restore for the walks below
 });
 
 await step('delete-settings-modes', async () => {
@@ -2127,6 +2243,35 @@ await step('onboarding-empty', async () => {
   await ok('upload greyed without sources', p2.evaluate(() => document.getElementById('btn-upload').disabled));
   await ok('doctor greyed without sources', p2.evaluate(() => window.__s3bCmdState?.canDoctor === false));
   await p2.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-onboarding-empty.png') });
+  // first import straight from the welcome: the app must open the imported
+  // source's content, and the welcome never shows again once any source
+  // exists ("No data source yet" was sticking around before)
+  await p2.evaluate(() => {
+    const b = Array.from(document.querySelectorAll('#empty-actions button'))
+      .find((x) => /import s3 credential/i.test(x.textContent));
+    b?.click();
+  });
+  await p2.waitForFunction(() => !document.getElementById('modal-root').classList.contains('hidden'), null, { timeout: 8000 });
+  await p2.evaluate(() => {
+    const ff = Array.from(document.querySelectorAll('#modal-root button'))
+      .find((b) => /^from file/i.test(b.textContent.trim()));
+    ff?.click();
+  });
+  await p2.waitForFunction(() => !!document.querySelector('#modal-root .cred-row'), null, { timeout: 8000 });
+  await p2.evaluate(() => {
+    const imp = Array.from(document.querySelectorAll('#modal-root button'))
+      .find((b) => /^import$/i.test(b.textContent.trim()));
+    imp?.click();
+  });
+  await p2.waitForFunction(() => Array.from(document.querySelectorAll('#tree .tlabel'))
+    .some((l) => l.textContent === 'from-file-photos'), null, { timeout: 8000 });
+  // nav.to loads asynchronously — wait for the listing to render rows
+  await ok('import from the welcome auto-opens the source', await p2.waitForFunction(
+    () => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .some((r) => r.querySelector('.tname')?.textContent === 'img-1.jpg'),
+    null, { timeout: 8000 }).then(() => true).catch(() => false));
+  await ok('welcome hidden once any source exists', await p2.evaluate(() => document.getElementById('empty-state').classList.contains('hidden')));
+  await p2.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-onboarding-autoopen.png') });
   await p2.close();
 });
 

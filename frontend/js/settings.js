@@ -155,7 +155,6 @@ export function settingsDialog(ctx) {
     row(t('settings.log'), checkbox(s.log(), (v) => a.log(v)), 'Ctrl+L'),
     row(t('settings.showVersions'), checkbox(s.showVersions?.() || false, (v) => a.showVersions?.(v)), t('settings.showVersionsHint')),
     row(t('settings.showMarkers'), checkbox(s.showMarkers?.() || false, (v) => a.showMarkers?.(v)), t('settings.showMarkersHint')),
-    row(t('settings.dirvMarkers'), checkbox(s.dirvMarkers?.() ?? true, (v) => a.dirvMarkers?.(v)), t('settings.dirvMarkersHint')),
     row(t('settings.showHidden'), checkbox(s.showHidden?.() || false, (v) => a.showHidden?.(v)), t('settings.showHiddenHint')),
 
     ...colSection('settings.colsMain', s.cols?.() || [], (v) => a.cols?.(v)),

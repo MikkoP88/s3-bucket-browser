@@ -190,6 +190,24 @@ export function deleteWindow({ target, summary, modes = [], mode = '', typedOn =
     });
     const delBtn = m.btns[1];
 
+    // Height stability: the warn slot reserves the tallest possible note
+    // (measured once — the box is in the DOM by now) so switching delete
+    // types never resizes the window. A fixed pixel reserve would drift
+    // across the 15 UI languages; measuring is exact.
+    let reserved = false;
+    function reserveWarn() {
+      if (reserved) return;
+      reserved = true;
+      const notes = modes.length > 1 ? ['delw.permWarn', 'delw.keepWarn'] : ['delw.noHistory'];
+      let maxH = 0;
+      for (const k of notes) {
+        warnBox.textContent = t(k);
+        maxH = Math.max(maxH, warnBox.offsetHeight);
+      }
+      warnBox.style.minHeight = `${maxH}px`;
+    }
+    reserveWarn();
+
     function sync() {
       delBtn.disabled = !!input && input.value.trim() !== 'delete';
       // Amber emphasis only for the destructive modes: the safe default
@@ -206,23 +224,22 @@ export function deleteWindow({ target, summary, modes = [], mode = '', typedOn =
 }
 
 // contentVersionsDialog is the Content Versions window: structured
-// version information for one folder — totals as stat cards (current
-// objects, total versions, noncurrent versions, noncurrent size, plus
-// delete markers when the marker-info setting is on) and per-child rows
-// with direct controls: files open their version timeline, marked files
-// their Delete Marker window, subfolders drill into their own Content
-// Versions. Two bounded ListObjectVersions passes (stats + immediate
-// children); the old object-timeline dialog paginated the whole subtree
-// for one exact key and hung on "Loading…" — folders get this window
-// instead. No refresh button: every action reloads what it changed.
-export function contentVersionsDialog(bucket, prefix, onChanged, markersOn = true) {
+// version information for one folder — a one-line version count up top
+// (the same format as the Delete Marker window) and per-child rows with
+// direct controls: files open their version timeline, marked files their
+// Delete Marker window, subfolders drill into their own Content Versions.
+// Delete markers stay out of sight unless the marker setting is on in
+// Settings (same toggle as the grid's ⛔ badges). Two bounded
+// ListObjectVersions passes (stats + immediate children); the old
+// object-timeline dialog paginated the whole subtree for one exact key
+// and hung on "Loading…" — folders get this window instead. No refresh
+// button: every action reloads what it changed.
+export function contentVersionsDialog(bucket, prefix, onChanged) {
   const stats = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: t('loading') });
   const kids = el('div', { class: 'ver-list' });
-  const stat = (label, v) => el('span', { class: 'dirv-stat' },
-    el('span', { class: 'dirv-lbl', text: label }),
-    el('span', { class: 'dirv-val', text: String(v) }));
 
   async function draw() {
+    const markersOn = localStorage.getItem('s3b-show-markers') === '1';
     stats.style.color = 'var(--text-dim)';
     stats.textContent = t('loading');
     kids.replaceChildren();
@@ -231,13 +248,8 @@ export function contentVersionsDialog(bucket, prefix, onChanged, markersOn = tru
         api.PrefixVersionStats(bucket, prefix),
         api.PrefixVersionSummary(bucket, prefix),
       ]);
-      stats.replaceChildren(el('div', { class: 'dirv-stats' },
-        stat(t('dirv.current'), st.currentObjects),
-        stat(t('dirv.totalVersions'), st.versions),
-        stat(t('dirv.noncurrent'), st.noncurrent),
-        stat(t('dirv.noncurrentBytes'), fmtBytes(st.noncurrentBytes || 0)),
-        ...(markersOn ? [stat(t('dirv.markers'), st.deleteMarkers)] : []),
-      ));
+      stats.textContent = t('dirv.versionCount', { n: st.versions })
+        + (markersOn && st.deleteMarkers ? ` \u00b7 ${t('dirv.markers')}: ${st.deleteMarkers}` : '');
       kids.replaceChildren(...(ch.length
         ? ch.map((c) => {
             const childKey = (prefix || '') + c.name + (c.isDir ? '/' : '');
@@ -250,7 +262,7 @@ export function contentVersionsDialog(bucket, prefix, onChanged, markersOn = tru
               c.allDeleted ? el('span', { class: 'tag', text: t('dirv.deleted') }) : null,
               el('span', { class: 'ver-actions' },
                 c.isDir
-                  ? el('button', { class: 'btn', text: t('dirv.openDir'), title: t('dirv.openDirTip'), onclick: () => contentVersionsDialog(bucket, childKey, onChanged, markersOn) })
+                  ? el('button', { class: 'btn', text: t('dirv.openDir'), title: t('dirv.openDirTip'), onclick: () => contentVersionsDialog(bucket, childKey, onChanged) })
                   : el('button', { class: 'btn', text: t('dirv.viewVersions'), title: t('dirv.viewVersionsTip'), onclick: () => versionsDialog(bucket, childKey, onChanged) }),
                 markersOn && c.markers
                   ? el('button', { class: 'btn', text: t('dirv.viewMarkers'), title: t('dirv.viewMarkersTip'), onclick: () => markersDialog(bucket, childKey, c.isDir, onChanged) })
@@ -347,9 +359,6 @@ export function markersDialog(bucket, key, isDir, onChanged) {
             el('div', { text: rel(mk.key) }),
             el('div', { class: 'ver-sub', text: `${mk.lastModified ? fmtDate(asMillis(mk.lastModified)) : ''}${mk.versionId ? ` — ${mk.versionId}` : ''}` }),
           ),
-          // "latest" earns a tag pill (it is the decision-relevant fact),
-          // not a greyed suffix lost in the metadata line
-          mk.isLatest ? el('span', { class: 'tag', text: t('markw.latest') }) : null,
           el('span', { class: 'ver-actions' },
             el('button', { class: 'btn', text: t('markw.remove'), title: t('markw.removeTip'), onclick: () => undo(mk) }),
           ),
@@ -1097,6 +1106,14 @@ export function usageGuideDialog() {
     cls: 'admin-modal',
     buttons: [{ label: 'Close' }],
   });
+  // Pin the tab body to the tallest section so switching tabs never
+  // resizes the window (all sections are static — measure once at open).
+  let maxH = 0;
+  for (const [name] of GUIDE_SECTIONS) {
+    select(name);
+    maxH = Math.max(maxH, content.scrollHeight);
+  }
+  content.style.minHeight = `${maxH}px`;
   select(GUIDE_SECTIONS[0][0]);
 }
 
@@ -1450,6 +1467,12 @@ export function versionsDialog(bucket, key, onChanged) {
       status.textContent = String(err);
       status.style.color = 'var(--danger)';
       return;
+    }
+    // Delete markers stay hidden unless the marker setting is on (the
+    // same toggle as the grid's ⛔ badges) — the timeline shows content
+    // versions; the Delete Marker window is the dedicated marker view.
+    if (localStorage.getItem('s3b-show-markers') !== '1') {
+      vers = vers.filter((v) => !v.isDeleteMarker);
     }
     status.style.color = 'var(--text-dim)';
     status.textContent = vers.length

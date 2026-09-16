@@ -430,9 +430,21 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
 .ctxmenu .item:hover { background: var(--hover); }
 .ctxmenu .item.disabled { color: var(--text-dim); pointer-events: none; }
 .ctxmenu .item .kbd { margin-left: auto; color: var(--text-dim); font-size: 11px; }
-.ctxmenu .item.hdr { font-weight: 600; cursor: default; }
-.ctxmenu .item.hdr:hover { background: none; }
-.ctxmenu .item.sub { padding-left: 26px; }
+/* Cascading flyout (Explorer-style "Upload ▸"): the submenu lives inside
+   its parent item; hover or click reveals it, hovering a sibling removes
+   it. .flip mirrors it to the left when it would cross the window edge. */
+.ctxmenu .item.has-sub { position: relative; }
+.ctxmenu .item.has-sub::after {
+  content: '\25B8'; margin-left: auto; padding-left: 18px;
+  color: var(--text-dim); font-size: 10px;
+}
+.ctxmenu .submenu {
+  position: absolute; left: calc(100% - 2px); top: -5px;
+  min-width: 180px; background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: var(--shadow); padding: 4px;
+}
+.ctxmenu .submenu.flip { left: auto; right: calc(100% - 2px); }
 .ctxmenu .sep { height: 1px; background: var(--border-soft); margin: 4px 6px; }
 
 /* ================= Modals ================= */
@@ -658,19 +670,8 @@ kbd {
 .ver-row.ghost { opacity: .55; font-style: italic; }
 
 /* ================= Content Versions window ================= */
-/* Totals as stat cards; auto-fit keeps one row while it fits. */
-.dirv-stats {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-  gap: 8px; margin: 6px 0;
-}
-.dirv-stat {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 8px 12px;
-  background: var(--panel-alt);
-  border: 1px solid var(--border-soft); border-radius: 8px;
-}
-.dirv-lbl { color: var(--text-dim); font-size: 11.5px; white-space: nowrap; }
-.dirv-val { font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; }
+/* The header is a one-line version count (same format as the Delete
+   Marker window); per-child rows render via the shared .ver-list rules. */
 
 /* ================= Delete Window ================= */
 /* Fixed width: the layout must not reflow when the delete-type radio
@@ -688,9 +689,10 @@ kbd {
 .delw-mode:has(input:checked) { background: var(--panel-alt); border-color: var(--border-soft); }
 .delw-mode label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .delw-mode .set-hint { margin: 2px 0 0 20px; }
+/* the warn slot's height is pinned at open to the tallest possible note
+   (dialogs.js measures and sets min-height inline), so swapping the
+   warning text across delete types never resizes the window */
 .delw-warn { margin-top: 12px; font-size: 12.5px; color: var(--warn); }
-/* no phantom gap under the safe default mode, which shows no warning */
-.delw-warn:empty { display: none; }
 .delw-confirm { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .delw-confirm label.field { margin: 0; flex: none; }
 .delw-confirm .input { flex: 1; }
@@ -768,7 +770,7 @@ kbd {
 }
 .tab:hover { background: var(--hover); }
 .tab.active { color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
-.tabbody { padding-top: 12px; }
+.tabbody { padding-top: 12px; min-height: 320px; }
 
 /* Usage guide / supported-sources dialogs */
 .guide { max-width: 640px; }
