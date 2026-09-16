@@ -658,7 +658,10 @@ function shim() {
     LocalDeletePreview: (paths) => ({ objects: paths.length, folders: 0, bytes: 4096, requiresL2: false }),
     LocalRemove: (paths) => ({ deleted: paths.length, errors: [] }),
     OsClipboardFiles: () => JSON.parse(JSON.stringify(world.osClip || [])),
-    OsClipboardSetFiles: (paths) => { world.osClip = paths; return {}; },
+    // mimics the real system: seq bumps on every clipboard write; tests bump
+    // it directly to simulate a Ctrl+C in Explorer (an external write)
+    OsClipboardState: () => ({ seq: world.osClipSeq || 0, files: !!(world.osClip || []).length }),
+    OsClipboardSetFiles: (paths) => { world.osClip = paths; world.osClipSeq = (world.osClipSeq || 0) + 1; return {}; },
     StageClipboardDir: () => 'C:\\Users\\demo\\AppData\\Local\\Temp\\s3b-clip-1',
     MakeDragUrls: (items) => items.map((it, i) => `http://127.0.0.1:39317/drag/${i}/${encodeURIComponent(it.name || it.key)}`),
     RemoteListDraft: () => [
@@ -1366,7 +1369,8 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /show version count icons/i.test(x))
       && rows.some((x) => /show delete marker icons/i.test(x)
         && /versions and content versions windows/i.test(x))
-      && rows.some((x) => /show hidden \(delete-marked\) objects/i.test(x));
+      && rows.some((x) => /show hidden \(delete-marked\) objects/i.test(x))
+      && rows.some((x) => /explorer copy & paste/i.test(x));
   }));
   await shot('settings-new-rows');
   // badge rows default OFF (the shim wipes every s3b-* key at boot): tick
@@ -2833,6 +2837,17 @@ await step('os-copy-mirror', async () => {
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'remote listing');
   await resetCalls();
+  // paste-parity's Ctrl+C left a staging poll parked on the busy seed
+  // queue. Idling the queue here would wake BOTH polls and whichever
+  // SetFiles lands first bumps the seq — the other's clobber guard then
+  // aborts it (a 50/50 on OUR mirror dying). Kill every EARLIER pending
+  // mirror deterministically: bump the seq (their guards see the change
+  // and abort), then idle the queue so OUR 700ms poll fires into an
+  // empty engine with a stable seq.
+  await evalPage(() => {
+    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
+    window.__shim.world.transfers = [];
+  });
   await clickRow('backup.sh');
   await page.keyboard.press('Control+c');
   await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'staging transfer');
@@ -2840,10 +2855,6 @@ await step('os-copy-mirror', async () => {
   await ok('copy stages through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[0][0].key === '/backup.sh');
   await ok('staging lands in the clipboard dir', c && c.args[2].kind === 'local' && /s3b-clip/.test(c.args[2].dir || ''));
   await ok('staging uses the overwrite policy', c && c.args[3] === 'overwrite');
-  // let the idle poll see an empty queue, then the OS clipboard is set.
-  // earlier steps' stale staging polls write their own entries when the
-  // queue clears — wait for OUR staged path specifically.
-  await evalPage(() => { window.__shim.world.transfers = []; });
   await waitFor(async () => (await calls()).some((x) => x.m === 'OsClipboardSetFiles'
     && (x.args[0] || []).some((p) => /backup\.sh$/.test(p))), 8000, 'backup.sh handed to the OS clipboard');
   await ok('staged file handed to the OS clipboard', true);
@@ -2857,7 +2868,11 @@ await step('os-clipboard-paste', async () => {
   await p3.addInitScript(shim);
   await p3.goto(BASE);
   await p3.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
-  await p3.evaluate(() => { window.__shim.world.osClip = ['C:\\Users\\demo\\Downloads\\photos.zip']; });
+  await p3.evaluate(() => {
+    // a real Explorer copy writes the file list AND bumps the system seq
+    window.__shim.world.osClip = ['C:\\Users\\demo\\Downloads\\photos.zip'];
+    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
+  });
   await p3.evaluate(() => Array.from(document.querySelectorAll('#tree .tnode'))
     .find((n) => n.querySelector('.tlabel')?.textContent === 'team-files')?.click());
   await p3.waitForFunction(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
@@ -2871,6 +2886,161 @@ await step('os-clipboard-paste', async () => {
   await ok('OS clipboard read through the binding', sawOs);
   await p3.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-os-paste.png') });
   await p3.close();
+});
+
+await step('os-clipboard-precedence', async () => {
+  // LAST COPY WINS. The old bug: one in-app Ctrl+C left clipboard.keys set
+  // for the whole session, so every later Explorer copy was ignored. Now an
+  // external copy bumps the OS seq past our baseline and outranks the stale
+  // app payload; with the seq unchanged the app payload keeps precedence.
+  const p4 = await context.newPage();
+  p4.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await p4.addInitScript(shim);
+  await p4.goto(BASE);
+  await p4.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  // fresh world seeds running jobs for the transfer-manager UI — idle the
+  // queue so the copies' 700ms mirror polls settle immediately (see the
+  // os-copy-mirror step for the same dance)
+  await p4.evaluate(() => { window.__shim.world.transfers = []; });
+  const openBucket = async (name, key) => {
+    await p4.evaluate((b) => Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((n) => n.querySelector('.tlabel')?.textContent === b)?.click(), name);
+    await p4.waitForFunction((k) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .some((r) => r._model && r._model.key === k), key, { timeout: 8000 });
+  };
+  // selection needs the full trusted click sequence (mousedown+mouseup) —
+  // a synthetic in-page el.click() navigates the tree but does NOT select
+  // grid rows, and a Ctrl+C with no selection is a silent no-op
+  const selectRow = async (key) => {
+    const h = await p4.evaluateHandle((k) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === k) || null, key);
+    const el = h.asElement();
+    if (!el) throw new Error(`no grid row "${key}"`);
+    await el.click();
+  };
+  const explorerCopy = (file) => p4.evaluate((f) => {
+    window.__shim.world.osClip = [f];
+    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
+  }, file);
+
+  // (a) in-app copy (mirror settles) → Explorer copies something else →
+  // the Explorer files MUST win over the stale app payload
+  await openBucket('team-files', 'readme.md');
+  await selectRow('readme.md');
+  await p4.keyboard.press('Control+c');
+  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'OsClipboardSetFiles'), null, { timeout: 8000 });
+  await explorerCopy('C:\\Users\\demo\\Downloads\\notes.txt');
+  await p4.evaluate(() => { window.__shim.calls.length = 0; });
+  await p4.keyboard.press('Control+v');
+  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'Upload'), null, { timeout: 6000 });
+  const up = await p4.evaluate(() => window.__shim.calls.find((x) => x.m === 'Upload'));
+  await ok('Explorer copy outranks the stale app clipboard', up && /notes\.txt$/.test(up.args[0][0]) && up.args[1] === 'team-files');
+
+  // (b) OS clipboard unchanged since our copy → the app payload wins
+  // (server-side CopySelection, no Upload of staged files)
+  await selectRow('readme.md');
+  await p4.keyboard.press('Control+c');
+  // (a) wiped the call log, so this counts from zero: wait for THIS copy's
+  // own mirror — the staged readme.md landing on the OS clipboard
+  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'OsClipboardSetFiles'
+    && (x.args[0] || []).some((p) => /readme\.md$/.test(p))), null, { timeout: 8000 });
+  await openBucket('logs-2026', 'app/');
+  await p4.evaluate(() => { window.__shim.calls.length = 0; });
+  await p4.keyboard.press('Control+v');
+  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'CopySelection'), null, { timeout: 6000 });
+  const cp = await p4.evaluate(() => window.__shim.calls.find((x) => x.m === 'CopySelection'));
+  const noUp = await p4.evaluate(() => !window.__shim.calls.some((x) => x.m === 'Upload'));
+  await ok('unchanged OS clipboard keeps app payload precedence', cp && cp.args[0] === 'team-files' && cp.args[2] === 'logs-2026' && noUp);
+  await p4.close();
+});
+
+await step('os-copy-mirror-abort', async () => {
+  // clobber guard: the user copies elsewhere while a copy's staging download
+  // is in flight → the late OS mirror must abort, not replace their clipboard
+  const p5 = await context.newPage();
+  p5.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await p5.addInitScript(shim);
+  await p5.goto(BASE);
+  await p5.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await p5.evaluate(() => Array.from(document.querySelectorAll('#tree .tnode'))
+    .find((n) => n.querySelector('.tlabel')?.textContent === 'backup-box')?.click());
+  await p5.waitForFunction(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .some((r) => r._model && r._model.key === '/backup.sh'), null, { timeout: 8000 });
+  await p5.evaluate(() => { window.__shim.calls.length = 0; });
+  // trusted click (see the precedence step) — a synthetic click would leave
+  // the selection empty and make the copy a no-op, turning this into a
+  // vacuous pass
+  {
+    const h = await p5.evaluateHandle(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === '/backup.sh') || null);
+    const el = h.asElement();
+    if (!el) throw new Error('no /backup.sh row');
+    await el.click();
+  }
+  await p5.keyboard.press('Control+c');
+  // staging transfer queued; the "user copy" must land BEFORE the 700ms
+  // idle poll — bump the seq and idle the engine immediately
+  await p5.evaluate(() => {
+    window.__shim.world.osClip = ['C:\\Users\\demo\\Downloads\\other.txt'];
+    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
+    window.__shim.world.transfers = [];
+  });
+  await sleep(1800); // well past the idle poll
+  const mirror = await p5.evaluate(() => (window.__shim.calls || []).filter((x) => x.m === 'OsClipboardSetFiles'));
+  const kept = await p5.evaluate(() => (window.__shim.world.osClip || [])[0]);
+  await ok('late mirror aborted, user clipboard kept', mirror.length === 0 && /other\.txt$/.test(kept || ''));
+  await p5.close();
+});
+
+await step('os-clipboard-setting', async () => {
+  // Settings → Transfers → Explorer copy & paste: OFF kills the whole OS
+  // bridge (no reads, no writes, honest "Nothing to paste"); default is ON.
+  const p6 = await context.newPage();
+  p6.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await p6.addInitScript(shim);
+  await p6.goto(BASE);
+  await p6.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await ok('Explorer copy enabled by default', await p6.evaluate(() => localStorage.getItem('s3b-os-clip') === null));
+  // toggle OFF through the real dialog row
+  await p6.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
+  await p6.waitForFunction(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .some((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')), null, { timeout: 4000 });
+  await p6.evaluate(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')).click());
+  await p6.waitForFunction(() => document.querySelector('#modal-root .set-row') !== null, null, { timeout: 4000 });
+  await p6.evaluate(() => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => /explorer copy & paste/i.test(x.querySelector('.set-name')?.textContent || ''));
+    const cb = row?.querySelector('input[type=checkbox]');
+    if (cb && cb.checked) cb.click();
+  });
+  await p6.evaluate(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await ok('toggle persisted off', await p6.evaluate(() => localStorage.getItem('s3b-os-clip') === '0'));
+  // an Explorer copy now pastes as nothing — no binding read, honest toast
+  await p6.evaluate(() => Array.from(document.querySelectorAll('#tree .tnode'))
+    .find((n) => n.querySelector('.tlabel')?.textContent === 'team-files')?.click());
+  await p6.waitForFunction(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .some((r) => r._model && r._model.key === 'readme.md'), null, { timeout: 8000 });
+  await p6.evaluate(() => {
+    window.__shim.world.osClip = ['C:\\Users\\demo\\Downloads\\secret.txt'];
+    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
+    window.__shim.calls.length = 0;
+  });
+  await p6.keyboard.press('Control+v');
+  await sleep(500);
+  const sawRead = await p6.evaluate(() => window.__shim.calls.some((x) => x.m === 'OsClipboardFiles' || x.m === 'OsClipboardState'));
+  const sawToast = await p6.evaluate(() => (document.getElementById('toasts')?.textContent || '').includes('Nothing to paste'));
+  await ok('disabled: OS clipboard never read', !sawRead);
+  await ok('disabled: honest "Nothing to paste" toast', sawToast);
+  // re-enable → the very next paste works again without a reload
+  await p6.evaluate(() => localStorage.setItem('s3b-os-clip', '1'));
+  await p6.evaluate(() => { window.__shim.calls.length = 0; });
+  await p6.keyboard.press('Control+v');
+  await p6.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'Upload'), null, { timeout: 6000 });
+  const up = await p6.evaluate(() => window.__shim.calls.find((x) => x.m === 'Upload'));
+  await ok('re-enabled: Explorer paste works again', up && /secret\.txt$/.test(up.args[0][0]));
+  await p6.evaluate(() => localStorage.removeItem('s3b-os-clip')); // leave clean for later pages
+  await p6.close();
 });
 
 await step('drag-urls', async () => {

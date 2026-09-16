@@ -186,7 +186,11 @@ Pinned by `pkg/core/profile/secure_test.go` and `pkg/api/secure_test.go`
   session.
 - The OS clipboard is shared within a login session by design; the
   60-second scrub reduces the window but cannot hide it from concurrent
-  processes.
+  processes. File-list sharing with File Explorer (Ctrl+C/Ctrl+V in
+  either direction, including the staging mirror of remote copies) rides
+  the same channel and can be disabled entirely — Settings → Transfers
+  → *Explorer copy & paste* — on locked-down machines; the in-app
+  clipboard then never touches the OS clipboard.
 - WebView storage (favorites, source bindings) stays per-user-protected
   but unencrypted; it never contains credentials, only names/paths.
 

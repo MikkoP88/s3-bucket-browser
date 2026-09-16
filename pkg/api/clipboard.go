@@ -29,6 +29,18 @@ func (a *App) OsClipboardFiles() []string {
 	return osClipboardFiles()
 }
 
+// OsClipboardState reports the OS file-clipboard cheaply, without reading
+// it: seq is the system clipboard sequence number (bumped on every write by
+// any process — the frontend tracks it to detect external copies and give
+// them paste precedence), files whether a CF_HDROP payload waits. Always
+// zero/false off Windows.
+func (a *App) OsClipboardState() map[string]any {
+	return map[string]any{
+		"seq":   osClipboardSeq(),
+		"files": osClipboardHasFiles(),
+	}
+}
+
 // OsClipboardSetFiles puts local file paths on the OS clipboard so Ctrl+V
 // works in Explorer and every other app. Paths must exist.
 func (a *App) OsClipboardSetFiles(paths []string) error {

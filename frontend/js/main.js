@@ -40,6 +40,7 @@ setCommandContext({
   hasProfile: () => sources.some((s) => s.type === 's3'),
   localSelectionCount: () => (localPane.visible ? localPane.grid.selectedRows().length : 0),
   localPaneOpen: () => localPane.visible,
+  osClipFiles: () => osClipFilesReady, // Explorer files wait on the OS clipboard
 });
 
 let sources = []; // data sources of any type (M8)
@@ -103,6 +104,7 @@ async function boot() {
   initSidebarResize();
   refreshPfState(); // container sessions do not survive restarts; defensive
   if (localStorage.getItem('s3b-panes') === '1') localPane.show();
+  osClipAdopt(); // baseline the OS clipboard seq so later Explorer copies are detected
   updateCommandState();
 }
 
@@ -1112,7 +1114,7 @@ function showContextMenu(e, rows) {
     items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
     items.push(['Cut', 'Ctrl+X', () => cutSelection(), !sel]);
     if (sel === 1 && rows[0].isDir) {
-      items.push(['Paste into folder', 'Ctrl+V', () => paste(rows[0].key), !clipHasItems()]);
+      items.push(['Paste into folder', 'Ctrl+V', () => paste(rows[0].key), !pasteReady()]);
     }
     items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
     items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
@@ -1130,7 +1132,7 @@ function showContextMenu(e, rows) {
     items.push(null);
     items.push(['Cut', 'Ctrl+X', () => cutSelection()]);
     items.push(['Copy', 'Ctrl+C', () => copySelection()]);
-    items.push(['Paste', 'Ctrl+V', () => paste(), !clipHasItems() || !inObjects]);
+    items.push(['Paste', 'Ctrl+V', () => paste(), !pasteReady() || !inObjects]);
     items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
     items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
     items.push(['Copy S3 URI', '', () => copyAsText(rows, 'uri'), !sel]);
@@ -1322,7 +1324,7 @@ function showTreeMenu(e, node) {
       [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
       null,
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
-      ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && clipboard.keys.length)],
+      ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && pasteReady())],
       null,
       ['Find in bucket\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, '', openSearchResult)), !st.hasProfile],
       ['Admin panel\u2026', '', goThen(() => adminDialog(node.bucket, refreshCurrent)), !st.hasProfile],
@@ -1389,7 +1391,7 @@ function showTreeMenu(e, node) {
         Object.assign(clipboard, { mode: 'cut', kind: 'remote', bucket: null, source: node.source, dir: parentRemoteDir(node.path), keys: [node.path], paths: [] });
         toast(`Cut ${node.label}`); updateCommandState();
       }],
-      ['Paste into folder', 'Ctrl+V', () => paste(node.path), !clipHasItems()],
+      ['Paste into folder', 'Ctrl+V', () => paste(node.path), !pasteReady()],
       null,
       ['New folder here\u2026', 'Ctrl+Shift+N', () => newRemoteFolderIn(node.source, node.path)],
       null,
@@ -1412,7 +1414,7 @@ function showTreeMenu(e, node) {
       [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
       null,
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
-      ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && clipboard.keys.length)],
+      ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && pasteReady())],
       null,
       ['Find in bucket\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, '', openSearchResult)), !st.hasProfile],
       ['Admin panel\u2026', '', goThen(() => adminDialog(node.bucket, refreshCurrent)), !st.hasProfile],
@@ -1435,7 +1437,7 @@ function showTreeMenu(e, node) {
     null,
     ['Copy', 'Ctrl+C', clipCopy, !st.hasProfile],
     ['Cut', 'Ctrl+X', clipCut, !st.hasProfile],
-    ['Paste into folder', 'Ctrl+V', () => paste(node.prefix, node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: node.prefix }), !(st.hasProfile && clipboard.keys.length)],
+    ['Paste into folder', 'Ctrl+V', () => paste(node.prefix, node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: node.prefix }), !(st.hasProfile && pasteReady())],
     null,
     ['Rename\u2026', 'F2', goThen(() => renameTreeFolder(node)), !st.hasProfile],
     ['Delete\u2026', 'Del', goThen(() => deleteSelection(node.bucket, [node.prefix], node.source)), !st.hasProfile],
@@ -2044,9 +2046,66 @@ async function deleteBucket(bucket) {
   }
 }
 
+// ====================== OS file clipboard (Explorer) ======================
+// The Explorer bridge: Ctrl+C in Windows Explorer puts a CF_HDROP file list
+// on the OS clipboard. Paste follows Explorer's own rule — LAST COPY WINS:
+// every clipboard write by any process bumps the system sequence number
+// (api.OsClipboardState), so
+//   - an external copy bumps seq past our baseline → the OS payload
+//     outranks the app clipboard (which never expires on its own and would
+//     otherwise shadow Explorer copies for the rest of the session);
+//   - every in-app copy/cut re-adopts the current seq as the baseline, and
+//     our own mirrors (OsClipboardSetFiles) re-adopt after writing, so the
+//     app's payload keeps precedence until someone copies elsewhere.
+// Settings → Transfers can disable the whole bridge (locked-down machines).
+const explorerClipOn = () => localStorage.getItem('s3b-os-clip') !== '0';
+let osClipBaseline = -1; // seq as of our last own clipboard interaction
+let osClipFilesReady = false; // OS clipboard holds files right now (menus)
+
+// pasteReady: whether a paste has anything to act on — the app clipboard
+// or Explorer files waiting on the OS clipboard (context-menu gating).
+const pasteReady = () => clipHasItems() || osClipFilesReady;
+
+// osClipAdopt re-reads the state and adopts the current seq as the
+// baseline ("ours from here on") — at boot and around every own copy/write.
+async function osClipAdopt() {
+  if (!explorerClipOn()) return;
+  try {
+    const st = await api.OsClipboardState();
+    osClipBaseline = st?.seq ?? osClipBaseline;
+    osClipFilesReady = !!st?.files;
+  } catch { /* binding missing — keep the previous baseline */ }
+}
+
+// refreshOsClip re-polls the files flag (window focus) WITHOUT adopting a
+// possibly-external new seq — adopting here would mask the very change the
+// paste precedence needs to see.
+async function refreshOsClip() {
+  if (!explorerClipOn()) { osClipFilesReady = false; return; }
+  try {
+    const st = await api.OsClipboardState();
+    osClipFilesReady = !!st?.files;
+    updateCommandState();
+  } catch { /* leave as-is */ }
+}
+
+// osClipPayload resolves the OS clipboard's file list for a paste, or null
+// when it must not win: disabled by setting, no file payload, or an
+// unchanged clipboard while the app clipboard still holds a newer copy.
+async function osClipPayload() {
+  if (!explorerClipOn()) return null;
+  let st = null;
+  try { st = await api.OsClipboardState(); } catch { return null; }
+  if (!st?.files) return null;
+  if (clipHasItems() && osClipBaseline >= 0 && st.seq === osClipBaseline) return null;
+  let paths = null;
+  try { paths = await api.OsClipboardFiles(); } catch { return null; }
+  return paths?.length ? paths : null;
+}
+
 // paste drops the app clipboard into a destination; with the app clipboard
-// empty it falls back to the OS clipboard (Ctrl+C in Explorer) — files land
-// wherever the active view points, exactly like an in-app paste.
+// empty — or outranked by a newer Explorer copy — the OS clipboard's files
+// land wherever the active view points, exactly like an in-app paste.
 async function paste(prefixOverride, bucketOverride, destOverride) {
   const loc = nav.current;
   let dest;
@@ -2055,17 +2114,20 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
   else if (prefixOverride !== undefined && loc?.kind === 'remote') dest = { kind: 'remote', source: loc.source, dir: prefixOverride };
   else dest = xferDestOf(loc) || sidePaneDest();
 
-  if (!clipHasItems()) {
-    // OS clipboard fallback: paths copied in Explorer (or any app).
-    let osPaths = null;
-    try { osPaths = await api.OsClipboardFiles(); } catch { /* binding missing */ }
-    if (!osPaths?.length || !dest) return;
+  // A winning Explorer payload is a copy and supersedes the app clipboard
+  // (from here on the Explorer copy IS the clipboard, Explorer-style).
+  const osPaths = await osClipPayload();
+  if (osPaths) {
+    if (!dest) { toast('Open a bucket or folder first'); return; }
+    clipboard.keys = []; clipboard.paths = []; clipboard.mode = null;
+    updateCommandState();
     if (dest.kind === 's3') uploadPaths(osPaths, dest.dir, dest.bucket, dest.source);
     else if (dest.kind === 'remote') uploadToRemote(osPaths, dest.source, dest.dir);
     else startTransfer({ localPaths: osPaths, dest, label: dest.dir });
     return;
   }
-  if (!dest) return;
+  if (!clipHasItems()) { toast('Nothing to paste'); return; }
+  if (!dest) { toast('Open a bucket or folder first'); return; }
 
   // Same-dir paste is a no-op (would spam "(1)" renames), and pasting a
   // folder into itself / its own subtree is refused (Explorer rules).
@@ -2571,7 +2633,7 @@ function showSideRemoteRowMenu(e, rows) {
     ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'remote' }), !sel],
     ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'remote' }), !sel],
     ...(sel === 1 && rows[0].isDir
-      ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir: rows[0].key }), !clipHasItems()]]
+      ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir: rows[0].key }), !pasteReady()]]
       : []),
     null,
     ['Rename', 'F2', async () => {
@@ -2598,7 +2660,7 @@ function sideRemoteEmptyMenu(e) {
   const b = localPane.binding;
   const dir = localPane.dir || '/';
   openMenu(e, [
-    ['Paste', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir }), !clipHasItems()],
+    ['Paste', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir }), !pasteReady()],
     null,
     ...uploadMenu(
       async () => { const paths = await api.PickUploadFiles(); if (paths?.length) uploadToRemote(paths, b.source, dir); },
@@ -2674,7 +2736,7 @@ function showSideS3RowMenu(e, rows) {
       ? [['Open', 'Enter', () => localPane.grid.on.activate(rows[0])]]
       : [['Download\u2026', 'Ctrl+D', () => downloadSideRows(rows.filter((r) => !r.isBucket)), hasBucketRow]]),
     ...(sel === 1 && rows[0].isDir && !rows[0].isBucket
-      ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 's3', source: b.source, bucket: localPane.bucket, dir: rows[0].key }), !clipHasItems()]]
+      ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 's3', source: b.source, bucket: localPane.bucket, dir: rows[0].key }), !pasteReady()]]
       : []),
     null,
     ['Copy', 'Ctrl+C', () => copySelection(), hasBucketRow],
@@ -2725,7 +2787,7 @@ function sideS3EmptyMenu(e) {
   const dest = { kind: 's3', source: b.source, bucket: localPane.bucket, dir };
   const inBucket = !!localPane.bucket;
   openMenu(e, [
-    ['Paste', 'Ctrl+V', () => paste(null, null, dest), !clipHasItems() || !inBucket],
+    ['Paste', 'Ctrl+V', () => paste(null, null, dest), !pasteReady() || !inBucket],
     null,
     ...uploadMenu(
       async () => { const paths = await api.PickUploadFiles(); if (paths?.length) startTransfer({ localPaths: paths, dest }); },
@@ -3022,6 +3084,7 @@ async function openSettings() {
       delWindow: delWindowOn,
       delTypeConfirm: delTypedOn,
       delAutoConfirm: delAutoConfirm,
+      explorerClip: () => localStorage.getItem('s3b-os-clip') !== '0',
     },
     apply: {
       theme: (v) => { document.documentElement.dataset.theme = v; localStorage.setItem('s3b-theme', v); },
@@ -3043,6 +3106,14 @@ async function openSettings() {
       delWindow: (v) => localStorage.setItem('s3b-del-window', v ? '1' : '0'),
       delTypeConfirm: (v) => localStorage.setItem('s3b-del-typeconfirm', v ? '1' : '0'),
       delAutoConfirm: (v) => localStorage.setItem('s3b-del-autoconfirm', v ? '1' : '0'),
+      explorerClip: (v) => {
+        localStorage.setItem('s3b-os-clip', v ? '1' : '0');
+        // Enable must NOT adopt the seq: a copy made while sharing was off
+        // (or in Explorer before enabling) is still the newest write — last
+        // copy wins. Refresh only re-syncs osClipFilesReady for canPaste.
+        if (v) refreshOsClip(); else { osClipFilesReady = false; }
+        updateCommandState();
+      },
     },
     log: {
       get: () => logSet,
@@ -3244,11 +3315,12 @@ function setClip(mode) {
     });
     // Mirror the copy onto the OS clipboard so Ctrl+V works in Explorer
     // too (cut never mirrors — an Explorer paste would move/delete).
-    if (mode === 'copy') {
+    if (mode === 'copy' && explorerClipOn()) {
       osCopyRemote(rows.map((r) => (loc.kind === 'remote'
         ? { source: src, key: r.key, size: r.size || 0, isDir: !!r.isDir }
         : { source: src, bucket: loc.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
     }
+    osClipAdopt(); // in-app copy is now the newest clipboard (last copy wins)
     toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${rows.length} item(s)`);
     updateCommandState();
     return;
@@ -3292,8 +3364,11 @@ function setClip(mode) {
         paths: lrows.map((x) => x.path),
       });
       // Local files are real OS files — straight onto the OS clipboard.
-      if (mode === 'copy') api.OsClipboardSetFiles(clipboard.paths).catch(() => {});
+      if (mode === 'copy' && explorerClipOn()) {
+        api.OsClipboardSetFiles(clipboard.paths).then(() => osClipAdopt(), () => {});
+      }
     }
+    osClipAdopt(); // in-app copy is now the newest clipboard (last copy wins)
     toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${lrows.length} item(s)`);
     updateCommandState();
   }
@@ -3307,7 +3382,7 @@ function setClip(mode) {
 async function osCopyRemote(items) {
   const MAX_BYTES = 256 * 1024 * 1024;
   const MAX_ITEMS = 500;
-  if (!items.length) return;
+  if (!explorerClipOn() || !items.length) return;
   const total = items.reduce((s, it) => s + (it.size || 0), 0);
   if (items.length > MAX_ITEMS || (total > 0 && total > MAX_BYTES)) return;
   let dir;
@@ -3316,6 +3391,12 @@ async function osCopyRemote(items) {
   } catch {
     return;
   }
+  // Baseline for the clobber guard: if anything writes the clipboard while
+  // the staging download runs, the user copied elsewhere — the late mirror
+  // must abort instead of replacing their clipboard (bug: Explorer copies
+  // silently overwritten by a finished staging).
+  let startSeq = null;
+  try { startSeq = (await api.OsClipboardState())?.seq ?? null; } catch { /* proceed */ }
   toast('Preparing OS clipboard — staging download\u2026');
   try {
     await api.TransferCross(items, [], { kind: 'local', dir }, 'overwrite', 0, false, null);
@@ -3337,7 +3418,12 @@ async function osCopyRemote(items) {
     }
     if (busy && Date.now() - t0 < 120000) { setTimeout(poll, 500); return; }
     try {
+      if (startSeq != null) {
+        const st = await api.OsClipboardState();
+        if (st?.seq !== startSeq) return; // copied elsewhere meanwhile — theirs wins
+      }
       await api.OsClipboardSetFiles(staged);
+      osClipAdopt(); // our own write — re-adopt so it does not look external
       toast('Ready to paste in Explorer', 'ok');
     } catch {
       // best-effort only
@@ -3491,6 +3577,10 @@ function wireEvents() {
   window.addEventListener('focus', () => {
     if (refreshOnFocus && !autoRefreshBlocked()) refreshCurrent(true);
   });
+  // Explorer copies arrive while the app is unfocused; refresh the
+  // files-waiting flag (NOT the seq baseline — see osClipPayload) so the
+  // Paste affordances light up when the window regains focus.
+  window.addEventListener('focus', () => refreshOsClip());
 }
 
 function showTransfersBadge() {

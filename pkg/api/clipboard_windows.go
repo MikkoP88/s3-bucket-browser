@@ -5,6 +5,7 @@ package api
 import (
 	"errors"
 	"syscall"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -23,6 +24,7 @@ var (
 	pIsAvail  = user32.NewProc("IsClipboardFormatAvailable")
 	pGetData  = user32.NewProc("GetClipboardData")
 	pSetData  = user32.NewProc("SetClipboardData")
+	pGetSeq   = user32.NewProc("GetClipboardSequenceNumber")
 	pDQFile   = shell32.NewProc("DragQueryFileW")
 	pGAlloc   = kernel32c.NewProc("GlobalAlloc")
 	pGLock    = kernel32c.NewProc("GlobalLock")
@@ -32,32 +34,53 @@ var (
 
 const gmemMoveable = 0x0002
 
+// osClipboardSeq returns the system clipboard sequence number — bumped on
+// EVERY clipboard write by any process. Cheap (no OpenClipboard), so the
+// frontend can poll it to detect "the user copied something elsewhere since
+// our last mirror" and give the OS payload paste precedence.
+func osClipboardSeq() uint64 {
+	ret, _, _ := pGetSeq.Call()
+	return uint64(ret)
+}
+
+// osClipboardHasFiles reports whether the clipboard currently holds a
+// CF_HDROP file list, without opening it.
+func osClipboardHasFiles() bool {
+	ret, _, _ := pIsAvail.Call(cfHDROP)
+	return ret != 0
+}
+
 // osClipboardFiles reads the CF_HDROP list from the clipboard.
 func osClipboardFiles() []string {
 	out := []string{}
-	if ret, _, _ := pOpenClp.Call(0); ret == 0 {
-		return out
-	}
-	defer pCloseCl.Call()
-	if ret, _, _ := pIsAvail.Call(cfHDROP); ret == 0 {
-		return out
-	}
-	h, _, _ := pGetData.Call(cfHDROP)
-	if h == 0 {
-		return out
-	}
-	// DragQueryFileW(0xFFFFFFFF) returns the file count.
-	n, _, _ := pDQFile.Call(h, 0xFFFFFFFF, 0, 0)
-	for i := uintptr(0); i < n; i++ {
-		l, _, _ := pDQFile.Call(h, i, 0, 0)
-		if l == 0 {
-			continue
+	// The clipboard is a shared resource another process may hold open
+	// mid-write; a brief retry turns a transient failure into a success.
+	for attempt := 0; attempt < 10; attempt++ {
+		if ret, _, _ := pOpenClp.Call(0); ret != 0 {
+			defer pCloseCl.Call()
+			if ret, _, _ := pIsAvail.Call(cfHDROP); ret == 0 {
+				return out
+			}
+			h, _, _ := pGetData.Call(cfHDROP)
+			if h == 0 {
+				return out
+			}
+			// DragQueryFileW(0xFFFFFFFF) returns the file count.
+			n, _, _ := pDQFile.Call(h, 0xFFFFFFFF, 0, 0)
+			for i := uintptr(0); i < n; i++ {
+				l, _, _ := pDQFile.Call(h, i, 0, 0)
+				if l == 0 {
+					continue
+				}
+				buf := make([]uint16, l+1)
+				if ret, _, _ := pDQFile.Call(h, i, uintptr(unsafe.Pointer(&buf[0])), l+1); ret == 0 {
+					continue
+				}
+				out = append(out, windows.UTF16ToString(buf))
+			}
+			return out
 		}
-		buf := make([]uint16, l+1)
-		if ret, _, _ := pDQFile.Call(h, i, uintptr(unsafe.Pointer(&buf[0])), l+1); ret == 0 {
-			continue
-		}
-		out = append(out, windows.UTF16ToString(buf))
+		time.Sleep(20 * time.Millisecond)
 	}
 	return out
 }

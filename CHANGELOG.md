@@ -4,6 +4,56 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Copy/paste reliability release: copying files in Windows File Explorer and
+pasting into the app now actually works. The app clipboard never expired,
+so the first in-app Ctrl+C shadowed every later Explorer copy for the rest
+of the session, and every Paste affordance was greyed out without an app
+payload. Precedence is now **last copy wins**, arbitrated by the OS
+clipboard sequence number: an Explorer copy outranks a stale app payload,
+the app payload keeps precedence while the OS clipboard is untouched by
+anything else, and a staging mirror aborts instead of clobbering a
+clipboard the user changed mid-download. Validated by the 375-check visual
+walk (three new steps: precedence, mirror abort, Settings toggle) and a
+new Explorer-clipboard section of the live walk that rides the real OS
+clipboard end to end (`Set-Clipboard -Path` ≡ Ctrl+C in File Explorer →
+Ctrl+V upload, in-app copy mirror round-trip, last-copy-wins over the
+stale app clipboard, and the Settings toggle off/on live — debris
+permanently purged afterwards so the marker-count assertions stay
+deterministic).
+
+### Fixed
+
+- **Explorer → app paste was a silent no-op.** `paste()` only consulted
+  the OS clipboard when the app clipboard was empty, and the app
+  clipboard never emptied — one in-app copy shadowed Explorer for the
+  whole session. Paste now resolves the freshest payload first; a
+  winning Explorer paste supersedes (clears) the app clipboard.
+- **Paste affordances ignored the OS clipboard.** The toolbar command
+  state and all thirteen context-menu Paste gates keyed off the app
+  clipboard alone; with only Explorer files waiting they stayed greyed.
+  They now light up whenever either clipboard can paste.
+- **Silent no-op without a destination** — pasting with nothing open now
+  says so ("Open a bucket or folder first"), and an empty clipboard says
+  "Nothing to paste" instead of failing quietly.
+- **Late staging mirror could clobber the user's clipboard.** A copy's
+  staging download captured the clipboard sequence up front; if anything
+  wrote the clipboard while it ran (the user copied elsewhere), the late
+  mirror aborts — their clipboard wins.
+- **`OpenClipboard` contention**: the native CF_HDROP read now retries
+  briefly (10 × 20 ms) instead of failing when another process holds the
+  clipboard.
+
+### Added
+
+- **Settings → Transfers → Explorer copy & paste** (on by default):
+  disables the entire OS-clipboard bridge on locked-down machines — no
+  reads, no mirror writes; in-app copy/paste semantics are untouched.
+  Re-enabling keeps last-copy-wins semantics (no reload needed).
+- New `OsClipboardState` binding exposing the clipboard sequence number
+  and file availability to the frontend (the arbitration signal).
+
 ## [1.1.0-beta.12] — 2026-09-16
 
 Security and presentation release: the opt-in Secure Storage mode for

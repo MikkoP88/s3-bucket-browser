@@ -226,6 +226,7 @@ export function settingsDialog(ctx) {
     ), t('settings.conflictHint')),
     row(t('settings.showThrottle'), checkbox(s.showThrottle?.() || false, (v) => a.showThrottle?.(v))),
     row(t('settings.copyVersions'), checkbox(s.copyVersions?.() ?? true, (v) => a.copyVersions?.(v)), t('settings.copyVersionsHint')),
+    row(t('settings.explorerClip'), checkbox(s.explorerClip?.() ?? true, (v) => a.explorerClip?.(v)), t('settings.explorerClipHint')),
     row(t('settings.throttle'), select(
       RATE_STEPS.map(([v, label]) => [v, t(label)]),
       s.throttle(),
