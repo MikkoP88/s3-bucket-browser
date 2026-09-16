@@ -2,7 +2,7 @@
 
 **A Windows-Explorer-style desktop app + CLI for S3-compatible cloud storage and remote file servers (SFTP/SCP, FTP/FTPS) — buckets, objects, versions, and everything in between.**
 
-> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.8).** 1.1 adds a unified data-source hierarchy (S3, SFTP/SCP, FTP/FTPS, local folders), OS clipboard/drag interop, credential import, and a first-class versioned-delete flow — one unified Delete Window with three delete types on every source — see the [CHANGELOG](CHANGELOG.md). Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
+> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.9).** 1.1 adds a unified data-source hierarchy (S3, SFTP/SCP, FTP/FTPS, local folders), OS clipboard/drag interop, credential import, and a first-class versioned-delete flow — one unified Delete Window with three delete types on every source — see the [CHANGELOG](CHANGELOG.md). Docs: [CLI reference](docs/cli.md) (generated from the cobra tree), [competitive comparison](docs/comparison.md), [security model](docs/security.md), [CHANGELOG](CHANGELOG.md), [CONTRIBUTING](CONTRIBUTING.md).
 
 ## Quickstart (GUI)
 
