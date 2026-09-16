@@ -47,12 +47,13 @@ export class Tree {
       const id = this.srcKey(s.name);
       const prev = this.nodes.get(id);
       keep.set(id, prev || {
-        id, kind: 'source', source: s.name, stype: s.type,
+        id, kind: 'source', source: s.name, stype: s.type, color: s.color,
         label: s.name, expanded: false, loaded: false, children: [],
         level: 0, el: null, twistEl: null,
       });
       const n = keep.get(id);
       n.stype = s.type;
+      n.color = s.color;
       // S3 sources are bucket-scoped by definition: the node adopts the
       // bucket identity up front (bucket-grade navigation, guard icons,
       // drop target). Legacy account-wide sources (no bucket) keep the
@@ -336,8 +337,12 @@ export class Tree {
     n.twistEl = twist;
     if (!hasKids && !n.expanded) twist.style.visibility = 'hidden';
     const ticon = el('span', { class: 'ticon' });
-    if (n.kind === 'source') ticon.innerHTML = srcIcon(n.stype);
-    else ticon.textContent = n.kind === 'rdir' ? '\u{1F4C1}' : n.prefix === '' ? '\u{1F5C0}' : '\u{1F4C1}';
+    if (n.kind === 'source') {
+      // the type glyph painted in the source's own accent color — the
+      // same icon the breadcrumb's root crumb carries
+      ticon.innerHTML = srcIcon(n.stype);
+      if (n.color) ticon.style.color = n.color;
+    } else ticon.textContent = n.kind === 'rdir' ? '\u{1F4C1}' : n.prefix === '' ? '\u{1F5C0}' : '\u{1F4C1}';
     const row = el('div', {
       class: `tnode${this.currentId === n.id ? ' sel' : ''}`,
       style: `padding-left:${8 + n.level * 14}px`,
