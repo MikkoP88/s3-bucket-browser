@@ -1353,6 +1353,7 @@ export function helpSheet() {
     ['Del', 'Delete selection — versioned buckets ask: marker (restorable) or permanent'],
     ['Shift+Del', 'Delete permanently (all versions)'],
     ['Ctrl+C / X / V', 'Copy / cut / paste'],
+    ['Drag (files)', 'Drag a file selection to Explorer / Desktop as real files (desktop app)'],
     ['Ctrl+A', 'Select all'],
     ['Ctrl+I', 'Invert selection'],
     ['Ctrl+F', 'Filter'],

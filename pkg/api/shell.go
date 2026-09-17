@@ -9,6 +9,13 @@ import "errors"
 // their narrower per-feature seams (SetEventSink, SetPickers,
 // SetProfileDialogs, SetClipboardTextSink) which take precedence.
 
+// EventDragSelfDrop announces a native drag-out released back over the app's
+// own window. Payload: positional (x, y, shift, ctrl) where x/y are CSS
+// pixels relative to the webview (same space as wails:file-drop) and
+// shift/ctrl carry the modifier keys held at release — the frontend routes
+// it exactly like an internal HTML5 drop.
+const EventDragSelfDrop = "drag:self-drop"
+
 // errNoShell is returned by shell-backed methods when no desktop shell is
 // attached (headless harness without a scripted seam).
 var errNoShell = errors.New("no desktop shell attached")
@@ -58,6 +65,13 @@ type DesktopShell struct {
 	OpenPopout  func(id, title, query string, geo ShellGeometry) bool
 	ClosePopout func(id string)
 	FocusPopout func(id string)
+	// ScreenToClient maps a screen point into the main window's webview
+	// CSS coordinates and reports whether the point is over the window's
+	// client area. The native drag-out uses it to detect a drop landing
+	// back on the app itself (self-drop) and to give the frontend drop
+	// coordinates Explorer never provides. Optional: nil means "never over
+	// self" (server builds, tests, non-Windows).
+	ScreenToClient func(screenX, screenY int) (clientX, clientY int, over bool)
 }
 
 // shell is the installed desktop shell (nil outside the GUI).
