@@ -5,11 +5,11 @@ import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS } from './grid.js';
 import { Tree } from './tree.js';
 import {
-  confirm, typedConfirm, prompt, properties, doctorDialog, transferManager,
+  confirm, prompt, properties, doctorDialog, transferManager,
   sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
-  deleteWindow,
+  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
@@ -1718,14 +1718,11 @@ function parentRemoteDir(p) {
 }
 
 // ---- unified Delete Window (all sources) ----
-// Delete preferences (Settings → Delete): the window itself (default on —
-// it shows exactly what would be removed), the typed-"delete" partition
-// (default off — the pre-counted window is the guard; enabling adds the
-// typed word to every delete), and auto-confirm (default off —
-// single-type deletes then run unprompted).
-const delWindowOn = () => localStorage.getItem('s3b-del-window') !== '0';
-const delTypedOn = () => localStorage.getItem('s3b-del-typeconfirm') === '1';
-const delAutoConfirm = () => localStorage.getItem('s3b-del-autoconfirm') === '1';
+// The confirmation itself lives in dialogs.js now: deleteWindow is the
+// base template every destructive confirmation is built on, and
+// runDeleteWindow routes every delete through it while honoring the
+// Settings → Delete preferences (window / typed word / auto-confirm —
+// see the deleteWindow doc comment there).
 
 // S3_DEL_MODES lists a versioned bucket's delete types (the window's radio
 // list). The marker delete is the safe default; keep-current and permanent
@@ -1736,25 +1733,6 @@ const S3_DEL_MODES = [
   { id: 'keepcurrent', label: 'delm.keep', hint: 'delm.keepHint' },
   { id: 'permanent', label: 'delm.perm', hint: 'delm.permHint' },
 ];
-
-// runDeleteWindow owns the confirmation every delete passes through.
-// Multi-type sources and preset (Shift+Del) deletes always open the window —
-// the user must pick, or re-verify, the destructive type there. Single-type
-// deletes follow Settings: auto-confirm skips prompts, the window is the
-// default, and only with both off does the classic ladder run (the typed
-// word at L2 or on sources with no undo; a plain confirm otherwise).
-// Resolves the confirmed mode ('' = plain) or null (canceled).
-async function runDeleteWindow({ target, summary, modes = [], mode = '', classicTyped = false, classicMsg = '' }) {
-  const multi = modes.length > 1;
-  if (!multi && !mode && delAutoConfirm()) return '';
-  if (multi || mode || delWindowOn()) {
-    return deleteWindow({ target, summary, modes, mode, typedOn: delTypedOn() });
-  }
-  const ok = (classicTyped || summary.requiresL2)
-    ? await typedConfirm({ title: target, message: classicMsg, typeWord: 'delete', okLabel: t('delw.go') })
-    : await confirm({ title: target, message: classicMsg, okLabel: t('delw.go'), danger: true });
-  return ok ? '' : null;
-}
 
 // reportDeleteResult toasts a DeleteResult ({deleted, errors}).
 function reportDeleteResult(res, okMsg) {
@@ -2005,7 +1983,7 @@ async function deleteRemoteSelection(overrideSource, overrideKeys, presetMode = 
       target: keys.length === 1 ? `${source}:${keys[0]}` : `${source}:${loc?.path || '/'}`,
       summary: { files: p.files, folders: p.folders, bytes: p.bytes },
       mode: presetMode,
-      classicTyped: true, // remote deletes have no undo: always the typed word
+      classicTyped: true, // no undo on remotes: classic mode types the word when the setting is on
       classicMsg: `You are about to delete ${desc}.\nRemote sources have no trash or versions — this cannot be undone.`,
     });
     if (mode === null) return;
@@ -2032,15 +2010,26 @@ async function createBucket() {
 async function deleteBucket(bucket) {
   try {
     const p = await api.PreviewBucketDelete(bucket);
-    const ok = await typedConfirm({
-      title: `Delete bucket s3://${bucket}`,
-      message: p.requiresL2
+    // The unified Delete Window with the L2 identity check: typing the
+    // bucket's own name applies regardless of the Require-typing setting.
+    // force: a whole-bucket removal never auto-confirms.
+    const go = await runDeleteWindow({
+      target: `s3://${bucket}`,
+      summary: p.requiresL2 ? { stats: [
+        `${p.objectCount} object(s)`,
+        ...(p.versioned ? [`${p.versionCount} version(s)`, `${p.deleteMarkers} delete marker(s)`] : []),
+      ] } : { stats: ['empty bucket'] },
+      warn: p.requiresL2
+        ? 'Removes the bucket AND all of its contents — permanently.'
+        : 'The bucket is empty; only the bucket itself is removed.',
+      typedAlways: true, typedWord: bucket,
+      classicMsg: p.requiresL2
         ? `The bucket holds ${p.objectCount} object(s). Deleting removes the bucket AND all of its contents.`
         : 'The bucket is empty and will be removed.',
-      typeWord: bucket,
-      okLabel: 'Delete bucket',
+      confirmLabel: 'Delete bucket', title: `Delete bucket s3://${bucket}`,
+      force: true,
     });
-    if (!ok) return;
+    if (go === null) return;
     const res = await api.DeleteBucket(bucket, true);
     toast(`Bucket removed (${res.deleted} object(s) emptied)`, 'ok');
     nav.to({ kind: 'buckets', source: viewSource });
@@ -2622,7 +2611,7 @@ async function deleteLocalSelection(paths) {
     const mode = await runDeleteWindow({
       target: paths.length === 1 ? paths[0] : `${paths.length} item(s)`,
       summary: { objects: p.objects, folders: p.folders, bytes: p.bytes, requiresL2: p.requiresL2 },
-      classicTyped: true, // permanent, no trash: always the typed word
+      classicTyped: true, // permanent, no trash: classic mode types the word when the setting is on
       classicMsg: `You are about to delete ${desc}.\nLocal deletion is permanent — the Recycle Bin is not used.`,
     });
     if (mode === null) return;
