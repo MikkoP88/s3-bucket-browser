@@ -209,15 +209,23 @@ The feature set most S3 tools treat as an afterthought.
   click (bulk-select works in the marker window). Rows with markers in
   their history carry a ⛔ badge; a folder whose every file is
   delete-marked shows *all deleted*.
-- **One Delete Window, three types** — every delete counts first and
-  acts second, on every source. On versioned buckets it offers:
+- **One Delete Window for every destructive op** — every delete counts
+  first and acts second, and every destructive flow — selection deletes,
+  bucket delete, destroying a single version, purging noncurrent
+  versions or markers, force-emptying a bucket — confirms in the same
+  window: target, counted stats, an amber consequence line and the
+  typed partition when the ladder asks for one. Selection deletes on
+  versioned buckets choose between three types:
   1. **Add a delete marker** (default) — everything stays restorable
   2. **Delete all except current version** — keep the latest, clear
      the history
   3. **Delete permanently** — purge every version and marker
-  The destructive types state their consequence in an amber line and
-  require a typed `delete`; Shift+Del jumps straight to the permanent
-  path.
+  The destructive types state their consequence in an amber line and ask
+  for a typed `delete` when *Require typing "delete"* is on; Shift+Del
+  jumps straight to the permanent path. Settings → Deleting →
+  *Always use the delete window* (default on) routes everything through
+  the window; with it off, plain deletes fall back to the classic
+  compact confirm — the typed ladder applies either way.
 
 ![The Delete Window](screenshots/delete-window.png)
 
@@ -233,10 +241,17 @@ The ladder, formally:
 
 | Level | Operations | Gate |
 |---|---|---|
-| L0 | delete selection, overwrite upload | count + confirm |
-| L1 | ≥50 items, prefix delete, bulk class conversion | `--force` (CLI) / typed confirm (GUI) |
-| L2 | empty/remove bucket, purge noncurrent | type the **bucket name** |
-| L3 | destroy versions & markers | explicit destructive choice + typed `delete` |
+| L0 | delete selection, overwrite upload, purge ≤50 | count + confirm |
+| L1 | ≥50 items, prefix delete, bulk class conversion | `--force` (CLI) / typed confirm (GUI¹) |
+| L2 | empty/remove bucket, purge >50 | type the **bucket name** / `purge` |
+| L3 | destroy versions & markers | explicit destructive choice + typed `delete`¹ |
+
+¹ Every typed-`delete` gate follows Settings → Deleting → **Require
+typing "delete"** (default off — the counted delete window / classic
+confirm is the base guard; the setting adds the typed word everywhere,
+window and classic alike). Typing the **bucket name** — and the `purge`
+escalation word for >50-item purges — is an identity check, not a
+delete guard, and always applies.
 
 ---
 

@@ -580,6 +580,13 @@ function shim() {
     BucketVersionStats: () => ({ currentObjects: 7, versions: 12, deleteMarkers: 2, noncurrent: 5, noncurrentBytes: 1048576 }),
     CompareAny: (x, y) => JSON.parse(JSON.stringify(world.compareRows)),
     PreviewDelete: (bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
+    // bucket-grade destructive flows (all route through the unified
+    // Delete Window — see the delete-window-uniform step)
+    PreviewBucketDelete: () => ({ objectCount: 7, versionCount: 12, deleteMarkers: 2, versioned: true, requiresL2: true }),
+    DeleteBucket: (_bucket, _force) => ({ deleted: 7 }),
+    PurgePreview: () => 60, // >50: the purge window types the escalation word
+    PurgeVersions: () => ({ deleted: 60 }),
+    EmptyBucketAllVersions: () => ({ deleted: 14 }),
     DeleteSelection: (_bucket, keys, _l2) => ({ deleted: keys.length, errors: [] }),
     DeleteSelectionPermanent: (_bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
     DeleteSelectionKeepCurrent: (_bucket, keys, _force) => ({ deleted: keys.length, errors: [] }),
@@ -1774,6 +1781,53 @@ await step('versions-diff', async () => {
     }
   }
   await closeModal();
+  // Per-version Destroy rides the SAME unified Delete Window (the base
+  // template every destructive confirmation uses): OFF (the default — no
+  // s3b-del-* key has been written yet this run) the window carries the
+  // version identity + consequence line with NO typed word; ON, the typed
+  // partition arms inside the same window.
+  const destroyVer = async (rowNeedle) => {
+    await clickRow('scan.png');
+    await openCtx('readme.md');
+    await ctxItem(/versions/i);
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) >= 3, 4000, 'versions reopen');
+    await evalPage((needle) => {
+      const r = Array.from(document.querySelectorAll('#modal-root .ver-row')).find((x) => x.textContent.includes(needle));
+      r?.querySelector('.ver-actions .btn.danger')?.click();
+    }, rowNeedle);
+  };
+  await resetCalls();
+  await destroyVer('ver-0002');
+  await waitFor(() => evalPage(() => !!document.querySelector('#modal-root .delw-modal')), 4000, 'destroy delete window');
+  await ok('version destroy opens the Delete Window, no typed word by default', evalPage(() => {
+    const t = document.getElementById('modal-root').textContent;
+    return !document.querySelector('#modal-root input') && t.includes('cannot be recovered');
+  }));
+  await ok('destroy window carries the version identity + live Destroy button', evalPage(() => {
+    const t = document.querySelector('#modal-root .delw-stats').textContent;
+    const b = document.querySelector('#modal-root .modal-foot .btn.danger');
+    return t.includes('ver-0002') && !b.disabled && /destroy/i.test(b.textContent);
+  }));
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('DeleteVersionPermanent')) !== null, 4000, 'DeleteVersionPermanent');
+  await closeModal();
+  // …and with the setting on, the same window arms its typed partition
+  await evalPage(() => localStorage.setItem('s3b-del-typeconfirm', '1'));
+  await resetCalls();
+  await destroyVer('ver-0002');
+  await waitFor(() => evalPage(() => !!document.querySelector('#modal-root .delw-confirm input')), 4000, 'destroy typed partition');
+  await ok('version destroy: typed word asked when the setting is on', evalPage(() => {
+    const d = document.querySelector('#modal-root .modal-foot .btn.danger');
+    const lbl = document.querySelector('#modal-root .delw-confirm .field')?.textContent || '';
+    return d.disabled && lbl.includes('"delete"');
+  }));
+  await evalPage(() => { document.querySelector('#modal-root input').focus(); });
+  await page.keyboard.type('delete');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('DeleteVersionPermanent')) !== null, 4000, 'typed DeleteVersionPermanent');
+  await evalPage(() => localStorage.removeItem('s3b-del-typeconfirm'));
+  await closeModal();
 });
 
 await step('presign-class-lock', async () => {
@@ -2319,6 +2373,164 @@ await step('side-pane-delete-window', async () => {
   await waitFor(async () => (await findCall('LocalRemove')) !== null, 4000, 'LocalRemove');
   const lc = await findCall('LocalRemove');
   await ok('LocalRemove got the path', lc && JSON.stringify(lc.args).includes('notes.txt'));
+  // Classic mode (window off) on a remote pane — classicTyped territory:
+  // the typed word must appear ONLY while Require-typing is on; off, a
+  // plain danger confirm carries the same stakes text.
+  await page.selectOption('#local-src', 'src-box');
+  await waitFor(async () => (await sideKeys()).includes('/db.dump'), 6000, 'pane remote listing (classic)');
+  await resetCalls();
+  await evalPage(() => localStorage.setItem('s3b-del-window', '0'));
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#local-grid-body .grid-row')).find((x) => x._model && x._model.key === '/db.dump');
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  });
+  await sleep(80);
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /^delete/i.test(i.textContent.trim()));
+    it?.click();
+  });
+  await waitFor(async () => /about to delete/.test(await evalPage(() => document.getElementById('modal-root').textContent)), 4000, 'classic remote confirm');
+  await ok('classic remote delete: no typed word while setting is off', evalPage(() => {
+    const t = document.getElementById('modal-root').textContent;
+    return !document.querySelector('#modal-root input') && t.includes('cannot be undone');
+  }));
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('RemoteRemove')) !== null, 4000, 'classic RemoteRemove');
+  // …and ON: the same flow asks for the word before the danger click
+  await resetCalls();
+  await evalPage(() => localStorage.setItem('s3b-del-typeconfirm', '1'));
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#local-grid-body .grid-row')).find((x) => x._model && x._model.key === '/db.dump');
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  });
+  await sleep(80);
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /^delete/i.test(i.textContent.trim()));
+    it?.click();
+  });
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Type "delete" to confirm:'), 4000, 'classic typed prompt');
+  await ok('classic remote delete: typed word asked when the setting is on', evalPage(() => !!document.querySelector('#modal-root input')));
+  // empty word: the danger click is a no-op — no RemoteRemove yet
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await sleep(120);
+  await ok('wrong word refuses to delete', (await findCall('RemoteRemove')) === null);
+  await evalPage(() => { document.querySelector('#modal-root input').focus(); });
+  await page.keyboard.type('delete');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('RemoteRemove')) !== null, 4000, 'typed classic RemoteRemove');
+  await evalPage(() => {
+    for (const k of ['s3b-del-window', 's3b-del-typeconfirm']) localStorage.removeItem(k);
+  });
+});
+
+await step('delete-window-uniform', async () => {
+  // Every destructive flow rides the same window base. Settings at their
+  // defaults (window on, typing off) — the bucket-grade ops still type an
+  // escalation word, because that is identity, not preference.
+  await evalPage(() => {
+    for (const k of ['s3b-del-window', 's3b-del-typeconfirm', 's3b-del-autoconfirm']) localStorage.removeItem(k);
+  });
+  const openBucketCtx = async () => {
+    await clickTree('hetzner');
+    await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'bucket list');
+    await openCtx('team-files');
+  };
+  const adminVersions = async () => { // openModal nests nothing: the delete
+    // window replaces the admin panel, so it is reopened for each tool
+    await openBucketCtx();
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('.tabstrip .tab')).some((x) => x.textContent.trim() === 'Versions')), 4000, 'admin tabs');
+    await evalPage(() => {
+      const t = Array.from(document.querySelectorAll('.tabstrip .tab')).find((x) => x.textContent.trim() === 'Versions');
+      t?.click();
+    });
+    await waitFor(async () => evalPage(() => document.getElementById('modal-root').textContent.includes('Cleanup tools')), 4000, 'versions tab');
+  };
+
+  // (a) bucket delete — the window with counted stats + the L2 name check
+  await openBucketCtx();
+  await resetCalls();
+  await ctxItem(/delete bucket/i);
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .delw-modal')), 4000, 'bucket delete window');
+  await ok('bucket delete: one window, counted stats', evalPage(() => {
+    const t = document.querySelector('#modal-root .delw-modal').textContent;
+    return t.includes('7 object(s)') && t.includes('12 version(s)') && t.includes('2 delete marker(s)');
+  }));
+  await ok('bucket delete: types the bucket name with typing OFF', evalPage(() => {
+    const m = document.querySelector('#modal-root .delw-modal');
+    return m.textContent.includes('Type "team-files" to confirm:')
+      && !!m.querySelector('.delw-confirm input') && m.querySelector('.btn.danger').disabled;
+  }));
+  await shotOf('delw-bucket', '#modal-root');
+  await evalPage(() => document.querySelector('#modal-root .delw-confirm input').focus());
+  await page.keyboard.type('team-files');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .delw-modal .btn.danger').click());
+  await waitFor(async () => (await findCall('DeleteBucket')) !== null, 4000, 'DeleteBucket fired');
+
+  // (b) window OFF — the classic typedConfirm ladder (still the name)
+  await evalPage(() => localStorage.setItem('s3b-del-window', '0'));
+  await openBucketCtx();
+  await resetCalls();
+  await ctxItem(/delete bucket/i);
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Type "team-files" to confirm:'), 4000, 'classic bucket prompt');
+  await ok('bucket delete, window off: classic typed prompt', evalPage(() =>
+    !document.querySelector('#modal-root .delw-modal') && !!document.querySelector('#modal-root input')));
+  await evalPage(() => document.querySelector('#modal-root input').focus());
+  await page.keyboard.type('team-files');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .btn.danger').click());
+  await waitFor(async () => (await findCall('DeleteBucket')) !== null, 4000, 'classic DeleteBucket fired');
+  await evalPage(() => localStorage.removeItem('s3b-del-window'));
+
+  // (c) purge noncurrent — same window, 'purge' escalation at >50
+  await adminVersions();
+  await resetCalls();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => /purge noncurrent/i.test(x.textContent));
+    b?.click();
+  });
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .delw-modal')), 4000, 'purge window');
+  await ok('purge: window with count + typed "purge"', evalPage(() => {
+    const m = document.querySelector('#modal-root .delw-modal');
+    return m.textContent.includes('60 noncurrent version(s)')
+      && m.textContent.includes('Type "purge" to confirm:')
+      && !!m.querySelector('.delw-confirm input') && m.querySelector('.btn.danger').disabled;
+  }));
+  await shotOf('delw-purge', '#modal-root');
+  await evalPage(() => document.querySelector('#modal-root .delw-confirm input').focus());
+  await page.keyboard.type('purge');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .delw-modal .btn.danger').click());
+  await waitFor(async () => (await findCall('PurgeVersions')) !== null, 4000, 'PurgeVersions fired');
+
+  // (d) empty bucket — the window again, L2 name check (admin was replaced)
+  await adminVersions();
+  await resetCalls();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => /empty bucket \(all versions\)/i.test(x.textContent));
+    b?.click();
+  });
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .delw-modal')), 4000, 'empty window');
+  await ok('empty bucket: full version stats + typed name', evalPage(() => {
+    const m = document.querySelector('#modal-root .delw-modal');
+    return m.textContent.includes('7 current object(s)') && m.textContent.includes('12 version(s)')
+      && m.textContent.includes('5 noncurrent') && m.textContent.includes('Type "team-files" to confirm:')
+      && m.textContent.includes('Empty bucket');
+  }));
+  await shotOf('delw-empty', '#modal-root');
+  await evalPage(() => document.querySelector('#modal-root .delw-confirm input').focus());
+  await page.keyboard.type('team-files');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .delw-modal .btn.danger').click());
+  await waitFor(async () => (await findCall('EmptyBucketAllVersions')) !== null, 4000, 'EmptyBucketAllVersions fired');
+
+  await evalPage(() => {
+    for (const k of ['s3b-del-window', 's3b-del-typeconfirm', 's3b-del-autoconfirm']) localStorage.removeItem(k);
+  });
 });
 
 await step('compare', async () => {

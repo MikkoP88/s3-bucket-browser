@@ -113,32 +113,40 @@ export function versionChoiceDialog({ move = false, defaultOn = true } = {}) {
   });
 }
 
-// deleteWindow is the unified Delete window every source opens (one
-// "Delete…" entry everywhere). It shows exactly what will be removed
-// (objects, folders, bytes), lists the source's delete types when it
-// supports more than one (versioned S3: marker / keep-current /
-// permanent) and — only when enabled in Settings — the typed-"delete"
-// confirm partition (hidden by default; the pre-counted window is the
-// guard). The dialog has a fixed width so switching delete types never
-// reflows it. Resolves null (canceled) or the chosen mode id
-// ('' for single-type sources).
-export function deleteWindow({ target, summary, modes = [], mode = '', typedOn = false }) {
+// deleteWindow is the BASE TEMPLATE every destructive confirmation in the
+// app is built on — selection deletes, bucket delete, version destroy,
+// version purges and force-empty alike (runDeleteWindow routes here and
+// honors Settings → Delete → "Always use the delete window"). One layout:
+// target headline + counted stats (bespoke stat lines via summary.stats),
+// optional delete-type radios, an amber consequence line (warn), and the
+// typed partition. typedOn arms the partition; typedWord is what it asks
+// for — 'delete' (the Require-typing setting) or an escalation word (the
+// bucket's own name, 'purge') that applies regardless of that setting.
+export function deleteWindow({
+  target, summary, modes = [], mode = '', typedOn = false,
+  typedWord = 'delete', warn = '', confirmLabel = '', title = '',
+}) {
   let settled = false;
   return new Promise((resolve) => {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     let cur = modes.some((m) => m.id === mode) ? mode : (modes[0]?.id || '');
 
-    // summary: objects/files, folders, bytes, selected items
+    // summary: objects/files, folders, bytes, selected items — or bespoke
+    // stat lines (versions, markers, one version's identity, …)
     const s = summary || {};
     const nObjects = s.objects ?? s.files ?? s.count ?? 0;
+    const stat = (x) => el('span', { text: x });
+    const statEls = Array.isArray(s.stats) && s.stats.length
+      ? s.stats.filter(Boolean).map(stat)
+      : [
+        stat(t('delw.objects', { n: nObjects })),
+        (s.folders || 0) > 0 ? stat(t('delw.folders', { n: s.folders })) : null,
+        s.bytes > 0 ? stat(fmtBytes(s.bytes)) : null,
+        s.items > 0 && s.items !== nObjects ? stat(t('delw.items', { n: s.items })) : null,
+      ];
     const sumBox = el('div', { class: 'delw-sum' },
       el('div', { class: 'delw-target', text: target }),
-      el('div', { class: 'delw-stats' },
-        el('span', { text: t('delw.objects', { n: nObjects }) }),
-        (s.folders || 0) > 0 ? el('span', { text: t('delw.folders', { n: s.folders }) }) : null,
-        s.bytes > 0 ? el('span', { text: fmtBytes(s.bytes) }) : null,
-        s.items > 0 && s.items !== nObjects ? el('span', { text: t('delw.items', { n: s.items }) }) : null,
-      ),
+      el('div', { class: 'delw-stats' }, statEls),
     );
 
     // delete-type radios (only when the source offers several)
@@ -158,16 +166,19 @@ export function deleteWindow({ target, summary, modes = [], mode = '', typedOn =
 
     // mode-dependent warning line
     const warnBox = el('div', { class: 'delw-warn' });
+    const singleWarn = warn || t('delw.noHistory');
 
-    // typed-"delete" partition: rendered only when the Settings toggle is
-    // on — off (the default) keeps the window lean; the pre-counted
-    // summary and the explicit delete-type choice are the guards.
+    // typed partition: rendered when the caller armed it — the Settings
+    // toggle ('delete') or an escalation word (bucket name, 'purge') that
+    // applies regardless. Off (the default for plain deletes) keeps the
+    // window lean; the pre-counted summary and the explicit delete-type
+    // choice are the guards.
     const input = typedOn
       ? el('input', { class: 'input', autocomplete: 'off', spellcheck: 'false' })
       : null;
     const confirmBox = typedOn
       ? el('div', { class: 'delw-confirm' },
-          el('label', { class: 'field', text: t('delw.typeToConfirm') }),
+          el('label', { class: 'field', text: t('delw.typeWord', { word: typedWord }) }),
           input,
         )
       : null;
@@ -179,12 +190,12 @@ export function deleteWindow({ target, summary, modes = [], mode = '', typedOn =
     }
 
     const m = openModal({
-      title: t('delw.title'),
+      title: title || t('delw.title'),
       cls: 'delw-modal', // fixed width — the layout never reflows on mode change
       body: el('div', { class: 'delw' }, sumBox, modeBox, warnBox, confirmBox),
       buttons: [
         { label: 'Cancel', onclick: (c) => { done(null); c(); } },
-        { label: t('delw.go'), class: 'danger', onclick: (c) => { if (!delBtn.disabled) { done(cur); c(); } } },
+        { label: confirmLabel || t('delw.go'), class: 'danger', onclick: (c) => { if (!delBtn.disabled) { done(cur); c(); } } },
       ],
       onClose: () => done(null),
     });
@@ -198,10 +209,10 @@ export function deleteWindow({ target, summary, modes = [], mode = '', typedOn =
     function reserveWarn() {
       if (reserved) return;
       reserved = true;
-      const notes = modes.length > 1 ? ['delw.permWarn', 'delw.keepWarn'] : ['delw.noHistory'];
+      const notes = modes.length > 1 ? [t('delw.permWarn'), t('delw.keepWarn')] : [singleWarn];
       let maxH = 0;
-      for (const k of notes) {
-        warnBox.textContent = t(k);
+      for (const n of notes) {
+        warnBox.textContent = n;
         maxH = Math.max(maxH, warnBox.offsetHeight);
       }
       warnBox.style.minHeight = `${maxH}px`;
@@ -209,18 +220,55 @@ export function deleteWindow({ target, summary, modes = [], mode = '', typedOn =
     reserveWarn();
 
     function sync() {
-      delBtn.disabled = !!input && input.value.trim() !== 'delete';
+      delBtn.disabled = !!input && input.value.trim() !== typedWord;
       // Amber emphasis only for the destructive modes: the safe default
       // mode already explains itself in its radio hint — repeating it in
-      // warn color read as noise. Single-mode windows carry the
-      // no-version-history callout instead.
+      // warn color read as noise. Single-action windows carry their own
+      // consequence line (warn) or the no-version-history callout.
       warnBox.textContent = cur === 'permanent' || cur === 'keepcurrent'
         ? t(cur === 'permanent' ? 'delw.permWarn' : 'delw.keepWarn')
-        : (modes.length > 1 ? '' : t('delw.noHistory'));
+        : (modes.length > 1 ? '' : singleWarn);
     }
     sync();
     input?.focus();
   });
+}
+
+// Delete preferences (Settings → Delete), read by every destructive
+// flow (and by main.js's settings accessors).
+export const delWindowOn = () => localStorage.getItem('s3b-del-window') !== '0';
+export const delAutoConfirm = () => localStorage.getItem('s3b-del-autoconfirm') === '1';
+
+// runDeleteWindow owns the confirmation every destructive operation passes
+// through, honoring Settings → Delete. Auto-confirm skips prompts for plain
+// single-type deletes only — force (bucket delete, version destroy, purge,
+// force-empty: the L2/L3 ladder) never auto-confirms. Multi-type sources
+// and preset (Shift+Del) deletes always open the window; otherwise the
+// window is the default, and only with it off does the classic ladder run.
+// typedAlways marks an escalation word (the bucket's own name, 'purge' >50)
+// that is required regardless of the Require-typing setting; plain flows
+// type 'delete' only while that setting is on (classicTyped / requiresL2
+// pick WHICH plain flows escalate to the typed word). Resolves the
+// confirmed mode ('' = plain) or null (canceled).
+export async function runDeleteWindow({
+  target, summary, modes = [], mode = '', classicTyped = false, classicMsg = '',
+  warn = '', typedWord = 'delete', typedAlways = false, confirmLabel = '', title = '',
+  force = false,
+}) {
+  const multi = modes.length > 1;
+  if (!force && !multi && !mode && delAutoConfirm()) return '';
+  if (multi || mode || delWindowOn()) {
+    return deleteWindow({
+      target, summary, modes, mode,
+      typedOn: typedAlways || delTypedOn(), typedWord, warn, confirmLabel, title,
+    });
+  }
+  const word = typedAlways ? typedWord
+    : ((classicTyped || summary.requiresL2) && delTypedOn() ? 'delete' : '');
+  const ok = word
+    ? await typedConfirm({ title: target, message: classicMsg, typeWord: word, okLabel: confirmLabel || t('delw.go') })
+    : await confirm({ title: target, message: classicMsg, okLabel: confirmLabel || t('delw.go'), danger: true });
+  return ok ? '' : null;
 }
 
 // contentVersionsDialog is the Content Versions window: structured
@@ -390,6 +438,14 @@ export function markersDialog(bucket, key, isDir, onChanged) {
   const selBtn = m.btns[1];
   draw();
 }
+
+// delTypedOn is the single switch behind every typed-"delete" guard: the
+// Settings → Delete "Require typing delete" checkbox (default off — the
+// counted delete window / classic confirm is the base guard, typing the
+// word is opt-in hardening). Guards that type a DIFFERENT word — the
+// bucket's own name (identity check), 'purge', 'convert' — are separate
+// escalation mechanisms and always apply.
+export const delTypedOn = () => localStorage.getItem('s3b-del-typeconfirm') === '1';
 
 export function typedConfirm({ title, message, typeWord, okLabel = 'Delete', danger = true }) {
   let settled = false;
@@ -1452,11 +1508,24 @@ export function versionsDialog(bucket, key, onChanged) {
     }
   };
   const destroy = async (v) => {
-    if (!(await typedConfirm({
-      title: 'Permanently delete version',
-      message: `This destroys one version of s3://${bucket}/${key}.\nIt cannot be recovered — not even from version history.`,
-      typeWord: 'delete',
-    }))) return;
+    // The unified Delete Window carries the confirmation (one base
+    // template for every destructive op). force: one version's permanent
+    // destruction (L3) never auto-confirms; the typed 'delete' word rides
+    // the Require-typing setting, so classic mode matches it too.
+    const go = await runDeleteWindow({
+      target: `s3://${bucket}/${key}`,
+      summary: { stats: [
+        `${fmtBytes(v.size)} \u00b7 ${v.storageClass || 'STANDARD'}`,
+        v.lastModified ? fmtDate(asMillis(v.lastModified)) : '',
+        v.versionId ? `version ${v.versionId}` : '',
+      ] },
+      warn: 'Destroys this one version permanently — it cannot be recovered, not even from version history.',
+      classicTyped: true, // permanent, no undo: classic mode types the word when the setting is on
+      classicMsg: `This destroys one version of s3://${bucket}/${key}.\nIt cannot be recovered — not even from version history.`,
+      confirmLabel: 'Destroy', title: 'Permanently delete version',
+      force: true,
+    });
+    if (go === null) return;
     act(() => api.DeleteVersionPermanent(bucket, key, v.versionId), 'Version destroyed');
   };
 
@@ -1960,11 +2029,18 @@ export function adminDialog(bucket, onChanged) {
             try {
               const n = await api.PurgePreview(bucket, '', mode);
               if (!n) { toast('Nothing to purge'); return; }
-              const msg = `Permanently remove ${n} ${label} from s3://${bucket}.\nThis cannot be undone.`;
-              const ok = n > 50
-                ? await typedConfirm({ title: 'Purge versions', message: msg, typeWord: 'purge' })
-                : await confirm({ title: 'Purge versions', message: msg, okLabel: 'Purge', danger: true });
-              if (!ok) return;
+              // The unified Delete Window carries the confirmation; >50
+              // items (L1) additionally types the escalation word 'purge'.
+              const go = await runDeleteWindow({
+                target: `s3://${bucket}`,
+                summary: { stats: [`${n} ${label}`] },
+                warn: 'Permanently removes these versions — this cannot be undone.',
+                typedAlways: n > 50, typedWord: 'purge',
+                classicMsg: `Permanently remove ${n} ${label} from s3://${bucket}.\nThis cannot be undone.`,
+                confirmLabel: 'Purge', title: 'Purge versions',
+                force: true,
+              });
+              if (go === null) return;
               const res = await api.PurgeVersions(bucket, '', mode, true);
               toast(`Purged ${res.deleted} version(s)`, 'ok');
               onChanged?.();
@@ -1989,11 +2065,24 @@ export function adminDialog(bucket, onChanged) {
                 class: 'btn danger',
                 text: 'Empty bucket (all versions)\u2026',
                 onclick: async () => {
-                  if (!(await typedConfirm({
-                    title: `Empty bucket ${bucket}`,
-                    message: `Every object and EVERY version in s3://${bucket} will be permanently destroyed.`,
-                    typeWord: bucket,
-                  }))) return;
+                  // The unified Delete Window with the L2 identity check:
+                  // typing the bucket's own name applies regardless of the
+                  // Require-typing setting.
+                  const go = await runDeleteWindow({
+                    target: `s3://${bucket}`,
+                    summary: { stats: [
+                      `${st.currentObjects} current object(s)`,
+                      `${st.versions} version(s)`,
+                      `${st.deleteMarkers} delete marker(s)`,
+                      `${st.noncurrent} noncurrent (${fmtBytes(st.noncurrentBytes)})`,
+                    ] },
+                    warn: 'Every object and EVERY version will be permanently destroyed.',
+                    typedAlways: true, typedWord: bucket,
+                    classicMsg: `Every object and EVERY version in s3://${bucket} will be permanently destroyed.`,
+                    confirmLabel: 'Empty bucket', title: `Empty bucket ${bucket}`,
+                    force: true,
+                  });
+                  if (go === null) return;
                   try {
                     const res = await api.EmptyBucketAllVersions(bucket);
                     toast(`Emptied ${res.deleted} version(s)`, 'ok');

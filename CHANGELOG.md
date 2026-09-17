@@ -6,8 +6,46 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Every destructive operation now confirms in the Delete Window.**
+  Four flows bypassed Settings → Deleting → *Always use the delete
+  window* and confirmed through bare prompts: bucket delete, the
+  Versions window's per-version **Destroy**, and the admin panel's
+  purge (noncurrent / delete markers) and force-empty tools. All of
+  them ride the same `deleteWindow` base template as selection deletes
+  now — one clean layout (target, counted stats, amber consequence
+  line, typed partition) with bespoke stats per flow: bucket delete
+  previews object / version / marker counts, version destroy shows the
+  one version's size · class · date · id, purge its exact count,
+  force-empty the full version statistics. The safety ladder is
+  unchanged and uniform across window and classic modes: typing the
+  bucket's own name (bucket delete, force-empty) or `purge` (>50) is an
+  identity check that always applies, the typed `delete` partition
+  follows *Require typing "delete"*, and none of these flows ever
+  auto-confirm. With the window off they fall back to the classic
+  typed/plain confirm carrying the same stakes text.
+  `runDeleteWindow` moved to dialogs.js so every destructive flow
+  shares one orchestrator; the usage-guide ladder documents the gates.
+
 ### Fixed
 
+- **"Require typing 'delete'" is now honored by every typed-`delete`
+  guard.** Two flows demanded the typed word even with the setting
+  disabled: the Versions window's per-version **Destroy** always opened
+  the typed prompt, and with the delete window turned off the classic
+  confirm ladder typed the word for L2-path and no-undo (remote/local)
+  deletes. Both now read the same `s3b-del-typeconfirm` switch the
+  delete window's typed partition reads (exported as `delTypedOn` from
+  dialogs.js — one switch, every typed-`delete` site); with the setting
+  off they fall back to the plain danger confirm carrying the same
+  stakes text. Guards that type a *different* word are separate
+  escalation mechanisms and keep applying regardless: the bucket's own
+  name (bucket delete, force-empty, enabling object lock), `purge`
+  (bulk noncurrent purge >50 versions) and `convert` (bulk storage-class
+  conversion). Settings hint reworded in all 15 languages ("…to every
+  delete confirmation", not just the window), and the usage-guide ladder
+  now footnotes which gates the setting governs.
 - **Dragging files from Windows File Explorer into the app did nothing.**
   Three independent defects, any one of them fatal: (1) the Wails
   `DisableWebViewDrop` option set WebView2 `AllowExternalDrop=false`,
