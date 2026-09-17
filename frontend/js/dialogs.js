@@ -65,6 +65,159 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
   return { close, body: box.querySelector('.modal-body'), btns: [...foot.children] };
 }
 
+// ---------- popouts: floating, non-modal windows ----------
+// Popouts are the "keep it open while working" tier: transfers, the help
+// views — anything meant for monitoring or reading while the user keeps
+// using the app. Unlike modals they cast NO mask (the view under them
+// stays fully interactive), don't trap focus, and several can float at
+// once. Wails v2 gives the app a single webview, so windows are bounded
+// by the app window (true out-of-window tear-off would need Wails v3
+// multi-window or a second app process); within it they drag by their
+// header, resize from the bottom-right grip, raise above siblings on
+// any press, remember geometry per id (s3b-popout-<id>) and re-clamp
+// when the app window shrinks. Escape closes only the topmost one — and
+// only while no modal is open (modals stay the blocking tier and, at
+// z-index 100, always overlay popouts). One instance per id: opening a
+// view that already floats focuses it instead of stacking a duplicate.
+const popRoot = () => document.getElementById('popout-root');
+const popouts = new Map(); // id -> handle
+let popZ = 60; // sibling z-order counter (modal-root stays above at 100)
+let popCascade = 0;
+
+function clampPop(box) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  // never strand a window: at least 60px stay reachable horizontally
+  // and the title bar stays grabbable vertically
+  const x = Math.min(Math.max(parseFloat(box.style.left) || 0, 60 - box.offsetWidth), vw - 60);
+  const y = Math.min(Math.max(parseFloat(box.style.top) || 0, 0), vh - 30);
+  box.style.left = `${Math.round(x)}px`;
+  box.style.top = `${Math.round(y)}px`;
+}
+
+export function openPopout({ id, title, body, buttons = [], wide = false, cls = '', onClose }) {
+  const existing = popouts.get(id);
+  if (existing) { existing.focus(); return { ...existing, fresh: false }; }
+
+  const close = (result) => {
+    box.remove();
+    popouts.delete(id);
+    document.removeEventListener('keydown', esc, true);
+    onClose?.(result);
+  };
+  // Escape: only the raised popout closes, and only when no modal is
+  // open — the modal's own capture handler owns the key otherwise.
+  const esc = (e) => {
+    if (e.key !== 'Escape') return;
+    if (!root().classList.contains('hidden')) return;
+    for (const p of popouts.values()) if (p.z > handle.z) return;
+    e.preventDefault();
+    e.stopPropagation();
+    close(null);
+  };
+  document.addEventListener('keydown', esc, true);
+
+  const foot = el('div', { class: 'modal-foot' },
+    buttons.map((b) => el('button', {
+      class: `btn ${b.class || ''}`,
+      text: b.label,
+      disabled: !!b.disabled,
+      onclick: () => b.onclick ? b.onclick(close) : close(null),
+    })));
+
+  const box = el('div', {
+    class: `popout${wide ? ' wide' : ''}${cls ? ' ' + cls : ''}`,
+    role: 'dialog', 'aria-label': title, 'data-pop': id,
+  },
+    el('div', { class: 'modal-head' },
+      el('span', { text: title }),
+      el('span', { class: 'x', text: '\u00D7', role: 'button', 'aria-label': 'Close', onclick: () => close(null) }),
+    ),
+    el('div', { class: 'modal-body' }, body),
+    buttons.length ? foot : null,
+    el('div', { class: 'pop-grip', 'aria-hidden': 'true' }),
+  );
+
+  const handle = {
+    box, close,
+    z: 0, fresh: true,
+    btns: [...foot.children],
+    body: box.querySelector('.modal-body'),
+    focus() { handle.z = ++popZ; box.style.zIndex = handle.z; },
+  };
+  popouts.set(id, handle);
+  // any pointer press raises the window above its siblings
+  box.addEventListener('pointerdown', () => handle.focus(), true);
+
+  // geometry: remembered placement/size, else a cascade near the top-right
+  let geo = null;
+  try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
+  popRoot().appendChild(box);
+  if (geo?.w) {
+    box.style.width = `${Math.max(320, Math.min(geo.w, window.innerWidth - 16))}px`;
+    box.style.height = `${Math.max(180, Math.min(geo.h || 0, window.innerHeight - 16))}px`;
+    // a remembered size outranks the CSS maxima (they only shape the
+    // default, content-driven size)
+    box.style.maxWidth = 'none';
+    box.style.maxHeight = 'none';
+    box.style.left = `${geo.x}px`;
+    box.style.top = `${geo.y}px`;
+  } else {
+    const n = popCascade++ % 8;
+    box.style.left = `${window.innerWidth - box.offsetWidth - 24 - n * 24}px`;
+    box.style.top = `${48 + n * 24}px`;
+  }
+  clampPop(box);
+  handle.focus();
+  return handle;
+}
+
+// A shrinking app window must not strand a floating window off-screen.
+window.addEventListener('resize', () => { for (const p of popouts.values()) clampPop(p.box); });
+
+// Drag + resize, delegated: one listener serves every floating window.
+// The header ignores presses on the close affordance and buttons; the
+// grip resizes (320x180 minimum, viewport-bounded). Pointer-up persists
+// the geometry under the window's id.
+document.addEventListener('pointerdown', (e) => {
+  const box = e.target.closest?.('.popout');
+  if (!box || !popRoot().contains(box)) return;
+  const head = e.target.closest('.modal-head');
+  const grip = e.target.closest('.pop-grip');
+  if (!head && !grip) return;
+  if (head && e.target.closest('.x, button')) return;
+  e.preventDefault();
+  const sx = e.clientX, sy = e.clientY;
+  const ox = parseFloat(box.style.left) || 0, oy = parseFloat(box.style.top) || 0;
+  const ow = box.offsetWidth, oh = box.offsetHeight;
+  const resize = !!grip;
+  box.classList.toggle('dragging', !resize);
+  const move = (ev) => {
+    if (resize) {
+      box.style.width = `${Math.max(320, Math.min(ow + ev.clientX - sx, window.innerWidth - 16))}px`;
+      box.style.height = `${Math.max(180, Math.min(oh + ev.clientY - sy, window.innerHeight - 16))}px`;
+      box.style.maxWidth = 'none';
+      box.style.maxHeight = 'none';
+    } else {
+      box.style.left = `${ox + ev.clientX - sx}px`;
+      box.style.top = `${oy + ev.clientY - sy}px`;
+      clampPop(box);
+    }
+  };
+  const up = () => {
+    box.classList.remove('dragging');
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', up);
+    const pid = box.dataset.pop;
+    if (pid) localStorage.setItem(`s3b-popout-${pid}`, JSON.stringify({
+      x: parseFloat(box.style.left) || 0,
+      y: parseFloat(box.style.top) || 0,
+      w: box.offsetWidth, h: box.offsetHeight,
+    }));
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+});
+
 // ---------- confirmations (safety ladder) ----------
 export function confirm({ title, message, okLabel = 'OK', danger = false }) {
   let settled = false;
@@ -675,17 +828,18 @@ export function doctorDialog(bucket) {
     for (const r of rows.values()) r.setRunning(false);
   }
 
-  openModal({
+  const pop = openPopout({
+    id: `doctor${bucket ? `:${bucket}` : ''}`,
     title: `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`,
     body: el('div', {}, summary, meta, el('div', { style: 'height:10px' }), list, warnBox),
     wide: true,
     buttons: [
       { label: t('doctor.runAll'), class: 'primary', onclick: () => runAll() },
-      { label: 'Close' },
     ],
   });
 
-  api.DoctorChecks().then((names) => {
+  // already floating: focus() did the work — don't re-fetch the check list
+  if (pop.fresh) api.DoctorChecks().then((names) => {
     for (const name of names) {
       const r = makeRow(name);
       rows.set(name, r);
@@ -697,16 +851,23 @@ export function doctorDialog(bucket) {
 // ---------- transfer manager ----------
 export function transferManager(onClose) {
   const list = el('div', {});
-  const { close } = openModal({
+  let off = () => {};
+  // A popout, not a modal: the whole point is watching jobs while the
+  // app keeps working — no mask, draggable, one instance (reopening
+  // focuses the floating window). Unsubscribes transfer:update on close.
+  const pop = openPopout({
+    id: 'transfers',
     title: t('transfer.managerTitle'),
     body: list,
     wide: true,
     buttons: [
-      { label: t('transfer.clearFinished'), onclick: async (c) => { await api.ClearFinishedTransfers(); draw(); } },
-      { label: t('dlg.close'), onclick: (c) => { c(); onClose?.(); } },
+      { label: t('transfer.clearFinished'), onclick: async () => { await api.ClearFinishedTransfers(); draw(); } },
     ],
-    onClose: () => off(),
+    onClose: () => { off(); onClose?.(); },
   });
+  // already floating: focus() did the work — the first instance owns
+  // the subscription, a second one would leak it
+  if (!pop.fresh) return { close: pop.close };
 
   async function draw() {
     const jobs = await api.ActiveTransfers();
@@ -744,9 +905,8 @@ export function transferManager(onClose) {
   }
 
   draw();
-  const off = onEvent('transfer:update', () => draw());
-  const origClose = close;
-  return { close: () => origClose() };
+  off = onEvent('transfer:update', () => draw());
+  return { close: () => pop.close() };
 }
 
 // fmtEta renders a remaining-seconds estimate for running jobs.
@@ -1120,7 +1280,7 @@ export function helpSheet() {
   const body = el('div', { class: 'help-grid' },
     rows.map(([k, v]) => el('div', { class: 'row' }, el('kbd', { text: k }), el('span', { text: v }))),
   );
-  openModal({ title: 'Keyboard shortcuts', body, wide: true, buttons: [{ label: 'Close' }] });
+  openPopout({ id: 'keys', title: 'Keyboard shortcuts', body, wide: true });
 }
 
 // ---------- usage guide + supported data sources (Help menu) ----------
@@ -1183,12 +1343,14 @@ export function usageGuideDialog() {
   };
   strip.replaceChildren(...GUIDE_SECTIONS.map(([name]) =>
     el('div', { class: 'tab', 'data-tab': name, text: name, onclick: () => select(name) })));
-  openModal({
+  const pop = openPopout({
+    id: 'guide',
     title: 'User guide',
     body: el('div', { class: 'admin' }, strip, content),
     cls: 'admin-modal',
-    buttons: [{ label: 'Close' }],
   });
+  // already floating: focus() did the work — geometry stays as the user left it
+  if (!pop.fresh) return;
   // Pin the tab body to the tallest section so switching tabs never
   // resizes the window (all sections are static — measure once at open).
   let maxH = 0;
@@ -1227,7 +1389,7 @@ export function sourcesInfoDialog() {
       ...lines.map((l) => el('div', { class: 'guide-p', text: l })),
     )),
   );
-  openModal({ title: 'Supported data sources', body, wide: true, buttons: [{ label: 'Close' }] });
+  openPopout({ id: 'sources', title: 'Supported data sources', body, wide: true });
 }
 
 // ---------- conflict policy + transfer throttle ----------
