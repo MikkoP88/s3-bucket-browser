@@ -885,7 +885,10 @@ function wireGrid() {
   const gridBodyMimes = ['application/x-s3b', 'application/x-s3b-local'];
   grid.body.addEventListener('dragover', (e) => {
     if (e.target.closest('.grid-row')) return; // row handlers own it
-    if (xferDestOf(nav.current) && gridBodyMimes.some((t) => e.dataTransfer.types.includes(t))) {
+    // external OS file drags highlight too (their upload arrives via the
+    // wails:file-drop event, not the DOM drop handler below)
+    const types = e.dataTransfer.types;
+    if (xferDestOf(nav.current) && (gridBodyMimes.some((t) => types.includes(t)) || types.includes('Files'))) {
       e.preventDefault();
       grid.body.classList.add('drop-target');
     }
@@ -2365,14 +2368,13 @@ function runDoctor(bucket) {
 
 // ============================ drag & drop ============================
 function wireDrop() {
-  onEvent('wails:file-drop', (data) => {
-    const paths = data?.paths || [];
-    if (!paths.length) return;
-    // OS-level drop: hit-test which pane sits under the cursor. The side
-    // pane accepts when visible and inside a directory (its binding decides
-    // the destination); otherwise the main view takes the drop.
-    const hit = Number.isFinite(data?.x) && Number.isFinite(data?.y)
-      ? document.elementFromPoint(data.x, data.y)
+  // OS-level drop: hit-test which pane sits under the cursor. The side
+  // pane accepts when visible and inside a directory (its binding decides
+  // the destination); otherwise the main view takes the drop.
+  const handleOSDrop = (x, y, paths) => {
+    if (!paths?.length) return;
+    const hit = Number.isFinite(x) && Number.isFinite(y)
+      ? document.elementFromPoint(x, y)
       : null;
     if (hit?.closest('#local-pane') && localPane.visible) {
       const b = localPane.binding;
@@ -2405,7 +2407,22 @@ function wireDrop() {
     const loc = nav.current;
     if (loc?.kind === 'remote') { uploadToRemote(paths, loc.source, loc.path || '/'); return; }
     uploadPaths(paths);
-  });
+  };
+  // Wails delivers the drop as three positional arguments (x, y, paths) —
+  // pkg/runtime OnFileDrop is the canonical consumer. Registering through
+  // runtime.OnFileDrop (not plain EventsOn) is also what arms the bridge:
+  // it attaches the runtime's dragover/dragleave/drop listeners, which
+  // preventDefault external file drags (so the webview never navigates to
+  // the dropped file) and forward the files to Go to resolve their real
+  // paths. useDropTarget=false — the app does its own hit-testing; nothing
+  // here carries the --wails-drop-target CSS. Bridges without the full
+  // runtime (test harnesses) still deliver the event through the plain
+  // events subscription.
+  if (typeof window.runtime?.OnFileDrop === 'function') {
+    window.runtime.OnFileDrop(handleOSDrop, false);
+  } else {
+    onEvent('wails:file-drop', (x, y, paths) => handleOSDrop(x, y, paths));
+  }
 }
 
 // copyS3Selection runs an S3→S3 copy/move with the per-task version

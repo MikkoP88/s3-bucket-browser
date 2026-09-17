@@ -64,8 +64,17 @@ func Run(version string) error {
 		OnBeforeClose: app.ShouldClose,
 		Bind:          []interface{}{app},
 		DragAndDrop: &options.DragAndDrop{
-			EnableFileDrop:     true, // native OS file drops -> wails:file-drop
-			DisableWebViewDrop: true, // don't let the webview "open" dropped files
+			// Native OS file drops -> wails:file-drop. The Windows bridge
+			// RIDES the webview's DOM drop event: DisableWebViewDrop sets
+			// WebView2 AllowExternalDrop=false, which rejects external
+			// drags outright — no DOM drop is ever delivered, so the file
+			// drop-in chain goes dead. Keeping the webview drop enabled is
+			// safe because the frontend registers through
+			// runtime.OnFileDrop, whose listeners preventDefault every
+			// external file drag: the webview never navigates to the
+			// dropped file (the protection the old flag tried to buy).
+			EnableFileDrop:     true,
+			DisableWebViewDrop: false,
 		},
 	})
 }
