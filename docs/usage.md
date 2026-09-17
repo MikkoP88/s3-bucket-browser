@@ -75,6 +75,19 @@ never written to logs. See [security.md](security.md) for the full
 model, including the opt-in **Secure Storage** mode that encrypts the
 whole source store as one AES-256-GCM envelope.
 
+### If the app won't start
+
+A launch with no window and no error is almost never a broken install —
+it's leftover state from a hard-killed session. When the app is killed
+outright (power loss, crash, force quit), its WebView2 helper processes
+can survive and keep holding the browser-profile lockfile, and every
+later launch used to block on that lock silently. The app now clears
+those orphaned helpers itself before opening a window, and if the
+window still hasn't appeared after 60 seconds it says so — a message
+box (Windows) or terminal line (Linux/macOS) instead of an invisible
+hang, with the details in the event log (**Ctrl+L**). Starting it
+again after that message normally just works.
+
 ---
 
 ## 2. Supported data sources

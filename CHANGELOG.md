@@ -23,7 +23,24 @@ stale app clipboard, and the Settings toggle off/on live — debris
 permanently purged afterwards so the marker-count assertions stay
 deterministic).
 
+Startup reliability: a hard-killed session (power loss, crash, force
+quit) could leave an orphaned WebView2 process tree holding the
+browser-profile lockfile, after which every launch hung invisibly — a
+live process in Task Manager, no window, no error, one more wedged
+process per retry. The GUI now sweeps orphaned webview trees before
+creating its own window and arms a startup watchdog so a hang that
+still happens fails loudly instead of forever.
+
 ### Fixed
+
+- **GUI startup could hang forever with no window.** If a previous
+  session was hard-killed, its `msedgewebview2.exe` children could
+  survive it and keep holding the WebView2 user-data-folder lockfile;
+  every later launch then blocked inside WebView2 environment creation.
+  On Windows the app now terminates orphaned webview trees (dead parent
+  PID) before starting the window. Healthy trees with a live host are
+  never touched, and PID reuse can only make the sweep skip, never
+  overreach.
 
 - **Explorer → app paste was a silent no-op.** `paste()` only consulted
   the OS clipboard when the app clipboard was empty, and the app
@@ -53,6 +70,13 @@ deterministic).
   Re-enabling keeps last-copy-wins semantics (no reload needed).
 - New `OsClipboardState` binding exposing the clipboard sequence number
   and file availability to the frontend (the arbitration signal).
+- **Startup watchdog (all platforms):** if the window hasn't appeared
+  60 s after launch, the app gives up loudly instead of hanging
+  silently — a message box on Windows, a stderr line on Linux/macOS,
+  an `error` entry in the event log, then exit. New `pkg/guihealth`
+  package, covered by unit tests with fake process tables plus an
+  end-to-end test that spawns a real orphan named
+  `msedgewebview2.exe` and watches the sweep reap it.
 
 ## [1.1.0-beta.12] — 2026-09-16
 

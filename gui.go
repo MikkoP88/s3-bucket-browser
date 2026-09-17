@@ -10,12 +10,14 @@
 package gui
 
 import (
+	"context"
 	"embed"
 	"io"
 	"io/fs"
 	"log"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/api"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/guihealth"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -33,6 +35,13 @@ func Run(version string) error {
 	// earn it — drop the whole default logger. Application events use the
 	// separate eventlog package and are unaffected.
 	log.SetOutput(io.Discard)
+	// Clear anything an earlier session left wedged (Windows: orphaned
+	// WebView2 trees holding the user-data folder), then guarantee that a
+	// start which never produces a window fails loudly — message box plus
+	// event-log entry — instead of hanging invisibly forever.
+	guihealth.Preflight()
+	guihealth.ArmStartupWatchdog()
+	defer guihealth.DisarmStartupWatchdog()
 	app := api.New(version)
 	assets, err := fs.Sub(frontendFS, "frontend")
 	if err != nil {
@@ -45,8 +54,11 @@ func Run(version string) error {
 		MinWidth:    960,
 		MinHeight:   600,
 		AssetServer: &assetserver.Options{Assets: assets},
-		OnStartup:   app.Startup,
-		OnShutdown:  app.Shutdown,
+		OnStartup: func(ctx context.Context) {
+			guihealth.MarkWindowUp() // window + webview exist — start succeeded
+			app.Startup(ctx)
+		},
+		OnShutdown: app.Shutdown,
 		// The X button asks before losing work (running transfers, unsaved
 		// profile) — the frontend confirms through exit:confirm/ConfirmExit.
 		OnBeforeClose: app.ShouldClose,
