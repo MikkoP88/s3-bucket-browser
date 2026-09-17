@@ -22,6 +22,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The marker toggle now hides delete-marker versions everywhere.**
+  Settings → View → *Show delete marker icons* (default off) already
+  folded markers out of the grid's ⛔ badges and the Versions and
+  Content Versions windows — but the Delete Marker window ignored it
+  and always listed them. It now honors the toggle like every other
+  marker surface: while off it fetches and lists nothing, showing a
+  notice with an inline *Show delete markers* button that makes the
+  same flip the View menu does (the grid re-badges live). The
+  context-menu entry stays available — the window remains the
+  undo-delete surface — and bucket admin version stats and pre-delete
+  safety counts keep reporting true numbers either way.
 - **Every destructive operation now confirms in the Delete Window.**
   Four flows bypassed Settings → Deleting → *Always use the delete
   window* and confirmed through bare prompts: bucket delete, the

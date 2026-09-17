@@ -875,6 +875,13 @@ function wireGrid() {
     if (!loc || loc.kind !== 'objects') return;
     markersDialog(loc.bucket, row.key, row.isDir, refreshCurrent);
   };
+  // The Delete Marker window's inline opt-in flips the same localStorage
+  // knob boot reads — keep the grid's ⛔ badges in step the moment it
+  // changes (identical effect to the View-menu item).
+  window.addEventListener('s3b-markers-changed', () => {
+    grid.showMarkers = localStorage.getItem('s3b-show-markers') === '1';
+    grid.render();
+  });
   grid.on.drop = (targetRow, data, e) => {
     const loc = nav.current;
     if (loc.kind === 'objects') dropToTarget({ kind: 's3', source: loc.source || viewSource, bucket: loc.bucket, dir: targetRow.key }, data, e);
