@@ -172,6 +172,7 @@ async function step(name, fn) {
     if (await modalVisible()) await closeModal();
     await closeCtx();
     await page.keyboard.press('Escape');
+    await sweepPopouts();
     await sleep(40);
   } catch { /* pre-boot (about:blank) or page gone */ }
   try { await fn(); }
@@ -808,6 +809,45 @@ async function closeModal() {
 async function modalVisible() {
   return evalPage(() => !document.getElementById('modal-root').classList.contains('hidden'));
 }
+// ---------- floating popouts (transfers / help views) ----------
+// id match is exact-or-prefixed: the doctor window ids itself
+// "doctor:<bucket>" when a bucket is open
+const popSel = (i) => `#popout-root .popout[data-pop="${i}"], #popout-root .popout[data-pop^="${i}:"]`;
+async function popoutVisible(id) {
+  return evalPage((s) => !!document.querySelector(s), popSel(id));
+}
+async function closePopout(id) {
+  await evalPage((s) => {
+    document.querySelector(`${s} .modal-head .x`)?.click();
+  }, popSel(id));
+  await sleep(80);
+}
+// step isolation: popouts left floating by a failed step must not leak
+// into later steps — geometry keys are wiped too (a persisted position
+// from one step would seed the next one's placement)
+async function sweepPopouts() {
+  await evalPage(() => {
+    for (const b of document.querySelectorAll('#popout-root .popout')) b.querySelector('.modal-head .x')?.click();
+    for (const k of Object.keys(localStorage)) if (k.startsWith('s3b-popout-')) localStorage.removeItem(k);
+  });
+  await sleep(60);
+}
+// synthetic pointer drag (header) / resize (grip) on a floating popout:
+// pointerdown on the handle, pointermove/pointerup on window — exactly
+// the events the delegated handlers in dialogs.js listen for
+async function popDrag(id, dx, dy, part = 'head') {
+  await evalPage(([s, ddx, ddy, p]) => {
+    const b = document.querySelector(s);
+    const h = b?.querySelector(p === 'grip' ? '.pop-grip' : '.modal-head');
+    if (!b || !h) throw new Error(`popDrag: no ${p} on popout ${s}`);
+    const r = h.getBoundingClientRect();
+    const o = { bubbles: true, cancelable: true, isPrimary: true, pointerId: 7, clientX: r.x + r.width / 2, clientY: r.y + Math.min(r.height / 2, 6) };
+    h.dispatchEvent(new PointerEvent('pointerdown', o));
+    window.dispatchEvent(new PointerEvent('pointermove', { ...o, clientX: o.clientX + ddx, clientY: o.clientY + ddy }));
+    window.dispatchEvent(new PointerEvent('pointerup', o));
+  }, [popSel(id), dx, dy, part]);
+  await sleep(40);
+}
 // The per-task version-choice dialog (S3→S3 onto a versioned destination):
 // wait for it, set the preserve checkbox to `preserve`, click the primary
 // Copy/Move button.
@@ -835,6 +875,14 @@ async function layoutAudit() {
       const r = m.getBoundingClientRect();
       if (r.left < -0.5 || r.top < -0.5 || r.right > vw + 0.5 || r.bottom > vh + 0.5) bad.push('modal-outside-viewport');
       for (const b of m.querySelectorAll('.modal-foot .btn')) {
+        if (b.scrollWidth > b.clientWidth + 1) bad.push('foot-btn-clipped');
+      }
+    }
+    // floating windows may be dragged anywhere, but never stranded off-screen
+    for (const p of document.querySelectorAll('#popout-root .popout')) {
+      const r = p.getBoundingClientRect();
+      if (r.left < -0.5 || r.top < -0.5 || r.right > vw + 0.5 || r.bottom > vh + 0.5) bad.push('popout-outside-viewport');
+      for (const b of p.querySelectorAll('.modal-foot .btn')) {
         if (b.scrollWidth > b.clientWidth + 1) bad.push('foot-btn-clipped');
       }
     }
@@ -1278,28 +1326,28 @@ await step('help-guide', async () => {
   await ok('Help→User guide present', !!guide);
   if (guide) {
     await guide.asElement().click();
-    await waitFor(modalVisible, 4000, 'guide modal');
-    await ok('guide has six section tabs', waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .tabstrip .tab').length)) === 6, 4000, 'guide tabs'));
-    await ok('getting-started content rendered', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Import existing credentials'));
-    // tab switches must not resize the dialog: the tallest static section
+    await waitFor(() => popoutVisible('guide'), 4000, 'guide popout');
+    await ok('guide has six section tabs', waitFor(async () => (await evalPage(() => document.querySelectorAll('#popout-root .tabstrip .tab').length)) === 6, 4000, 'guide tabs'));
+    await ok('getting-started content rendered', (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('Import existing credentials'));
+    // tab switches must not resize the window: the tallest static section
     // is measured at open and pinned as the body's min-height
     await ok('guide height pinned across all six tabs', evalPage(() => {
-      const modal = document.querySelector('#modal-root .modal');
+      const modal = document.querySelector('#popout-root .popout[data-pop="guide"]');
       if (!modal) return false;
       const h0 = modal.getBoundingClientRect().height;
       const hs = [];
-      for (const tb of Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))) {
+      for (const tb of Array.from(document.querySelectorAll('#popout-root .tabstrip .tab'))) {
         tb.click();
         hs.push(modal.getBoundingClientRect().height);
       }
       return hs.length === 6 && Math.max(...hs, h0) - Math.min(...hs, h0) <= 1;
     }));
     await shot('guide');
-    const tab = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))
+    const tab = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .tabstrip .tab'))
       .find((t) => /^transfers$/i.test(t.textContent.trim())) || null);
     if (tab) { await tab.asElement().click(); await sleep(80); }
-    await ok('guide tab switch works', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('multipart'));
-    await closeModal();
+    await ok('guide tab switch works', (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('multipart'));
+    await closePopout('guide');
   }
   await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
   await sleep(80);
@@ -1308,11 +1356,11 @@ await step('help-guide', async () => {
   await ok('Help→Supported data sources present', !!src);
   if (src) {
     await src.asElement().click();
-    await waitFor(modalVisible, 4000, 'sources modal');
-    const txt = await evalPage(() => document.getElementById('modal-root').textContent);
+    await waitFor(() => popoutVisible('sources'), 4000, 'sources popout');
+    const txt = await evalPage(() => document.querySelector('#popout-root .popout[data-pop="sources"]').textContent);
     await ok('sources list covers engines', ['SFTP', 'FTP', 'WebDAV', 'MinIO', 'Cloudflare R2'].every((s) => txt.includes(s)));
     await shot('sources-info');
-    await closeModal();
+    await closePopout('sources');
   }
 });
 
@@ -1339,12 +1387,12 @@ await step('about-keysheet', async () => {
   }
   // F1 keyboard shortcuts sheet
   await page.keyboard.press('F1');
-  await waitFor(modalVisible, 4000, 'keysheet');
-  await ok('keysheet lists shortcuts', waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .help-grid .row').length)) >= 18, 4000, 'keys rows'));
-  await ok('keysheet uses the wide size class', evalPage(() => document.querySelector('#modal-root .modal.wide') !== null));
+  await waitFor(() => popoutVisible('keys'), 4000, 'keysheet');
+  await ok('keysheet lists shortcuts', waitFor(async () => (await evalPage(() => document.querySelectorAll('#popout-root .help-grid .row').length)) >= 18, 4000, 'keys rows'));
+  await ok('keysheet uses the wide size class', evalPage(() => document.querySelector('#popout-root .popout.wide') !== null));
   await ok('keysheet layout clean', (await layoutAudit()).ok);
   await shot('keysheet');
-  await closeModal();
+  await closePopout('keys');
 });
 
 await step('settings-dialog', async () => {
@@ -1685,17 +1733,17 @@ await step('doctor', async () => {
   await ok('Help→Doctor present', !!docItem);
   if (!docItem) return;
   await docItem.asElement().click();
-  await waitFor(modalVisible, 4000, 'doctor modal');
-  await ok('doctor checks listed', waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Connectivity'), 4000, 'checks'));
-  const run = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+  await waitFor(() => popoutVisible('doctor'), 4000, 'doctor popout');
+  await ok('doctor checks listed', waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop^="doctor"]').textContent)).includes('Connectivity'), 4000, 'checks'));
+  const run = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop^="doctor"] button'))
     .find((b) => /run all/i.test(b.textContent)) || null);
   await ok('Run all button present', !!run);
   if (run) {
     await run.asElement().click();
-    await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('warn'), 4000, 'report');
+    await waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop^="doctor"]').textContent)).includes('warn'), 4000, 'report');
   }
-  await shotOf('doctor', '#modal-root .modal');
-  await closeModal();
+  await shotOf('doctor', '#popout-root .popout[data-pop^="doctor"]');
+  await closePopout('doctor');
 });
 
 await step('admin-panel', async () => {
@@ -2354,18 +2402,104 @@ await step('transfers', async () => {
     .find((i) => /transfers/i.test(i.textContent)) || null);
   await ok('View→Transfers present', !!trItem);
   if (trItem) await trItem.asElement().click();
-  await waitFor(modalVisible, 4000, 'transfers modal');
-  await ok('job rendered with its current file', waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('video-final.mp4'), 4000, 'jobs'));
+  await waitFor(() => popoutVisible('transfers'), 4000, 'transfers popout');
+  await ok('job rendered with its current file', waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="transfers"]').textContent)).includes('video-final.mp4'), 4000, 'jobs'));
   await ok('percent badge on every job', evalPage(() => {
-    const ps = Array.from(document.querySelectorAll('#modal-root .tr-pct'));
+    const ps = Array.from(document.querySelectorAll('#popout-root .tr-pct'));
     return ps.length === 2 && ps.every((p) => /\d+%/.test(p.textContent));
   }));
-  await ok('running job leads the list', evalPage(() => document.querySelector('#modal-root .tr-job')?.classList.contains('running') === true));
-  await ok('failed and skipped counted aloud', evalPage(() => /1 failed/.test(document.getElementById('modal-root').textContent)
-    && /2 skipped/.test(document.getElementById('modal-root').textContent)));
-  await ok('running job offers Cancel', evalPage(() => !!document.querySelector('#modal-root .tr-job.running .btn')));
-  await shotOf('transfers', '#modal-root .modal');
-  await closeModal();
+  await ok('running job leads the list', evalPage(() => document.querySelector('#popout-root .tr-job')?.classList.contains('running') === true));
+  await ok('failed and skipped counted aloud', evalPage(() => {
+    const t = document.querySelector('#popout-root .popout[data-pop="transfers"]').textContent;
+    return /1 failed/.test(t) && /2 skipped/.test(t);
+  }));
+  await ok('running job offers Cancel', evalPage(() => !!document.querySelector('#popout-root .tr-job.running .btn')));
+  await shotOf('transfers', '#popout-root .popout[data-pop="transfers"]');
+  await closePopout('transfers');
+});
+
+await step('popouts', async () => {
+  // deterministic grid state: the buckets view of the default S3 source
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+  // open the transfer manager as a floating window
+  await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'running', totalFiles: 3, doneFiles: 1 }));
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  const trItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /transfers/i.test(i.textContent)) || null);
+  if (trItem) await trItem.asElement().click();
+  await waitFor(() => popoutVisible('transfers'), 4000, 'transfers popout');
+  // non-modal: no mask, the grid underneath still works. The click lands
+  // on the row's left edge — the row's center would sit under the
+  // floating window itself, and the point of the check is that the root
+  // passes clicks through everywhere else
+  await ok('popout casts no modal mask', (await modalVisible()) === false);
+  const rowH = await gridRow('team-files');
+  if (!rowH) throw new Error('no grid row "team-files"');
+  await rowH.asElement().click({ position: { x: 20, y: 8 } });
+  await ok('grid still interactive under a popout', /^1 of /.test(await txt('#status-selection')));
+  // header drag moves the window and persists its geometry
+  const g0 = await evalPage(() => {
+    const r = document.querySelector('#popout-root .popout[data-pop="transfers"]').getBoundingClientRect();
+    return { x: r.x, y: r.y };
+  });
+  await popDrag('transfers', -120, 60);
+  const g1 = await evalPage(() => {
+    const b = document.querySelector('#popout-root .popout[data-pop="transfers"]');
+    const r = b.getBoundingClientRect();
+    return { x: r.x, y: r.y, saved: JSON.parse(localStorage.getItem('s3b-popout-transfers') || 'null') };
+  });
+  await ok('header drag moves the window', g1.x <= g0.x - 100 && g1.y >= g0.y + 50);
+  await ok('geometry persisted per id', !!(g1.saved && Number.isFinite(g1.saved.x) && g1.saved.w > 300));
+  // a second window floats on top; pressing either one raises it
+  await page.keyboard.press('F1');
+  await waitFor(() => popoutVisible('keys'), 4000, 'keys popout');
+  await ok('two popouts float at once', evalPage(() => document.querySelectorAll('#popout-root .popout').length === 2));
+  const z0 = await evalPage(() => ({
+    keys: parseInt(document.querySelector('#popout-root .popout[data-pop="keys"]').style.zIndex, 10),
+    tr: parseInt(document.querySelector('#popout-root .popout[data-pop="transfers"]').style.zIndex, 10),
+  }));
+  await ok('newest window stacks on top', z0.keys > z0.tr);
+  await popDrag('transfers', 0, 0);
+  const z1 = await evalPage(() => parseInt(document.querySelector('#popout-root .popout[data-pop="transfers"]').style.zIndex, 10));
+  await ok('pressing a window raises it above siblings', z1 > z0.keys);
+  // one instance per id: reopening focuses instead of duplicating
+  await page.keyboard.press('F1');
+  await sleep(120);
+  await ok('reopening focuses the existing window', evalPage(() => document.querySelectorAll('#popout-root .popout[data-pop="keys"]').length === 1));
+  // grip resize grows the window
+  const s0 = await evalPage(() => {
+    const r = document.querySelector('#popout-root .popout[data-pop="keys"]').getBoundingClientRect();
+    return { w: r.width, h: r.height };
+  });
+  await popDrag('keys', 140, 90, 'grip');
+  const s1 = await evalPage(() => {
+    const r = document.querySelector('#popout-root .popout[data-pop="keys"]').getBoundingClientRect();
+    return { w: r.width, h: r.height };
+  });
+  await ok('grip resizes the window', s1.w >= s0.w + 100 && s1.h >= s0.h + 60);
+  await ok('popout layout clean', (await layoutAudit()).ok);
+  await shot('popouts');
+  // a closed window reopens where it was left
+  const savedKeys = await evalPage(() => JSON.parse(localStorage.getItem('s3b-popout-keys')));
+  await closePopout('keys');
+  await page.keyboard.press('F1');
+  await waitFor(() => popoutVisible('keys'), 4000, 'keys reopen');
+  const reopened = await evalPage(() => {
+    const r = document.querySelector('#popout-root .popout[data-pop="keys"]').getBoundingClientRect();
+    return { x: r.x, y: r.y };
+  });
+  await ok('window reopens at its remembered spot', Math.abs(reopened.x - savedKeys.x) <= 2 && Math.abs(reopened.y - savedKeys.y) <= 2);
+  // Escape closes only the topmost window — twice clears both
+  await page.keyboard.press('Escape');
+  await sleep(80);
+  await ok('Escape closes only the topmost popout', evalPage(() =>
+    !document.querySelector('#popout-root .popout[data-pop="keys"]')
+    && !!document.querySelector('#popout-root .popout[data-pop="transfers"]')));
+  await page.keyboard.press('Escape');
+  await sleep(80);
+  await ok('second Escape clears the rest', evalPage(() => document.querySelectorAll('#popout-root .popout').length === 0));
 });
 
 await step('dual-pane', async () => {

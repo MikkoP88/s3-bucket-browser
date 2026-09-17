@@ -8,6 +8,22 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Popout windows — monitoring views no longer block the app.** The
+  Transfer manager, the User guide, Supported data sources, the F1
+  keyboard-shortcut sheet and the connection Doctor now open as
+  *floating non-modal windows* instead of dialogs: no grey-out mask,
+  no focus trap — the view underneath stays fully interactive, so you
+  can watch a transfer crawl or read the guide while keep working.
+  Windows drag by their header, resize from the bottom-right grip,
+  stack and raise like real windows (any press lifts a window above
+  its siblings; Escape closes only the topmost one, and only while no
+  dialog is open — confirmations still overlay everything), and each
+  remembers where you left it (`s3b-popout-<id>`; wiped by Settings
+  reset together with the rest). One instance per view: reopening
+  focuses the floating window instead of stacking a duplicate. The
+  windows are bounded by the app window (Wails v2 gives the app a
+  single webview) and re-clamp themselves when the window shrinks so
+  they can never be stranded off-screen.
 - **File-log source filter.** Settings → Logging can now filter what is
   written to the log file by *source* — the third dimension the in-app
   log drawer already filters by (bucket and data-source names). The

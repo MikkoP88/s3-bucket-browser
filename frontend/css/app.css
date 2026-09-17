@@ -485,6 +485,34 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
 .modal-foot .btn { min-width: 84px; }
 @keyframes modal-in { from { transform: translateY(6px) scale(.99); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* ================= Popouts (floating non-modal windows) ================= */
+/* The root covers the viewport but passes clicks through: only the
+   floating windows themselves are interactive. Sits below modal-root
+   (z-index 100) so confirmations always overlay the floaters. */
+#popout-root { position: fixed; inset: 0; z-index: 60; pointer-events: none; }
+.popout {
+  position: absolute; pointer-events: auto;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: var(--shadow);
+  min-width: min(420px, 92vw); max-width: min(720px, 92vw);
+  max-height: 82vh; display: flex; flex-direction: column;
+  animation: modal-in .14s ease-out;
+}
+.popout.wide { min-width: min(640px, 92vw); }
+.popout.admin-modal { min-width: min(820px, 94vw); max-width: min(1000px, 95vw); }
+/* the header is the drag handle — no text selection mid-drag */
+.popout .modal-head { cursor: grab; user-select: none; touch-action: none; }
+.popout.dragging { cursor: grabbing; }
+.popout.dragging .modal-body { pointer-events: none; }
+.popout .modal-body { flex: 1; min-height: 0; }
+/* bottom-right resize grip */
+.pop-grip {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  cursor: nwse-resize; touch-action: none;
+  background: linear-gradient(135deg, transparent 50%, var(--border-soft) 50%);
+  border-bottom-right-radius: 8px;
+}
+
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; font-size: 12.5px; }
 .kv .k { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
 .kv .v { overflow-wrap: anywhere; }

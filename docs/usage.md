@@ -145,6 +145,14 @@ directory compare) with S3 and the local pane.
 
 ![Dual pane with directory compare](screenshots/dual-pane-compare.png)
 
+- **Floating windows** — the views you keep an eye on — Transfers, the
+  User guide, the keyboard map, the sources overview, the connection
+  Doctor — open as draggable non-modal popouts: no grey-out mask, the
+  app underneath stays fully usable while a transfer crawls or you
+  read the guide. They resize from the corner grip, stack like real
+  windows (any press raises one, Escape closes the topmost), each
+  remembers where you left it, and reopening a view just focuses its
+  floating window instead of stacking a duplicate.
 - **Light/dark theme** and 15 built-in languages (English default,
   auto-detect optional) — switchable in Settings.
 
@@ -183,7 +191,8 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   which files collide, and can be throttled (256 kB/s … 10 MB/s).
 - **Transfer manager** — View → Transfers (or the status-bar counter)
   shows every job with per-file and byte-level progress, speed and
-  cancel.
+  cancel — in a floating window, so you can keep browsing while it
+  runs.
 
 ![Transfer manager](screenshots/transfers.png)
 
@@ -273,7 +282,8 @@ offers, same confirm gates.
 
 - **Doctor** — Help → Doctor (or `s3b doctor s3://bucket`) runs a guided
   diagnosis: DNS → TCP → TLS → auth → permissions, with plain-language
-  remediation and one-click re-runs of individual checks.
+  remediation and one-click re-runs of individual checks — in a floating
+  window that doesn't block the app while it runs.
 - **Presign & storage class** — the context menu creates time-limited
   pre-signed URLs (computed locally) and converts objects between
   storage classes via server-side self-copy.
