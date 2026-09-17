@@ -16,7 +16,7 @@ go build -tags s3b_headless -o s3b ./cmd/s3b   # pure-Go CLI, no GTK deps (Linux
 go run ./tools/gendocs                    # regenerate docs/cli.md
 ```
 
-Go 1.25+. The frontend is vanilla JS/CSS (no npm install, no bundler —
+Go 1.26+. The frontend is vanilla JS/CSS (no npm install, no bundler —
 embedded via `go:embed`). Windows and macOS build out of the box; Linux
 GUI builds need webkit2gtk (`sudo apt install libgtk-3-0 libwebkit2gtk-4.1-dev`).
 

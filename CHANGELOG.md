@@ -8,6 +8,22 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Drag out of the window as real files — plain drag, nothing to hold.**
+  Dragging a files-only selection (S3 objects or a remote/local listing)
+  out of the app window onto Explorer, Finder or the desktop now hands
+  the selection to the OS as a native drag that drops real files. The
+  webview's own drag data cannot do this (WebView2 does not implement
+  the Chromium DownloadURL drag-out the browser build rides), so the
+  gesture is cancelled at `dragstart` and handed to Go: the selection is
+  staged through the transfer engine into a temp dir and a native OLE
+  drag floats delay-rendered file data — the cursor moves at once and a
+  drop resolves once the bytes exist, with the same size/count envelope
+  the OS clipboard mirror uses (500 files / 256 MB). Released back over
+  the app's own window the gesture is routed through the internal
+  move/copy funnel (Shift/Ctrl state honored) instead of re-importing
+  the staged files. Selections that contain folders keep the in-app DOM
+  drag (expand-vs-zip policy for dragged directories is deliberately
+  deferred). Browser/server builds keep the loopback-URL drag-out.
 - **Popout windows — monitoring views no longer block the app.** The
   Transfer manager, the User guide, Supported data sources, the F1
   keyboard-shortcut sheet and the connection Doctor now open as
@@ -21,9 +37,10 @@ follow [Semantic Versioning](https://semver.org/).
   remembers where you left it (`s3b-popout-<id>`; wiped by Settings
   reset together with the rest). One instance per view: reopening
   focuses the floating window instead of stacking a duplicate. The
-  windows are bounded by the app window (Wails v2 gives the app a
-  single webview) and re-clamp themselves when the window shrinks so
-  they can never be stranded off-screen.
+  in-app DOM popouts are bounded by the app window and re-clamp
+  themselves when the window shrinks so they can never be stranded
+  off-screen (see the Wails v3 entry under Changed — on desktop the
+  same views can now also float as real OS windows).
 - **File-log source filter.** Settings → Logging can now filter what is
   written to the log file by *source* — the third dimension the in-app
   log drawer already filters by (bucket and data-source names). The
@@ -38,6 +55,22 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Wails v2 → v3 (v3.0.0-beta.23) — same frontend, native popout
+  windows.** The unmodified frontend now runs on the v3 runtime in the
+  desktop webview or over plain HTTP: a small bridge restores the v2
+  surface on top of v3's runtime, and `pkg/api` stays framework-free
+  behind a desktop-shell seam (events, clipboard, native dialogs, quit,
+  popout windows) installed once by the GUI. Monitoring views can now
+  float as *real OS popout windows* (v3 multi-window): a native window
+  per view, centered on the main window, per-id singleton with close
+  bookkeeping — server/browser builds keep the in-app DOM popout, and
+  the GUI workspace becomes session-only (ListSources serves the
+  in-memory registry or an open `.s3bprofile` container). A `-tags
+  server` build runs the exact production stack windowless over HTTP
+  for browser-driven validation. Build tags follow v3: no desktop tag
+  (the GUI is the default build; `production` strips devtools), `gtk3`
+  for Ubuntu 24.04's webkit2gtk 4.1 — CI, release workflow and docs
+  all updated.
 - **The marker toggle now hides delete-marker versions everywhere.**
   Settings → View → *Show delete marker icons* (default off) already
   folded markers out of the grid's ⛔ badges and the Versions and
@@ -105,6 +138,28 @@ follow [Semantic Versioning](https://semver.org/).
   hit-testing kept, external drags now highlight the grid/side-pane
   drop targets, and both harnesses exercise the real positional
   contract.
+- **No orphan root crumb in the path bar.** With zero sources
+  configured or none selected the breadcrumb drew the root bucket icon
+  for a source that isn't there; the path bar is now empty in the
+  onboarding state and whenever the session's view source matches no
+  existing source, and the root crumb returns as soon as a source
+  opens.
+- **Log drawer and Settings controls read as one family.** The log
+  drawer's Filter input had been stretched across the whole header row
+  by a later cascade rule; it is back to the compact chip that sits
+  with the toolbar's filter chips. Settings → Logging's multi-select
+  pickers had kept the drawer's compact-chip metrics — they now take
+  the settings-select metrics (13px text, select padding, 200–280px
+  band) and a settings row's Browse button sizes to its content like
+  every other button. Pinned by the visual harness as same-kind peer
+  checks, not eyeballed screenshots.
+- **Dead-code sweep.** A module-wide scan for unreferenced symbols
+  found the codebase clean apart from two leftovers: an unused OLE
+  constant in the drag-out plumbing and one i18n key (`modified`)
+  defined in all 15 dictionaries but never referenced (the grid's
+  date column uses `col.date`). Both removed; i18n parity now 258
+  keys. Stale build binaries at the repo root (pre-release `s3b`,
+  `s3b.exe`, `s3b.exe~`) cleaned from the working tree.
 
 ## [1.1.0-beta.13] — 2026-09-17
 

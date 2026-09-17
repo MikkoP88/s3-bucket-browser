@@ -171,7 +171,11 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   directory tree — or just drag files/folders from the OS anywhere onto
   the window.
 - **Download** — toolbar ▼, Ctrl+D, Enter, or the context menu.
-  Multistep transfers are multipart and resumable per file.
+  Multistep transfers are multipart and resumable per file. Dragging rows
+  **out of the window** is a download too: a plain drag of a files-only
+  selection onto Explorer, Finder or the desktop drops real files (staged
+  through the transfer engine and streamed — no modifier key); releasing
+  the same gesture back over the app window is an internal move/copy.
 - **Copy & move** — Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders,
   the tree, or the other pane. Same-source S3 copies run **server-side**
   (no traffic through you); hold Shift while dragging to force a move;
