@@ -132,6 +132,30 @@ async function shot(name) {
   await settlePaint();
   await page.screenshot({ path: file });
 }
+// Curated shot of one section inside the scrolling settings-modal body.
+// NOT shotOf: Chromium kicks the modal body's scrollTop back to the top
+// when scrollIntoView is also given inline:'nearest' (observed
+// deterministically — the on-screen check passes, then the scroll flips
+// and the capture lands a top-of-dialog shot). Scrolling with block only
+// and never scrolling again afterwards holds the position.
+async function shotModalSection(name, sectionText) {
+  const sel = '.set-section';
+  await evalPage((s, t) => {
+    const el = Array.from(document.querySelectorAll(s)).find((e) => new RegExp(t, 'i').test(e.textContent));
+    el?.scrollIntoView({ block: 'center' });
+    return !!el;
+  }, sel, sectionText);
+  await sleep(120);
+  await ok(`shot "${name}": section on screen`, evalPage((s, t) => {
+    const el = Array.from(document.querySelectorAll(s)).find((e) => new RegExp(t, 'i').test(e.textContent));
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;
+  }, sel, sectionText));
+  await waitFor(() => evalPage(() => document.getElementById('toasts').children.length === 0),
+    4600, 'toasts to clear').catch(() => {});
+  await shot(name);
+}
 // Curated-shot capture (the ones docs/screenshots/ republish): scrolls the
 // subject into view where needed, verifies as a real check that the subject
 // is fully on screen, and waits out transient toasts — a shot whose subject
@@ -1438,6 +1462,42 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /explorer copy & paste/i.test(x));
   }));
   await shot('settings-new-rows');
+  // Logging section: the file-log pickers must read as the same control
+  // family as every other settings selector. shotModalSection scrolls the
+  // section into view (block-only — see its comment) and the geometry
+  // checks below pin the fix: a settings-row ms-btn matches a settings
+  // select's height, font, border and background (the old 11px chip
+  // failed all of them)
+  await shotModalSection('settings-logging', 'logging');
+  await ok('file-log pickers match settings selector metrics', evalPage(() => {
+    const btn = document.querySelector('#modal-root .set-row .ms-btn');
+    const ctl = document.querySelector('#modal-root select.set-ctl');
+    if (!btn || !ctl) return false;
+    const b = btn.getBoundingClientRect();
+    const c = ctl.getBoundingClientRect();
+    const bs = getComputedStyle(btn);
+    const cs = getComputedStyle(ctl);
+    // same kind = same family: size, type, and chrome all match a real
+    // settings select; the 200px min / 280px max sizing band is .set-ctl's
+    return Math.abs(b.height - c.height) <= 2
+      && bs.fontSize === cs.fontSize
+      && bs.borderRadius === cs.borderRadius
+      && bs.borderColor === cs.borderColor
+      && bs.backgroundColor === cs.backgroundColor
+      && b.width >= 200 && b.width <= 280;
+  }));
+  // Browse… is a button in the log-file row's control group: same height
+  // as the select beside it, but sized to its content — not the 200px
+  // min-width meant for selects
+  await ok('browse button matches its group but keeps content width', evalPage(() => {
+    const grp = document.querySelector('#modal-root .set-ctl-group');
+    const sel = grp?.querySelector('select.set-ctl');
+    const btn = grp?.querySelector('button.btn');
+    if (!grp || !sel || !btn) return false;
+    const s = sel.getBoundingClientRect();
+    const b = btn.getBoundingClientRect();
+    return Math.abs(b.height - s.height) <= 2 && b.width > 0 && b.width < 140;
+  }));
   // badge rows default OFF (the shim wipes every s3b-* key at boot): tick
   // both icon toggles — the apply thunk persists the keys and re-renders
   // the grid, which the version-marker-badges / marker-window walks assert
@@ -1481,9 +1541,10 @@ await step('settings-dialog', async () => {
     return !!cb && cb.checked && vals.some((v) => /Roaming/.test(v));
   }));
   // the Security section sits below the fold in the scrolling settings body
-  // — shotOf scrolls it into view and verifies it is on screen, so the
-  // shot shows security settings, not the top of an unrelated section
-  await shotOf('settings-secure-on', '.set-section', 'security');
+  // — shotModalSection scrolls it into view (block-only) and verifies it
+  // is on screen, so the shot shows security settings, not the top of an
+  // unrelated section
+  await shotModalSection('settings-secure-on', 'security');
   // ticking a level in the file-log filter persists via SetLogSettings;
   // the current mode rides along unchanged (file-only filters)
   await resetCalls();
@@ -2759,6 +2820,23 @@ await step('log-area', async () => {
   await evalPage(() => window.__shim.emit('log:line', { time: new Date().toISOString(), level: 'warn', scope: 'harness', message: 'visual harness log line' }));
   await waitFor(async () => (await txt('#logarea')).includes('visual harness log line'), 4000, 'log line');
   await ok('log line appended', true);
+  // the Filter input must stay a compact ~130px chip: .input's width:100%
+  // used to win the cascade and stretch it across the whole header row.
+  // Its same-kind peers in this toolbar are the multiSel chips (.ms-btn):
+  // it must share their type size, height and chip chrome
+  await ok('log filter input matches its toolbar chip peers', evalPage(() => {
+    const inp = document.querySelector('#logarea .la-search');
+    const chip = document.querySelector('#logarea .la-head .ms-btn');
+    if (!inp || !chip) return false;
+    const i = getComputedStyle(inp);
+    const c = getComputedStyle(chip);
+    return inp.getBoundingClientRect().width > 100 && inp.getBoundingClientRect().width <= 150
+      && i.fontSize === c.fontSize
+      && Math.abs(inp.getBoundingClientRect().height - chip.getBoundingClientRect().height) <= 3
+      && i.borderRadius === c.borderRadius
+      && i.borderColor === c.borderColor
+      && i.backgroundColor === c.backgroundColor;
+  }));
   await shot('logarea');
   await page.click('#status-log');
 });
