@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **File-log source filter.** Settings → Logging can now filter what is
+  written to the log file by *source* — the third dimension the in-app
+  log drawer already filters by (bucket and data-source names). The
+  selector's options grow the same way the drawer's do: every source
+  that appears on a log line is registered (`logsources.json`) and
+  offered, together with the configured data sources, so a fresh source
+  is selectable before it ever logs. Like the level and area filters it
+  gates only the file — the on-screen log is untouched — and while a
+  filter is set, lines with no source stay out, exactly like the
+  drawer's rule. The line's source now also lands in `events.jsonl`
+  (and thus in `s3b log` output), where it was previously dropped.
+
 ### Changed
 
 - **Every destructive operation now confirms in the Delete Window.**

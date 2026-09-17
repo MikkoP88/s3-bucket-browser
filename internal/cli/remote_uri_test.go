@@ -16,7 +16,7 @@ import (
 // appendTestEvent simulates GUI activity landing in the shared event log.
 func appendTestEvent(t *testing.T, level, scope, msg string) {
 	t.Helper()
-	eventlog.Append(level, scope, msg)
+	eventlog.Append(level, scope, "", msg)
 }
 
 // srcEnv sets up a throwaway config dir with one local source "lab"

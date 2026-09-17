@@ -64,18 +64,21 @@ function colSection(labelKey, cur, apply) {
 
 // logFileRow builds the save-logs-to-file control: a select (off / app
 // settings folder / custom folder) plus a Browse button that picks the
-// custom location with the native folder dialog, and the two file-log
-// filters — multi-select level and scope pickers. ctx.log = { get, set,
-// browse } is injected by main.js and talks to the backend preference
-// (logsettings.json), so the choice survives restarts and `s3b log`.
-// The filters gate ONLY what is written to the log file; the in-app log
-// drawer keeps its own, independent filters.
+// custom location with the native folder dialog, and the three file-log
+// filters — multi-select level, scope and source pickers. ctx.log =
+// { get, set, browse } is injected by main.js and talks to the backend
+// preference (logsettings.json), so the choice survives restarts and
+// `s3b log`. The source picker's options come from the backend too
+// (allSources): every source seen on a log line plus the configured
+// data sources. All three filters gate ONLY what is written to the log
+// file; the in-app log drawer keeps its own, independent filters.
 function logFileRow(ctx) {
-  let cur = ctx.log.get() || {}; // { mode, dir, levels, scopes, allScopes }
+  let cur = ctx.log.get() || {}; // { mode, dir, levels, scopes, sources, allScopes, allSources }
   const dirOpt = el('option', { value: 'custom' });
   const sel = el('select', { class: 'input set-ctl' });
   const levelsSel = multiSel(t('log.all'), ['info', 'warn', 'error'], cur.levels || []);
   const scopesSel = multiSel(t('log.all'), cur.allScopes || [], cur.scopes || []);
+  const sourcesSel = multiSel(t('log.sourceAll'), cur.allSources || [], cur.sources || []);
   const sync = () => {
     dirOpt.textContent = cur.mode === 'custom' && cur.dir
       ? cur.dir
@@ -89,15 +92,16 @@ function logFileRow(ctx) {
   };
   sync();
   const apply = async (mode, dir) => {
-    cur = (await ctx.log.set(mode, dir, [...levelsSel.sel], [...scopesSel.sel])) || {};
+    cur = (await ctx.log.set(mode, dir, [...levelsSel.sel], [...scopesSel.sel], [...sourcesSel.sel])) || {};
     sync();
   };
   const applyFilters = async () => {
-    cur = (await ctx.log.set(cur.mode || 'default', cur.dir || '', [...levelsSel.sel], [...scopesSel.sel])) || {};
+    cur = (await ctx.log.set(cur.mode || 'default', cur.dir || '', [...levelsSel.sel], [...scopesSel.sel], [...sourcesSel.sel])) || {};
     sync();
   };
   levelsSel.root.addEventListener('change', applyFilters);
   scopesSel.root.addEventListener('change', applyFilters);
+  sourcesSel.root.addEventListener('change', applyFilters);
   const browse = async () => {
     const dir = await ctx.log.browse();
     if (dir) await apply('custom', dir);
@@ -120,6 +124,7 @@ function logFileRow(ctx) {
     row(t('settings.logFile'), el('span', { class: 'set-ctl-group' }, sel, btn), t('settings.logHint')),
     row(t('settings.logLevels'), levelsSel.root, t('settings.logFilterHint')),
     row(t('settings.logScopes'), scopesSel.root),
+    row(t('settings.logSources'), sourcesSel.root, t('settings.logFilterHint')),
   );
 }
 

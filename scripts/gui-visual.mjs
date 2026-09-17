@@ -371,12 +371,14 @@ function shim() {
     // CheckConflicts fixture — empty means a clean destination; the
     // conflict-view step seeds real collisions before uploading
     conflicts: [],
-    // file-log prefs: what the Settings dialog reads/writes. levels/scopes
-    // gate ONLY the log file — the in-app drawer filters client-side and
-    // never consults these.
+    // file-log prefs: what the Settings dialog reads/writes. levels/scopes/
+    // sources gate ONLY the log file — the in-app drawer filters client-side
+    // and never consults these. allSources mirrors the backend's union of
+    // seen-on-a-line sources and configured data sources.
     logSettings: {
-      mode: 'default', dir: '', levels: [], scopes: [],
+      mode: 'default', dir: '', levels: [], scopes: [], sources: [],
       allScopes: ['admin', 'app', 'copy', 'delete', 'doctor', 'download', 'import', 'list', 'mkdir', 'profile', 'rename', 'settings', 'share', 'sources', 'transfer', 'upload', 'versions'],
+      allSources: ['hetzner', 'lab', 'local', 'team-files', 'vault'],
     },
     // secure-storage status (Settings → Security): off by default; the
     // toggle flips the mock and relocates the workspaces the way the real
@@ -620,8 +622,8 @@ function shim() {
     CopySelectionVersions: (srcS, srcB, keys, dstS, dstB, prefix, move) => 'vcopy-1',
     EditingFiles: () => [{ bucket: 'team-files', key: 'docs/notes.md' }],
     GetLogSettings: () => JSON.parse(JSON.stringify(world.logSettings)),
-    SetLogSettings: (mode, dir, levels, scopes) => {
-      world.logSettings = { ...world.logSettings, mode, dir, levels: levels || [], scopes: scopes || [] };
+    SetLogSettings: (mode, dir, levels, scopes, sources) => {
+      world.logSettings = { ...world.logSettings, mode, dir, levels: levels || [], scopes: scopes || [], sources: sources || [] };
       return JSON.parse(JSON.stringify(world.logSettings));
     },
     GetSecureStorage: () => JSON.parse(JSON.stringify(world.secure)),
@@ -1449,6 +1451,37 @@ await step('settings-dialog', async () => {
   await ok('level selection rides on SetLogSettings (file log only)', ls
     && ls.args[0] === 'default' && Array.isArray(ls.args[2]) && ls.args[2].includes('warn')
     && Array.isArray(ls.args[3]) && ls.args[3].length === 0);
+  // the source picker mirrors the drawer's source filter for the FILE log
+  // only: its options come from the backend (allSources) and its selection
+  // rides as SetLogSettings' 5th argument, together with the level filter
+  await ok('file-log sources row rendered with the file-only hint', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-row'));
+    return rows.some((r) => {
+      const n = r.querySelector('.set-name')?.textContent || '';
+      return /log file: sources/i.test(n) && !!r.querySelector('.ms-btn')
+        && /only.*log file/i.test(r.querySelector('.set-hint')?.textContent || '');
+    });
+  }));
+  await resetCalls();
+  await evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((r) => /log file: sources/i.test(r.querySelector('.set-name')?.textContent || ''));
+    row?.querySelector('.ms-btn')?.click();
+  });
+  await sleep(60);
+  await evalPage(() => {
+    // several popovers can be open at once (each picker owns one and the
+    // open button stopPropagation's) — pick the one holding the option
+    const pop = Array.from(document.querySelectorAll('#modal-root .ms-pop:not(.hidden)'))
+      .find((p) => Array.from(p.querySelectorAll('.ms-opt')).some((l) => l.textContent.trim() === 'team-files'));
+    const opt = pop && Array.from(pop.querySelectorAll('.ms-opt')).find((l) => l.textContent.trim() === 'team-files');
+    opt?.querySelector('input').click();
+  });
+  await waitFor(async () => (await findCall('SetLogSettings')) !== null, 4000, 'SetLogSettings on source tick');
+  const lsrc = await findCall('SetLogSettings');
+  await ok('source selection rides on SetLogSettings 5th arg (file log only)', lsrc
+    && lsrc.args[0] === 'default' && Array.isArray(lsrc.args[4]) && lsrc.args[4].includes('team-files')
+    && Array.isArray(lsrc.args[2]) && lsrc.args[2].includes('warn'));
   await closeModal();
   await ok('modal closed', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
 });

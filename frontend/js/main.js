@@ -3123,8 +3123,8 @@ async function openSettings() {
     },
     log: {
       get: () => logSet,
-      set: async (mode, dir, levels, scopes) => {
-        try { logSet = await api.SetLogSettings(mode, dir, levels || [], scopes || []); }
+      set: async (mode, dir, levels, scopes, sources) => {
+        try { logSet = await api.SetLogSettings(mode, dir, levels || [], scopes || [], sources || []); }
         catch (e) { toast(String(e), 'error'); }
         return logSet;
       },
@@ -3156,7 +3156,7 @@ async function openSettings() {
       const favs = localStorage.getItem('s3b-favs');
       localStorage.clear();
       if (favs !== null) localStorage.setItem('s3b-favs', favs);
-      try { api.SetLogSettings('default', '', [], []); } catch { /* best effort */ }
+      try { api.SetLogSettings('default', '', [], [], []); } catch { /* best effort */ }
       window.location.reload();
     },
   });

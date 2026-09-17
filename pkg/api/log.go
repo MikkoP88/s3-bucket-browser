@@ -34,16 +34,20 @@ const (
 )
 
 // LogSettings is the save-logs-to-file preference shown in Settings.
-// Levels/Scopes filter what is WRITTEN to the file (empty = everything);
-// they never affect the in-app log drawer, which filters client-side on
-// its own controls. AllScopes lists every scope the app emits (selector
-// options; read-only metadata, ignored by SetLogSettings).
+// Levels/Scopes/Sources filter what is WRITTEN to the file (empty =
+// everything); they never affect the in-app log drawer, which filters
+// client-side on its own controls. AllScopes lists every scope the app
+// emits; AllSources the file-log source selector's options — every
+// source seen on a log line (eventlog's registry) plus the configured
+// data sources. Both are read-only metadata, ignored by SetLogSettings.
 type LogSettings struct {
-	Mode      string   `json:"mode"` // "default" | "off" | "custom"
-	Dir       string   `json:"dir"`  // the picked folder (mode == "custom")
-	Levels    []string `json:"levels"`
-	Scopes    []string `json:"scopes"`
-	AllScopes []string `json:"allScopes"`
+	Mode       string   `json:"mode"` // "default" | "off" | "custom"
+	Dir        string   `json:"dir"`  // the picked folder (mode == "custom")
+	Levels     []string `json:"levels"`
+	Scopes     []string `json:"scopes"`
+	Sources    []string `json:"sources"`
+	AllScopes  []string `json:"allScopes"`
+	AllSources []string `json:"allSources"`
 }
 
 // LogScopes lists every scope the app logs under — the Settings dialog's
@@ -61,12 +65,38 @@ func (a *App) GetLogSettings() LogSettings {
 	if s.Mode == "" {
 		s.Mode = LogModeDefault
 	}
-	return LogSettings{Mode: s.Mode, Dir: s.Dir, Levels: s.Levels, Scopes: s.Scopes, AllScopes: LogScopes}
+	return LogSettings{
+		Mode: s.Mode, Dir: s.Dir, Levels: s.Levels, Scopes: s.Scopes, Sources: s.Sources,
+		AllScopes: LogScopes, AllSources: a.logSourceOptions(),
+	}
+}
+
+// logSourceOptions unions the sources the event stream has shown
+// (eventlog's registry) with the workspace's configured data-source
+// names, sorted — a fresh source is selectable before it ever logs.
+func (a *App) logSourceOptions() []string {
+	seen := map[string]bool{}
+	for _, s := range eventlog.SeenSources() {
+		seen[s] = true
+	}
+	for _, s := range a.workspaceSources() {
+		if s.Name != "" {
+			seen[s.Name] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for s := range seen {
+		out = append(out, s)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // SetLogSettings persists the log-file preference; "custom" requires a
-// non-empty dir (the dialog browses for it first).
-func (a *App) SetLogSettings(mode, dir string, levels, scopes []string) (LogSettings, error) {
+// non-empty dir (the dialog browses for it first). Sources are free-form
+// (bucket names have no fixed vocabulary) — cleaned but not vetted
+// against the current options.
+func (a *App) SetLogSettings(mode, dir string, levels, scopes, sources []string) (LogSettings, error) {
 	if mode == "" {
 		mode = LogModeDefault
 	}
@@ -82,20 +112,22 @@ func (a *App) SetLogSettings(mode, dir string, levels, scopes []string) (LogSett
 	}
 	levels = cleanLogFilter(levels, []string{LogInfo, LogWarn, LogError})
 	scopes = cleanLogFilter(scopes, LogScopes)
-	if err := eventlog.SaveSettings(eventlog.Settings{Mode: mode, Dir: dir, Levels: levels, Scopes: scopes}); err != nil {
+	sources = cleanLogFilter(sources, nil)
+	if err := eventlog.SaveSettings(eventlog.Settings{Mode: mode, Dir: dir, Levels: levels, Scopes: scopes, Sources: sources}); err != nil {
 		return a.GetLogSettings(), err
 	}
-	a.emitLog(LogInfo, "settings", fmt.Sprintf("log file mode set to %s%s%s", mode, dirNote(dir), filterNote(levels, scopes)))
+	a.emitLog(LogInfo, "settings", fmt.Sprintf("log file mode set to %s%s%s", mode, dirNote(dir), filterNote(levels, scopes, sources)))
 	return a.GetLogSettings(), nil
 }
 
 // cleanLogFilter keeps known values, trimmed, de-duplicated, first come.
+// known == nil accepts any non-empty value (the free-form dimensions).
 func cleanLogFilter(in, known []string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, v := range in {
 		v = strings.TrimSpace(v)
-		if v == "" || seen[v] || !slices.Contains(known, v) {
+		if v == "" || seen[v] || (known != nil && !slices.Contains(known, v)) {
 			continue
 		}
 		seen[v] = true
@@ -104,18 +136,21 @@ func cleanLogFilter(in, known []string) []string {
 	return out
 }
 
-func filterNote(levels, scopes []string) string {
-	if len(levels) == 0 && len(scopes) == 0 {
+func filterNote(levels, scopes, sources []string) string {
+	if len(levels) == 0 && len(scopes) == 0 && len(sources) == 0 {
 		return ""
 	}
-	lv, sc := levels, scopes
+	lv, sc, src := levels, scopes, sources
 	if len(lv) == 0 {
 		lv = []string{"all"}
 	}
 	if len(sc) == 0 {
 		sc = []string{"all"}
 	}
-	return fmt.Sprintf(" (levels: %s; scopes: %s)", strings.Join(lv, ", "), strings.Join(sc, ", "))
+	if len(src) == 0 {
+		src = []string{"all"}
+	}
+	return fmt.Sprintf(" (levels: %s; scopes: %s; sources: %s)", strings.Join(lv, ", "), strings.Join(sc, ", "), strings.Join(src, ", "))
 }
 
 func dirNote(dir string) string {
@@ -133,7 +168,8 @@ func (a *App) emitLog(level, scope, msg string) {
 }
 
 // emitLogSrc is emitLog with the source (bucket or data-source name) the
-// line is about — the log drawer's per-source filter rides on it.
+// line is about — the log drawer's per-source filter rides on it, and so
+// does the file log's source filter.
 func (a *App) emitLogSrc(level, scope, source, msg string) {
 	a.emit(EventLogLine, LogLine{
 		Time:    time.Now().UTC(),
@@ -142,7 +178,7 @@ func (a *App) emitLogSrc(level, scope, source, msg string) {
 		Source:  source,
 		Message: msg,
 	})
-	eventlog.Append(level, scope, msg)
+	eventlog.Append(level, scope, source, msg)
 }
 
 // jobStatusLevel maps a transfer job's final status to a log level.
