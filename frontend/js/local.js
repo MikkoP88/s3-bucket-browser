@@ -73,7 +73,10 @@ export class LocalPane {
       ? ['application/x-s3b']
       : ['application/x-s3b', 'application/x-s3b-local']);
     body.addEventListener('dragover', (e) => {
-      if (this.dir && bodyMimes().some((t) => e.dataTransfer.types.includes(t))) {
+      // external OS file drags highlight too (their upload arrives via the
+      // wails:file-drop event, not the DOM drop handler below)
+      const types = e.dataTransfer.types;
+      if (this.dir && (bodyMimes().some((t) => types.includes(t)) || types.includes('Files'))) {
         e.preventDefault();
         body.classList.add('drop-target');
       }

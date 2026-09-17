@@ -86,6 +86,7 @@ const bridgeJS = `(function () {
       return off;
     },
     EventsEmit: function () { /* frontend→backend emits are not used */ },
+    OnFileDrop: function (cb) { return window.runtime.EventsOn('wails:file-drop', cb); },
   };
 })();`
 

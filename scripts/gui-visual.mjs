@@ -465,9 +465,12 @@ function shim() {
 
   // ---- event registry (window.runtime shim) ----
   const listeners = new Map();
-  const emit = (name, payload) => setTimeout(() => {
+  // payload arrives as positional arguments — the same contract as the
+  // backend Events.Emit (wails:file-drop delivers x, y, paths as three
+  // separate args, never one object).
+  const emit = (name, ...payload) => setTimeout(() => {
     for (const cb of listeners.get(name) || []) {
-      try { cb(payload); } catch (e) { console.error('shim emit', name, e); }
+      try { cb(...payload); } catch (e) { console.error('shim emit', name, e); }
     }
   }, 20);
   window.runtime = {
@@ -477,6 +480,11 @@ function shim() {
       return () => listeners.get(name)?.delete(cb);
     },
     EventsOff: (name, cb) => listeners.get(name)?.delete(cb),
+    // Mirrors the real Wails runtime API: subscribes cb to the positional
+    // (x, y, paths) contract of wails:file-drop — the production entry
+    // point wireDrop() looks for.
+    OnFileDrop: (cb) => window.runtime.EventsOn('wails:file-drop',
+      (x, y, paths) => cb(x, y, paths)),
     EventsEmit: () => {},
     WindowSetTitle: () => {},
     WindowCenter: () => {},
@@ -2524,7 +2532,7 @@ await step('dnd-os-file-drop', async () => {
   await resetCalls();
   await page.evaluate(() => {
     const r = document.getElementById('grid-body').getBoundingClientRect();
-    window.__shim.emit('wails:file-drop', { x: r.left + r.width / 2, y: r.top + r.height / 2, paths: ['C:\\Users\\demo\\Downloads\\photos.zip'] });
+    window.__shim.emit('wails:file-drop', r.left + r.width / 2, r.top + r.height / 2, ['C:\\Users\\demo\\Downloads\\photos.zip']);
   });
   await waitFor(async () => (await findCall('Upload')) !== null, 4000, 'OS-drop upload');
   const c = await findCall('Upload');
@@ -2540,7 +2548,7 @@ await step('dnd-os-file-drop-tree', async () => {
     if (!r) throw new Error(`no tree node "${label}"`);
     const box = await r.asElement().boundingBox();
     await page.evaluate(({ x, y }) => {
-      window.__shim.emit('wails:file-drop', { x, y, paths: ['C:\\Users\\demo\\Downloads\\photos.zip'] });
+      window.__shim.emit('wails:file-drop', x, y, ['C:\\Users\\demo\\Downloads\\photos.zip']);
     }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
   };
   await resetCalls();

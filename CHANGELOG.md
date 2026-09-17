@@ -4,6 +4,29 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Dragging files from Windows File Explorer into the app did nothing.**
+  Three independent defects, any one of them fatal: (1) the Wails
+  `DisableWebViewDrop` option set WebView2 `AllowExternalDrop=false`,
+  which rejects external drags outright, so the DOM drop event the
+  Windows file-drop bridge depends on never fired; (2) the frontend
+  subscribed with plain `EventsOn` instead of `runtime.OnFileDrop`, so
+  the runtime's bridging listeners were never attached and the Go side
+  never learned about a drop; (3) the handler expected a single
+  `{x, y, paths}` object while Wails emits three positional arguments —
+  `paths` was always empty and the handler returned silently. The
+  visual harness masked (3) because its shim emitted exactly the wrong
+  shape the app was written against. All three fixed: the webview drop
+  stays enabled (the runtime's listeners `preventDefault` external file
+  drags, so the webview never navigates to a dropped file), the drop
+  registers through the official `OnFileDrop` API with the app's own
+  hit-testing kept, external drags now highlight the grid/side-pane
+  drop targets, and both harnesses exercise the real positional
+  contract.
+
 ## [1.1.0-beta.13] — 2026-09-17
 
 Copy/paste reliability release: copying files in Windows File Explorer and
