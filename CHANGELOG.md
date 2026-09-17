@@ -4,7 +4,7 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0-beta.13] — 2026-09-17
 
 Copy/paste reliability release: copying files in Windows File Explorer and
 pasting into the app now actually works. The app clipboard never expired,
