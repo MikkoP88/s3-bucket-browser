@@ -31,6 +31,30 @@ More screenshots:
 
 The full tour with screenshots lives in the **[usage guide](docs/usage.md)**; the app carries the same guide (Help → User guide, F1).
 
+## Supported operating systems & requirements
+
+One binary per platform carries the GUI and the CLI together (`s3b` with no
+arguments opens the desktop app; with arguments it is the CLI).
+
+| Platform | Builds | Webview / runtime needed |
+|---|---|---|
+| **Windows 10/11** | amd64, arm64 | Microsoft Edge WebView2 (preinstalled on current Windows 10/11; a machine without it needs the free Evergreen runtime from Microsoft first) |
+| **macOS 12+** | amd64 (Intel), arm64 (Apple Silicon) | System WebKit — nothing to install |
+| **Linux desktop** | amd64 | GTK3 + WebKitGTK 4.1 (what Ubuntu 24.04+, Mint and current Fedora ship) |
+| **Linux servers / arm64** | amd64, arm64 | none — the `-tags s3b_headless` build is a pure-Go CLI with no GUI libraries |
+| **Any OS, browser-driven** | `-tags server` | none on the host — the same stack runs windowless and serves the UI over HTTP |
+
+- **To run**: the portable editions need no install and no admin rights —
+  releases ship an NSIS installer (machine-wide, elevated) and portable
+  zip (Windows), a DMG (macOS), and tarballs plus portable tarballs
+  (Linux). Secrets use the OS keychain (Windows
+  Credential Manager, macOS Keychain, Linux SecretService); keyring-less
+  hosts fall back to a `0600` file.
+- **To build from source**: Go **1.26+** and git only — the frontend is
+  vanilla JS/CSS embedded via `go:embed` (no npm install, no bundler).
+  Linux GUI builds additionally need `libgtk-3-dev` and
+  `libwebkit2gtk-4.1-dev`; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Quickstart (GUI)
 
 ```bash
@@ -48,7 +72,7 @@ go build -tags production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop 
 - **Data sources**: color-coded connections in one sidebar hierarchy — S3 sources (account-wide, or bucket-scoped via `--bucket` / `s3b source add s3://bucket`), SFTP/SCP, FTP/FTPS servers, WebDAV/WebDAVs shares and local folders, all browsable with the same Explorer UI. **Import credentials** from files or KMS/secrets services — with a live bucket-count test; the very first import, straight from the welcome screen, opens the imported bucket's content.
 - **Explorer layout**: toolbar, back/forward/up history, breadcrumb (type `source://bucket/prefix` to jump), folder tree sidebar, sortable details grid with per-column visibility, status bar, favorites.
 - **Multi-select everything**: click / Ctrl+click / Shift+click / Ctrl+A / Ctrl+I (invert), marquee drag-select, type-to-jump, full keyboard map (F1 in-app).
-- **Drag & drop + OS interop**: drop files or folders from the OS to upload; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket); rows drag out of the window as downloadable URLs; Ctrl+C mirrors the selection to the real OS clipboard and Ctrl+V uploads files copied in Explorer/Finder; **Copy name / Copy path / Copy S3 URI** put plain text on the clipboard.
+- **Drag & drop + OS interop**: drop files or folders from the OS to upload; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket); drag rows **out of the window** to Explorer, Finder or the desktop — a plain, unmodified drag hands the selection to the OS as real files (staged and streamed by the transfer engine), and a release back over the app is an internal move/copy (in the browser/server build, rows drag out as downloadable URLs instead); Ctrl+C mirrors the selection to the real OS clipboard and Ctrl+V uploads files copied in Explorer/Finder; **Copy name / Copy path / Copy S3 URI** put plain text on the clipboard.
 - **Upload**: one **Upload ▸** flyout everywhere — **Files… (Ctrl+U)** for the native multi-select dialog, **Folder…** for a whole directory tree.
 - **Transfer manager**: per-file and byte-level progress, speed, cancel — multipart and resumable, with an optional bandwidth throttle (256 kB/s … 10 MB/s) and conflict policies (overwrite / skip / rename) backed by a live pre-check that lists exactly which files collide.
 - **Versions**: opt-in version-count badges (⟲ n, ⛔) open the object's timeline or the folder-level **Content Versions** overview; restore-as-latest, one-click **undo delete** for markers, permanent destroy and bulk purge — in the dialog or via Shift+Del.

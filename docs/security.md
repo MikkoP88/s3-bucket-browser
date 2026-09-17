@@ -246,10 +246,10 @@ Additional rules:
 ## Supply chain
 
 - **Small, audited dependency set.** Runtime dependencies are permissive
-  Go modules only: MIT/Apache-2.0 (Wails, aws-sdk-go-v2, cobra/pflag,
+  Go modules only: MIT/Apache-2.0 (Wails v3, aws-sdk-go-v2, cobra/pflag,
   go-keyring, fatih/color) plus, for the remote engines, ISC
   (`jlaffaye/ftp`), BSD-2-Clause (`pkg/sftp`) and BSD-3-Clause
-  (`golang.org/x/{crypto,net,term}`). **Zero npm
+  (`golang.org/x/{crypto,net,sys,term}`). **Zero npm
   runtime dependencies.** The frontend embeds inline SVG path data from
   one MIT-licensed icon set — Bootstrap Icons 1.13.1 (pc-display,
   hdd-network, terminal-fill, lock-fill, globe, bucket-fill,

@@ -49,7 +49,6 @@ const (
 	mkLButton                  = 0x0001
 	mkShift                    = 0x0004
 	mkControl                  = 0x0008
-	dropEffectNone             = 0
 	dropEffectCopy             = 1
 	dropEffectLink             = 4
 	tymedHGlobal               = 1
