@@ -634,6 +634,11 @@ function renderBreadcrumb() {
   const bc = $('breadcrumb');
   bc.replaceChildren();
   const loc = nav.current || { kind: 'buckets', source: viewSource };
+  // Nothing to anchor the path on (onboarding: no sources configured, or
+  // a fresh session where none is selected yet): the path bar starts
+  // empty — no orphan root icon for a source that isn't there.
+  if (loc.kind === 'onboarding') return;
+  if (!nav.current && !sources.some((x) => x.name === viewSource)) return;
   if (loc.kind === 'remote') {
     const atRoot = !loc.path || loc.path === '/';
     const s = sources.find((x) => x.name === loc.source);

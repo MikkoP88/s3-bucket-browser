@@ -2801,6 +2801,9 @@ await step('onboarding-empty', async () => {
   await ok('empty actions offer add-source', p2.evaluate(() => document.getElementById('empty-actions').textContent.length > 0));
   await ok('upload greyed without sources', p2.evaluate(() => document.getElementById('btn-upload').disabled));
   await ok('doctor greyed without sources', p2.evaluate(() => window.__s3bCmdState?.canDoctor === false));
+  // with nothing selected there is no source root crumb in front of the
+  // path — no orphan bucket icon for a source that isn't there
+  await ok('path bar carries no source crumb when nothing is selected', p2.evaluate(() => document.getElementById('breadcrumb').children.length === 0));
   await settlePaint(p2);
   await p2.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-onboarding-empty.png') });
   // first import straight from the welcome: the app must open the imported
@@ -2831,6 +2834,8 @@ await step('onboarding-empty', async () => {
       .some((r) => r.querySelector('.tname')?.textContent === 'img-1.jpg'),
     null, { timeout: 8000 }).then(() => true).catch(() => false));
   await ok('welcome hidden once any source exists', await p2.evaluate(() => document.getElementById('empty-state').classList.contains('hidden')));
+  // ...and the path bar gains its source root crumb back
+  await ok('source crumb returns once a source is open', await p2.evaluate(() => document.getElementById('breadcrumb').children.length > 0));
   await settlePaint(p2);
   await p2.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-onboarding-autoopen.png') });
   await p2.close();
