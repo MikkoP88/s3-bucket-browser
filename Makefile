@@ -1,9 +1,8 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
-# Wails needs its tags for a working GUI; without them the binary shows
-# Wails' "will not build without the correct build tags" error instead of
-# the app (https://wails.io/docs/guides/manual-builds).
-GUI_TAGS := desktop,production
+# Wails v3: the GUI is the default build — `production` strips devtools
+# (https://wails.io/docs/guides/manual-builds).
+GUI_TAGS := production
 BINARY  := s3b
 
 # LDFLAGS_GUI: host GUI build — on Windows link with -H windowsgui: without
@@ -22,7 +21,8 @@ build:
 build-all:
 	GOOS=windows GOARCH=amd64 go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS) -H windowsgui" -o dist/$(BINARY)-windows-amd64.exe ./cmd/s3b
 	GOOS=windows GOARCH=arm64 go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS) -H windowsgui" -o dist/$(BINARY)-windows-arm64.exe ./cmd/s3b
-	GOOS=linux   GOARCH=amd64 go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-linux-amd64 ./cmd/s3b
+	# gtk3: Wails v3 defaults to GTK4/webkitgtk-6.0; Ubuntu 24.04 ships 4.1
+	GOOS=linux   GOARCH=amd64 go build -tags $(GUI_TAGS),gtk3 -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-linux-amd64 ./cmd/s3b
 	GOOS=linux   GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -tags s3b_headless -o dist/$(BINARY)-linux-arm64 ./cmd/s3b
 	GOOS=darwin  GOARCH=amd64 go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-amd64 ./cmd/s3b
 	GOOS=darwin  GOARCH=arm64 go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-arm64 ./cmd/s3b

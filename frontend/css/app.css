@@ -512,6 +512,22 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
   background: linear-gradient(135deg, transparent 50%, var(--border-soft) 50%);
   border-bottom-right-radius: 8px;
 }
+/* Native popout windows (Wails v3 multi-window): the same frontend
+   renders exactly one view full-bleed in its own OS window — the main
+   chrome is hidden, and the OS provides move, resize, shadow and the
+   ability to leave the app window's bounds. */
+body.popout-win { overflow: hidden; }
+body.popout-win #app { display: none; }
+body.popout-win #popout-root { pointer-events: auto; }
+body.popout-win .popout {
+  position: static; inset: auto;
+  width: 100vw; height: 100vh;
+  min-width: 0; max-width: none; max-height: none;
+  border: none; border-radius: 0; box-shadow: none;
+  animation: none;
+}
+body.popout-win .popout .modal-head { cursor: default; }
+body.popout-win .pop-grip { display: none; }
 
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; font-size: 12.5px; }
 .kv .k { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }

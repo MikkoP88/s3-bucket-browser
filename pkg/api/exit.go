@@ -1,11 +1,6 @@
 package api
 
-import (
-	"context"
-	"fmt"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-)
+import "fmt"
 
 // EventExitConfirm asks the frontend to confirm an exit that would lose
 // work (running transfers, unsaved profile changes). Payload: {reason}.
@@ -49,8 +44,8 @@ func (a *App) ExitApp() {
 		return
 	}
 	a.exitOK.Store(true)
-	if a.ctx != nil {
-		runtime.Quit(a.ctx)
+	if a.ctx != nil && shell != nil {
+		shell.Quit()
 	}
 }
 
@@ -58,15 +53,15 @@ func (a *App) ExitApp() {
 // "Exit anyway".
 func (a *App) ConfirmExit() {
 	a.exitOK.Store(true)
-	if a.ctx != nil {
-		runtime.Quit(a.ctx)
+	if a.ctx != nil && shell != nil {
+		shell.Quit()
 	}
 }
 
-// ShouldClose is the Wails OnBeforeClose hook (the window's X button):
-// a busy app blocks the close and asks through the frontend instead
-// (exit:confirm); a confirmed or clean exit closes.
-func (a *App) ShouldClose(context.Context) bool {
+// ShouldClose gates the main window's close (the X button): a busy app
+// vetoes the close and asks through the frontend instead (exit:confirm);
+// a confirmed or clean close proceeds. Returns true = prevent the close.
+func (a *App) ShouldClose() bool {
 	if a.exitOK.Load() {
 		return false // confirmed exit in flight — let the window close
 	}

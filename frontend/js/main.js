@@ -9,6 +9,7 @@ import {
   sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
+  renderPopoutView,
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm,
 } from './dialogs.js';
 import { LocalPane, aggregateCompare } from './local.js';
@@ -77,6 +78,15 @@ function applyColumnPrefs() {
 async function boot() {
   setLang(detectLang());
   initTheme();
+  // A native popout window (Wails v3 multi-window): the main window opened
+  // this page with ?popout=<kind> to float exactly one view as a real OS
+  // window — render just that view, none of the app chrome.
+  const popoutQS = new URLSearchParams(location.search);
+  if (popoutQS.get('popout')) {
+    document.body.classList.add('popout-win');
+    renderPopoutView(popoutQS.get('popout'), popoutQS);
+    return;
+  }
   applyColumnPrefs();
   $('status-version').textContent = `s3b v${await api.GetVersion()}`;
   wireToolbar();
@@ -2409,16 +2419,15 @@ function wireDrop() {
     if (loc?.kind === 'remote') { uploadToRemote(paths, loc.source, loc.path || '/'); return; }
     uploadPaths(paths);
   };
-  // Wails delivers the drop as three positional arguments (x, y, paths) —
-  // pkg/runtime OnFileDrop is the canonical consumer. Registering through
-  // runtime.OnFileDrop (not plain EventsOn) is also what arms the bridge:
-  // it attaches the runtime's dragover/dragleave/drop listeners, which
-  // preventDefault external file drags (so the webview never navigates to
-  // the dropped file) and forward the files to Go to resolve their real
-  // paths. useDropTarget=false — the app does its own hit-testing; nothing
-  // here carries the --wails-drop-target CSS. Bridges without the full
-  // runtime (test harnesses) still deliver the event through the plain
-  // events subscription.
+  // The drop arrives as three positional arguments (x, y, paths). The
+  // desktop app (Wails v3) arms its own drop listeners when the runtime
+  // script loads — they preventDefault external file drags so the
+  // webview never navigates to the dropped file — and Go re-emits the
+  // resolved paths as the wails:file-drop event, which js/bridge.js
+  // spreads back into positional arguments. The test shims keep the
+  // v2-style runtime.OnFileDrop surface and route it to the same
+  // handler; nothing here relies on drop-target CSS (the app does its
+  // own hit-testing).
   if (typeof window.runtime?.OnFileDrop === 'function') {
     window.runtime.OnFileDrop(handleOSDrop, false);
   } else {

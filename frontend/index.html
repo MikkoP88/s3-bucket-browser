@@ -6,7 +6,7 @@
   <title>S3 Bucket Browser</title>
   <link rel="stylesheet" href="css/app.css">
 </head>
-<body>
+<body data-file-drop-target>
   <div id="app" class="app">
 
     <!-- ============ Menu bar ============ -->
@@ -119,6 +119,14 @@
   <!-- Marquee selection rectangle -->
   <div class="marquee hidden" id="marquee"></div>
 
+  <!-- Wails v3 runtime (an ES module — a classic script tag would die on its
+       export statement and leave window.wails undefined, killing every
+       binding call), then the v2-surface bridge; both load before main.js
+       (module scripts execute in document order) so window.go/window.runtime
+       exist when it runs. The harnesses install their own window.go first;
+       js/bridge.js yields to it. -->
+  <script type="module" src="/wails/runtime.js"></script>
+  <script type="module" src="js/bridge.js"></script>
   <script type="module" src="js/main.js"></script>
 </body>
 </html>

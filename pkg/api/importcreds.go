@@ -37,7 +37,6 @@ import (
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // CredCandidate is the metadata of one importable connection (secrets stay
@@ -62,12 +61,12 @@ type pendingCred struct {
 // PickCredentialFiles opens the native multi-select file dialog for
 // credential/config files.
 func (a *App) PickCredentialFiles() ([]string, error) {
-	if a.ctx == nil {
-		return nil, errNoContext
+	if shell == nil {
+		return nil, errNoShell
 	}
-	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
+	return shell.OpenFiles(ShellDialog{
 		Title: "Select credential files",
-		Filters: []runtime.FileFilter{
+		Filters: []ShellFilter{
 			{DisplayName: "Credential files (*.ini;*.cfg;*.conf;*.env;*.json;*.s3bprofile)",
 				Pattern: "*.ini;*.cfg;*.conf;*.env;*.json;*.s3bprofile"},
 			{DisplayName: "All files (*.*)", Pattern: "*.*"},

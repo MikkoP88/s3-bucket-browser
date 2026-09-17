@@ -54,8 +54,8 @@ var (
 )
 
 // ArmStartupWatchdog starts the pre-window watchdog. Call immediately
-// before wails.Run; the window appearing (OnStartup) or Run returning
-// disarms it again.
+// before the application run; the first window reaching runtime-ready
+// (MarkWindowUp) or Run returning disarms it again.
 func ArmStartupWatchdog() { armStartupWatchdog(StartupBudget) }
 
 func armStartupWatchdog(budget time.Duration) {
@@ -73,9 +73,9 @@ func armStartupWatchdog(budget time.Duration) {
 	})
 }
 
-// MarkWindowUp declares success: wails calls OnStartup once the window and
-// the webview behind it exist, so the loud-failure timer must never fire
-// after this point.
+// MarkWindowUp declares success: the caller invokes this from the window's
+// runtime-ready event, which fires once the window and the webview behind
+// it exist, so the loud-failure timer must never fire after this point.
 func MarkWindowUp() {
 	windowUp.Store(true)
 	DisarmStartupWatchdog()
