@@ -52,6 +52,19 @@ let currentEntries = []; // unfiltered rows of the active view
 // follows navigation — opening a source's buckets/objects sets it Go-side.
 let viewSource = '';
 let dragUrls = []; // loopback URLs for the current selection (OS drag-out)
+// Desktop drag-out goes native instead: WebView2 ignores DownloadURL, so a
+// plain drag of a files-only selection hands the rows to Go, which stages
+// them and floats a real OLE drag — Explorer drops actual files, and a
+// release over the app itself comes back as drag:self-drop and routes
+// through the internal move/copy logic. Resolved once like the popout
+// flag — a binding round-trip cannot gate a synchronous dragstart.
+let osDragNative = false;
+// true while a native drag initiated here is (or just was) floating: the
+// drag:self-drop event must only ever route one of OUR gestures.
+let nativeDragOut = false;
+if (window.wails?.Call?.ByName) {
+  api.IsDesktopShell().then((v) => { osDragNative = !!v; }).catch(() => {});
+}
 
 // Streaming listing state (M5): generation counter + active stream token.
 let listSeq = 0;
@@ -835,6 +848,7 @@ function guardRows(g) {
 // text-uri-list data synchronously in dragstart (dragstart cannot await).
 function refreshDragUrls() {
   dragUrls = [];
+  if (osDragNative) return; // desktop drags float natively (grid.on.dragOS)
   const loc = nav.current;
   const rows = grid.selectedRows();
   if (!rows.length || rows.some((r) => r.isDir)) return; // files only (folders would need zips)
@@ -850,7 +864,30 @@ function refreshDragUrls() {
 function wireGrid() {
   grid.on.select = () => { updateStatus(); refreshDragUrls(); };
   grid.on.dragOS = (e, rows) => {
-    // OS drag-out: rows leave the app as downloadable loopback URLs.
+    // OS drag-out. Desktop: a plain drag of a files-only selection floats
+    // a native OLE drag — Go stages the selection and Explorer drops real
+    // files; releasing the gesture over the app itself returns as
+    // drag:self-drop and routes through the same move/copy logic as an
+    // internal drop. The DOM drag is cancelled because one mouse cannot
+    // serve two drags; folder-bearing selections keep the in-app D&D.
+    // Browsers/server: rows leave as downloadable loopback URLs (the
+    // DownloadURL trick is a browser feature WebView2 lacks).
+    const loc = nav.current;
+    if (osDragNative && rows.length && !rows.some((r) => r.isDir)
+      && (loc?.kind === 'objects' || loc?.kind === 'remote')) {
+      const items = loc.kind === 'objects'
+        ? rows.map((r) => ({ source: loc.source || viewSource, bucket: loc.bucket, key: r.key, name: r.name, size: r.size || 0 }))
+        : rows.map((r) => ({ source: loc.source, key: r.key, name: r.name, size: r.size || 0 }));
+      e.preventDefault();
+      nativeDragOut = true;
+      api.DragOutFiles(items)
+        .catch((err) => toast(`Drag-out: ${err}`, 'error'))
+        // Go emits drag:self-drop before this promise resolves, but event
+        // delivery and promise settlement race inside the webview — hold
+        // the gesture flag briefly past the end.
+        .finally(() => { setTimeout(() => { nativeDragOut = false; }, 250); });
+      return;
+    }
     if (!dragUrls.length || dragUrls.length !== rows.length) return;
     if (rows.length === 1) {
       e.dataTransfer.setData('DownloadURL', `application/octet-stream:${rows[0].name}:${dragUrls[0]}`);
@@ -2433,6 +2470,40 @@ function wireDrop() {
   } else {
     onEvent('wails:file-drop', (x, y, paths) => handleOSDrop(x, y, paths));
   }
+  // drag:self-drop — a native drag-out released back over the app routes
+  // exactly like the internal HTML5 drop it replaces: same payload (the
+  // current selection, origin-tagged), same dropToTarget/dropToLocal
+  // funnel, same Shift/Ctrl modifier semantics captured at release.
+  onEvent('drag:self-drop', (x, y, shift, ctrl) => {
+    if (!nativeDragOut) return;
+    const hit = Number.isFinite(x) && Number.isFinite(y) ? document.elementFromPoint(x, y) : null;
+    if (!hit) return;
+    const rows = grid.selectedRows();
+    if (!rows.length) return;
+    const payload = grid.dragPayload();
+    const ev = { shiftKey: !!shift, ctrlKey: !!ctrl };
+    if (hit.closest('#local-pane') && localPane.visible) {
+      const rowEl = hit.closest('.grid-row');
+      const m = rowEl?._model;
+      if (m && (m.isDir || m.isBucket)) { localPane.on.dropFolder?.(m, payload, ev); return; }
+      localPane.on.dropBody?.(payload, ev);
+      return;
+    }
+    const tnode = hit.closest('#tree .tnode');
+    if (tnode) {
+      const d = tnode.dataset;
+      if (d.rdir !== undefined) { dropToTarget({ kind: 'remote', source: d.source, dir: d.rdir }, payload, ev); return; }
+      if (d.bucket !== undefined) { dropToTarget({ kind: 's3', source: d.source || '', bucket: d.bucket, dir: d.prefix || '' }, payload, ev); return; }
+      if (d.stype && d.stype !== 's3') { dropToTarget({ kind: 'remote', source: d.source, dir: '/' }, payload, ev); return; }
+      return; // account-wide root: no bucket picked, same refusal as a DOM drop
+    }
+    const rowEl = hit.closest('#grid-body .grid-row');
+    if (rowEl && rowEl._model?.isDir) { grid.on.drop?.(rowEl._model, payload, ev); return; }
+    if (hit.closest('#grid-body')) {
+      const dest = xferDestOf(nav.current);
+      if (dest) dropToTarget(dest, payload, ev);
+    }
+  });
 }
 
 // copyS3Selection runs an S3→S3 copy/move with the per-task version

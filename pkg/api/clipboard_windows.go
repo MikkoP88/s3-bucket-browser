@@ -105,33 +105,15 @@ func utf16Copy(dst []byte, s string) {
 	}
 }
 
-// osClipboardSetFiles writes a CF_HDROP list onto the clipboard. The system
-// owns the global memory after SetClipboardData succeeds.
-func osClipboardSetFiles(paths []string) error {
-	if len(paths) == 0 {
-		return errors.New("no paths given")
-	}
-	// DROPFILES (20 bytes) + double-null-terminated UTF-16 list.
+// hdropBytes lays out a CF_HDROP payload: DROPFILES (20 bytes, fWide) +
+// double-null-terminated UTF-16 path list. Shared by the OS clipboard
+// write and the native drag-out data object.
+func hdropBytes(paths []string) []byte {
 	units := 1 // trailing list-terminating NUL
 	for _, p := range paths {
 		units += utf16Units(p)
 	}
-	total := 20 + units*2
-	hMem, _, _ := pGAlloc.Call(gmemMoveable, uintptr(total))
-	if hMem == 0 {
-		return syscall.GetLastError()
-	}
-	ptr, _, _ := pGLock.Call(hMem)
-	if ptr == 0 {
-		pGFree.Call(hMem)
-		return errors.New("GlobalLock failed")
-	}
-	// LazyProc.Call is not recognized as a syscall boundary by vet, so the
-	// pointer rides through a dereference (unsafe rule 3 workaround).
-	buf := unsafe.Slice((*byte)(*(*unsafe.Pointer)(unsafe.Pointer(&ptr))), total)
-	for i := range buf {
-		buf[i] = 0
-	}
+	buf := make([]byte, 20+units*2)
 	// DROPFILES: pFiles=20 (payload offset), fWide=TRUE.
 	*(*uint32)(unsafe.Pointer(&buf[0])) = 20
 	*(*uint32)(unsafe.Pointer(&buf[16])) = 1
@@ -142,6 +124,29 @@ func osClipboardSetFiles(paths []string) error {
 		off += n
 	}
 	// The final list-terminating NUL is already zeroed.
+	return buf
+}
+
+// osClipboardSetFiles writes a CF_HDROP list onto the clipboard. The system
+// owns the global memory after SetClipboardData succeeds.
+func osClipboardSetFiles(paths []string) error {
+	if len(paths) == 0 {
+		return errors.New("no paths given")
+	}
+	payload := hdropBytes(paths)
+	hMem, _, _ := pGAlloc.Call(gmemMoveable, uintptr(len(payload)))
+	if hMem == 0 {
+		return syscall.GetLastError()
+	}
+	ptr, _, _ := pGLock.Call(hMem)
+	if ptr == 0 {
+		pGFree.Call(hMem)
+		return errors.New("GlobalLock failed")
+	}
+	// LazyProc.Call is not recognized as a syscall boundary by vet, so the
+	// pointer rides through a dereference (unsafe rule 3 workaround).
+	buf := unsafe.Slice((*byte)(*(*unsafe.Pointer)(unsafe.Pointer(&ptr))), len(payload))
+	copy(buf, payload)
 	pGUnlock.Call(hMem)
 
 	if ret, _, _ := pOpenClp.Call(0); ret == 0 {

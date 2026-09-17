@@ -706,6 +706,10 @@ function shim() {
     OsClipboardSetFiles: (paths) => { world.osClip = paths; world.osClipSeq = (world.osClipSeq || 0) + 1; return {}; },
     StageClipboardDir: () => 'C:\\Users\\demo\\AppData\\Local\\Temp\\s3b-clip-1',
     MakeDragUrls: (items) => items.map((it, i) => `http://127.0.0.1:39317/drag/${i}/${encodeURIComponent(it.name || it.key)}`),
+    // native drag-out (Alt+drag): IsDesktopShell is what gates the frontend
+    // onto the OLE path; DragOutFiles records the payload for assertions
+    IsDesktopShell: () => !!world.desktop,
+    DragOutFiles: (items) => { world.dragOut = items; return {}; },
     RemoteListDraft: () => [
       { key: '/draft-up/', isDir: true, name: 'draft-up' },
       { key: '/seed.txt', isDir: false, name: 'seed.txt', size: 12 },
@@ -3563,6 +3567,92 @@ await step('drag-urls', async () => {
   await ok('selection precomputes drag-out URLs', c && c.args[0][0].bucket === 'team-files'
     && c.args[0][0].key === 'readme.md' && c.args[0][0].name === 'readme.md');
   await ok('drag items tag the originating source', c && c.args[0][0].source === 'hetzner');
+});
+
+await step('drag-out-native', async () => {
+  // A desktop shell (wails bridge present + IsDesktopShell) switches
+  // drag-out from DownloadURL URLs to the native OLE drag: selection must
+  // NOT precompute URLs anymore, a PLAIN dragstart cancels the DOM drag
+  // and hands the rows to DragOutFiles, folder rows keep the in-app D&D,
+  // and drag:self-drop routes internally exactly like a DOM drop.
+  const p7 = await context.newPage();
+  p7.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await p7.addInitScript(shim);
+  // the desktop tell: window.wails exists (main.js gates on it) and the
+  // shell reports native windows — both before any app script runs
+  await p7.addInitScript(() => {
+    window.wails = { Call: { ByName: () => Promise.resolve() } };
+    if (window.__shim) window.__shim.world.desktop = true;
+  });
+  await p7.goto(BASE);
+  await p7.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  // into team-files and select readme.md
+  await p7.evaluate(() => Array.from(document.querySelectorAll('#tree .tnode'))
+    .find((n) => n.querySelector('.tlabel')?.textContent === 'team-files')?.click());
+  await p7.waitForFunction(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .some((r) => r._model && r._model.key === 'readme.md'), null, { timeout: 8000 });
+  await p7.evaluate(() => {
+    const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === 'readme.md');
+    row?.click();
+  });
+  await sleep(300); // selection callbacks (incl. the skipped refreshDragUrls) settle
+  await ok('native mode: no DownloadURL precompute on select',
+    await p7.evaluate(() => !window.__shim.calls.some((x) => x.m === 'MakeDragUrls')));
+  // PLAIN drag -> DOM drag cancelled + payload handed to the OLE path
+  const plainStopped = await p7.evaluate(() => {
+    const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === 'readme.md');
+    const ev = new DragEvent('dragstart', {
+      bubbles: true, cancelable: true, dataTransfer: new DataTransfer(),
+    });
+    row.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  });
+  await sleep(200);
+  const c = await p7.evaluate(() => window.__shim.calls.find((x) => x.m === 'DragOutFiles') || null);
+  await ok('plain drag cancels the DOM drag', plainStopped === true);
+  await ok('plain drag hands rows to DragOutFiles', c && c.args[0][0].source === 'hetzner'
+    && c.args[0][0].bucket === 'team-files' && c.args[0][0].key === 'readme.md'
+    && c.args[0][0].size === 1234);
+  // folder rows must keep the in-app HTML5 drag: never native
+  const folderNative = await p7.evaluate(() => {
+    // folder keys carry a trailing slash ("docs/") — match the name column
+    const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && (r._model.key === 'docs/' || r._model.name === 'docs'));
+    row?.click();
+    const ev = new DragEvent('dragstart', {
+      bubbles: true, cancelable: true, dataTransfer: new DataTransfer(),
+    });
+    row.dispatchEvent(ev);
+    const n = window.__shim.calls.filter((x) => x.m === 'DragOutFiles').length;
+    return { stopped: ev.defaultPrevented, calls: n };
+  });
+  await ok('folder drag stays internal (not cancelled, not native)',
+    folderNative.stopped === false && folderNative.calls === 1);
+  // self-drop: the same gesture released over the app routes internally.
+  // Re-select the file, restart the gesture, and drop over the sidebar's
+  // logs-2026 bucket node — cross-bucket copy through CopySelection (dest
+  // has no versioning, so no choice dialog).
+  await p7.evaluate(() => {
+    const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === 'readme.md');
+    row?.click();
+    const ev = new DragEvent('dragstart', {
+      bubbles: true, cancelable: true, dataTransfer: new DataTransfer(),
+    });
+    row.dispatchEvent(ev); // nativeDragOut goes up
+    const tnode = Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((n) => n.querySelector('.tlabel')?.textContent === 'logs-2026');
+    const r = tnode.getBoundingClientRect();
+    window.__emit('drag:self-drop', r.left + r.width / 2, r.top + r.height / 2, false, false);
+  });
+  await p7.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'CopySelection'), null, { timeout: 6000 });
+  const cc = await p7.evaluate(() => window.__shim.calls.find((x) => x.m === 'CopySelection') || null);
+  await ok('self-drop over a tree bucket routes as a cross-bucket copy',
+    cc && cc.args[0] === 'team-files' && cc.args[1][0] === 'readme.md'
+    && cc.args[2] === 'logs-2026' && cc.args[4] === false);
+  await p7.close();
 });
 
 // ===================== full-feature coverage (slice 7) =====================

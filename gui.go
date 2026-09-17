@@ -124,6 +124,12 @@ func Run(version string) error {
 	// Three payloads (x, y, files) — the bridge spreads them into the
 	// frontend's handleOSDrop(x, y, paths).
 	mainWindow.OnWindowEvent(events.Common.WindowFilesDropped, func(e *application.WindowEvent) {
+		// A native drag-out may cross back over the app window: dropping it
+		// here must not re-import the staged files as an upload — internal
+		// routing arrives separately through the drag:self-drop event.
+		if app.DragOutActive() {
+			return
+		}
 		ec := e.Context()
 		if ec == nil {
 			return
@@ -265,6 +271,22 @@ func installShell(app3 *application.App, a *api.App) {
 			if w, ok := app3.Window.GetByName(popoutPrefix + id); ok {
 				w.Focus()
 			}
+		},
+		// Screen point → main window CSS coordinates for the native
+		// drag-out: detects a gesture released over the app itself and
+		// gives the frontend drop coordinates in the same space
+		// wails:file-drop uses. Server builds have no main window — the
+		// lookup just fails and "over self" stays false.
+		ScreenToClient: func(sx, sy int) (int, int, bool) {
+			w, ok := app3.Window.GetByName("main")
+			if !ok {
+				return 0, 0, false
+			}
+			h := w.NativeWindow()
+			if h == nil {
+				return 0, 0, false
+			}
+			return clientPoint(uintptr(h), sx, sy)
 		},
 	})
 }
