@@ -3,6 +3,7 @@ package eventlog
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,9 +17,9 @@ func eventEnv(t *testing.T) string {
 
 func TestAppendTailFilters(t *testing.T) {
 	eventEnv(t)
-	Append("info", "transfer", "copied a.txt")
-	Append("error", "delete", "rm failed: boom")
-	Append("warn", "transfer", "throttled")
+	Append("info", "transfer", "", "copied a.txt")
+	Append("error", "delete", "", "rm failed: boom")
+	Append("warn", "transfer", "", "throttled")
 
 	all, err := Tail(0, "", "")
 	if err != nil {
@@ -56,6 +57,54 @@ func TestTailMissingFileIsEmpty(t *testing.T) {
 	}
 }
 
+func TestSourceFilterAndRegistry(t *testing.T) {
+	eventEnv(t)
+
+	// a source filter keeps only the named sources' lines — unsourced
+	// lines are rejected while the filter is set, like the drawer
+	if err := SaveSettings(Settings{Sources: []string{"team-files"}}); err != nil {
+		t.Fatal(err)
+	}
+	Append("info", "delete", "team-files", "deleted 3 object(s)")
+	Append("info", "delete", "other-bucket", "deleted 1 object(s)")
+	Append("warn", "settings", "", "mode changed")
+
+	lines, _ := Tail(0, "", "")
+	if len(lines) != 1 || lines[0].Source != "team-files" || lines[0].Message != "deleted 3 object(s)" {
+		t.Fatalf("source filter not applied: %+v", lines)
+	}
+
+	// the rejected sources still joined the vocabulary — the selector can
+	// offer them even while they are filtered out
+	seen := SeenSources()
+	if !slices.Contains(seen, "team-files") || !slices.Contains(seen, "other-bucket") {
+		t.Fatalf("seen registry incomplete: %v", seen)
+	}
+	if slices.Contains(seen, "") {
+		t.Fatalf("unsourced lines must not register: %v", seen)
+	}
+
+	// empty filter = everything again, sources included
+	if err := SaveSettings(Settings{}); err != nil {
+		t.Fatal(err)
+	}
+	Append("warn", "doctor", "team-files", "check passed")
+	lines, _ = Tail(0, "", "")
+	if len(lines) != 2 || lines[1].Source != "team-files" {
+		t.Fatalf("unfiltered lines wrong: %+v", lines)
+	}
+
+	// off mode writes nothing anywhere — registry included
+	if err := SaveSettings(Settings{Mode: "off"}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(SeenSources())
+	Append("info", "delete", "fresh-bucket", "invisible")
+	if len(SeenSources()) != before || slices.Contains(SeenSources(), "fresh-bucket") {
+		t.Fatal("off mode still wrote to the seen registry")
+	}
+}
+
 func TestSettingsOffAndCustom(t *testing.T) {
 	cfg := eventEnv(t)
 
@@ -63,7 +112,7 @@ func TestSettingsOffAndCustom(t *testing.T) {
 	if err := SaveSettings(Settings{Mode: "off"}); err != nil {
 		t.Fatal(err)
 	}
-	Append("info", "test", "must not land")
+	Append("info", "test", "", "must not land")
 	if _, err := os.Stat(filepath.Join(cfg, "events.jsonl")); !os.IsNotExist(err) {
 		t.Fatal("off mode still wrote the default log")
 	}
@@ -76,7 +125,7 @@ func TestSettingsOffAndCustom(t *testing.T) {
 	if err := SaveSettings(Settings{Mode: "custom", Dir: custom}); err != nil {
 		t.Fatal(err)
 	}
-	Append("warn", "test", "custom sink")
+	Append("warn", "test", "", "custom sink")
 	lines, err := Tail(0, "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +141,7 @@ func TestSettingsOffAndCustom(t *testing.T) {
 	if err := SaveSettings(Settings{Mode: "custom"}); err != nil {
 		t.Fatal(err)
 	}
-	Append("info", "test", "fallback")
+	Append("info", "test", "", "fallback")
 	if _, err := os.Stat(filepath.Join(cfg, "events.jsonl")); err != nil {
 		t.Fatal("custom-without-dir did not fall back to the default log")
 	}
@@ -113,7 +162,7 @@ func TestRotationKeepsNewestHalf(t *testing.T) {
 	filler := strings.Repeat("x", 512)
 	n := (maxBytes/len(filler))*2 + 10
 	for i := 0; i < n; i++ {
-		Append("info", "test", filler)
+		Append("info", "test", "", filler)
 	}
 	p, err := Path()
 	if err != nil {
@@ -137,7 +186,7 @@ func TestRotationKeepsNewestHalf(t *testing.T) {
 		t.Fatal("newest line did not survive rotation")
 	}
 	// The append-after-rotate path still works.
-	Append("warn", "test", "after-rotate")
+	Append("warn", "test", "", "after-rotate")
 	lines, _ = Tail(0, "", "")
 	if lines[len(lines)-1].Message != "after-rotate" {
 		t.Fatal("append after rotation failed")

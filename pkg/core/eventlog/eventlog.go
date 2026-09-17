@@ -21,8 +21,9 @@ import (
 // Line is one log line (same shape the GUI drawer renders).
 type Line struct {
 	Time    time.Time `json:"time"`
-	Level   string    `json:"level"` // "info" | "warn" | "error"
-	Scope   string    `json:"scope"` // "transfer", "doctor", "upload", ...
+	Level   string    `json:"level"`            // "info" | "warn" | "error"
+	Scope   string    `json:"scope"`            // "transfer", "doctor", "upload", ...
+	Source  string    `json:"source,omitempty"` // bucket / source name the line is about
 	Message string    `json:"message"`
 }
 
@@ -44,15 +45,16 @@ func Path() (string, error) {
 // in the config dir, written by the GUI Settings dialog). Mode:
 // "" / "default" = events.jsonl beside profiles.json (what `s3b log`
 // tails), "off" = no file logging, "custom" = the user-picked Dir.
-// Levels/Scopes filter what is WRITTEN to the file (empty = everything).
-// They are deliberately independent of the in-app log drawer, which
-// filters client-side on its own controls — file logging must never
-// change what the user sees on screen.
+// Levels/Scopes/Sources filter what is WRITTEN to the file (empty =
+// everything). They are deliberately independent of the in-app log
+// drawer, which filters client-side on its own controls — file logging
+// must never change what the user sees on screen.
 type Settings struct {
-	Mode   string   `json:"logFileMode"`
-	Dir    string   `json:"logFileDir"`
-	Levels []string `json:"logFileLevels,omitempty"`
-	Scopes []string `json:"logFileScopes,omitempty"`
+	Mode    string   `json:"logFileMode"`
+	Dir     string   `json:"logFileDir"`
+	Levels  []string `json:"logFileLevels,omitempty"`
+	Scopes  []string `json:"logFileScopes,omitempty"`
+	Sources []string `json:"logFileSources,omitempty"`
 }
 
 func settingsPath() (string, error) {
@@ -116,23 +118,84 @@ func sinkPathFrom(s Settings) (string, bool) {
 	return p, true
 }
 
-// Append writes one line, rotating first when the file outgrew the cap.
-// Best effort: logging must never take the app down, errors are dropped.
-// Lines the saved level/scope filters reject never reach the file.
-func Append(level, scope, msg string) {
-	s := LoadSettings()
-	if s.Mode == "off" {
+// seenSourcesPath is the registry of every source (bucket / data-source
+// name) that has ever appeared on a log line — the Settings dialog's
+// file-log source selector options, so it can offer the same grow-with-
+// the-stream vocabulary the in-app drawer builds client-side.
+func seenSourcesPath() (string, error) {
+	dir, err := profile.DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "logsources.json"), nil
+}
+
+// SeenSources lists the registered sources, sorted. Best effort: a
+// missing or torn registry is an empty vocabulary, never an error.
+func SeenSources() []string {
+	p, err := seenSourcesPath()
+	if err != nil {
+		return nil
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	var srcs []string
+	if json.Unmarshal(b, &srcs) != nil {
+		return nil
+	}
+	slices.Sort(srcs)
+	return srcs
+}
+
+// registerSource adds src to the registry when it is new. Best effort:
+// an unwritable config dir only costs the option list a late entry.
+// Called with mu held (Append serializes writers).
+func registerSource(src string) {
+	if src == "" {
 		return
 	}
-	if !fileFilterMatches(s, level, scope) {
+	srcs := SeenSources()
+	if slices.Contains(srcs, src) {
+		return
+	}
+	srcs = append(srcs, src)
+	slices.Sort(srcs)
+	p, err := seenSourcesPath()
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return
+	}
+	b, err := json.Marshal(srcs)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(p, b, 0o600)
+}
+
+// Append writes one line, rotating first when the file outgrew the cap.
+// Best effort: logging must never take the app down, errors are dropped.
+// Lines the saved level/scope/source filters reject never reach the file.
+func Append(level, scope, source, msg string) {
+	s := LoadSettings()
+	if s.Mode == "off" {
+		return // off (and Secure Storage) means nothing is written at all
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	// the vocabulary registers before the filters: a source whose lines
+	// are being filtered out must still become selectable
+	registerSource(source)
+	if !fileFilterMatches(s, level, scope, source) {
 		return
 	}
 	p, ok := sinkPathFrom(s)
 	if !ok {
 		return
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	if err := rotateIfBig(p); err != nil {
 		return // unwritable config dir — the GUI drawer still works
 	}
@@ -141,21 +204,25 @@ func Append(level, scope, msg string) {
 		return
 	}
 	defer f.Close()
-	b, err := json.Marshal(Line{Time: time.Now().UTC(), Level: level, Scope: scope, Message: msg})
+	b, err := json.Marshal(Line{Time: time.Now().UTC(), Level: level, Scope: scope, Source: source, Message: msg})
 	if err != nil {
 		return
 	}
 	f.Write(append(b, '\n'))
 }
 
-// fileFilterMatches applies the saved level/scope filters (exact match;
-// empty list = dimension unrestricted). File-only by design: the in-app
-// drawer never consults these.
-func fileFilterMatches(s Settings, level, scope string) bool {
+// fileFilterMatches applies the saved level/scope/source filters (exact
+// match; empty list = dimension unrestricted; an unsourced line fails a
+// source filter, same rule the drawer's source selector applies).
+// File-only by design: the in-app drawer never consults these.
+func fileFilterMatches(s Settings, level, scope, source string) bool {
 	if len(s.Levels) > 0 && !slices.Contains(s.Levels, level) {
 		return false
 	}
 	if len(s.Scopes) > 0 && !slices.Contains(s.Scopes, scope) {
+		return false
+	}
+	if len(s.Sources) > 0 && !slices.Contains(s.Sources, source) {
 		return false
 	}
 	return true

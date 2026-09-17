@@ -98,7 +98,7 @@ func DisarmStartupWatchdog() {
 // hang, and the preflight sweep of the NEXT start clears the usual cause.
 func startupTimedOut() {
 	msg := TimeoutMessage(StartupBudget)
-	eventlog.Append("error", "app", msg)
+	eventlog.Append("error", "app", "", msg)
 	notifyUser(msg)
 	if windowUp.Load() {
 		return // the window came up while the message was being shown
@@ -187,7 +187,7 @@ func Preflight() []uint32 {
 	for i, p := range killed {
 		pids[i] = strconv.FormatUint(uint64(p), 10)
 	}
-	eventlog.Append("warn", "app",
+	eventlog.Append("warn", "app", "",
 		"startup cleared "+strconv.Itoa(len(killed))+" orphaned WebView2 process tree(s) "+
 			"left over by an earlier session (root PIDs: "+strings.Join(pids, ", ")+")")
 	return killed
