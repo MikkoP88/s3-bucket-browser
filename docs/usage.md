@@ -208,7 +208,13 @@ The feature set most S3 tools treat as an afterthought.
   marker*; **Versions → undo delete** brings the object back in one
   click (bulk-select works in the marker window). Rows with markers in
   their history carry a ⛔ badge; a folder whose every file is
-  delete-marked shows *all deleted*.
+  delete-marked shows *all deleted*. The **Show delete marker icons**
+  toggle (Settings → View, default off) hides delete-marker versions
+  from every version view at once — the grid badges, the Versions and
+  Content Versions windows and the Delete Marker window itself, which
+  then lists nothing and offers the toggle inline (the context menu
+  keeps opening it, so undo-delete stays reachable). Bucket admin
+  version stats and pre-delete counts always show the true numbers.
 - **One Delete Window for every destructive op** — every delete counts
   first and acts second, and every destructive flow — selection deletes,
   bucket delete, destroying a single version, purging noncurrent

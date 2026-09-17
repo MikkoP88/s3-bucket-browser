@@ -343,7 +343,12 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
 // first. Rows carry selection checkboxes (remove several at once) plus
 // one-click Remove ("undo delete" — the object reappears with its
 // previous current version) and a bulk remove for everything listed.
-// Works for files and directories alike.
+// Works for files and directories alike. Like every marker surface it
+// honors the Settings → View "Show delete marker icons" toggle: while
+// off nothing is fetched or listed — the inline button makes the same
+// flip the View menu does, so this undo-delete surface stays reachable
+// (the context menu keeps opening it) yet shows no marker versions
+// until the user opts in.
 export function markersDialog(bucket, key, isDir, onChanged) {
   const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: t('loading') });
   const list = el('div', { class: 'ver-list' });
@@ -385,10 +390,29 @@ export function markersDialog(bucket, key, isDir, onChanged) {
   };
 
   async function draw() {
+    sel.clear();
+    selBtn.disabled = true;
+    // Hidden markers (the default): no fetch, no rows — the notice plus
+    // the inline opt-in instead. s3b-markers-changed lets main.js re-
+    // badge the grid in step with the same flip the View menu makes.
+    if (localStorage.getItem('s3b-show-markers') !== '1') {
+      listed = [];
+      status.style.color = 'var(--text-dim)';
+      status.textContent = t('markw.hiddenNotice');
+      list.replaceChildren(el('div', { class: 'ver-sub', style: 'margin:10px 0' },
+        el('button', {
+          class: 'btn', text: t('markw.show'),
+          onclick: () => {
+            localStorage.setItem('s3b-show-markers', '1');
+            window.dispatchEvent(new Event('s3b-markers-changed'));
+            draw();
+          },
+        })));
+      return;
+    }
     status.style.color = 'var(--text-dim)';
     status.textContent = t('loading');
     list.replaceChildren();
-    sel.clear();
     try {
       const res = await api.PrefixMarkers(bucket, key, !isDir);
       listed = res.markers || [];

@@ -2143,6 +2143,45 @@ await step('marker-window', async () => {
   // are checkbox-selectable (bulk Remove selected), plus per-row Remove
   // (undo delete) and bulk Remove all
   await navObjects('team-files');
+  // the Settings → View marker toggle governs the Delete Marker window
+  // too: while OFF (the default) it lists nothing and never fetches —
+  // the context-menu entry still opens it (badges are gone), and the
+  // inline button is the same flip the View menu makes
+  await resetCalls();
+  await evalPage(() => localStorage.setItem('s3b-show-markers', '0'));
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'readme.md');
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  });
+  await sleep(80);
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /delete marker/i.test(i.textContent.trim()));
+    it?.click();
+  });
+  await waitFor(modalVisible, 4000, 'marker window while hidden');
+  await sleep(150);
+  await ok('hidden: notice shown, nothing listed or fetched',
+    (await evalPage(() => {
+      const t = document.getElementById('modal-root').textContent;
+      return document.querySelectorAll('#modal-root .ver-row').length === 0 && /are hidden/i.test(t);
+    })) && (await findCall('PrefixMarkers')) === null);
+  await ok('hidden: inline opt-in offered', evalPage(() => !!Array.from(document.querySelectorAll('#modal-root .btn'))
+    .find((x) => /show delete markers/i.test(x.textContent))));
+  await shot('marker-window-hidden');
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /show delete markers/i.test(x.textContent));
+    b?.click();
+  });
+  await waitFor(async () => (await findCall('PrefixMarkers')) !== null, 4000, 'PrefixMarkers after opt-in');
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) === 2, 4000, 'markers listed after opt-in');
+  await ok('opt-in flips the global toggle and re-badges the grid', evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'readme.md');
+    return localStorage.getItem('s3b-show-markers') === '1'
+      && !!r && /\u26D4/.test(r.querySelector('.mbadge').textContent);
+  }));
+  await closeModal();
   await resetCalls();
   await evalPage(() => {
     const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'readme.md');
