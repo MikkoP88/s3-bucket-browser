@@ -504,7 +504,7 @@ function shim() {
   // Methods whose return values drive rendering get explicit handlers;
   // everything else falls through to record + benign default.
   const H = {
-    GetVersion: () => '1.1.0-beta.12',
+    GetVersion: () => '1.1.0-beta.13',
     ListSources: () => JSON.parse(JSON.stringify(world.sources)),
     ListBuckets: () => JSON.parse(JSON.stringify(world.buckets)),
     ListSourceBuckets: (_src) => JSON.parse(JSON.stringify(world.buckets)),
