@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // OS clipboard bridge (Explorer ⇄ app). The Windows implementation speaks
@@ -74,7 +73,9 @@ func isPresignedURL(text string) bool {
 func (a *App) ClipboardSetText(text string) error {
 	if clipboardTextSeam != nil {
 		clipboardTextSeam(text)
-	} else if err := runtime.ClipboardSetText(a.ctx, text); err != nil {
+	} else if shell == nil {
+		return errNoShell
+	} else if err := shell.ClipSetText(text); err != nil {
 		return err
 	}
 	if profile.SecureModeOnDisk() && isPresignedURL(text) {
@@ -103,14 +104,14 @@ func (a *App) armPresignScrub(url string) {
 
 // scrubClipboard overwrites the URL when it is still on the clipboard.
 func (a *App) scrubClipboard(url string) {
-	if a.ctx == nil {
+	if a.ctx == nil || shell == nil {
 		return
 	}
-	if cur, err := runtime.ClipboardGetText(a.ctx); err == nil && cur != url {
+	if cur, err := shell.ClipGetText(); err == nil && cur != url {
 		a.clearScrub(url) // user copied something else meanwhile — leave it
 		return
 	}
-	if err := runtime.ClipboardSetText(a.ctx, ""); err != nil {
+	if err := shell.ClipSetText(""); err != nil {
 		return // keep pending; Shutdown retries
 	}
 	a.clearScrub(url)

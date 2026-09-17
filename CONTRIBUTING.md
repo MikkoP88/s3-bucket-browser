@@ -9,8 +9,9 @@ PR. The architecture is documented in code comments (start at
 ## Build & run
 
 ```bash
-# Wails needs its tags for a working GUI (wails.io/docs/guides/manual-builds)
-go build -tags desktop,production -o s3b ./cmd/s3b && ./s3b   # GUI (no args) + CLI (any arg)
+# `production` strips Wails v3's devtools — the GUI is the default build
+go build -tags production -o s3b ./cmd/s3b && ./s3b   # GUI (no args) + CLI (any arg)
+go build -tags production,gtk3 -o s3b ./cmd/s3b  # Linux: GTK3/webkit2gtk 4.1 (Ubuntu 24.04)
 go build -tags s3b_headless -o s3b ./cmd/s3b   # pure-Go CLI, no GTK deps (Linux CI)
 go run ./tools/gendocs                    # regenerate docs/cli.md
 ```

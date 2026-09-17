@@ -14,8 +14,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # amd64 ships the full GUI: needs the webkit/GTK headers (same as CI).
-      # webkit2_41: ubuntu-latest (24.04) ships webkit2gtk 4.1 only, and
-      # Wails defaults to the 4.0 pkg-config name without this tag.
+      # gtk3: Wails v3 defaults to GTK4/webkitgtk-6.0, but ubuntu-latest
+      # (24.04) ships webkit2gtk 4.1 — the gtk3 tag builds against that.
       - name: Install GUI build deps
         run: |
           sudo apt-get update
@@ -30,7 +30,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg
-          go build -tags desktop,production,webkit2_41 -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b ./cmd/s3b
+          go build -tags production,gtk3 -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b ./cmd/s3b
           cp LICENSE README.md dist/pkg/
           tar -C dist/pkg -czf "dist/s3b-${VERSION}-linux-amd64.tar.gz" s3b LICENSE README.md
         env:
@@ -95,7 +95,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg dist/pkg-arm
           env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch amd64
-          go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
+          go build -tags production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg/
         env:
@@ -106,7 +106,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch arm64
-          go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
+          go build -tags production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg-arm/
         env:
@@ -198,7 +198,7 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           APP="dist/S3 Bucket Browser.app"
           mkdir -p "$APP/Contents/MacOS"
-          go build -tags desktop,production -ldflags "-s -w -X main.version=${VERSION}" -o "$APP/Contents/MacOS/s3b" ./cmd/s3b
+          go build -tags production -ldflags "-s -w -X main.version=${VERSION}" -o "$APP/Contents/MacOS/s3b" ./cmd/s3b
           sed "s/__VERSION__/${VERSION}/g" scripts/installer/Info.plist > "$APP/Contents/Info.plist"
           hdiutil create -volname "S3 Bucket Browser" -srcfolder "$APP" -ov -format UDZO "dist/s3b-${VERSION}-darwin-${{ matrix.goarch }}.dmg"
         env:

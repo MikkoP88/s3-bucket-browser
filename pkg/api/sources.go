@@ -20,7 +20,6 @@ import (
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // profileDialogs, when set, answers the profile-file pickers in place of
@@ -44,9 +43,12 @@ func (a *App) PickOpenProfileFile() (string, error) {
 	if profileDialogs.open != nil {
 		return profileDialogs.open()
 	}
-	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+	if shell == nil {
+		return "", errNoShell
+	}
+	return shell.OpenFile(ShellDialog{
 		Title: "Open profile file",
-		Filters: []runtime.FileFilter{{
+		Filters: []ShellFilter{{
 			DisplayName: "s3b profile files (*.s3bprofile)",
 			Pattern:     "*.s3bprofile",
 		}},
@@ -64,10 +66,13 @@ func (a *App) PickSaveProfileFile(defaultName string) (string, error) {
 	if !strings.HasSuffix(defaultName, ".s3bprofile") {
 		defaultName += ".s3bprofile"
 	}
-	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "Save profile file",
-		DefaultFilename: defaultName,
-		Filters: []runtime.FileFilter{{
+	if shell == nil {
+		return "", errNoShell
+	}
+	return shell.SaveFile(ShellDialog{
+		Title:       "Save profile file",
+		DefaultName: defaultName,
+		Filters: []ShellFilter{{
 			DisplayName: "s3b profile files (*.s3bprofile)",
 			Pattern:     "*.s3bprofile",
 		}},

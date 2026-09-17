@@ -70,19 +70,20 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
 // views — anything meant for monitoring or reading while the user keeps
 // using the app. Unlike modals they cast NO mask (the view under them
 // stays fully interactive), don't trap focus, and several can float at
-// once. Wails v2 gives the app a single webview, so windows are bounded
-// by the app window (true out-of-window tear-off would need Wails v3
-// multi-window or a second app process); within it they drag by their
-// header, resize from the bottom-right grip, raise above siblings on
-// any press, remember geometry per id (s3b-popout-<id>) and re-clamp
-// when the app window shrinks. Escape closes only the topmost one — and
-// only while no modal is open (modals stay the blocking tier and, at
-// z-index 100, always overlay popouts). One instance per id: opening a
-// view that already floats focuses it instead of stacking a duplicate.
+// once. In the desktop app these views float as native OS windows (Wails
+// v3 multi-window — see the native block below, they can leave the app
+// window's bounds); this DOM tier is what harnesses and plain browsers
+// use, and what a native popout window itself renders through. Windows
+// are bounded by the app window; within it they drag by their header,
+// resize from the bottom-right grip, raise above siblings on any press,
+// remember geometry per id (s3b-popout-<id>) and re-clamp when the app
+// window shrinks. Escape closes only the topmost one — and only while no
+// modal is open (modals stay the blocking tier and, at z-index 100,
+// always overlay popouts). One instance per id: opening a view that
+// already floats focuses it instead of stacking a duplicate.
 const popRoot = () => document.getElementById('popout-root');
 const popouts = new Map(); // id -> handle
 let popZ = 60; // sibling z-order counter (modal-root stays above at 100)
-let popCascade = 0;
 
 function clampPop(box) {
   const vw = window.innerWidth, vh = window.innerHeight;
@@ -99,6 +100,9 @@ export function openPopout({ id, title, body, buttons = [], wide = false, cls = 
   if (existing) { existing.focus(); return { ...existing, fresh: false }; }
 
   const close = (result) => {
+    // inside a native popout window the OS window dies with this box —
+    // its own subscription dies with it, nothing to clean up here
+    if (document.body.classList.contains('popout-win')) { api.ClosePopout(id); return; }
     box.remove();
     popouts.delete(id);
     document.removeEventListener('keydown', esc, true);
@@ -148,10 +152,19 @@ export function openPopout({ id, title, body, buttons = [], wide = false, cls = 
   // any pointer press raises the window above its siblings
   box.addEventListener('pointerdown', () => handle.focus(), true);
 
-  // geometry: remembered placement/size, else a cascade near the top-right
+  // geometry: remembered placement/size, else centered in the app window
   let geo = null;
   try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
   popRoot().appendChild(box);
+  if (document.body.classList.contains('popout-win')) {
+    // Inside a native popout window this box IS the window's whole
+    // content, sized full-bleed by CSS (body.popout-win .popout). Never
+    // pin it with inline geometry: the OS owns size and position now,
+    // and inline px would freeze the content while the user resizes
+    // the window.
+    handle.focus();
+    return handle;
+  }
   if (geo?.w) {
     box.style.width = `${Math.max(320, Math.min(geo.w, window.innerWidth - 16))}px`;
     box.style.height = `${Math.max(180, Math.min(geo.h || 0, window.innerHeight - 16))}px`;
@@ -159,12 +172,11 @@ export function openPopout({ id, title, body, buttons = [], wide = false, cls = 
     // default, content-driven size)
     box.style.maxWidth = 'none';
     box.style.maxHeight = 'none';
-    box.style.left = `${geo.x}px`;
-    box.style.top = `${geo.y}px`;
+    box.style.left = `${geo.x || 0}px`;
+    box.style.top = `${geo.y || 0}px`;
   } else {
-    const n = popCascade++ % 8;
-    box.style.left = `${window.innerWidth - box.offsetWidth - 24 - n * 24}px`;
-    box.style.top = `${48 + n * 24}px`;
+    box.style.left = `${Math.max(16, (window.innerWidth - box.offsetWidth) / 2)}px`;
+    box.style.top = `${Math.max(16, (window.innerHeight - box.offsetHeight) / 2)}px`;
   }
   clampPop(box);
   handle.focus();
@@ -172,13 +184,19 @@ export function openPopout({ id, title, body, buttons = [], wide = false, cls = 
 }
 
 // A shrinking app window must not strand a floating window off-screen.
-window.addEventListener('resize', () => { for (const p of popouts.values()) clampPop(p.box); });
+// Inside a native popout window the box is full-bleed (no left/top) —
+// clamping there would inject offsets and break the bleed, so skip it.
+window.addEventListener('resize', () => {
+  if (document.body.classList.contains('popout-win')) return;
+  for (const p of popouts.values()) clampPop(p.box);
+});
 
 // Drag + resize, delegated: one listener serves every floating window.
 // The header ignores presses on the close affordance and buttons; the
 // grip resizes (320x180 minimum, viewport-bounded). Pointer-up persists
 // the geometry under the window's id.
 document.addEventListener('pointerdown', (e) => {
+  if (document.body.classList.contains('popout-win')) return; // the OS window moves itself
   const box = e.target.closest?.('.popout');
   if (!box || !popRoot().contains(box)) return;
   const head = e.target.closest('.modal-head');
@@ -217,6 +235,69 @@ document.addEventListener('pointerdown', (e) => {
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
 });
+
+// ---------- native popout windows (Wails v3 multi-window) ----------
+// The desktop app floats popouts as real OS windows: unlike the DOM
+// versions they can leave the app window's bounds (which clip them at
+// its edge). Harnesses, plain browsers and Wails server builds have no
+// windows, so the DOM path stays the default there; a native popout
+// window itself also renders through the DOM path (maybeNativePopout
+// declines inside one). The backend answers IsDesktopShell once and the
+// answer is cached — a binding round-trip cannot gate a synchronous
+// click, so until it resolves the DOM path is the safe default.
+let nativeMode = false;
+if (window.wails?.Call?.ByName) {
+  api.IsDesktopShell().then((v) => { nativeMode = !!v; }).catch(() => { nativeMode = false; });
+}
+const nativeWindows = () => nativeMode;
+const nativeOpen = new Set();
+onEvent('popout:closed', ({ id }) => nativeOpen.delete(id));
+
+// maybeNativePopout floats (or focuses) id as a native OS window and
+// returns true when the caller must stop — the window loads /?query and
+// renders the view itself. A remembered size survives reopens under the
+// same storage key the DOM popouts use; placement is the backend's job
+// (every popout opens centered on the app window).
+function maybeNativePopout({ id, query, title, w, h }) {
+  if (!nativeWindows()) return false;                                 // harness / browser
+  if (document.body.classList.contains('popout-win')) return false;   // we ARE the popout
+  if (nativeOpen.has(id)) { api.FocusPopout(id); return true; }
+  nativeOpen.add(id);
+  let geo = null;
+  try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
+  api.OpenPopout({
+    id, title, query,
+    w: Math.max(0, geo?.w || w || 0), h: Math.max(0, geo?.h || h || 0),
+  }).catch((err) => { nativeOpen.delete(id); toast(`Popout: ${err}`, 'error'); });
+  return true;
+}
+
+// renderPopoutView runs inside a native popout window (?popout=<kind>):
+// the same exported dialogs render through the DOM path into this
+// window's #popout-root, full-bleed (body.popout-win, app.css). The
+// window keeps its geometry remembered — moves fire no DOM event, so a
+// cheap poll supplements beforeunload (which a native destroy may skip).
+export function renderPopoutView(kind, qs) {
+  const bucket = qs.get('bucket') || '';
+  const id = kind === 'doctor' ? `doctor${bucket ? `:${bucket}` : ''}` : kind;
+  const persist = () => {
+    try {
+      // size only — the backend centers the window on the app window,
+      // so there is no position worth remembering
+      localStorage.setItem(`s3b-popout-${id}`, JSON.stringify({
+        w: outerWidth, h: outerHeight,
+      }));
+    } catch { /* storage unavailable — best effort */ }
+  };
+  addEventListener('beforeunload', persist);
+  setInterval(persist, 2000);
+  if (kind === 'doctor') doctorDialog(bucket);
+  else if (kind === 'transfers') transferManager();
+  else if (kind === 'keys') helpSheet();
+  else if (kind === 'guide') usageGuideDialog();
+  else if (kind === 'sources') sourcesInfoDialog();
+  else document.body.textContent = `Unknown popout: ${kind}`;
+}
 
 // ---------- confirmations (safety ladder) ----------
 export function confirm({ title, message, okLabel = 'OK', danger = false }) {
@@ -707,6 +788,12 @@ const docTime = (iso) => {
 };
 
 export function doctorDialog(bucket) {
+  if (maybeNativePopout({
+    id: `doctor${bucket ? `:${bucket}` : ''}`,
+    query: bucket ? `popout=doctor&bucket=${encodeURIComponent(bucket)}` : 'popout=doctor',
+    title: `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`,
+    w: 780, h: 640,
+  })) return;
   const summary = el('div', { class: 'doc-summary' });
   const list = el('div', { class: 'doc-list' });
   const warnBox = el('div', {});
@@ -850,6 +937,9 @@ export function doctorDialog(bucket) {
 
 // ---------- transfer manager ----------
 export function transferManager(onClose) {
+  if (maybeNativePopout({ id: 'transfers', query: 'popout=transfers', title: t('transfer.managerTitle'), w: 720, h: 560 })) {
+    return { close: () => api.ClosePopout('transfers') };
+  }
   const list = el('div', {});
   let off = () => {};
   // A popout, not a modal: the whole point is watching jobs while the
@@ -1256,6 +1346,7 @@ export function sourceEditor(existing, onSaved) {
 
 // ---------- help sheet (F1) ----------
 export function helpSheet() {
+  if (maybeNativePopout({ id: 'keys', query: 'popout=keys', title: 'Keyboard shortcuts', w: 640, h: 620 })) return;
   const rows = [
     ['Enter', 'Open bucket / folder / download object'],
     ['F2', 'Rename'],
@@ -1329,6 +1420,7 @@ const GUIDE_SECTIONS = [
 ];
 
 export function usageGuideDialog() {
+  if (maybeNativePopout({ id: 'guide', query: 'popout=guide', title: 'User guide', w: 860, h: 640 })) return;
   const strip = el('div', { class: 'tabstrip' });
   const content = el('div', { class: 'tabbody' });
   const select = (name) => {
@@ -1383,6 +1475,7 @@ const SOURCE_KINDS = [
 ];
 
 export function sourcesInfoDialog() {
+  if (maybeNativePopout({ id: 'sources', query: 'popout=sources', title: 'Supported data sources', w: 680, h: 620 })) return;
   const body = el('div', { class: 'guide' },
     SOURCE_KINDS.map(([name, lines]) => el('div', { class: 'guide-item' },
       el('div', { class: 'guide-h', text: name }),

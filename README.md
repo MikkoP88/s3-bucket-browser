@@ -34,15 +34,15 @@ The full tour with screenshots lives in the **[usage guide](docs/usage.md)**; th
 ## Quickstart (GUI)
 
 ```bash
-# Wails needs its build tags for a working GUI — see
-# https://wails.io/docs/guides/manual-builds
-go build -tags desktop,production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop app
-# Ubuntu 24.04+ ships webkit2gtk 4.1 only — add Wails' webkit2_41 tag there:
-# go build -tags desktop,production,webkit2_41 -o s3b ./cmd/s3b
+# `production` strips Wails v3's devtools — the GUI is the default build
+go build -tags production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop app
+# Ubuntu 24.04+ ships webkit2gtk 4.1, not the GTK4 webkit Wails v3 defaults
+# to — build the GTK3 frontend there:
+# go build -tags production,gtk3 -o s3b ./cmd/s3b
 # Windows: link with the GUI subsystem for a native, console-flash-free
 # launch (the CLI still prints normally — it re-attaches the parent
 # terminal on demand; release builds use exactly this):
-# go build -tags desktop,production -ldflags "-H windowsgui" -o s3b.exe ./cmd/s3b
+# go build -tags production -ldflags "-H windowsgui" -o s3b.exe ./cmd/s3b
 ```
 
 - **Data sources**: color-coded connections in one sidebar hierarchy — S3 sources (account-wide, or bucket-scoped via `--bucket` / `s3b source add s3://bucket`), SFTP/SCP, FTP/FTPS servers, WebDAV/WebDAVs shares and local folders, all browsable with the same Explorer UI. **Import credentials** from files or KMS/secrets services — with a live bucket-count test; the very first import, straight from the welcome screen, opens the imported bucket's content.
@@ -71,7 +71,7 @@ go build -tags s3b_headless -o s3b ./cmd/s3b
 
 ```bash
 go build -o s3b ./cmd/s3b   # CLI-only works in any build; add -tags
-                             # desktop,production if you want the GUI too
+                             # production if you want the GUI too
 
 # Connect to any S3 provider (AWS, MinIO, Wasabi, R2, ...) — credentials
 # also fall back to $S3B_ACCESS_KEY / $S3B_SECRET_KEY

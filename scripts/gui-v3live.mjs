@@ -1,0 +1,948 @@
+#!/usr/bin/env node
+// gui-v3live.mjs — the Wails v3 live walk: REAL v3 runtime + REAL bindings
+// + REAL backend, driven in a real browser.
+//
+// The app is built with Wails' `server` build tag (go build -tags server),
+// which runs the exact production stack — embedded frontend, /wails/runtime.js
+// (loaded by the fixed ES-module tag in index.html), the js/bridge.js v2
+// surface, HTTP-stream binding calls, WebSocket event delivery — behind a
+// plain HTTP server (WAILS_SERVER_PORT). Playwright drives that stack in a
+// real Chromium, so unlike gui-visual (fake backend) and the old gui-live
+// (v2-era HTTP bridge) this exercises the same code paths the desktop
+// webview runs, including the ESM runtime loading that once killed the app.
+//
+// Live data: local e2e containers (MinIO :9000 minioadmin, SFTP :2222,
+// FTP :2121, WebDAV :7070 — see scripts/e2e-cross.sh) plus fixture files.
+// The walk never touches the user's profile: S3B_CONFIG points at a
+// throwaway directory for the whole run, and remote sections join only
+// while their port answers.
+//
+// Coverage: boot/v3 layer checks → every menubar dropdown → onboarding →
+// add+test source → browse/tree guards → filter → context menu → admin →
+// doctor → help popouts (in-page: server flag gates native windows off) →
+// transfer manager → dual pane → New folder → DnD upload → versions →
+// conflict overwrite → A/B diff → DnD download (bytes verified) → rename →
+// deep Find → remote engines (sftp/ftp/webdav round-trip + cross-engine) →
+// i18n → settings/theme → log area → profile save/close/open through the
+// real bindings → server restart (session model) → Delete Window cleanup
+// (marker + permanent purge). A screenshot is captured from EVERY view.
+//
+// Usage:  node scripts/gui-v3live.mjs [--headed] [--channel msedge|chrome]
+// Artifacts: testartifacts/gui-v3live/ (shots/, fixtures/, server log,
+// browser profile, throwaway config) — wiped fresh every run.
+
+import { spawn, execFileSync } from 'node:child_process';
+import { rm, mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import net from 'node:net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright-core';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ART = path.join(ROOT, 'testartifacts', 'gui-v3live');
+const SHOTS = path.join(ART, 'shots');
+const FIX = path.join(ART, 'fixtures');
+const CFG = path.join(ART, 'config');          // S3B_CONFIG — throwaway app config
+const PROFILE = path.join(ART, 'walk.s3bprofile');
+const USERDIR = path.join(ART, 'browser-profile');
+const SRV_EXE = path.join(ROOT, 'testartifacts', 's3b-server.exe');
+const SRVLOG = path.join(ART, 'server.log');
+const VERSION = 'v1.1.0-beta.13-7-wails3';
+
+const arg = (k) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 ? process.argv[i + 1] : null; };
+const HEADED = process.argv.includes('--headed');
+
+const PKG = 'github.com/MikkoP88/s3-bucket-browser/pkg/api';
+const ENDPOINT = 'http://localhost:9000';
+const KEY = 'minioadmin';
+const SECRET = 'minioadmin';
+const REGION = 'us-east-1';
+const BUCKET = 'guiv3-walk';        // versioned, seeded (see the mc block in main)
+const SRCNAME = 'minio-live';
+const SEED = 'seed';
+const PORT = 39872;                 // fixed: restart keeps the origin (localStorage) stable
+const PREFIX = 'zz-v3';
+const V1 = 'v3 live walk v1 — uploaded through the real v3 bridge\n';
+const V2 = 'v3 live walk v2 — overwritten through the conflict dialog\n';
+const B_TXT = 'second fixture file for the v3 walk\n';
+const PASSWORD = 'v3-walk-password-1';
+const LOCK = '\u{1F510}';
+
+const E2E_USER = process.env.S3B_E2E_USER || 'e2e';
+const E2E_PASS = process.env.S3B_E2E_PASS || 'e2epass';
+const ENGINES = [
+  { label: 'sftp', type: 'sftp', port: +(process.env.S3B_SFTP_PORT || 2222), root: '/upload' },
+  { label: 'ftp', type: 'ftp', port: +(process.env.S3B_FTP_PORT || 2121), root: '' },
+  { label: 'webdav', type: 'webdav', port: +(process.env.S3B_WEBDAV_PORT || 7070), root: '' },
+];
+const TREE_FILES = {
+  'readme.md': 'tree readme\n',
+  'root-1.txt': 'root file one\n',
+  'docs/a.md': 'docs alpha\n',
+  'docs/b with space.txt': 'space in the name\n',
+  'docs/uni-åäö.txt': 'unicode åäö content\n',
+  'docs/nested/deep-file.txt': 'deep file\n',
+  'docs/empty.txt': '',
+  'logs/l1.log': 'log one\n',
+  'logs/l2.log': 'log two\n',
+};
+const RUNID = `v${Date.now().toString(36)}`;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let pass = 0, fail = 0; const failures = [];
+async function step(name, fn) {
+  process.stdout.write(`== ${name}\n`);
+  try { const v = await fn(); pass++; return v; }
+  catch (err) { fail++; failures.push(`${name}: ${err.message}`); console.error(`   FAIL: ${err.message}`); }
+  finally { await dismissUI(); }
+}
+async function dismissUI() {
+  if (!page) return;
+  try {
+    // in-page popouts first (server flag): close via their own × buttons
+    await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout .modal-head .x')).forEach((x) => x.click()));
+    await sleep(60);
+    await page.keyboard.press('Escape');
+    await sleep(60);
+    await page.keyboard.press('Escape');
+    await sleep(60);
+    const btn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+      .reverse().find((b) => /^(close|cancel)$/i.test(b.textContent.trim())) || null);
+    if (btn) await btn.asElement().click();
+    await evalPage(() => {
+      document.getElementById('ctxmenu')?.classList.add('hidden');
+      const r = document.getElementById('modal-root');
+      if (r && !r.classList.contains('hidden') && !r.querySelector('.modal')) r.classList.add('hidden');
+      document.querySelectorAll('#menubar .mb-dd').forEach((d) => d.classList.add('hidden'));
+    });
+  } catch { /* best effort */ }
+}
+async function ok(label, cond) {
+  if (cond) { pass++; process.stdout.write(`   ok  ${label}\n`); }
+  else { fail++; failures.push(label); console.error(`   FAIL ${label}`); }
+}
+async function waitFor(fn, ms = 15000, what = 'condition') {
+  const t0 = Date.now();
+  for (;;) {
+    let v; try { v = await fn(); } catch { v = false; }
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error(`timeout waiting for ${what}`);
+    await sleep(150);
+  }
+}
+const evalPage = (fn, ...args) => page.evaluate(fn, ...args);
+const elOrNull = (js, arg) => page.evaluateHandle(js, arg).then(async (h) => ((await h.asElement()) ? h : null));
+const rowKeys = () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+  .filter((r) => r.style.display !== 'none' && r._model).map((r) => r._model.key));
+const names = () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+  .filter((r) => r.style.display !== 'none' && r._model).map((r) => r._model.name || r._model.key));
+const sideKeys = () => evalPage(() => Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+  .filter((r) => r.style.display !== 'none' && r._model).map((r) => String(r._model.key).replace(/[\\/]+$/, '').split(/[\\/]/).pop()));
+const gridRow = (label) => elOrNull((l) => {
+  const norm = (s) => String(s || '').replace(/\/+$/, '');
+  return Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .find((r) => norm(r.querySelector('.tname')?.textContent) === norm(l)) || null;
+}, label);
+const sideRow = (label) => elOrNull((l) => {
+  const norm = (s) => String(s || '').replace(/\/+$/, '');
+  return Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+    .find((r) => norm(r.querySelector('.tname')?.textContent) === norm(l)) || null;
+}, label);
+const bodyH = () => page.evaluateHandle(() => document.getElementById('grid-body'));
+const sideBodyH = () => page.evaluateHandle(() => document.getElementById('local-grid-body'));
+async function rowAction(label, kind) {
+  const h = await waitFor(async () => {
+    const r = await (kind === 'side' ? sideRow(label) : gridRow(label));
+    return (await r.asElement()) ? r : false;
+  }, 15000, `row "${label}"`);
+  return h.asElement();
+}
+const clickRow = (l) => rowAction(l, 'grid').then((e) => e.click());
+const dblClickRow = (l) => rowAction(l, 'grid').then((e) => e.dblclick());
+const rightClickRow = (l) => rowAction(l, 'grid').then((e) => e.click({ button: 'right' }));
+const txt = (sel) => evalPage((s) => document.querySelector(s)?.textContent || '', sel);
+const toasts = () => evalPage(() => Array.from(document.querySelectorAll('#toasts .toast')).map((t) => t.textContent));
+// binding calls straight through the bridge the app itself uses
+const call = (method, ...args) => evalPage(([m, a]) => window.go['github.com/MikkoP88/s3-bucket-browser/pkg/api'].App[m](...a), [method, args]);
+const verCount = () => call('ObjectVersions', BUCKET, `${PREFIX}/live-a.txt`).then((r) => (r || []).length);
+
+async function shot(name) {
+  try { await page.screenshot({ path: path.join(SHOTS, `${name}.png`) }); } catch { /* non-fatal */ }
+}
+// modal helpers
+async function answerPrompt(value) {
+  const input = page.locator('#modal-root .modal input.input').last();
+  await waitFor(() => input.count().then((n) => n > 0), 5000, 'prompt input');
+  await input.fill(value);
+  await input.press('Enter');
+  await sleep(120);
+}
+async function clickFooter(re) {
+  const h = await elOrNull((src) => {
+    const btns = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'));
+    return btns.find((b) => new RegExp(src, 'i').test(b.textContent.trim())) || null;
+  }, re.source);
+  if (!h) throw new Error(`no footer button /${re.source}/`);
+  await h.asElement().click();
+  await sleep(120);
+}
+async function closeModal() {
+  const btn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+    .reverse().find((b) => /^(close|cancel)$/i.test(b.textContent.trim())) || null);
+  if (btn) { await btn.asElement().click(); await sleep(100); return; }
+  await page.keyboard.press('Escape');
+  await sleep(100);
+  await evalPage(() => document.getElementById('modal-root')?.classList.add('hidden'));
+}
+async function modalVisible() {
+  return evalPage(() => !!document.querySelector('#modal-root .modal') && !document.getElementById('modal-root').classList.contains('hidden'));
+}
+async function modalText() {
+  return evalPage(() => document.querySelector('#modal-root .modal')?.textContent || '');
+}
+async function ctxItem(re) {
+  const h = await elOrNull((src) => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+    .find((i) => new RegExp(src, 'i').test(i.textContent)) || null, re.source);
+  if (!h) throw new Error(`no ctxmenu item /${re.source}/`);
+  await h.asElement().click();
+  await sleep(100);
+}
+async function menuClick(menuRe, itemRe) {
+  await page.locator('#menubar .mb-title', { hasText: menuRe }).first().click();
+  await sleep(100);
+  const h = await elOrNull((src) => {
+    const [m, i] = src;
+    const menu = Array.from(document.querySelectorAll('#menubar .mb-title')).find((t) => new RegExp(m, 'i').test(t.textContent));
+    const dd = Array.from(document.querySelectorAll('#menubar .mb-dd')).find((d) => !d.classList.contains('hidden'));
+    if (!dd) return null;
+    return Array.from(dd.querySelectorAll('.mb-item')).find((it) => new RegExp(i, 'i').test(it.textContent)) || null;
+  }, [menuRe.source, itemRe.source]);
+  if (!h) { await page.keyboard.press('Escape'); throw new Error(`no menu item ${menuRe}/${itemRe}`); }
+  await h.asElement().click();
+  await sleep(120);
+}
+async function dnd(fromH, toH, { shift = false, ctrl = false } = {}) {
+  if (!fromH || !toH) throw new Error(`dnd: ${!fromH ? 'source' : 'target'} element not found`);
+  await page.evaluate(([f, t, sh, ct]) => {
+    const dt = new DataTransfer();
+    f.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    const init = { bubbles: true, cancelable: true, dataTransfer: dt, shiftKey: sh, ctrlKey: ct };
+    t.dispatchEvent(new DragEvent('dragover', init));
+    t.dispatchEvent(new DragEvent('drop', init));
+    f.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: dt }));
+  }, [fromH.asElement(), toH.asElement(), shift, ctrl]);
+  await sleep(150);
+}
+async function startIfAsked(timeoutMs = 8000) {
+  try {
+    await waitFor(async () => {
+      if (!(await modalVisible())) return false;
+      const h = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((b) => /^start$/i.test(b.textContent.trim())) || null);
+      return (h && await h.asElement()) ? true : false;
+    }, timeoutMs, 'transfer dialog');
+    await clickFooter(/^start$/i);
+    return 'dialog';
+  } catch { return 'silent'; }
+}
+async function bodyCtx() {
+  await page.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.right - 40, clientY: r.bottom - 30 }));
+  }, await bodyH());
+  await sleep(80);
+}
+const portOpen = (port) => new Promise((res) => {
+  const s = net.connect({ host: '127.0.0.1', port, timeout: 1500 });
+  s.once('connect', () => { s.destroy(); res(true); });
+  s.once('error', () => res(false));
+  s.once('timeout', () => { s.destroy(); res(false); });
+});
+async function treeOf(dir, base = dir) {
+  const out = [];
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...await treeOf(p, base));
+    else {
+      const b = await readFile(p);
+      out.push([path.relative(base, p).split(path.sep).join('/'), b.length, b.toString('utf8')]);
+    }
+  }
+  return out.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+}
+async function addRemoteSource({ label, type, port, root }) {
+  await page.locator('#sidebar-head .side-add').click();
+  await waitFor(() => page.locator('#modal-root .modal select').count().then((n) => n > 0), 5000, 'source editor');
+  await page.locator('#modal-root .modal select').selectOption(type);
+  const inputs = page.locator('#modal-root .modal input.input');
+  await waitFor(() => inputs.count().then((n) => n >= 6), 5000, 'remote fields');
+  await inputs.nth(0).fill(`live-${label}`);
+  await inputs.nth(1).fill('127.0.0.1');
+  await inputs.nth(2).fill(String(port));
+  await inputs.nth(3).fill(E2E_USER);
+  await inputs.nth(4).fill(E2E_PASS);
+  await inputs.nth(5).fill(root);
+  await clickFooter(/^test$/i);
+  await waitFor(async () => /✅|❌/.test(await modalText()), 20000, `test ${label}`);
+  await ok(`${label}: source test passed`, (await modalText()).includes('✅'));
+  await shot(`r0-${label}-test`);
+  await clickFooter(/^save$/i);
+  await waitFor(async () => txt('#breadcrumb').then((s) => s.includes(`live-${label}`)), 15000, `${label} root`);
+}
+async function runDeleteWindow(mode = '') {
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) >= 1, 5000, 'delete window');
+  const nModes = await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length);
+  if (nModes > 1) {
+    await evalPage((m) => {
+      document.querySelector(`#modal-root input[name="delmode"][value="${m}"]`)?.click();
+    }, mode);
+  }
+  const armed = await evalPage(() => {
+    const i = document.querySelector('#modal-root .delw-confirm input');
+    return !!i && !i.disabled;
+  });
+  if (armed) await page.locator('#modal-root .delw-confirm input').fill('delete');
+  await shot(mode ? `delete-window-${mode}` : 'delete-window-marker');
+  await clickFooter(/^delete$/i);
+}
+async function crumbRoot() {
+  await evalPage(() => document.querySelector('#breadcrumb .crumb')?.click());
+  await sleep(120);
+}
+async function treeOpen(label) {
+  await waitFor(() => evalPage((l) => Array.from(document.querySelectorAll('#tree .tnode'))
+    .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), label), 10000, `tree node "${label}"`);
+  await evalPage((l) => {
+    Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l)
+      ?.querySelector('.tlabel')?.click();
+  }, label);
+  await sleep(300);
+}
+
+// ---------- server lifecycle ----------
+function startServer() {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(SRV_EXE, [], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        WAILS_SERVER_HOST: '127.0.0.1',
+        WAILS_SERVER_PORT: String(PORT),
+        S3B_CONFIG: CFG,
+      },
+    });
+    proc.stdout.on('data', (d) => fs.appendFileSync(SRVLOG, d));
+    proc.stderr.on('data', (d) => fs.appendFileSync(SRVLOG, d));
+    const t0 = Date.now();
+    (function poll() {
+      fetch(`http://127.0.0.1:${PORT}/health`, { signal: AbortSignal.timeout(1500) })
+        .then((r) => r.json())
+        .then((j) => { if (j.status === 'ok') resolve({ proc }); else retry(); })
+        .catch(retry);
+      function retry() {
+        if (proc.exitCode !== null) return reject(new Error(`server exited early (code ${proc.exitCode}) — see ${SRVLOG}`));
+        if (Date.now() - t0 > 30000) return reject(new Error('server did not answer /health in 30s'));
+        setTimeout(poll, 400);
+      }
+    })();
+  });
+}
+async function stopServer(srv) {
+  if (!srv || srv.proc.exitCode !== null) return;
+  const exited = new Promise((r) => srv.proc.on('exit', r));
+  srv.proc.kill();
+  await Promise.race([exited, sleep(3000)]);
+  if (srv.proc.exitCode === null) srv.proc.kill();
+}
+
+let page, context, srv;
+let consoleTail = [];
+let pageErrors = [];
+
+async function launch() {
+  const channels = [...new Set([arg('channel'), process.env.S3B_BROWSER_CHANNEL, 'msedge', 'chrome'].filter(Boolean))];
+  let lastErr;
+  for (const ch of channels) {
+    try {
+      context = await chromium.launchPersistentContext(USERDIR, { channel: ch, headless: !HEADED });
+      return;
+    } catch (err) { lastErr = err; }
+  }
+  throw new Error(`no usable browser (tried channels: ${channels.join(', ')}): ${lastErr?.message}`);
+}
+
+import fs from 'node:fs';
+
+async function main() {
+  await rm(ART, { recursive: true, force: true });
+  await mkdir(SHOTS, { recursive: true });
+  await mkdir(FIX, { recursive: true });
+  await mkdir(CFG, { recursive: true });
+  fs.writeFileSync(SRVLOG, '');
+  await writeFile(path.join(FIX, 'live-a.txt'), V1);
+  await writeFile(path.join(FIX, 'live-b.txt'), B_TXT);
+  for (const [rel, content] of Object.entries(TREE_FILES)) {
+    const p = path.join(FIX, 'tree', rel);
+    await mkdir(path.dirname(p), { recursive: true });
+    await writeFile(p, content);
+  }
+
+  srv = await startServer();
+  console.log(`s3b v3 server at http://127.0.0.1:${PORT} (config: ${CFG})`);
+
+  await launch();
+  page = context.pages()[0] || await context.newPage();
+  page.on('console', (m) => { consoleTail.push(`[${m.type()}] ${m.text()}`); consoleTail = consoleTail.slice(-60); });
+  page.on('pageerror', (e) => { pageErrors.push(e.message); consoleTail.push(`[pageerror] ${e.message}`); consoleTail = consoleTail.slice(-60); });
+  page.setDefaultTimeout(20000);
+
+  await walk();
+
+  await shot('final');
+  console.log(`\nv3 live walk: ${pass} check(s) passed, ${fail} failed`);
+  if (pageErrors.length) {
+    console.log(`\nPAGE ERRORS (${pageErrors.length}):`);
+    for (const e of pageErrors) console.log(`  ${e}`);
+  } else {
+    console.log('no page errors across the whole walk');
+  }
+  if (fail || pageErrors.length) process.exitCode = 1;
+}
+
+// ---------- the walk ----------
+async function walk() {
+  await step('boot: v3 runtime, bridge, bindings, events', async () => {
+    await page.goto(`http://127.0.0.1:${PORT}/`);
+    await evalPage(() => {
+      localStorage.setItem('s3b-lang', 'en');
+      localStorage.setItem('s3b-show-markers', '1');
+    });
+    await page.reload();
+    // THE layer the desktop webview runs: v3 runtime as ES module, bridge
+    // surface, binding call round-trip, backend→frontend event delivery.
+    await waitFor(() => evalPage(() => !!window.wails?.Call?.ByName && !!window.wails?.Events?.On), 15000, 'window.wails');
+    await ok('v3 runtime loaded (window.wails)', true);
+    await waitFor(() => evalPage(() => !!window.go && !!window.runtime), 15000, 'bridge surface');
+    await ok('bridge installed window.go + window.runtime', true);
+    const ver = await call('GetVersion');
+    await ok(`binding round-trip GetVersion → "${ver}"`, ver === VERSION);
+    // events: subscribe in the page, emit from the backend through a real
+    // transfer-free path — the log:line stream the app itself listens to
+    const got = await evalPage(async () => {
+      let hit = false;
+      window.runtime.EventsOn('v3walk:ping', (v) => { window.__v3ping = v; });
+      // backend emits via a binding that logs (any API call logs log:line);
+      // for a pure event check use the wails runtime itself
+      await window.wails.Events.Emit('v3walk:ping', { n: 42 });
+      await new Promise((r) => setTimeout(r, 300));
+      return window.__v3ping;
+    });
+    await ok(`runtime event round-trip (emit→on): ${JSON.stringify(got)}`, got && got.n === 42);
+    await waitFor(() => txt('#status-version').then((s) => s.includes(VERSION)), 15000, 'version in status bar');
+    await ok('status bar shows the build version', true);
+    await waitFor(() => evalPage(() => Array.from(document.querySelectorAll('#empty-actions .btn')).length > 0), 10000, 'onboarding actions');
+    await ok('onboarding empty state shown', true);
+    await ok('menubar rendered', await evalPage(() => document.querySelectorAll('#menubar .mb-title').length >= 4));
+    await shot('01-boot-onboarding');
+  });
+
+  await step('menubar: every dropdown opens (screenshot each)', async () => {
+    const titles = await evalPage(() => Array.from(document.querySelectorAll('#menubar .mb-title')).map((t) => t.textContent.trim()));
+    process.stdout.write(`   menus: [${titles.join(', ')}]\n`);
+    for (const t of titles) {
+      await page.locator('#menubar .mb-title', { hasText: new RegExp(`^${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).first().click();
+      await sleep(120);
+      const open = await evalPage(() => Array.from(document.querySelectorAll('#menubar .mb-dd')).some((d) => !d.classList.contains('hidden')));
+      await ok(`menu "${t}" opens`, open);
+      await shot(`02-menu-${t.toLowerCase().replace(/\s+/g, '-')}`);
+      await page.keyboard.press('Escape');
+      await sleep(80);
+    }
+  });
+
+  await step('add + test S3 source (MinIO, real dial)', async () => {
+    await page.locator('#empty-actions .btn.primary').first().click();
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n >= 6), 5000, 'source editor fields');
+    const inputs = page.locator('#modal-root .modal input.input');
+    await inputs.nth(0).fill(SRCNAME);
+    await inputs.nth(1).fill(BUCKET);
+    await inputs.nth(2).fill(ENDPOINT);
+    await inputs.nth(3).fill(REGION);
+    await inputs.nth(4).fill(KEY);
+    await inputs.nth(5).fill(SECRET);
+    await page.locator('#modal-root .modal input[type="checkbox"]').first().check(); // path-style
+    await shot('03-source-editor');
+    await clickFooter(/^test$/i);
+    await waitFor(async () => /✅|❌/.test(await modalText()), 30000, 'Test result');
+    await ok('source test passed against MinIO', (await modalText()).includes('✅'));
+    await shot('04-source-test');
+    await clickFooter(/^save$/i);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root listing');
+    await ok('bucket root listed through the v3 bridge', true);
+  });
+
+  await step('session-only status chip', async () => {
+    await waitFor(() => txt('#status-pfile').then((s) => /unsaved source/i.test(s)), 5000, 'unsaved-source chip');
+    await ok(`status bar: "${(await txt('#status-pfile')).trim()}"`, true);
+  });
+
+  await step('browse: rows, tree guards, breadcrumb', async () => {
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket contents');
+    await ok(`existing data visible (${SEED}/)`, true);
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .tguard').length)) > 0, 10000, 'tree guard icons');
+    const icons = await evalPage(() => Array.from(document.querySelectorAll('#tree .tguard')).map((c) => c.title));
+    await ok(`tree guard icons: [${icons.join(' | ')}]`, icons.length > 0);
+    await shot('05-objects');
+  });
+
+  await step('filter box filters rows live', async () => {
+    await page.locator('#filter').fill('see'); // matches seed/
+    await sleep(250);
+    const filtered = await evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .filter((r) => r.style.display !== 'none').length);
+    await ok(`filter narrowed the view (${filtered} row(s))`, filtered >= 1);
+    await shot('06-filter');
+    await page.locator('#filter').fill('');
+    await sleep(150);
+  });
+
+  await step('context menu on a row (all items)', async () => {
+    await clickRow(SEED);
+    await rightClickRow(SEED);
+    await sleep(120);
+    const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item')).map((i) => i.textContent.trim()));
+    process.stdout.write(`   items: [${items.join(' | ')}]\n`);
+    await ok('row context menu has items', items.length >= 5);
+    await shot('07-ctxmenu');
+    await evalPage(() => document.getElementById('ctxmenu')?.classList.add('hidden'));
+    // copy-path goes through the real ClipSetText binding — a no-op impl in
+    // server builds, so assert the menu worked, not the OS clipboard
+    await rightClickRow(SEED);
+    await sleep(80);
+    await ctxItem(/^copy path$/i);
+    await sleep(300);
+    process.stdout.write(`   copy-path toasts: ${JSON.stringify(await toasts()).slice(0, 160)}\n`);
+    await ok('copy path clicked without killing the page', true);
+  });
+
+  await step('admin dialog (real bucket info + versioning status)', async () => {
+    await page.locator('#tree .tguard').first().click();
+    await waitFor(async () => /versioning/i.test(await modalText()), 10000, 'admin overview');
+    const tabs = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .tab')).map((t) => t.textContent));
+    await ok(`admin dialog opens (${tabs.length} tab(s): ${tabs.slice(0, 4).join(',')}…)`, await modalVisible());
+    await ok('admin dialog titled Admin panel', (await modalText()).includes('Admin panel'));
+    await ok(`versioning reported: ${(await modalText().then((t) => t.match(/Versioning\s*(Enabled|Suspended|off[^]*)?/i) || [])[0] || '')}`, /enabled/i.test(await modalText()));
+    // screenshot a second tab too (Security) for coverage
+    const tab = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .tab')).find((t) => /security/i.test(t.textContent)) || null);
+    if (tab) { await tab.asElement().click(); await sleep(400); await shot('08b-admin-security'); }
+    await shot('08-admin');
+    await closeModal();
+  });
+
+  await step('doctor (real checks over the bridge)', async () => {
+    await menuClick(/help/i, /doctor/i);
+    // doctor floats as an in-page popout (#popout-root), not a modal
+    await waitFor(() => evalPage(() => {
+      const p = document.querySelector('#popout-root .popout');
+      return p ? p.textContent : '';
+    }).then((s) => /run all/i.test(s)), 10000, 'doctor popout');
+    await shot('09-doctor-initial');
+    const runAllBtn = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout .modal-foot .btn'))
+      .find((b) => /run all/i.test(b.textContent.trim())) || null);
+    await runAllBtn.asElement().click();
+    await waitFor(async () => /pass/i.test(await evalPage(() => document.querySelector('#popout-root .doc-summary')?.textContent || '')), 60000, 'doctor summary');
+    const summary = await evalPage(() => document.querySelector('#popout-root .doc-summary')?.textContent || '');
+    await ok(`doctor summary: "${summary.trim()}"`, /pass/i.test(summary));
+    await shot('10-doctor-run');
+    await dismissUI();
+  });
+
+  await step('help popouts render in-page (server flag gates native off)', async () => {
+    // F1 keyboard shortcuts
+    await page.keyboard.press('F1');
+    await waitFor(() => evalPage(() => document.querySelectorAll('#popout-root .popout').length > 0), 5000, 'keyboard popout');
+    await ok('keyboard shortcuts popout (in-page)', true);
+    await shot('11-keys-popout');
+    await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout .modal-head .x')).forEach((x) => x.click()));
+    // user guide
+    await menuClick(/help/i, /guide|usage/i);
+    await waitFor(() => evalPage(() => document.querySelectorAll('#popout-root .popout').length > 0), 5000, 'guide popout');
+    await ok('user guide popout (in-page)', true);
+    await shot('12-guide-popout');
+    await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout .modal-head .x')).forEach((x) => x.click()));
+    // supported data sources
+    await menuClick(/help/i, /sources|data sources/i);
+    await waitFor(() => evalPage(() => document.querySelectorAll('#popout-root .popout').length > 0), 5000, 'sources popout');
+    await ok('supported data sources popout (in-page)', true);
+    await shot('13-sources-popout');
+    await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout .modal-head .x')).forEach((x) => x.click()));
+  });
+
+  await step('transfer manager (in-page popout)', async () => {
+    await menuClick(/view/i, /transfers/i);
+    await waitFor(() => evalPage(() => document.querySelectorAll('#popout-root .popout').length > 0), 5000, 'transfer popout');
+    await ok('transfer manager opens as a popout', true);
+    await shot('14-transfers');
+    await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout .modal-head .x')).forEach((x) => x.click()));
+  });
+
+  await step('dual pane: bind local side to fixtures', async () => {
+    await page.keyboard.press('F9');
+    await waitFor(() => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 5000, 'local pane');
+    await page.locator('#local-crumb').click();
+    await answerPrompt(FIX);
+    await waitFor(async () => (await sideKeys()).includes('live-a.txt'), 10000, 'fixture rows');
+    await ok('local rows visible', true);
+    await shot('15-dualpane');
+  });
+
+  await step('New folder via empty-area context menu', async () => {
+    await bodyCtx();
+    await ctxItem(/new folder/i);
+    await shot('16-newfolder-prompt');
+    await answerPrompt(PREFIX);
+    await waitFor(async () => (await rowKeys()).includes(`${PREFIX}/`), 20000, 'zz-v3 folder');
+    await ok(`folder ${PREFIX}/ created`, true);
+    await dblClickRow(`${PREFIX}/`);
+    await waitFor(async () => (await rowKeys()).length === 0, 10000, 'empty folder view');
+  });
+
+  await step('DnD upload through the bridge (local row → grid body)', async () => {
+    const upload = async (file) => {
+      await dnd(await sideRow(file), await bodyH());
+      const how = await startIfAsked(8000);
+      await waitFor(async () => (await names()).includes(file), 60000, `uploaded row ${file}`);
+      return how;
+    };
+    const a = await upload('live-a.txt');
+    await ok(`live-a.txt uploaded (${a})`, true);
+    const b = await upload('live-b.txt');
+    await ok(`live-b.txt uploaded (${b})`, true);
+    await shot('17-uploaded');
+  });
+
+  await step('versions baseline + versions dialog', async () => {
+    const base = await verCount();
+    await ok(`baseline: ${base} version(s) of ${PREFIX}/live-a.txt`, base >= 1);
+    await clickRow('live-a.txt');
+    await rightClickRow('live-a.txt');
+    await ctxItem(/^versions/i);
+    await waitFor(() => page.locator('#modal-root .ver-row').count().then((n) => n >= base), 15000, 'version rows');
+    await ok(`versions dialog shows ${await page.locator('#modal-root .ver-row').count()} row(s)`, true);
+    await shot('18-versions');
+    await closeModal();
+    return base;
+  }).then((base) => { walk.base = base; });
+
+  await step('overwrite via conflict dialog → 2 versions → A/B diff', async () => {
+    const base = walk.base;
+    await writeFile(path.join(FIX, 'live-a.txt'), V2);
+    await dnd(await sideRow('live-a.txt'), await bodyH());
+    await waitFor(async () => /already exist/i.test(await modalText()), 15000, 'conflict dialog');
+    await ok('conflict policy dialog shown', true);
+    await shot('19-conflict');
+    await clickFooter(/^start$/i);
+    await waitFor(async () => (await verCount()) === base + 1, 60000, 'second version landed');
+    await ok('overwrite created a new version', true);
+    await clickRow('live-a.txt');
+    await rightClickRow('live-a.txt');
+    await ctxItem(/^versions/i);
+    await waitFor(async () => page.locator('#modal-root .ver-row').count().then((n) => n >= base + 1), 20000, 'two versions');
+    await ok(`now ${await page.locator('#modal-root .ver-row').count()} versions`, true);
+    await shot('20-versions-two');
+    await page.locator('#modal-root .ver-row').first().locator('.ver-pick', { hasText: 'A' }).click();
+    await sleep(80);
+    await page.locator('#modal-root .ver-row').last().locator('.ver-pick', { hasText: 'B' }).click();
+    await sleep(120);
+    await page.locator('#modal-root button', { hasText: 'Compare A' }).click();
+    await waitFor(async () => {
+      const d = await modalText();
+      return d.includes('v1') && d.includes('v2');
+    }, 20000, 'A/B diff contents');
+    await ok('A/B diff shows both contents', true);
+    await shot('21-versiondiff');
+    await closeModal();
+  });
+
+  await step('DnD download (S3 row → local pane, bytes verified)', async () => {
+    const dst = path.join(FIX, 'downloads');
+    await mkdir(dst, { recursive: true });
+    await page.locator('#local-crumb').click();
+    await answerPrompt(dst);
+    await waitFor(async () => (await sideKeys()).length === 0, 10000, 'empty downloads dir');
+    await dnd(await rowAction('live-b.txt', 'grid'), await sideBodyH());
+    await startIfAsked(8000);
+    await waitFor(async () => (await sideKeys()).includes('live-b.txt'), 60000, 'downloaded row');
+    const bytes = await readFile(path.join(dst, 'live-b.txt'), 'utf8');
+    await ok('downloaded bytes identical', bytes === B_TXT);
+    await shot('22-downloaded');
+  });
+
+  await step('rename (F2)', async () => {
+    await page.locator('#local-crumb').click();
+    await answerPrompt(FIX);
+    await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'local side reset');
+    await clickRow('live-b.txt');
+    await page.keyboard.press('F2');
+    await shot('23-rename-prompt');
+    await answerPrompt('live-renamed.txt');
+    await waitFor(async () => (await names()).includes('live-renamed.txt'), 20000, 'renamed row');
+    await ok('renamed to live-renamed.txt', true);
+  });
+
+  await step('deep Find (Ctrl+Shift+F)', async () => {
+    await page.keyboard.press('Control+Shift+F');
+    await waitFor(() => modalVisible(), 5000, 'find dialog');
+    await ok('find dialog opens', true);
+    await shot('24-find');
+    const input = page.locator('#modal-root .modal input.input').first();
+    if (await input.count()) {
+      await input.fill('live-a');
+      const btn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((b) => /^(find|search|start)$/i.test(b.textContent.trim())) || null);
+      if (btn) { await btn.asElement().click(); await sleep(1500); }
+      await shot('25-find-results');
+    }
+  });
+
+  await step('remote engines: add + test + structure-fidelity round-trip', async () => {
+    const engines = [];
+    for (const e of ENGINES) if (await portOpen(e.port)) engines.push(e);
+    if (!engines.length) {
+      console.log('   (no local e2e containers reachable — remote engine checks skipped)');
+      await ok('remote engine section skipped (no containers up)', true);
+      return;
+    }
+    walk.engines = engines;
+    for (const e of engines) {
+      await treeOpen(SRCNAME);
+      await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 15000, 'back on s3 source');
+      await addRemoteSource(e);
+      await shot(`r1-${e.label}-root`);
+      await bodyCtx();
+      await ctxItem(/new folder/i);
+      await answerPrompt(RUNID);
+      await waitFor(async () => (await names()).includes(RUNID), 20000, `${e.label}: ${RUNID} dir`);
+      await dblClickRow(RUNID);
+      await waitFor(async () => (await rowKeys()).length === 0, 10000, `${e.label}: empty run dir`);
+      await page.locator('#local-crumb').click();
+      await answerPrompt(FIX);
+      await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'fixture tree on the local side');
+      await dnd(await sideRow('tree'), await bodyH());
+      await startIfAsked(8000);
+      await waitFor(async () => (await names()).includes('tree'), 90000, `${e.label}: tree uploaded`);
+      await ok(`${e.label}: nested tree uploaded via folder-row DnD`, true);
+      await dblClickRow('tree');
+      await waitFor(async () => {
+        const n = await names();
+        return ['docs', 'logs', 'readme.md', 'root-1.txt'].every((x) => n.includes(x));
+      }, 20000, `${e.label}: tree root`);
+      await ok(`${e.label}: root files + dirs intact`, true);
+      await shot(`r2-${e.label}-tree`);
+      await dblClickRow('docs');
+      await waitFor(async () => {
+        const n = await names();
+        return ['a.md', 'b with space.txt', 'uni-åäö.txt', 'nested', 'empty.txt'].every((x) => n.includes(x));
+      }, 20000, `${e.label}: docs/`);
+      await ok(`${e.label}: space, unicode, empty file and nested dir intact`, true);
+      await crumbRoot();
+      await waitFor(async () => (await names()).includes(RUNID), 10000, `${e.label}: back at root`);
+      await dblClickRow(RUNID);
+      await waitFor(async () => (await names()).includes('tree'), 10000, `${e.label}: run dir`);
+      const dst = path.join(FIX, `rt-${e.label}`);
+      await mkdir(dst, { recursive: true });
+      await page.locator('#local-crumb').click();
+      await answerPrompt(dst);
+      await waitFor(async () => (await sideKeys()).length === 0, 10000, `${e.label}: empty local dst`);
+      await dnd(await rowAction('tree', 'grid'), await sideBodyH());
+      await startIfAsked(8000);
+      await waitFor(async () => (await sideKeys()).includes('tree'), 90000, `${e.label}: tree downloaded`);
+      const a = await treeOf(path.join(dst, 'tree'));
+      const b = await treeOf(path.join(FIX, 'tree'));
+      await ok(`${e.label}: round-trip byte-identical (${a.length} files)`, JSON.stringify(a) === JSON.stringify(b));
+      await shot(`r3-${e.label}-roundtrip`);
+      await crumbRoot();
+      await waitFor(async () => (await names()).includes(RUNID), 10000, `${e.label}: root again`);
+    }
+    if (engines.length >= 2) {
+      const from = engines[0];
+      await treeOpen(SRCNAME);
+      await bodyCtx();
+      await ctxItem(/new folder/i);
+      await answerPrompt(`x-${RUNID}`);
+      await waitFor(async () => (await names()).includes(`x-${RUNID}`), 20000, 'cross-engine dir');
+      await dblClickRow(`x-${RUNID}`);
+      await waitFor(async () => (await rowKeys()).length === 0, 10000, 'empty cross dir');
+      await page.locator('#local-src').selectOption({ label: `live-${from.label} (${from.type})` });
+      await waitFor(async () => (await sideKeys()).includes(RUNID), 15000, `${from.label} on the side`);
+      const runDir = await rowAction(RUNID, 'side');
+      await runDir.dblclick();
+      await waitFor(async () => (await sideKeys()).includes('tree'), 15000, `${from.label}: run dir on side`);
+      await dnd(await sideRow('tree'), await bodyH());
+      await startIfAsked(8000);
+      await waitFor(async () => (await names()).includes('tree'), 90000, 'cross-engine tree landed');
+      await dblClickRow('tree');
+      await waitFor(async () => (await names()).includes('docs'), 20000, 'cross-engine docs/');
+      await ok(`${from.label} → last engine: cross-engine DnD keeps the tree`, true);
+      await shot('r4-cross-engine');
+      await page.locator('#local-src').selectOption('local');
+      await page.locator('#local-crumb').click();
+      await answerPrompt(FIX);
+      await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'local side restored');
+    }
+  });
+
+  await step('i18n: switch language, verify UI strings swap', async () => {
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 15000, 'back on s3');
+    await menuClick(/^settings$/i, /settings/i);
+    await waitFor(() => page.locator('#modal-root .set-body select').count().then((n) => n > 0), 5000, 'settings dialog');
+    // The language select carries language-code options; the theme select
+    // next to it only has light/dark — target by the 'fi' option value.
+    const langSel = page.locator('#modal-root .set-body select').filter({ has: page.locator('option[value="fi"]') });
+    await waitFor(() => langSel.count().then((n) => n === 1), 5000, 'language select');
+    const opts = await langSel.first().evaluate((s) => Array.from(s.options).map((o) => o.value));
+    process.stdout.write(`   language options: [${opts.join(', ')}]\n`);
+    await ok(`language picker present (${opts.length} options incl. auto)`, opts.includes('auto') && opts.includes('fi'));
+    // onchange persists the choice and reloads (setLanguage); the reload
+    // can race the select action itself, so a throw here is still success.
+    await langSel.first().selectOption('fi').catch(() => {});
+    await waitFor(() => evalPage(() => localStorage.getItem('s3b-lang') === 'fi'
+      && Array.from(document.querySelectorAll('#menubar .mb-title')).some((t) => /Asetukset/.test(t.textContent))), 20000, 'Finnish UI after reload');
+    await ok('language switched to fi (menubar shows Asetukset)', true);
+    await shot('26-lang-fi');
+    // restore English through the same persisted choice the app writes
+    await evalPage(() => localStorage.setItem('s3b-lang', 'en'));
+    await page.reload();
+    await waitFor(() => evalPage(() => Array.from(document.querySelectorAll('#menubar .mb-title')).some((t) => /^Settings$/.test(t.textContent.trim()))), 20000, 'English UI after reload');
+    await ok('switched back to English', true);
+  });
+
+  await step('settings: theme dark/light applies + persists', async () => {
+    // settings dialog may still be open from the language step
+    if (!(await modalVisible())) {
+      await menuClick(/^settings$/i, /settings/i);
+      await waitFor(() => page.locator('#modal-root .set-body select').count().then((n) => n > 0), 5000, 'settings dialog');
+    }
+    const themeSel = page.locator('#modal-root .set-body select').first();
+    // find the theme select: it holds 'dark'
+    const isTheme = await themeSel.evaluate((s) => Array.from(s.options).some((o) => o.value === 'dark'));
+    const rows = await evalPage(() => document.querySelectorAll('#modal-root .set-row').length);
+    await ok(`settings dialog renders (${rows} rows)`, rows >= 3);
+    if (isTheme) {
+      await themeSel.selectOption('dark');
+      await sleep(150);
+      await ok('dark theme applied', await evalPage(() => document.documentElement.dataset.theme === 'dark'));
+      await shot('27-settings-dark');
+      await themeSel.selectOption('light');
+      await sleep(150);
+      await ok('light theme applied', await evalPage(() => (document.documentElement.dataset.theme || 'light') === 'light'));
+    }
+    await shot('28-settings');
+    await closeModal();
+  });
+
+  await step('log area (Ctrl+L) shows real backend lines', async () => {
+    await page.keyboard.press('Control+L');
+    await waitFor(() => evalPage(() => !document.getElementById('logarea').classList.contains('hidden')), 5000, 'logarea');
+    const lines = await evalPage(() => Array.from(document.querySelectorAll('#logarea .log-line, #logarea .line, #logarea div')).slice(-30).map((l) => l.textContent));
+    await ok(`log shows ${lines.length} line(s)`, lines.length > 0);
+    await shot('29-log');
+    await page.keyboard.press('Control+L');
+  });
+
+  await step('profile round-trip through the real bindings', async () => {
+    // server builds have no OS dialogs; drive the same bindings the UI's
+    // save/close/open flows call. The UI chip/tree update only in those UI
+    // flows (no event for them), so assert backend truth via
+    // GetProfileFileState and the re-booted UI after page.reload()s.
+    await call('SaveProfileFileAs', PROFILE, PASSWORD);
+    const st = await call('GetProfileFileState');
+    // the profile NAME is the filename minus the .s3bprofile extension
+    await ok(`saved: open=${st.open} name="${st.name}" sources=${st.sourceCount}`,
+      !!st.open && String(st.name) === 'walk' && st.sourceCount >= 1);
+    const bytes = (await readFile(PROFILE)).length;
+    await ok(`profile file written (${bytes} bytes)`, bytes > 0);
+    await page.reload();
+    await waitFor(() => txt('#status-pfile').then((s) => s.includes(LOCK)), 15000, 'profile chip after reload');
+    await ok('chip shows the profile lock after reload', true);
+    await shot('30-profile-saved');
+    await call('CloseProfileFile', true);
+    await page.reload();
+    await waitFor(() => evalPage(() => Array.from(document.querySelectorAll('#empty-actions .btn')).length > 0), 15000, 'onboarding after close');
+    await ok('profile closed → sources gone → onboarding', true);
+    await shot('31-profile-closed');
+    // a failed open must REJECT through the bridge (the UI shows the toast)
+    let err = '';
+    try { await call('OpenProfileFile', PROFILE, 'definitely-wrong'); } catch (e) { err = String(e && e.message || e); }
+    await ok(`wrong password rejected (${err})`, /password|decrypt|corrupt/i.test(err));
+    await call('OpenProfileFile', PROFILE, PASSWORD);
+    await page.reload();
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root after reopen');
+    await ok('profile reopened, sources restored', true);
+    await shot('32-profile-reopened');
+  });
+
+  await step('server restart: session sources vanish, settings survive', async () => {
+    await stopServer(srv);
+    srv = await startServer();
+    await page.goto(`http://127.0.0.1:${PORT}/`);
+    await waitFor(() => evalPage(() => Array.from(document.querySelectorAll('#empty-actions .btn')).length > 0), 15000, 'onboarding after restart');
+    await ok('fresh backend → no sources (strict session model)', true);
+    await shot('33-after-restart');
+  });
+
+  await step('reopen + Delete Window cleanup (marker → badge → permanent)', async () => {
+    await call('OpenProfileFile', PROFILE, PASSWORD);
+    await page.reload();
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root');
+    await dblClickRow(`${PREFIX}/`);
+    await waitFor(async () => (await rowKeys()).length >= 2, 20000, 'zz-v3 contents');
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
+    await runDeleteWindow('');
+    await ok('versioned Delete Window: marker default, one click through', true);
+    await waitFor(async () => (await rowKeys()).length === 0, 60000, 'folder emptied');
+    await ok('zz-v3 objects marker-deleted', true);
+    await shot('34-deleted');
+    await page.keyboard.press('Backspace');
+    await waitFor(async () => (await rowKeys()).includes(`${PREFIX}/`), 20000, 'bucket root');
+    const badge = await waitFor(() => evalPage((k) => {
+      const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+        .find((x) => x._model && x._model.key === k);
+      return r ? (r.querySelector('.mbadge')?.textContent || '').trim() : '';
+    }, `${PREFIX}/`), 15000, 'marker-count badge');
+    await ok(`folder badge shows "${badge}"`, /⛔/.test(badge));
+    await shot('35-marker-badge');
+    await clickRow(`${PREFIX}/`);
+    await page.keyboard.press('Delete');
+    await runDeleteWindow('permanent');
+    await waitFor(async () => !(await rowKeys()).includes(`${PREFIX}/`), 60000, 'folder row gone for good');
+    await ok('permanent purge removed the folder row entirely', true);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root relisted');
+    const left = await rowKeys();
+    await ok(`bucket root back to pre-existing data [${left.join(', ')}]`, left.some((k) => k.startsWith(SEED)) && !left.some((k) => k.startsWith(PREFIX) && !k.endsWith('/')));
+    await shot('36-cleaned');
+  });
+}
+
+// ---------- shutdown ----------
+process.on('SIGINT', async () => { await stopServer(srv); process.exit(130); });
+main()
+  .catch(async (err) => {
+    console.error(`\nv3 live walk crashed: ${err.message}`);
+    if (page) await shot('crash').catch(() => {});
+    if (consoleTail.length) {
+      console.log('last browser console lines:');
+      for (const l of consoleTail) console.log(`  ${l}`);
+    }
+    await stopServer(srv);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await stopServer(srv);
+    if (context) await context.close().catch(() => {});
+  });

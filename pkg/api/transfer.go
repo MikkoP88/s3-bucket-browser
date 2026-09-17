@@ -19,7 +19,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // Job statuses.
@@ -189,7 +188,7 @@ func (j *jobHandle) emit(m *jobManager, force bool) {
 	ctx := m.ctx
 	j.mu.Unlock()
 	if ctx != nil {
-		emitEvent(ctx, EventTransferUpdate, info)
+		emitEvent(EventTransferUpdate, info)
 	}
 }
 
@@ -617,5 +616,8 @@ func (a *App) PickFolder(title string) (string, error) {
 	if title == "" {
 		title = "Choose a folder"
 	}
-	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
+	if shell == nil {
+		return "", errNoShell
+	}
+	return shell.OpenDir(title)
 }

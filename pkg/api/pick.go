@@ -2,8 +2,6 @@ package api
 
 import (
 	"os"
-
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // pickerSeams, when set, answer the upload-files and folder pickers in
@@ -33,9 +31,12 @@ func (a *App) PickUploadFiles() ([]string, error) {
 	if pickerSeams.items != nil {
 		return pickerSeams.items()
 	}
-	return runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:           "Choose files to upload",
-		ShowHiddenFiles: true,
+	if shell == nil {
+		return nil, errNoShell
+	}
+	return shell.OpenFiles(ShellDialog{
+		Title:      "Choose files to upload",
+		ShowHidden: true,
 	})
 }
 

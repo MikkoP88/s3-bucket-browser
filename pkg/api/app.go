@@ -203,6 +203,6 @@ func (a *App) invalidateClients() {
 // emit sends a Wails event (no-op before Startup).
 func (a *App) emit(event string, data ...any) {
 	if a.ctx != nil {
-		emitEvent(a.ctx, event, data...)
+		emitEvent(event, data...)
 	}
 }
