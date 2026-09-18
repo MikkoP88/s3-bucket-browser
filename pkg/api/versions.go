@@ -105,6 +105,7 @@ func (a *App) PurgeVersions(bucket, prefix, mode string, force bool) (res transf
 	task := a.tasks.add("purge", fmt.Sprintf("s3://%s/%s — purge %s versions", bucket, dirPrefix(prefix), mode))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
+	task.setPhase(TaskPhaseCount)
 	n, err := versioning.CountPurge(ctx, c.S3, bucket, dirPrefix(prefix), versioning.PurgeMode(mode))
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -114,7 +115,9 @@ func (a *App) PurgeVersions(bucket, prefix, mode string, force bool) (res transf
 			"%d version(s) would be removed — typed confirmation (force) required", n)
 	}
 	task.setTotal(n, fmt.Sprintf("s3://%s/%s — purging %d %s version(s)", bucket, dirPrefix(prefix), n, mode))
-	res, err = versioning.Purge(ctx, c.S3, bucket, dirPrefix(prefix), versioning.PurgeMode(mode))
+	res, err = versioning.PurgeProg(ctx, c.S3, bucket, dirPrefix(prefix), versioning.PurgeMode(mode), func(deleted int) {
+		task.progress(deleted)
+	})
 	task.progress(res.Deleted)
 	if err != nil {
 		a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("purging %s versions under %s failed: %v", mode, dirPrefix(prefix), err))
@@ -262,8 +265,10 @@ func (a *App) deleteSelectionPermanentC(c *s3client.Client, bucket string, keys 
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 
+	task.setPhase(TaskPhaseCount)
 	total := 0
 	for _, k := range keys {
+		task.setCurrent(k)
 		n, err := a.countPermanent(ctx, c, bucket, k)
 		if err != nil {
 			return out, err
@@ -276,6 +281,7 @@ func (a *App) deleteSelectionPermanentC(c *s3client.Client, bucket string, keys 
 	}
 	task.setTotal(total, fmt.Sprintf("s3://%s — destroying %d version(s)/marker(s)", bucket, total))
 	for _, k := range keys {
+		task.setCurrent(k)
 		res, err := a.purgePermanent(ctx, c, bucket, k)
 		out.Deleted += res.Deleted
 		out.Errors = append(out.Errors, res.Errors...)
@@ -324,8 +330,10 @@ func (a *App) deleteSelectionKeepCurrentC(c *s3client.Client, bucket string, key
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 
+	task.setPhase(TaskPhaseCount)
 	total := 0
 	for _, k := range keys {
+		task.setCurrent(k)
 		n, err := a.countKeepCurrent(ctx, c, bucket, k)
 		if err != nil {
 			return out, err
@@ -338,6 +346,7 @@ func (a *App) deleteSelectionKeepCurrentC(c *s3client.Client, bucket string, key
 	}
 	task.setTotal(total, fmt.Sprintf("s3://%s — removing %d noncurrent version(s)", bucket, total))
 	for _, k := range keys {
+		task.setCurrent(k)
 		res, err := a.purgeKeepCurrent(ctx, c, bucket, k)
 		out.Deleted += res.Deleted
 		out.Errors = append(out.Errors, res.Errors...)
@@ -415,7 +424,12 @@ func (a *App) EmptyBucketAllVersions(bucket string) (res transfer.DeleteResult, 
 	task := a.tasks.add("empty", fmt.Sprintf("s3://%s — empty bucket (all versions)", bucket))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
-	res, err = versioning.EmptyBucketVersions(ctx, c.S3, bucket)
+	task.setPhase(TaskPhaseCount)
+	res, err = versioning.EmptyBucketVersionsProg(ctx, c.S3, bucket,
+		func(total int) {
+			task.setTotal(total, fmt.Sprintf("s3://%s — emptying %d version(s)/marker(s)", bucket, total))
+		},
+		func(deleted int) { task.progress(deleted) })
 	if res.Deleted > 0 {
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	}

@@ -314,6 +314,13 @@ type DeleteResult struct {
 
 // DeleteKeys deletes keys in batches of 1000 (the S3 maximum).
 func DeleteKeys(ctx context.Context, client *s3.Client, bucket string, keys []string) (DeleteResult, error) {
+	return DeleteKeysProg(ctx, client, bucket, keys, nil)
+}
+
+// DeleteKeysProg is DeleteKeys with a per-batch progress callback: onProg
+// fires with the running deleted count after every batch, so a long delete
+// of many thousands shows real-time units instead of 0% → 100% at the end.
+func DeleteKeysProg(ctx context.Context, client *s3.Client, bucket string, keys []string, onProg func(deleted int)) (DeleteResult, error) {
 	out := DeleteResult{}
 	for start := 0; start < len(keys); start += 1000 {
 		end := start + 1000
@@ -336,6 +343,9 @@ func DeleteKeys(ctx context.Context, client *s3.Client, bucket string, keys []st
 		out.Deleted += len(resp.Deleted)
 		for _, e := range resp.Errors {
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: %s", aws.ToString(e.Key), aws.ToString(e.Message)))
+		}
+		if onProg != nil {
+			onProg(out.Deleted)
 		}
 	}
 	return out, nil

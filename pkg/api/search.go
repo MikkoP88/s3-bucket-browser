@@ -94,6 +94,7 @@ func (a *App) DeepSearch(bucket, prefix string, opts SearchOptions) (string, err
 			if len(batch) >= searchPageSize {
 				a.emit(EventSearchPage, SearchPage{Token: token, Entries: batch, Matched: matched})
 				batch = make([]search.Result, 0, searchPageSize)
+				task.progress(matched) // live match count on the task row
 			}
 			return nil
 		})

@@ -90,6 +90,7 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 			total++
 			if len(batch) >= listPageSize {
 				emit(false, "")
+				task.progress(total) // live entry count on the transient row
 			}
 			return nil
 		})

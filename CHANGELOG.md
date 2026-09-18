@@ -8,6 +8,21 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Running tasks rows now carry the whole picture: phase, current item,
+  live speed, ETA and every finish stamp.** Every long-running task —
+  copy, move, delete, permanent/keep-current purge, purge-all,
+  empty-bucket, convert, search and listing — now feeds live progress
+  from its producer, and the row renders all of it: a "Counting" chip
+  over an indeterminate shimmer bar while the full object list is
+  walked, "d / t" counts with the percentage once the total is known,
+  a current-item line naming the key in flight, live speed ("@ 4.2/s")
+  with a remaining-time estimate, and on finish the elapsed lifetime
+  ("in 10s") in place of the ETA. Failures are classified — a timeout
+  gets a critical "Timed out" chip — and merged transfer rows pass
+  their byte-speed, phase, current file and stalled flag through
+  untouched. The status-bar badge shows the first running task's live
+  count — "purge 10/40 (25%)" — without opening the window.
+
 - **File transfers rows now carry the whole picture: action + name, route,
   current item, speed, ETA and every state.** Every job row is titled by
   what it does and what it works on — "↑ Uploading video-final.mp4 +2",
@@ -32,6 +47,22 @@ follow [Semantic Versioning](https://semver.org/).
   under their name with the "+N" item count.
 
 ### Fixed
+
+- **Tasks no longer jump from 0% to 100%.** Task progress updated the
+  done-count silently — update events only fired on registry lifecycle
+  changes — so a task that ran for 15+ seconds sat at 0% the whole way
+  and snapped straight to done. progress() now emits (throttled to
+  100 ms), a per-task heartbeat re-emits every 250 ms regardless, and
+  speed (EMA) and ETA tick in real time. The long producers were also
+  restructured count-then-act: folder copies and moves plan their full
+  src→dst pair list first and then copy pair by pair with live counts
+  (a mid-folder error no longer aborts the folder — the rest are
+  attempted and the errors collected into the result), bulk deletes
+  and version purges feed per-key progress from new engine callbacks
+  (DeleteKeysProg, PurgeProg, EmptyBucketVersionsProg), bucket
+  emptying reports per-batch deletions, searches and listings report
+  live match and entry counts, and a move's source-delete pass is
+  chipped "Cleaning up" so it reads as work, not a hang.
 
 - **Transfers no longer jump from 0% to 100%.** Progress events were
   only emitted at file boundaries, so a single file large enough to take

@@ -3839,7 +3839,13 @@ function showTasksBadge() {
     if (live.length) {
       sb.classList.remove('hidden');
       const x = live[0];
-      const counts = x.totalUnits ? ` ${x.doneUnits}/${x.totalUnits}` : '';
+      // Live % on the badge: the first running task's progress at a
+      // glance, without opening the window.
+      let counts = '';
+      if (x.totalUnits > 0) {
+        const pct = Math.min(100, (x.doneUnits / x.totalUnits) * 100);
+        counts = ` ${x.doneUnits}/${x.totalUnits} (${Math.floor(pct)}%)`;
+      }
       sb.textContent = `\u2699 ${live.length} ${live.length === 1 ? 'task' : 'tasks'} — ${x.kind}${counts}`;
     } else {
       sb.classList.add('hidden');

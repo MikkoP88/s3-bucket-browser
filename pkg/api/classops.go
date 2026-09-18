@@ -32,9 +32,11 @@ func (a *App) ConvertStorageClass(bucket string, keys []string, class string, fo
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 	// expand folder selections into their object keys
+	task.setPhase(TaskPhaseCount)
 	var flat []string
 	for _, k := range keys {
 		if strings.HasSuffix(k, "/") {
+			task.setCurrent(k)
 			sub, err := transfer.CollectPrefixKeys(ctx, c.S3, bucket, k)
 			if err != nil {
 				return 0, err
@@ -51,6 +53,7 @@ func (a *App) ConvertStorageClass(bucket string, keys []string, class string, fo
 	done := 0
 	a.emitLogSrc(LogInfo, "admin", bucket, fmt.Sprintf("converting %d object(s) to storage class %s", len(flat), class))
 	for _, k := range flat {
+		task.setCurrent(k)
 		if err := transfer.ConvertStorageClass(ctx, c.S3, bucket, k, "", class); err != nil {
 			a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("storage-class conversion failed after %d object(s): %v", done, err))
 			return done, err
