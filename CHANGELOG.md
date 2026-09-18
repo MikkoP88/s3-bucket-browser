@@ -4,6 +4,17 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Show/Hide history moved to the bottom bar, styled like Clear.** In
+  both the File transfers and the Running tasks windows the history
+  toggle left the top of the list for the left end of the window's
+  bottom bar — the same button styling as the Clear button sitting
+  opposite it on the right (the compact small-text button that used to
+  float above the list is gone), with the hidden-row count beside it.
+
 ## [1.1.0-beta.14] — 2026-09-18
 
 ### Added
