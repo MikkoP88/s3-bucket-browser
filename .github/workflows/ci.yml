@@ -107,10 +107,29 @@ jobs:
           # darwin cross-arch (amd64 on arm64 runners) disables cgo by
           # default, but Wails' darwin frontend is cgo — force it on. The
           # macOS 26 SDK also no longer auto-links UniformTypeIdentifiers
-          # (WailsContext.m uses UTType), so link the framework explicitly.
-          # Empty string elsewhere = unset = Go's native defaults.
+          # (Wails' dialog filters use UTType), so link the framework
+          # explicitly. -mmacosx-version-min pins the deployment target for
+          # BOTH the cgo compile and the external link — Xcode 26's clang
+          # otherwise defaults it to the SDK version (26.0), and every Mac
+          # below that refuses to launch the binary. 12.0 = Go 1.26's own
+          # darwin floor; keep it in sync with release.yml (MACOS_MIN) and
+          # the README. Empty string elsewhere = unset = Go's native
+          # defaults.
           CGO_ENABLED: ${{ matrix.goos == 'darwin' && '1' || '' }}
-          CGO_LDFLAGS: ${{ matrix.goos == 'darwin' && '-framework UniformTypeIdentifiers' || '' }}
+          CGO_CFLAGS: ${{ matrix.goos == 'darwin' && '-mmacosx-version-min=12.0' || '' }}
+          CGO_LDFLAGS: ${{ matrix.goos == 'darwin' && '-mmacosx-version-min=12.0 -framework UniformTypeIdentifiers' || '' }}
+
+      # Same gate as the release workflow: the darwin binary must carry
+      # the documented minimum, not whatever the runner's clang defaulted
+      # to this week.
+      - name: Verify darwin minimum-system-version
+        if: matrix.goos == 'darwin'
+        run: |
+          vtool -show-build "dist/${{ matrix.artifact }}"
+          vtool -show-build "dist/${{ matrix.artifact }}" | grep -Eq "(minos|version) 12.0$" || {
+            echo "::error::darwin binary minimum is not macOS 12.0 — the toolchain default leaked into the artifact"
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         with:

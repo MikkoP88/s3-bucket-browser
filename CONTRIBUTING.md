@@ -20,6 +20,13 @@ Go 1.26+. The frontend is vanilla JS/CSS (no npm install, no bundler —
 embedded via `go:embed`). Windows and macOS build out of the box; Linux
 GUI builds need webkit2gtk (`sudo apt install libgtk-3-0 libwebkit2gtk-4.1-dev`).
 
+macOS builds: pin the deployment target to **12.0** (`make build-all` and
+CI do this for you — `MACOSX_DEPLOYMENT_TARGET=12.0` plus
+`-mmacosx-version-min=12.0` in `CGO_CFLAGS`/`CGO_LDFLAGS`). A plain
+`go build` on a macOS 26 / Xcode 26 machine silently targets macOS 26,
+and the binary then refuses to launch on older macOS. 12.0 is Go 1.26's
+own darwin floor — do not set it lower.
+
 ## Before you push
 
 ```bash

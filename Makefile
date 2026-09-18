@@ -24,8 +24,17 @@ build-all:
 	# gtk3: Wails v3 defaults to GTK4/webkitgtk-6.0; Ubuntu 24.04 ships 4.1
 	GOOS=linux   GOARCH=amd64 go build -tags $(GUI_TAGS),gtk3 -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-linux-amd64 ./cmd/s3b
 	GOOS=linux   GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -tags s3b_headless -o dist/$(BINARY)-linux-arm64 ./cmd/s3b
-	GOOS=darwin  GOARCH=amd64 go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-amd64 ./cmd/s3b
-	GOOS=darwin  GOARCH=arm64 go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-arm64 ./cmd/s3b
+	# darwin: pin the deployment target to 12.0 (Go 1.26's own darwin
+	# floor) — Xcode 26's clang otherwise defaults it to the SDK version,
+	# producing binaries that refuse to launch below that macOS.
+	GOOS=darwin  GOARCH=amd64 CGO_ENABLED=1 MACOSX_DEPLOYMENT_TARGET=12.0 \
+	  CGO_CFLAGS="-mmacosx-version-min=12.0" \
+	  CGO_LDFLAGS="-mmacosx-version-min=12.0 -framework UniformTypeIdentifiers" \
+	  go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-amd64 ./cmd/s3b
+	GOOS=darwin  GOARCH=arm64 CGO_ENABLED=1 MACOSX_DEPLOYMENT_TARGET=12.0 \
+	  CGO_CFLAGS="-mmacosx-version-min=12.0" \
+	  CGO_LDFLAGS="-mmacosx-version-min=12.0 -framework UniformTypeIdentifiers" \
+	  go build -tags $(GUI_TAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY)-darwin-arm64 ./cmd/s3b
 
 test:
 	go test -race ./...
