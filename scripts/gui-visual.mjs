@@ -648,8 +648,14 @@ function shim() {
     DeleteSelectionPermanent: (_bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
     DeleteSelectionKeepCurrent: (_bucket, keys, _force) => ({ deleted: keys.length, errors: [] }),
     // delete-marker badges (versioned folders): per-immediate-child
-    // aggregates keyed `${bucket}/${prefix}` — mirrors PrefixVersionSummary
-    PrefixVersionSummary: (bucket, prefix) => JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || [])),
+    // aggregates keyed `${bucket}/${prefix}` — mirrors PrefixVersionSummary.
+    // versionSummaryDelayMs holds the reply past the silent listing swap —
+    // the exact flash window the hidden-ghost-refresh pin inspects.
+    PrefixVersionSummary: async (bucket, prefix) => {
+      const d = world.versionSummaryDelayMs || 0;
+      if (d) await new Promise((r) => setTimeout(r, d));
+      return JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || []));
+    },
     // Directory Versions window: bounded stats pass over the subtree
     PrefixVersionStats: () => ({ currentObjects: 3, versions: 9, deleteMarkers: 2, noncurrent: 4, noncurrentBytes: 12345 }),
     // Delete Marker window feed: two markers under a folder key, or on the
@@ -721,7 +727,11 @@ function shim() {
     SourceDeleteSelection: (_src, _bucket, keys) => ({ deleted: keys.length, errors: [] }),
     SourceDeleteSelectionPermanent: (_src, _bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
     SourceDeleteSelectionKeepCurrent: (_src, _bucket, keys, _force) => ({ deleted: keys.length, errors: [] }),
-    SourcePrefixVersionSummary: (_src, bucket, prefix) => JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || [])),
+    SourcePrefixVersionSummary: async (_src, bucket, prefix) => {
+      const d = world.versionSummaryDelayMs || 0;
+      if (d) await new Promise((r) => setTimeout(r, d));
+      return JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || []));
+    },
     SourceRenameObject: () => ({}),
     SourceCreateFolder: () => ({}),
     // ---- OS interop ----
@@ -4284,6 +4294,81 @@ await step('auto-refresh', async () => {
     if (off) await off.asElement().click();
   }
   await ok('Off hides the indicator', waitFor(async () => evalPage(() => document.getElementById('status-auto').classList.contains('hidden')), 4000, 'status-auto off'));
+});
+
+await step('hidden-ghost-refresh', async () => {
+  // Ghost rows (Settings → Show hidden) are delete-marked children —
+  // invisible to any plain listing. A silent auto-refresh swaps the grid
+  // to the fresh listing, which by definition carries no ghosts: without
+  // the carry they flashed out at that paint and only returned once the
+  // version summary re-appended them, every tick. gone-file.txt is a TRUE
+  // ghost (all-deleted AND absent from the listing — legacy/ is listed,
+  // so it only dims); versionSummaryDelayMs holds the summary past the
+  // swap so the pin can inspect the exact window the flash lived in.
+  // Runs after the auto-refresh walk: the t1 job it retires must stay
+  // retired — a visible jobs badge blocks background refreshes by design.
+  await page.bringToFront();
+  await evalPage(() => {
+    window.__shim.world.versionKids['team-files/'].push(
+      { name: 'gone-file.txt', isDir: false, versions: 2, markers: 1, allDeleted: true });
+    localStorage.setItem('s3b-show-hidden', '1');
+  });
+  await navObjects('team-files');
+  // visible rows only: pooled rows parked via display:none keep their last
+  // _model around (grid.js recycling) and would ghost-count stale
+  const ghostRow = () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .filter((r) => r.style.display !== 'none' && r._model && r._model.name === 'gone-file.txt' && r.classList.contains('ghost')).length);
+  await waitFor(async () => (await ghostRow()) === 1, 4000, 'ghost row rendered');
+  await shot('ghost-row');
+  const summaryCalls = () => evalPage(() => window.__shim.calls.filter((c) => c.m === 'PrefixVersionSummary').length);
+  const before = await summaryCalls();
+  await evalPage(() => { window.__shim.world.versionSummaryDelayMs = 1500; });
+  // View → Auto refresh → 5 s
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  const ar = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /auto.?refresh/i.test(i.textContent)) || null);
+  if (ar) {
+    await ar.asElement().hover();
+    await sleep(120);
+    const s5 = await elOrNull(() => Array.from(document.querySelectorAll('.mb-dd.sub:not(.hidden) .mb-item'))
+      .find((i) => /^5\s*s$/i.test(i.textContent.trim())) || null);
+    if (s5) await s5.asElement().click();
+  }
+  // the summary call only fires AFTER the silent swap painted — so once the
+  // count moves, the flash window is open: without the carry the ghost was
+  // already gone from the grid right here, waiting on the delayed summary
+  await waitFor(async () => (await summaryCalls()) > before, 9000, 'auto tick summary');
+  await ok('ghost carried across the silent swap (no flash)', (await ghostRow()) === 1);
+  await sleep(1700); // let the delayed summary resolve — re-append must not duplicate
+  await ok('ghost exactly once after the summary lands', (await ghostRow()) === 1);
+  // reconcile: purge gone-file.txt from history entirely — the next tick's
+  // summary must retire the stale ghost instead of carrying it forever
+  await evalPage(() => {
+    const k = window.__shim.world.versionKids['team-files/'];
+    if (k.length && k[k.length - 1].name === 'gone-file.txt') k.pop();
+  });
+  await waitFor(async () => (await summaryCalls()) > before + 1, 9000, 'second tick summary');
+  // the delayed summary resolves ~1.5 s after the call was recorded; the
+  // reconcile then drops the stale ghost — poll for it
+  await ok('purged ghost retired by the reconcile', waitFor(async () => (await ghostRow()) === 0, 4500, 'ghost retired'));
+  // ---- cleanup: timer off, world and settings pristine ----
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  const ar2 = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /auto.?refresh/i.test(i.textContent)) || null);
+  if (ar2) {
+    await ar2.asElement().hover();
+    await sleep(120);
+    const off = await elOrNull(() => Array.from(document.querySelectorAll('.mb-dd.sub:not(.hidden) .mb-item'))
+      .find((i) => /off/i.test(i.textContent)) || null);
+    if (off) await off.asElement().click();
+  }
+  await ok('auto refresh back off', waitFor(async () => evalPage(() => document.getElementById('status-auto').classList.contains('hidden')), 4000, 'status-auto off'));
+  await evalPage(() => {
+    window.__shim.world.versionSummaryDelayMs = 0;
+    localStorage.removeItem('s3b-show-hidden');
+  });
 });
 
 await step('marquee-select', async () => {
