@@ -8,6 +8,23 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Hidden (delete-marked) rows no longer flash on auto refresh.** With
+  Settings → View → *Show hidden (delete-marked) objects* enabled, every
+  silent refresh swapped the grid to the fresh listing — which by
+  definition cannot contain delete-marked children — so the ghost rows
+  vanished at that paint and only reappeared a moment later, once the
+  version-summary pass re-appended them: a vanish/reappear flash on every
+  tick, while normal rows (which never leave the grid) stayed steady. The
+  folder's ghost rows are now carried across the listing swap so the swap
+  paints with them in place, and the summary that follows reconciles
+  instead of rebuilding — retiring ghosts that were restored or purged out
+  of history and adding new delete markers, with no flash in either
+  direction. A side effect worth noting: a selection on a ghost row now
+  survives auto refresh too (the swap no longer drops the row out from
+  under it). The visual harness pins the exact flash window — a delayed
+  version summary holds the reply past the silent swap and asserts the
+  ghost stays rendered, renders exactly once after the summary lands, and
+  is retired by the reconcile once purged.
 - **Multi-selection delete on versioned buckets: the destructive modes
   could never run.** The delete window's "Delete all but the current
   version" and "Delete permanently" modes derive their `force` flag from

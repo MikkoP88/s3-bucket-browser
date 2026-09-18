@@ -556,7 +556,13 @@ async function loadObjectsStream(loc, silent = false) {
         listStream.token = null;
         listStream.off?.();
         listStream.off = null;
-        if (silent) grid.setRows(buffered);
+        if (silent) {
+          // merge the folder's ghost rows in BEFORE this single paint: the
+          // fresh listing can't contain delete-marked children, and without
+          // the carry they'd flash out here and only return once the
+          // version-summary pass re-appends them (auto-refresh)
+          grid.setRows([...buffered, ...ghostCarryFor(loc, buffered)]);
+        }
         grid.apply(); // canonical folders-first ordering + active sort/filter
         decorateVersionMarkers(loc, seq);
         if (!currentEntries.length && !view.filter) {
@@ -594,6 +600,30 @@ function cancelListStream() {
 // ListObjectVersions pass costs more than the badges are worth.
 const vmarkRowCap = 500;
 
+// lastGhosts remembers one folder's ghost rows (delete-marked children,
+// invisible to any plain listing) across refreshes. A silent refresh's
+// setRows swaps in the fresh listing — which by definition has no ghosts —
+// so without carrying them across, ghost rows would vanish at that paint
+// and only reappear once the version-summary pass re-appends them: the
+// flash only hidden rows suffer on auto-refresh. Normal rows never leave
+// the grid, so they never flash.
+let lastGhosts = { key: '', rows: [] };
+
+function ghostsKey(loc) {
+  return `${loc.source || ''}|${loc.bucket}|${loc.prefix || ''}`;
+}
+
+// ghostCarryFor returns the folder's remembered ghost rows that the fresh
+// listing still doesn't contain, so the silent swap can merge them in
+// before its single paint. A ghost whose name now exists as a real row
+// (restored or re-uploaded) is not carried — the summary pass drops it.
+function ghostCarryFor(loc, freshRows) {
+  if (localStorage.getItem('s3b-show-hidden') !== '1') return [];
+  if (lastGhosts.key !== ghostsKey(loc)) return [];
+  const have = new Set(freshRows.map((r) => `${r.isDir ? 'd' : 'f'}:${r.name}`));
+  return lastGhosts.rows.filter((r) => !have.has(`${r.isDir ? 'd' : 'f'}:${r.name}`));
+}
+
 // decorateVersionMarkers badges the folder view with version + delete-marker
 // counts (versioned buckets only): the ⟲ badge carries each row's version
 // count, the ⛔ badge its marker count (directories aggregate everything
@@ -605,12 +635,27 @@ const vmarkRowCap = 500;
 async function decorateVersionMarkers(loc, seq) {
   try {
     const g = await ensureGuard(loc.source, loc.bucket);
-    if (!g || g.versioning !== 'Enabled') return;
+    if (!g || g.versioning !== 'Enabled') {
+      lastGhosts = { key: '', rows: [] }; // no ghosts can exist here
+      return;
+    }
     if (seq !== listSeq || grid.all.length > vmarkRowCap) return;
     const kids = await api.PrefixVersionSummary(loc.bucket, loc.prefix || '');
     if (seq !== listSeq) return; // navigated away while listing versions
     if (localStorage.getItem('s3b-show-hidden') === '1') {
       const prefix = loc.prefix || '';
+      // reconcile against the fresh summary: ghosts that are no longer
+      // all-deleted (restored, or purged out of existence) leave; new
+      // delete markers join. The carried rows from ghostCarryFor are
+      // re-confirmed here, so a state change costs one summary latency —
+      // never a flash.
+      const deleted = new Set(kids
+        .filter((c) => c.allDeleted)
+        .map((c) => `${c.isDir ? 'd' : 'f'}:${c.name}`));
+      const stale = grid.all
+        .filter((r) => r.ghost && !deleted.has(`${r.isDir ? 'd' : 'f'}:${r.name}`))
+        .map((r) => r.key);
+      if (stale.length) grid.removeRows(stale);
       const have = new Set(grid.all.map((r) => `${r.isDir ? 'd' : 'f'}:${r.name}`));
       const ghosts = kids
         .filter((c) => c.allDeleted && !have.has(`${c.isDir ? 'd' : 'f'}:${c.name}`))
@@ -625,6 +670,9 @@ async function decorateVersionMarkers(loc, seq) {
         grid.appendRows(ghosts);
         grid.apply(); // canonical folders-first ordering for the appended ghosts
       }
+      lastGhosts = { key: ghostsKey(loc), rows: grid.all.filter((r) => r.ghost) };
+    } else {
+      lastGhosts = { key: '', rows: [] }; // setting off: nothing to carry
     }
     grid.setMarkers(new Map(kids.map((c) => [`${c.isDir ? 'd' : 'f'}:${c.name}`, c])));
   } catch { /* decoration is best-effort */ }

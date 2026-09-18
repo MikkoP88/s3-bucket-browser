@@ -229,6 +229,15 @@ export class Grid {
     }
   }
 
+  // removeRows drops rows by key — the inverse of appendRows, for rows a
+  // plain listing can never return (ghost reconciliation on refresh).
+  removeRows(keys) {
+    if (!keys.length) return;
+    const drop = new Set(keys);
+    this.all = this.all.filter((r) => !drop.has(r.key));
+    this.apply();
+  }
+
   setFilter(f) {
     this.filter = f;
     this.apply();
