@@ -2,7 +2,7 @@
 
 **A Windows-Explorer-style desktop app + CLI for S3-compatible cloud storage and remote file servers — S3 buckets and objects, SFTP/SCP, FTP/FTPS, WebDAV and local folders — with first-class versioning, bucket administration and security.**
 
-> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.13).** 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
+> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.14).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
 
 ![Main window](docs/screenshots/main-view.png)
 
@@ -39,10 +39,18 @@ arguments opens the desktop app; with arguments it is the CLI).
 | Platform | Builds | Webview / runtime needed |
 |---|---|---|
 | **Windows 10/11** | amd64, arm64 | Microsoft Edge WebView2 (preinstalled on current Windows 10/11; a machine without it needs the free Evergreen runtime from Microsoft first) |
-| **macOS 12+** | amd64 (Intel), arm64 (Apple Silicon) | System WebKit — nothing to install |
+| **macOS 12 Monterey or later** (verified up to macOS 26 Tahoe) | amd64 (Intel), arm64 (Apple Silicon) | System WebKit — nothing to install |
 | **Linux desktop** | amd64 | GTK3 + WebKitGTK 4.1 (what Ubuntu 24.04+, Mint and current Fedora ship) |
 | **Linux servers / arm64** | amd64, arm64 | none — the `-tags s3b_headless` build is a pure-Go CLI with no GUI libraries |
 | **Any OS, browser-driven** | `-tags server` | none on the host — the same stack runs windowless and serves the UI over HTTP |
+
+The macOS floor is real, not aspirational: the release binaries carry a
+pinned 12.0 deployment target (the oldest macOS the Go 1.26 runtime itself
+runs on) and the release pipeline verifies it (`vtool`) before shipping.
+Releases up to and including **v1.1.0-beta.13** were built without that
+pin and accidentally required macOS 26 — if one of those told you "This
+version cannot be used with this version of macOS", take v1.1.0-beta.14
+or later.
 
 - **To run**: the portable editions need no install and no admin rights —
   releases ship an NSIS installer (machine-wide, elevated) and portable

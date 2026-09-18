@@ -182,6 +182,28 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **macOS builds demanded macOS 26 — "This version cannot be used with
+  this version of macOS."** The darwin releases were linked on GitHub's
+  macOS 26 runners without a pinned deployment target, and Xcode 26's
+  clang defaults that target to the SDK version (26.0) — so both the
+  Intel and Apple Silicon binaries carried `minos 26.0` and every Mac
+  below macOS 26 refused to launch them (the `.app`'s Info.plist even
+  claimed 10.13; the binary's Mach-O load command is what the OS
+  enforces). The release and CI workflows now pin the deployment target
+  to **macOS 12.0** — the oldest macOS the Go 1.26 runtime itself runs
+  on, and exactly what the README has always promised — via
+  `-mmacosx-version-min=12.0` in `CGO_CFLAGS`/`CGO_LDFLAGS` plus
+  `MACOSX_DEPLOYMENT_TARGET` (the env var alone is not honored at link
+  time), the Info.plist's `LSMinimumSystemVersion` is stamped from the
+  same constant instead of a stale hardcoded 10.13, and a release gate
+  runs `vtool` on every darwin artifact and fails the build if the
+  binary's minimum is not 12.0 — so a future runner-image default change
+  can never silently ship an OS-gated binary again. `make build-all`
+  pins the same target for local darwin builds. Verified live on the
+  macOS 26 runner: both arches now carry `LC_BUILD_VERSION minos 12.0
+  sdk 26.5`, built clean; supported range is macOS 12 Monterey through
+  26 Tahoe on Intel and Apple Silicon. Affected: every release up to and
+  including v1.1.0-beta.13.
 - **Drag out of the window killed the webview — nothing ever dropped.**
   The OLE `DoDragDrop` modal loop must run on the app's UI thread, the
   one that owns the windows and pumps their messages; the drag-out
