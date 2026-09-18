@@ -2513,20 +2513,20 @@ await step('transfers', async () => {
   await ok('job rendered with its current file', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, trSel)).includes('video-final.mp4'), 4000, 'jobs'));
   // a fresh window hides the past: the finished t2 predates the open, so
   // only the running job (the one that auto-opened this window) shows
-  // and the header offers the history behind a count
+  // and the bottom bar offers the history behind a count (left of Clear)
   await ok('pre-open finished rows are history', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
-    const head = document.querySelector(`${s} .tm-head`);
+    const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 1 && /show history/i.test(head?.textContent || '') && /1 hidden/.test(head?.textContent || '');
   }, trSel), 4000, 'history hidden'));
   await ok('running job leads the list', evalPage((s) => document.querySelector(`${s} .tr-job`)?.classList.contains('running') === true, trSel));
   await ok('running job offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), trSel));
   await shotOf('transfers', trSel);
   // Show history reveals the pre-open rows again
-  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await evalPage((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, trSel);
   await ok('Show history reveals the past', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
-    const head = document.querySelector(`${s} .tm-head`);
+    const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 2 && /hide history/i.test(head?.textContent || '');
   }, trSel), 4000, 'history shown'));
   await ok('percent badge on every job', evalPage((s) => {
@@ -2552,10 +2552,10 @@ await step('transfers', async () => {
   // Hide history now collapses EVERY finished row on demand — the
   // always-present toggle is the missing-button fix: rows that finished
   // inside the open view hide too, not just the pre-open past
-  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await evalPage((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, trSel);
   await ok('Hide collapses every finished row, counted', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
-    const head = document.querySelector(`${s} .tm-head`);
+    const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 1 && /show history/i.test(head?.textContent || '') && /2 hidden/.test(head?.textContent || '');
   }, trSel), 4000, 'hidden again'));
   // a job finishing while history is hidden stays visible — Clear passes
@@ -2582,7 +2582,7 @@ await step('transfers', async () => {
     return !ids.includes('t4') && ids.includes('t2') && ids.includes('t3');
   }));
   // with everything visible, Clear clears all finished (null ids)
-  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await evalPage((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, trSel);
   await waitFor(async () => evalPage((s) => !!document.querySelector(`${s} .tr-job[data-id="t2"]`), trSel), 4000, 't2 back');
   await resetCalls();
   await evalPage((s) => {
@@ -2593,7 +2593,7 @@ await step('transfers', async () => {
   await ok('Clear with history shown sends null (clear all)', c2 && c2.args[0] === null);
   await ok('every finished row cleared', waitFor(async () => evalPage((s) => document.querySelectorAll(`${s} .tr-job`).length === 1, trSel), 4000, 'only running left'));
   // live work only: no finished rows anywhere, no toggle at all
-  await ok('no toggle while only running work exists', evalPage((s) => document.querySelector(`${s} .tm-head`).children.length === 0, trSel));
+  await ok('no toggle while only running work exists', evalPage((s) => document.querySelector(`${s} .modal-foot .left`).children.length === 0, trSel));
   // the missing-button case itself: a job finishing INSIDE the open view
   // brings the toggle with it (Hide history), and Hide collapses it
   await evalPage(() => {
@@ -2604,13 +2604,13 @@ await step('transfers', async () => {
   });
   await ok('a job finishing in view brings the toggle', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
-    const head = document.querySelector(`${s} .tm-head`);
+    const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 1 && /hide history/i.test(head?.textContent || '') && !/hidden/.test(head?.textContent || '');
   }, trSel), 4000, 'toggle appears'));
-  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await evalPage((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, trSel);
   await ok('Hide collapses the in-view finish too', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
-    const head = document.querySelector(`${s} .tm-head`);
+    const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 0 && /show history/i.test(head?.textContent || '') && /1 hidden/.test(head?.textContent || '');
   }, trSel), 4000, 'collapsed'));
   // restore the default seeds for the steps that follow
@@ -2649,14 +2649,14 @@ await step('running-tasks', async () => {
   // from before) are history — only live rows show, counted in the head
   await ok('pre-open finished rows are history', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
-    const head = document.querySelector(`${s} .tm-head`);
+    const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 2 && /3 hidden/.test(head?.textContent || '');
   }, popSel), 4000, 'history hidden'));
   await ok('running task offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), popSel));
   await shotOf('running-tasks', popSel);
   // Show history: the finished rows reappear, the totals-less done task
   // reads 100%
-  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, popSel);
+  await evalPage((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, popSel);
   await ok('done purge shows its counts', waitFor(async () => evalPage((s) => {
     const t = document.querySelector(s).textContent;
     return /done/.test(t) && /60 \/ 60/.test(t);
@@ -2866,10 +2866,10 @@ await step('popout-window-views', async () => {
     document.querySelector(`${s} .modal-head`).offsetParent === null, trSel));
   await ok('finished past is history in the window', await pw.evaluate((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
-    const head = document.querySelector(`${s} .tm-head`);
+    const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 1 && /show history/i.test(head?.textContent || '') && /1 hidden/.test(head?.textContent || '');
   }, trSel));
-  await pw.evaluate((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await pw.evaluate((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, trSel);
   await pw.waitForFunction((s) => document.querySelectorAll(`${s} .tr-job`).length === 2, trSel, { timeout: 4000 });
   await ok('Show history reveals the past in the window', true);
   await pw.screenshot({ path: 'testartifacts/gui/popout-win-transfers.png' });
@@ -2885,12 +2885,12 @@ await step('popout-window-views', async () => {
   await pt.waitForFunction((s) => !!document.querySelector(`${s} .tr-job`), tkSel, { timeout: 8000 });
   await ok('tasks window: one running row, 2 hidden', await pt.evaluate((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
-    const head = document.querySelector(`${s} .tm-head`);
+    const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 1 && /2 hidden/.test(head?.textContent || '');
   }, tkSel));
   await ok('tasks window: no duplicate header', await pt.evaluate((s) =>
     document.querySelector(`${s} .modal-head`).offsetParent === null, tkSel));
-  await pt.evaluate((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, tkSel);
+  await pt.evaluate((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, tkSel);
   await pt.waitForFunction((s) => document.querySelectorAll(`${s} .tr-job`).length === 3, tkSel, { timeout: 4000 });
   await ok('tasks window: history reveals the merged past', true);
   await pt.close();

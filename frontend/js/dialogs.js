@@ -95,7 +95,10 @@ function clampPop(box) {
   box.style.top = `${Math.round(y)}px`;
 }
 
-export function openPopout({ id, title, body, buttons = [], wide = false, cls = '', onClose }) {
+// footLeft: element pinned to the left end of the footer bar — style it
+// with class 'left' (see .modal-foot .left) so its margin-right:auto keeps
+// the action buttons on the right. Rendered even with no buttons.
+export function openPopout({ id, title, body, buttons = [], footLeft = null, wide = false, cls = '', onClose }) {
   const existing = popouts.get(id);
   if (existing) { existing.focus(); return { ...existing, fresh: false }; }
 
@@ -121,6 +124,7 @@ export function openPopout({ id, title, body, buttons = [], wide = false, cls = 
   document.addEventListener('keydown', esc, true);
 
   const foot = el('div', { class: 'modal-foot' },
+    footLeft || null,
     buttons.map((b) => el('button', {
       class: `btn ${b.class || ''}`,
       text: b.label,
@@ -137,14 +141,15 @@ export function openPopout({ id, title, body, buttons = [], wide = false, cls = 
       el('span', { class: 'x', text: '\u00D7', role: 'button', 'aria-label': 'Close', onclick: () => close(null) }),
     ),
     el('div', { class: 'modal-body' }, body),
-    buttons.length ? foot : null,
+    buttons.length || footLeft ? foot : null,
     el('div', { class: 'pop-grip', 'aria-hidden': 'true' }),
   );
 
   const handle = {
     box, close,
     z: 0, fresh: true,
-    btns: [...foot.children],
+    // action buttons only — a footLeft element is not one of them
+    btns: [...foot.children].filter((n) => n.tagName === 'BUTTON'),
     body: box.querySelector('.modal-body'),
     focus() { handle.z = ++popZ; box.style.zIndex = handle.z; },
   };
@@ -1005,12 +1010,14 @@ export function doctorDialog(bucket) {
 // A freshly opened view shows only what happens from that moment on:
 // rows already finished when it opened start as "history" behind a
 // Show history toggle (the running job that auto-opened a transfer
-// window is current, so it shows). The toggle is always there while
-// any finished row exists — Hide collapses everything finished to
-// just the live work, Show brings it back. Clear passes the ids the
-// view can actually see to the backend, so hidden history survives it.
+// window is current, so it shows). The toggle lives at the left end of
+// the window's bottom bar — same button styling as the Clear button
+// that sits opposite it on the right. It is always there while any
+// finished row exists — Hide collapses everything finished to just the
+// live work, Show brings it back. Clear passes the ids the view can
+// actually see to the backend, so hidden history survives it.
 function viewHistory(onToggle) {
-  const head = el('div', { class: 'tm-head' });
+  const foot = el('div', { class: 'left' });
   const hidden = new Set();
   let show = false;
   let seeded = false;
@@ -1020,7 +1027,7 @@ function viewHistory(onToggle) {
     show = false;
   };
   return {
-    head,
+    foot,
     // seed captures the already-finished rows on the first draw; later
     // draws drop ids that left the view (cleared behind our back).
     seed(rows) {
@@ -1040,19 +1047,19 @@ function viewHistory(onToggle) {
       return rows.filter((j) => fin(j) && !hidden.has(j.id)).map((j) => j.id);
     },
     redraw(rows) {
-      head.replaceChildren();
+      foot.replaceChildren();
       // toggle whenever finished rows exist — hidden ones (Show) or
       // visible ones (Hide); a view of live work only has no toggle
       if (!hidden.size && !rows.some((j) => fin(j))) return;
       const revealing = hidden.size > 0 && !show;
-      head.appendChild(el('button', {
+      foot.appendChild(el('button', {
         class: 'btn',
         text: revealing ? t('popout.showHistory') : t('popout.hideHistory'),
         onclick: () => { if (revealing) show = true; else hideAll(rows); onToggle(); },
       }));
       if (revealing) {
-        head.appendChild(el('span', {
-          class: 'tm-head-n',
+        foot.appendChild(el('span', {
+          class: 'tm-hist-n',
           text: t('popout.hiddenCount', { n: hidden.size }),
         }));
       }
@@ -1089,8 +1096,9 @@ function openTransferManagerDom(onClose) {
   const pop = openPopout({
     id: 'transfers',
     title: t('transfer.managerTitle'),
-    body: el('div', {}, hist.head, list),
+    body: el('div', {}, list),
     wide: true,
+    footLeft: hist.foot,
     buttons: [
       { label: t('transfer.clear'), onclick: () => clearVisible() },
     ],
@@ -1261,8 +1269,9 @@ function runningTasksDom() {
   const pop = openPopout({
     id: 'tasks',
     title: t('tasks.title'),
-    body: el('div', {}, hist.head, list),
+    body: el('div', {}, list),
     wide: true,
+    footLeft: hist.foot,
     buttons: [
       { label: t('tasks.clear'), onclick: () => clearVisible() },
     ],
