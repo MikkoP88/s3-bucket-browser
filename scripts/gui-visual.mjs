@@ -885,8 +885,11 @@ async function popoutVisible(id) {
   return evalPage((s) => !!document.querySelector(s), popSel(id));
 }
 async function closePopout(id) {
+  // two-step on purpose: popSel(id) is a comma selector (exact-or-
+  // prefixed id match), and bolting " .modal-head .x" onto it would
+  // make the first alternative match the BOX — clicking it does nothing
   await evalPage((s) => {
-    document.querySelector(`${s} .modal-head .x`)?.click();
+    document.querySelector(s)?.querySelector('.modal-head .x')?.click();
   }, popSel(id));
   await sleep(80);
 }
@@ -2837,6 +2840,7 @@ await step('popouts', async () => {
   await closePopout('keys');
   await page.keyboard.press('F1');
   await waitFor(() => popoutVisible('keys'), 4000, 'keys reopen');
+  await sleep(250); // the fresh box replays modal-in — measure past the animation
   const reopened = await evalPage(() => {
     const r = document.querySelector('#popout-root .popout[data-pop="keys"]').getBoundingClientRect();
     return { x: r.x, y: r.y };
@@ -2851,6 +2855,102 @@ await step('popouts', async () => {
   await page.keyboard.press('Escape');
   await sleep(80);
   await ok('second Escape clears the rest', evalPage(() => document.querySelectorAll('#popout-root .popout').length === 0));
+});
+
+await step('popout-auto-height', async () => {
+  // The monitoring windows (File transfers / Running tasks) ride the
+  // Windows file-transfer footprint: 490x300 default AND minimum, the
+  // height tracking the content up to 740 and scrolling inside beyond
+  // that. A manual height resize takes over for the window's life —
+  // never past the space the content fills — and a reopen starts the
+  // tracking fresh. Pinned here on the DOM tier; the native window's
+  // own fit calls get their pin in popout-window-views below.
+  const trSel = '#popout-root .popout[data-pop="transfers"]';
+  const geo = () => evalPage((s) => {
+    const b = document.querySelector(s);
+    const r = b.getBoundingClientRect();
+    const body = b.querySelector('.modal-body');
+    return { w: r.width, h: r.height, over: body.scrollHeight - body.clientHeight };
+  }, trSel);
+  const trRows = (n) => evalPage(([s, n]) => document.querySelectorAll(`${s} .tr-job`).length === n, [trSel, n]);
+  // n running jobs — running never hides as history, so the row count is
+  // the content — plus a running-shaped event to (re)draw / auto-open
+  const seed = (n) => evalPage((n) => {
+    window.__shim.world.transfers = Array.from({ length: n }, (_, i) => ({
+      id: `sz${i}`, op: 'upload', status: 'running', currentFile: `job-${i}.bin`,
+      totalFiles: 9, doneFiles: i, totalBytes: 10485760, sentBytes: 1048576, speedBps: 262144,
+    }));
+    window.__shim.emit('transfer:update', { id: 'sz0', op: 'upload', status: 'running' });
+  }, n);
+
+  // quiesce first: the auto-open rides a rising edge (no running →
+  // running) and the popouts step before this one left a running job
+  // in the world — one empty update re-arms the edge
+  await evalPage(() => {
+    window.__shim.world.transfers = [];
+    window.__shim.emit('transfer:update', {});
+  });
+  await sleep(120);
+  await seed(1);
+  await waitFor(() => popoutVisible('transfers'), 4000, 'auto-open');
+  await waitFor(() => trRows(1), 4000, 'one row');
+  await sleep(250); // let the modal-in animation finish before measuring
+  const d0 = await geo();
+  await ok('default footprint is 490x300', Math.abs(d0.w - 490) <= 1 && Math.abs(d0.h - 300) <= 1);
+  await ok('auto-height class on the window', evalPage((s) => document.querySelector(s).classList.contains('autoh'), trSel));
+
+  await seed(14);
+  await waitFor(() => trRows(14), 4000, 'fourteen rows');
+  const d1 = await geo();
+  await ok('height caps at 740, content scrolls inside', Math.abs(d1.h - 740) <= 1 && d1.over > 40 && Math.abs(d1.w - 490) <= 1);
+  await shotOf('popout-autoh-capped', trSel);
+
+  await seed(6);
+  await waitFor(() => trRows(6), 4000, 'six rows');
+  const d2 = await geo();
+  await ok('height shrinks back to the content', d2.h > 320 && d2.h < 730 && d2.over === 0);
+
+  // a manual height resize takes over: the window stops tracking
+  await popDrag('transfers', 0, -80, 'grip');
+  const manual = (await geo()).h;
+  await ok('grip resize pins a manual height', Math.abs(manual - (d2.h - 80)) <= 3);
+  await seed(10);
+  await waitFor(() => trRows(10), 4000, 'ten rows');
+  const d3 = await geo();
+  await ok('manual height wins over content growth', Math.abs(d3.h - manual) <= 3 && d3.over > 0);
+
+  // ...and the resize never exceeds the space the content fills — with
+  // less content than the floor, the floor (300) is the ceiling too
+  await seed(2);
+  await waitFor(() => trRows(2), 4000, 'two rows');
+  await popDrag('transfers', 0, 400, 'grip');
+  const d4 = await geo();
+  await ok('resize cannot exceed the content space', d4.h <= 303 && d4.over === 0);
+  await popDrag('transfers', 0, -400, 'grip');
+  await ok('minimum height is 300', Math.abs((await geo()).h - 300) <= 1);
+
+  // persisted geometry keeps placement+width only — a reopen must track
+  // the content afresh
+  const saved = await evalPage(() => JSON.parse(localStorage.getItem('s3b-popout-transfers') || 'null'));
+  await ok('no height persisted for an auto-height window', !!saved && saved.w >= 489 && !('h' in saved));
+  await closePopout('transfers');
+  await ok('window closed', !(await popoutVisible('transfers')));
+  await seed(6);
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  const trItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /transfers/i.test(i.textContent)) || null);
+  if (trItem) await trItem.asElement().click();
+  await waitFor(() => trRows(6), 4000, 'six rows again');
+  await sleep(250); // fresh box replays modal-in — measure past the animation
+  const d5 = await geo();
+  await ok('reopen re-enables content tracking', Math.abs(d5.h - d2.h) <= 4 && d5.over === 0);
+  await shotOf('popout-autoh-reopened', trSel);
+  // leave no running jobs behind for later steps
+  await evalPage(() => {
+    window.__shim.world.transfers = [];
+    window.__shim.emit('transfer:update', {});
+  });
 });
 
 await step('popout-window-views', async () => {
@@ -2897,6 +2997,15 @@ await step('popout-window-views', async () => {
   await pw.evaluate((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, trSel);
   await pw.waitForFunction((s) => document.querySelectorAll(`${s} .tr-job`).length === 2, trSel, { timeout: 4000 });
   await ok('Show history reveals the past in the window', true);
+  // the auto-height contract in the OS window: the view drives the
+  // window's height itself through ResizePopout (the shim records every
+  // call) — each requested inner height sits in the 300..740 band
+  await ok('native window fits its own height', await pw.evaluate(() => {
+    const chromeH = window.outerHeight - window.innerHeight;
+    const fits = window.__shim.calls.filter((c) => c.m === 'ResizePopout');
+    return fits.length >= 1 && fits.every((c) =>
+      c.args[0] === 'transfers' && c.args[2] - chromeH >= 299 && c.args[2] - chromeH <= 741);
+  }));
   await pw.screenshot({ path: 'testartifacts/gui/popout-win-transfers.png' });
   await pw.close();
   // the tasks window: same contract over the merged list (t2 done +
@@ -2918,6 +3027,12 @@ await step('popout-window-views', async () => {
   await pt.evaluate((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, tkSel);
   await pt.waitForFunction((s) => document.querySelectorAll(`${s} .tr-job`).length === 3, tkSel, { timeout: 4000 });
   await ok('tasks window: history reveals the merged past', true);
+  await ok('tasks window fits its own height', await pt.evaluate(() => {
+    const chromeH = window.outerHeight - window.innerHeight;
+    const fits = window.__shim.calls.filter((c) => c.m === 'ResizePopout');
+    return fits.length >= 1 && fits.every((c) =>
+      c.args[0] === 'tasks' && c.args[2] - chromeH >= 299 && c.args[2] - chromeH <= 741);
+  }));
   await pt.close();
 });
 

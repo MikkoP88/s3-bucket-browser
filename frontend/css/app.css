@@ -507,6 +507,16 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
   animation: modal-in .14s ease-out;
 }
 .popout.wide { min-width: min(640px, 92vw); }
+/* Auto-height monitoring windows (File transfers, Running tasks): the
+   Windows file-transfer footprint — 490px wide default AND minimum, the
+   height tracking the content between 300 and 740px. Beyond the cap the
+   window stays put and the body scrolls (overflow:auto above). A grip
+   resize sets inline width/height that outrank the tracking for the
+   window's life; a reopen starts it fresh (no height is remembered). */
+.popout.autoh {
+  width: min(490px, 94vw); min-width: min(490px, 94vw); max-width: none;
+  min-height: min(300px, 90vh); max-height: min(740px, 94vh);
+}
 .popout.admin-modal { min-width: min(820px, 94vw); max-width: min(1000px, 95vw); }
 /* the header is the drag handle — no text selection mid-drag */
 .popout .modal-head { cursor: grab; user-select: none; touch-action: none; }

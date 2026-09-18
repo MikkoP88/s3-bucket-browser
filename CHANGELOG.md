@@ -6,6 +6,24 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **File transfers and Running tasks now size like the Windows
+  file-transfer window: 490x300 default and minimum, height tracking
+  the content up to 740px.** Both monitoring windows previously opened
+  at a fixed 720px wide and, natively, a fixed height — regardless of
+  how little or how much they contained. They now open at the
+  file-transfer footprint and their height follows the content between
+  300 and 740px, expanding and shrinking as jobs come and go; beyond
+  740px the window stays put and the content scrolls inside. A manual
+  height resize takes over for the window's life and can never exceed
+  the space the content fills (the 300px minimum still applies);
+  reopening the window starts the tracking fresh. In the desktop app
+  the native popout windows carry real resize bounds (490x300 minimum,
+  740 maximum height) and drive their own height through a new
+  ResizePopout binding; in-page they get the same contract through CSS
+  and the resize grip.
+
 ### Fixed
 
 - **Hidden (delete-marked) rows no longer flash on auto refresh.** With
