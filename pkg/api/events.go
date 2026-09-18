@@ -17,12 +17,20 @@ var testNoEvents atomic.Bool
 // eventSink, when set, receives every GUI event in place of the desktop
 // shell. The live GUI harness (tools/gui-live) bridges events to a real
 // browser this way; the desktop app never sets it. Must be set before
-// Startup.
-var eventSink func(event string, data ...any)
+// Startup. Held in an atomic because background job goroutines (task
+// heartbeats, transfer emitters) read it while tests swap it between
+// runs — a plain global was a data race under -race.
+var eventSink atomic.Pointer[func(event string, data ...any)]
 
 // SetEventSink redirects all GUI events to fn (nil restores the desktop
 // shell). Only tools/gui-live sets this.
-func SetEventSink(fn func(event string, data ...any)) { eventSink = fn }
+func SetEventSink(fn func(event string, data ...any)) {
+	if fn == nil {
+		eventSink.Store(nil)
+		return
+	}
+	eventSink.Store(&fn)
+}
 
 // emitEvent forwards to the desktop shell's event bus (gui.go installs it);
 // with neither sink nor shell (pure unit tests) events drop silently.
@@ -30,8 +38,8 @@ func emitEvent(event string, data ...any) {
 	if testNoEvents.Load() {
 		return
 	}
-	if eventSink != nil {
-		eventSink(event, data...)
+	if p := eventSink.Load(); p != nil {
+		(*p)(event, data...)
 		return
 	}
 	if shell != nil {
