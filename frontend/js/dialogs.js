@@ -93,6 +93,11 @@ let popZ = 60; // sibling z-order counter (modal-root stays above at 100)
 // starts the tracking fresh. See openPopout's autoH.
 const XFER_PROFILE = { w: 490, h: 300, minW: 490, minH: 300, maxH: 740 };
 
+// popoutsRemembered gates the per-id geometry store (s3b-popout-<id>):
+// Settings → View → "Remember popout window positions" (default on). Off =
+// nothing is read or written; every window opens at its default spot.
+const popoutsRemembered = () => localStorage.getItem('s3b-popouts-persist') !== '0';
+
 function clampPop(box) {
   const vw = window.innerWidth, vh = window.innerHeight;
   // never strand a window: at least 60px stay reachable horizontally
@@ -170,7 +175,9 @@ export function openPopout({ id, title, body, buttons = [], footLeft = null, wid
 
   // geometry: remembered placement/size, else centered in the app window
   let geo = null;
-  try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
+  if (popoutsRemembered()) {
+    try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
+  }
   popRoot().appendChild(box);
   if (document.body.classList.contains('popout-win')) {
     // Inside a native popout window this box IS the window's whole
@@ -284,7 +291,7 @@ document.addEventListener('pointerdown', (e) => {
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     const pid = box.dataset.pop;
-    if (pid) localStorage.setItem(`s3b-popout-${pid}`, JSON.stringify({
+    if (pid && popoutsRemembered()) localStorage.setItem(`s3b-popout-${pid}`, JSON.stringify({
       x: parseFloat(box.style.left) || 0,
       y: parseFloat(box.style.top) || 0,
       w: box.offsetWidth,
@@ -369,7 +376,7 @@ function maybeNativePopout({ id, query, title, w, h, minW = 0, minH = 0, maxH = 
   // them too)
   const auto = minH > 0;
   let geo = null;
-  if (!auto) {
+  if (!auto && popoutsRemembered()) {
     try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
   }
   api.OpenPopout({
@@ -466,6 +473,7 @@ export function renderPopoutView(kind, qs) {
   const persistSize = kind !== 'transfers' && kind !== 'tasks';
   const persist = persistSize ? () => {
     try {
+      if (!popoutsRemembered()) return;
       // size only — the backend centers the window (on the app's
       // display by default), so there is no position worth remembering
       localStorage.setItem(`s3b-popout-${id}`, JSON.stringify({

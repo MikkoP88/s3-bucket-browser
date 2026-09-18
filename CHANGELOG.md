@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Settings rebuilt as a Visual Studio 2026-style two-pane dialog with
+  search.** The single scrolling list of sections is gone: a category
+  navigation (Appearance, View, Refresh, Editing, Deleting, Logging,
+  Security, File transfers) now sits on the left with the matching page
+  on the right, and a search box above it filters every setting across
+  all categories at once — matches are shown grouped under their
+  category headers, the nav carries per-category match counts, empty
+  categories dim, and an honest "no settings match" note appears when
+  nothing hits. Searching also matches descriptions and category names,
+  and clearing it (or picking a category) restores the paged view. The
+  per-setting rows keep the label + description + control family and
+  apply immediately, exactly as before.
+
 - **File transfers and Running tasks now size like the Windows
   file-transfer window: 490x300 default and minimum, height tracking
   the content up to 740px.** Both monitoring windows previously opened
@@ -23,6 +36,20 @@ follow [Semantic Versioning](https://semver.org/).
   740 maximum height) and drive their own height through a new
   ResizePopout binding; in-page they get the same contract through CSS
   and the resize grip.
+
+### Added
+
+- **Theme can follow the OS (Auto (system))** — the third theme choice
+  alongside Light and Dark, after the VS 2026 "use system setting". The
+  app now tracks the system light/dark switch live while Auto is
+  selected; never-made-a-choice boots behave (and display) as Auto.
+- **Settings → View → "Remember popout window positions"** (default on):
+  turning it off stops popout geometry being read or written — every
+  popout opens at its default spot instead of where it was last left.
+- **Settings → View → "Sync local pane with remote"**: the synced-browsing
+  knob previously reachable only through the small checkbox in the local
+  pane header is now a first-class setting; both panels browse the same
+  folders side by side with the base pair captured on enable.
 
 ### Fixed
 

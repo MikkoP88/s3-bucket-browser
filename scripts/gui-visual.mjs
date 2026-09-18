@@ -138,20 +138,24 @@ async function shot(name) {
 // deterministically — the on-screen check passes, then the scroll flips
 // and the capture lands a top-of-dialog shot). Scrolling with block only
 // and never scrolling again afterwards holds the position.
+// NB: evalPage forwards exactly ONE argument — multi-value probes must
+// pack into an array (a bare second parameter arrives as undefined, and
+// RegExp(undefined) is the match-everything empty pattern, so the find
+// used to grab the FIRST section and the check passed vacuously).
 async function shotModalSection(name, sectionText) {
   const sel = '.set-section';
-  await evalPage((s, t) => {
+  await evalPage(([s, t]) => {
     const el = Array.from(document.querySelectorAll(s)).find((e) => new RegExp(t, 'i').test(e.textContent));
     el?.scrollIntoView({ block: 'center' });
     return !!el;
-  }, sel, sectionText);
+  }, [sel, sectionText]);
   await sleep(120);
-  await ok(`shot "${name}": section on screen`, evalPage((s, t) => {
+  await ok(`shot "${name}": section on screen`, evalPage(([s, t]) => {
     const el = Array.from(document.querySelectorAll(s)).find((e) => new RegExp(t, 'i').test(e.textContent));
     if (!el) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;
-  }, sel, sectionText));
+  }, [sel, sectionText]));
   await waitFor(() => evalPage(() => document.getElementById('toasts').children.length === 0),
     4600, 'toasts to clear').catch(() => {});
   await shot(name);
@@ -1474,13 +1478,52 @@ await step('about-keysheet', async () => {
 });
 
 await step('settings-dialog', async () => {
-  await page.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
-  await sleep(80);
-  const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
-    .find((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')) || null);
-  await ok('Settings… entry exists', !!item);
-  if (item) await item.asElement().click();
-  await waitFor(modalVisible, 4000, 'settings modal');
+  const openSettings = async () => {
+    await page.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
+    await sleep(80);
+    const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')) || null);
+    if (item) await item.asElement().click();
+    await waitFor(modalVisible, 4000, 'settings modal');
+    return !!item;
+  };
+  await ok('Settings… entry exists', await openSettings());
+  // VS 2026-style shell: category nav + search on the left, one page per
+  // category on the right. navTo clicks a nav item (clears any search);
+  // searchSet types into the box through the real input event.
+  const navTo = (label) => evalPage((lb) => {
+    const b = Array.from(document.querySelectorAll('#modal-root .set-nav-item'))
+      .find((n) => new RegExp('^' + lb, 'i').test(n.querySelector('.set-nav-label')?.textContent || ''));
+    if (!b) return false;
+    b.click();
+    return true;
+  }, label);
+  const searchSet = (q) => evalPage((v) => {
+    const s = document.querySelector('#modal-root .set-search');
+    s.value = v;
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }, q);
+  await ok('category nav rendered (8 pages)', evalPage(() => document.querySelectorAll('#modal-root .set-nav-item').length === 8));
+  await ok('search box present', evalPage(() => !!document.querySelector('#modal-root .set-search')));
+  await ok('appearance page active first', evalPage(() => {
+    const p = document.querySelector('#modal-root .set-page[data-cat="appearance"]');
+    const b = Array.from(document.querySelectorAll('#modal-root .set-nav-item'))
+      .find((n) => /appearance/i.test(n.textContent));
+    return !!p && !p.hidden && b?.classList.contains('active');
+  }));
+  // the theme select offers the VS 2026 trio and follows the stored
+  // preference (the shim pins s3b-theme=light at boot for determinism;
+  // the Auto default itself is proven below on a reopen with the key
+  // cleared)
+  await ok('theme offers auto/light/dark and follows the stored preference', evalPage(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root select.set-ctl'))
+      .find((s) => Array.from(s.options).some((o) => o.value === 'auto'));
+    if (!sel) return false;
+    const vs = Array.from(sel.options).map((o) => o.value);
+    return vs.includes('auto') && vs.includes('light') && vs.includes('dark')
+      && sel.value === (localStorage.getItem('s3b-theme') || 'auto');
+  }));
   await ok('settings rows rendered', evalPage(() => document.querySelectorAll('#modal-root .set-row').length >= 7));
   await ok('speed-limit visibility toggle offered', evalPage(() => Array.from(document.querySelectorAll('#modal-root .set-row'))
     .some((r) => /speed limit when transferring/i.test(r.textContent))));
@@ -1495,6 +1538,23 @@ await step('settings-dialog', async () => {
     await shot('settings-dark');
     await darkSel.asElement().selectOption('light');
   }
+  // Auto is the unset-key default (the VS 2026 "use system setting"):
+  // clear s3b-theme, reopen the dialog — the select is built from the
+  // live thunk and must read Auto — then hand the preference back to
+  // the shim's pinned light via the select itself
+  await evalPage(() => localStorage.removeItem('s3b-theme'));
+  await closeModal();
+  await openSettings();
+  await ok('unset theme key defaults the select to auto', evalPage(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root select.set-ctl'))
+      .find((s) => Array.from(s.options).some((o) => o.value === 'auto'));
+    return !!sel && sel.value === 'auto';
+  }));
+  const lightBack = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root select'))
+    .find((s) => Array.from(s.options).some((o) => o.value === 'auto')) || null);
+  if (lightBack) await lightBack.asElement().selectOption('light');
+  await ok('shim theme preference restored', evalPage(() => localStorage.getItem('s3b-theme') === 'light'
+    && document.documentElement.dataset.theme === 'light'));
   // new rows: the edit open-with toggle, the file-log multi-select filters,
   // and Reset to defaults (presence only — clicking it would wipe the run)
   await ok('edit open-with toggle offered', evalPage(() => Array.from(document.querySelectorAll('#modal-root .set-row'))
@@ -1516,16 +1576,63 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /explorer copy & paste/i.test(x));
   }));
   await shot('settings-new-rows');
+  // Search: typing flattens the book — matching rows from every category
+  // visible in one list, per-category match counts in the nav, non-matching
+  // categories dimmed and their pages hidden
+  await searchSet('delete');
+  await ok('search surfaces deleting rows across pages', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-row')).filter((r) => {
+      const b = r.getBoundingClientRect(); return b.width > 0 && b.height > 0;
+    });
+    return rows.some((r) => /always use the delete window/i.test(r.textContent))
+      && rows.some((r) => /delete without prompting/i.test(r.textContent))
+      && rows.some((r) => /show delete marker icons/i.test(r.textContent));
+  }));
+  await ok('nav badge counts the deleting category', evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .set-nav-item'))
+      .find((n) => /deleting/i.test(n.textContent));
+    return !!b && b.querySelector('.set-nav-badge')?.textContent === '3';
+  }));
+  await ok('non-matching category hidden + dimmed', evalPage(() => {
+    const p = document.querySelector('#modal-root .set-page[data-cat="refresh"]');
+    const n = Array.from(document.querySelectorAll('#modal-root .set-nav-item'))
+      .find((x) => /refresh/i.test(x.textContent));
+    return !!p && p.hidden && n?.classList.contains('miss');
+  }));
+  await shot('settings-search');
+  // the new remember-positions row is findable from anywhere
+  await searchSet('popout');
+  await ok('search finds the remember-positions row', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-row')).filter((r) => {
+      const b = r.getBoundingClientRect(); return b.width > 0 && b.height > 0;
+    });
+    return rows.some((r) => /remember popout window positions/i.test(r.textContent));
+  }));
+  // no match → the honest empty note; clearing restores the active page
+  await searchSet('zzqq-nothing');
+  await ok('no-match note shown with the query echoed', evalPage(() => {
+    const n = document.querySelector('#modal-root .set-search-none');
+    return !!n && !n.hidden && /zzqq-nothing/.test(n.textContent);
+  }));
+  await searchSet('');
+  await ok('clearing restores the appearance page', evalPage(() => {
+    const p = document.querySelector('#modal-root .set-page[data-cat="appearance"]');
+    return !!p && !p.hidden;
+  }));
   // Logging section: the file-log pickers must read as the same control
-  // family as every other settings selector. shotModalSection scrolls the
-  // section into view (block-only — see its comment) and the geometry
-  // checks below pin the fix: a settings-row ms-btn matches a settings
-  // select's height, font, border and background (the old 11px chip
-  // failed all of them)
+  // family as every other settings selector. Navigate to the Logging page
+  // first (the metrics below read live geometry — the rows must be
+  // visible). shotModalSection scrolls the section into view (block-only
+  // — see its comment) and the geometry checks below pin the fix: a
+  // settings-row ms-btn matches a settings select's height, font, border
+  // and background (the old 11px chip failed all of them)
+  await ok('nav walks to the logging page', await navTo('logging'));
   await shotModalSection('settings-logging', 'logging');
   await ok('file-log pickers match settings selector metrics', evalPage(() => {
-    const btn = document.querySelector('#modal-root .set-row .ms-btn');
-    const ctl = document.querySelector('#modal-root select.set-ctl');
+    // same visible page for both: the logging page is active (hidden pages
+    // would read as 0x0 and the comparison would be vacuous)
+    const btn = document.querySelector('#modal-root .set-page:not([hidden]) .set-row .ms-btn');
+    const ctl = document.querySelector('#modal-root .set-page:not([hidden]) select.set-ctl');
     if (!btn || !ctl) return false;
     const b = btn.getBoundingClientRect();
     const c = ctl.getBoundingClientRect();
@@ -1594,13 +1701,15 @@ await step('settings-dialog', async () => {
     const vals = Array.from(document.querySelectorAll('#modal-root .set-val')).map((v) => v.textContent);
     return !!cb && cb.checked && vals.some((v) => /Roaming/.test(v));
   }));
-  // the Security section sits below the fold in the scrolling settings body
-  // — shotModalSection scrolls it into view (block-only) and verifies it
-  // is on screen, so the shot shows security settings, not the top of an
-  // unrelated section
+  // the Security page: shotModalSection scrolls it into view (block-only)
+  // and verifies it is on screen, so the shot shows security settings,
+  // not the top of an unrelated section
+  await ok('nav walks to the security page', await navTo('security'));
   await shotModalSection('settings-secure-on', 'security');
   // ticking a level in the file-log filter persists via SetLogSettings;
-  // the current mode rides along unchanged (file-only filters)
+  // the current mode rides along unchanged (file-only filters). Back to
+  // the logging page so the pickers act on visible controls.
+  await ok('nav walks back to the logging page', await navTo('logging'));
   await resetCalls();
   await evalPage(() => document.querySelector('#modal-root .ms-btn').click());
   await sleep(60);
