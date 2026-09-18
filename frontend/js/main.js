@@ -188,16 +188,46 @@ function setRefreshOnFocus(on) {
   localStorage.setItem('s3b-refresh-focus', on ? '1' : '0');
 }
 
+// Theme preference: 'light', 'dark', or 'auto'. 'auto' follows the OS
+// light/dark setting live (the VS 2026 "use system setting" pattern) — the
+// media listener stays registered until an explicit theme replaces it.
+const themeMq = matchMedia('(prefers-color-scheme: dark)');
+let themeAuto = false;
+const applyAutoTheme = () => {
+  document.documentElement.dataset.theme = themeMq.matches ? 'dark' : 'light';
+};
+const setThemeAuto = (on) => {
+  if (on === themeAuto) return;
+  themeAuto = on;
+  if (on) themeMq.addEventListener('change', applyAutoTheme);
+  else themeMq.removeEventListener('change', applyAutoTheme);
+};
+
 function initTheme() {
   const saved = localStorage.getItem('s3b-theme');
-  const theme = saved || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.dataset.theme = theme;
+  if (saved === 'auto' || !saved) {
+    // Unsaved means "never chose" — the boot default follows the system,
+    // so the Settings select honestly shows Auto (system).
+    setThemeAuto(true);
+    applyAutoTheme();
+    return;
+  }
+  document.documentElement.dataset.theme = saved;
+}
+
+// setThemePref is the Settings apply hook: persists the choice and applies
+// it immediately ('auto' re-registers the system listener).
+function setThemePref(v) {
+  localStorage.setItem('s3b-theme', v);
+  if (v === 'auto') { setThemeAuto(true); applyAutoTheme(); return; }
+  setThemeAuto(false);
+  document.documentElement.dataset.theme = v;
 }
 
 function toggleTheme() {
-  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next;
-  localStorage.setItem('s3b-theme', next);
+  // The quick toggle always lands on an explicit theme (and switches an
+  // 'auto' session to the opposite of what is on screen).
+  setThemePref(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 }
 
 // ============================ data sources (M8) ============================
@@ -3230,7 +3260,7 @@ async function openSettings() {
   try { secSet = await api.GetSecureStorage(); } catch { /* binding missing pre-Startup */ }
   settingsDialog({
     state: {
-      theme: () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light'),
+      theme: () => localStorage.getItem('s3b-theme') || 'auto',
       lang: savedLang,
       autoRefreshMs: () => autoRefreshMs,
       refreshOnFocus: () => refreshOnFocus,
@@ -3252,9 +3282,15 @@ async function openSettings() {
       explorerClip: () => localStorage.getItem('s3b-os-clip') !== '0',
       xferWin: () => localStorage.getItem('s3b-xfer-window') !== '0',
       popoutCenter: () => (localStorage.getItem('s3b-popout-center') === 'app' ? 'app' : 'display'),
+      // Popout geometry persistence (dialogs.js reads this fresh on every
+      // open/save) — off = windows always open centered, nothing stored.
+      popoutPersist: () => localStorage.getItem('s3b-popouts-persist') !== '0',
+      // Synced local/remote browsing (local.js setSync mirrors the pane
+      // header checkbox and captures the base pair on enable).
+      localSync: () => localPane.sync,
     },
     apply: {
-      theme: (v) => { document.documentElement.dataset.theme = v; localStorage.setItem('s3b-theme', v); },
+      theme: setThemePref,
       lang: setLanguage,
       autoRefresh: setAutoRefresh,
       refreshOnFocus: setRefreshOnFocus,
@@ -3287,6 +3323,8 @@ async function openSettings() {
       // Read fresh on every native popout open (dialogs.js) — no other
       // consumer needs notifying.
       popoutCenter: (v) => localStorage.setItem('s3b-popout-center', v === 'app' ? 'app' : 'display'),
+      popoutPersist: (v) => localStorage.setItem('s3b-popouts-persist', v ? '1' : '0'),
+      localSync: (v) => localPane.setSync(v),
     },
     log: {
       get: () => logSet,

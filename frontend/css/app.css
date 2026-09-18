@@ -889,8 +889,42 @@ kbd {
 /* Editor status in the status bar */
 .sb-editing { color: var(--warn); cursor: pointer; }
 
-/* Settings dialog */
-.set-body { display: flex; flex-direction: column; gap: 2px; min-width: 480px; }
+/* Settings dialog — VS 2026-style two-pane shell: category nav + search on
+   the left, the active category page (or the flattened search results) on
+   the right. Rows/controls keep the .set-row/.set-ctl family below. */
+.modal.settings-modal { min-width: min(760px, 94vw); max-width: min(980px, 95vw); }
+.modal.settings-modal .modal-body { padding: 0; display: flex; overflow: hidden; }
+.set-shell { display: flex; width: 100%; height: min(540px, 62vh); min-height: 280px; }
+.set-side {
+  flex: 0 0 190px; display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 8px 12px 12px; border-right: 1px solid var(--border-soft);
+  min-height: 0; overflow-y: auto;
+}
+.set-search { width: 100%; }
+.set-nav { display: flex; flex-direction: column; gap: 2px; }
+.set-nav-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 10px; border: 0; border-radius: 6px; background: none;
+  font: inherit; font-size: 13px; color: var(--text);
+  text-align: left; cursor: pointer;
+}
+.set-nav-item:hover { background: var(--hover); }
+.set-nav-item.active { background: var(--sel); font-weight: 600; }
+.set-nav-item.miss { opacity: .45; }
+.set-nav-badge {
+  flex: none; min-width: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--text-dim); color: var(--panel);
+  font-size: 10.5px; font-weight: 600; line-height: 16px; text-align: center;
+}
+.set-main { flex: 1; min-width: 0; overflow-y: auto; padding: 12px 18px 16px; }
+.set-page { display: flex; flex-direction: column; gap: 2px; }
+.set-search-none {
+  padding: 32px 12px; text-align: center;
+  font-size: 13px; color: var(--text-dim);
+}
+/* the hidden attribute must win over the display rules above it */
+.set-page[hidden], .set-section[hidden], .set-row[hidden],
+.set-nav-badge[hidden], .set-search-none[hidden] { display: none; }
 .set-section {
   font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
   color: var(--text-dim); margin: 12px 0 4px;
