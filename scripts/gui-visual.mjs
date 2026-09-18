@@ -616,6 +616,10 @@ function shim() {
         label: j.name ? j.name + (j.items > 1 ? ` +${j.items - 1}` : '') : (j.currentFile || j.id),
         doneUnits: (j.doneFiles || 0) + (j.failedFiles || 0) + (j.skippedFiles || 0),
         totalUnits: j.totalFiles || 0, startedAt: 0, error: j.error || '',
+        // the full-picture fields ride along exactly like the backend join
+        phase: j.phase || '', current: j.currentFile || '', speed: j.speedBps || 0,
+        etaMs: j.etaMs || 0, elapsedMs: j.elapsedMs || 0, errorKind: j.errorKind || '',
+        stalled: !!j.stalled,
       })),
       ...(world.tasks || []),
     ])),
@@ -2823,15 +2827,21 @@ await step('transfers', async () => {
 });
 
 await step('running-tasks', async () => {
-  // the everything-monitor: a tracked deep search and two finished
-  // chores ride beside the transfer jobs in one merged, cancelable list
+  // the everything-monitor: a tracked deep search and finished chores
+  // ride beside the transfer jobs in one merged, cancelable list — now
+  // with the full picture per row (chips, phase, current item, speed)
   await evalPage(() => {
     window.__shim.world.tasks = [
-      { id: 'task-7', kind: 'search', label: '"backup*" — s3://team-files/', status: 'running', doneUnits: 2, totalUnits: 0, startedAt: 1 },
-      { id: 'task-8', kind: 'purge', label: 's3://team-files/old/ — purging 60 noncurrent version(s)', status: 'done', doneUnits: 60, totalUnits: 60, startedAt: 1, endedAt: 2 },
+      { id: 'task-7', kind: 'search', label: '"backup*" — s3://team-files/', status: 'running', doneUnits: 2, totalUnits: 0, speed: 4.2, startedAt: 1 },
+      { id: 'task-8', kind: 'purge', label: 's3://team-files/old/ — purging 60 noncurrent version(s)', status: 'done', doneUnits: 60, totalUnits: 60, elapsedMs: 25000, startedAt: 1, endedAt: 2 },
       // done with unknown totals (bulk delete after its count phase was
       // skipped): the bar must read 100%, never 0%
       { id: 'task-11', kind: 'delete', label: 'bulk delete — s3://team-files/tmp/', status: 'done', doneUnits: 0, totalUnits: 0, startedAt: 1, endedAt: 2 },
+      // count phase: a folder copy walks its objects before any total
+      // exists — the row must say Counting and shimmer, not sit at 0%
+      { id: 'task-12', kind: 'copy', label: 'copying 1 item(s): s3://team-files → s3://lab/mirror', status: 'running', doneUnits: 0, totalUnits: 0, phase: 'count', current: 'shoot/raw/', startedAt: 2 },
+      // a timed-out delete is critical information: crit chip + duration
+      { id: 'task-13', kind: 'delete', label: 's3://lab — deleting 3 object(s)', status: 'error', doneUnits: 2, totalUnits: 3, error: 'delete tcp: i/o timeout', errorKind: 'timeout', elapsedMs: 9500, startedAt: 1, endedAt: 2 },
     ];
   });
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
@@ -2844,12 +2854,12 @@ await step('running-tasks', async () => {
   const popSel = '#popout-root .popout[data-pop="tasks"]';
   await ok('transfer jobs merged into the task list', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, popSel)).includes('video-final.mp4 +2'), 4000, 'merged jobs'));
   await ok('search task shows its label', evalPage((s) => document.querySelector(s).textContent.includes('backup*'), popSel));
-  // fresh window: the finished purge/delete (and the done transfer job
-  // from before) are history — only live rows show, counted in the head
+  // fresh window: the finished rows (and the done transfer job from
+  // before) are history — only live rows show, counted in the head
   await ok('pre-open finished rows are history', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
     const head = document.querySelector(`${s} .modal-foot .left`);
-    return rows.length === 2 && /3 hidden/.test(head?.textContent || '');
+    return rows.length === 3 && /4 hidden/.test(head?.textContent || '');
   }, popSel), 4000, 'history hidden'));
   await ok('running task offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), popSel));
   await shotOf('running-tasks', popSel);
@@ -2858,12 +2868,35 @@ await step('running-tasks', async () => {
   await evalPage((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, popSel);
   await ok('done purge shows its counts', waitFor(async () => evalPage((s) => {
     const t = document.querySelector(s).textContent;
-    return /done/.test(t) && /60 \/ 60/.test(t);
+    return /Done/.test(t) && /60 \/ 60/.test(t);
   }, popSel), 4000, 'counts'));
   await ok('done task with unknown totals reads 100%', evalPage((s) => {
     const row = document.querySelector(`${s} .tr-job[data-id="task-11"]`);
     return !!row && /^100%$/.test(row.querySelector('.tr-pct').textContent.trim());
   }, popSel));
+  // the full picture: count chip + shimmer, crit timeout chip + error,
+  // duration on finished rows, live pace on running ones
+  await ok('count-phase task shows Counting chip and shimmer', evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="task-12"]`);
+    return !!row && /counting/i.test(row.querySelector('.tr-chip.st-phase')?.textContent || '')
+      && !!row.querySelector('.tr-bar.tr-indet')
+      && /shoot\/raw\//.test(row.querySelector('.tr-cur')?.textContent || '');
+  }, popSel));
+  await ok('timed-out task shouts with a crit chip', evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="task-13"]`);
+    return !!row && /timed out/i.test(row.querySelector('.tr-chip.st-crit')?.textContent || '')
+      && /i\/o timeout/.test(row.textContent) && /in 10s/.test(row.textContent);
+  }, popSel));
+  await ok('finished task carries its duration', evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="task-8"]`);
+    return !!row && /in 25s/.test(row.textContent);
+  }, popSel));
+  await ok('running search shows live match pace', evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="task-7"]`);
+    return !!row && /@ 4\.2\/s/.test(row.textContent);
+  }, popSel));
+  await ok('merged transfer row keeps its byte speed', evalPage((s) =>
+    /@ 8\.0 MB\/s/.test(document.querySelector(`${s} .tr-job[data-id="t1"]`)?.textContent || ''), popSel));
   // cancel dispatches with the row's id — target the search task (the
   // upload job is also running and sorts first)
   await evalPage((s) => {
@@ -2938,6 +2971,15 @@ await step('status-badges', async () => {
   });
   await evalPage(() => window.__shim.emit('tasks:update', {}));
   await ok('counter totals simultaneous tasks', waitFor(async () => evalPage(() => /2 tasks\b/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge count 2'));
+  // the badge carries the first running task's live progress and %
+  await evalPage(() => {
+    window.__shim.world.tasks = [
+      { id: 'task-10', kind: 'purge', label: 'purge s3://b', status: 'running', doneUnits: 10, totalUnits: 40, startedAt: 2 },
+    ];
+  });
+  await evalPage(() => window.__shim.emit('tasks:update', {}));
+  await ok('badge carries live progress and percent', waitFor(async () => evalPage(() =>
+    /purge 10\/40 \(25%\)/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge %'));
   // transfers never light the tasks badge (they own the ⇅ one) and the
   // badge hides again when nothing runs
   await evalPage(() => { window.__shim.world.tasks = []; });

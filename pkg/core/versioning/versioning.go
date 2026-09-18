@@ -355,7 +355,7 @@ func DeleteAllVersions(ctx context.Context, client *s3.Client, bucket, key strin
 			VersionId: aws.String(v.VersionID),
 		})
 	}
-	return deleteIdentifiers(ctx, client, bucket, ids)
+	return deleteIdentifiers(ctx, client, bucket, ids, nil)
 }
 
 // DeleteKeepCurrent permanently removes every version and delete marker of
@@ -377,7 +377,7 @@ func DeleteKeepCurrent(ctx context.Context, client *s3.Client, bucket, key strin
 			VersionId: aws.String(v.VersionID),
 		})
 	}
-	return deleteIdentifiers(ctx, client, bucket, ids)
+	return deleteIdentifiers(ctx, client, bucket, ids, nil)
 }
 
 // ListMarkers returns up to cap delete markers under prefix (the Delete
@@ -452,6 +452,13 @@ func CountPurge(ctx context.Context, client *s3.Client, bucket, prefix string, m
 
 // Purge removes versions/markers under a prefix in batches of 1000.
 func Purge(ctx context.Context, client *s3.Client, bucket, prefix string, mode PurgeMode) (transfer.DeleteResult, error) {
+	return PurgeProg(ctx, client, bucket, prefix, mode, nil)
+}
+
+// PurgeProg is Purge with a per-batch progress callback: onProg fires with
+// the running deleted count after every batch (live units for the
+// Running-tasks window).
+func PurgeProg(ctx context.Context, client *s3.Client, bucket, prefix string, mode PurgeMode, onProg func(deleted int)) (transfer.DeleteResult, error) {
 	var ids []s3types.ObjectIdentifier
 	err := WalkVersions(ctx, client, bucket, prefix, func(v Version) error {
 		switch mode {
@@ -478,13 +485,20 @@ func Purge(ctx context.Context, client *s3.Client, bucket, prefix string, mode P
 	if err != nil {
 		return transfer.DeleteResult{}, err
 	}
-	return deleteIdentifiers(ctx, client, bucket, ids)
+	return deleteIdentifiers(ctx, client, bucket, ids, onProg)
 }
 
 // EmptyBucketVersions force-empties a versioned bucket: every version and
 // delete marker is permanently removed (L2: typed bucket name; L3: permanent).
 // Used by `rb --force` and the GUI's empty-bucket when versioning is on.
 func EmptyBucketVersions(ctx context.Context, client *s3.Client, bucket string) (transfer.DeleteResult, error) {
+	return EmptyBucketVersionsProg(ctx, client, bucket, nil, nil)
+}
+
+// EmptyBucketVersionsProg is EmptyBucketVersions with progress callbacks:
+// onTotal fires once the walk has counted everything (so the task can pin
+// its total), onProg after every deleted batch.
+func EmptyBucketVersionsProg(ctx context.Context, client *s3.Client, bucket string, onTotal func(total int), onProg func(deleted int)) (transfer.DeleteResult, error) {
 	var ids []s3types.ObjectIdentifier
 	err := WalkVersions(ctx, client, bucket, "", func(v Version) error {
 		ids = append(ids, s3types.ObjectIdentifier{
@@ -496,11 +510,16 @@ func EmptyBucketVersions(ctx context.Context, client *s3.Client, bucket string) 
 	if err != nil {
 		return transfer.DeleteResult{}, fmt.Errorf("listing versions: %w", err)
 	}
-	return deleteIdentifiers(ctx, client, bucket, ids)
+	if onTotal != nil {
+		onTotal(len(ids))
+	}
+	return deleteIdentifiers(ctx, client, bucket, ids, onProg)
 }
 
-// deleteIdentifiers batch-deletes explicit (key, version) pairs.
-func deleteIdentifiers(ctx context.Context, client *s3.Client, bucket string, ids []s3types.ObjectIdentifier) (transfer.DeleteResult, error) {
+// deleteIdentifiers batch-deletes explicit (key, version) pairs. onProg,
+// when set, fires with the running deleted count after every batch (live
+// units for the Running-tasks window).
+func deleteIdentifiers(ctx context.Context, client *s3.Client, bucket string, ids []s3types.ObjectIdentifier, onProg func(deleted int)) (transfer.DeleteResult, error) {
 	out := transfer.DeleteResult{}
 	for start := 0; start < len(ids); start += 1000 {
 		end := start + 1000
@@ -517,6 +536,9 @@ func deleteIdentifiers(ctx context.Context, client *s3.Client, bucket string, id
 		out.Deleted += len(resp.Deleted)
 		for _, e := range resp.Errors {
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: %s", aws.ToString(e.Key), aws.ToString(e.Message)))
+		}
+		if onProg != nil {
+			onProg(out.Deleted)
 		}
 	}
 	return out, nil

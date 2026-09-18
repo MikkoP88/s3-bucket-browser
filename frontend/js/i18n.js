@@ -274,6 +274,7 @@ const dict = {
     'tasks.clear': 'Clear',
     'tasks.cancel': 'Cancel',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Counting',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Show history',
     'popout.hideHistory': 'Hide history',
@@ -581,6 +582,7 @@ const dict = {
     'tasks.clear': 'Tyhjennä',
     'tasks.cancel': 'Peruuta',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Lasketaan',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Näytä historia',
     'popout.hideHistory': 'Piilota historia',
@@ -888,6 +890,7 @@ const dict = {
     'tasks.clear': 'Rensa',
     'tasks.cancel': 'Avbryt',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Räknar',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Visa historik',
     'popout.hideHistory': 'Dölj historik',
@@ -1195,6 +1198,7 @@ const dict = {
     'tasks.clear': 'Leeren',
     'tasks.cancel': 'Abbrechen',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Zählt',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Verlauf anzeigen',
     'popout.hideHistory': 'Verlauf ausblenden',
@@ -1502,6 +1506,7 @@ const dict = {
     'tasks.clear': 'Effacer',
     'tasks.cancel': 'Annuler',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Comptage',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Afficher l\'historique',
     'popout.hideHistory': 'Masquer l\'historique',
@@ -1809,6 +1814,7 @@ const dict = {
     'tasks.clear': 'Limpiar',
     'tasks.cancel': 'Cancelar',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Contando',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Mostrar historial',
     'popout.hideHistory': 'Ocultar historial',
@@ -2116,6 +2122,7 @@ const dict = {
     'tasks.clear': 'Limpar',
     'tasks.cancel': 'Cancelar',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Contando',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Mostrar histórico',
     'popout.hideHistory': 'Ocultar histórico',
@@ -2423,6 +2430,7 @@ const dict = {
     'tasks.clear': 'Cancella',
     'tasks.cancel': 'Annulla',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Conteggio',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Mostra cronologia',
     'popout.hideHistory': 'Nascondi cronologia',
@@ -2730,6 +2738,7 @@ const dict = {
     'tasks.clear': 'Wissen',
     'tasks.cancel': 'Annuleren',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Tellen',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Geschiedenis tonen',
     'popout.hideHistory': 'Geschiedenis verbergen',
@@ -3037,6 +3046,7 @@ const dict = {
     'tasks.clear': 'Wyczyść',
     'tasks.cancel': 'Anuluj',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Zliczanie',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Pokaż historię',
     'popout.hideHistory': 'Ukryj historię',
@@ -3344,6 +3354,7 @@ const dict = {
     'tasks.clear': 'Очистить',
     'tasks.cancel': 'Отмена',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Подсчёт',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Показать историю',
     'popout.hideHistory': 'Скрыть историю',
@@ -3651,6 +3662,7 @@ const dict = {
     'tasks.clear': 'Temizle',
     'tasks.cancel': 'İptal',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': 'Sayılıyor',
     // popout view history (transfers / running tasks)
     'popout.showHistory': 'Geçmişi göster',
     'popout.hideHistory': 'Geçmişi gizle',
@@ -3958,6 +3970,7 @@ const dict = {
     'tasks.clear': '清除',
     'tasks.cancel': '取消',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': '统计中',
     // popout view history (transfers / running tasks)
     'popout.showHistory': '显示历史',
     'popout.hideHistory': '隐藏历史',
@@ -4265,6 +4278,7 @@ const dict = {
     'tasks.clear': 'クリア',
     'tasks.cancel': 'キャンセル',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': '計数中',
     // popout view history (transfers / running tasks)
     'popout.showHistory': '履歴を表示',
     'popout.hideHistory': '履歴を非表示',
@@ -4572,6 +4586,7 @@ const dict = {
     'tasks.clear': '지우기',
     'tasks.cancel': '취소',
     'tasks.counts': '{d} / {t}',
+    'tasks.counting': '집계 중',
     // popout view history (transfers / running tasks)
     'popout.showHistory': '기록 표시',
     'popout.hideHistory': '기록 숨기기',

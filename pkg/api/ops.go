@@ -119,6 +119,7 @@ func (a *App) deleteSelectionC(c *s3client.Client, bucket string, keys []string,
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 
+	task.setPhase(TaskPhaseCount)
 	all, err := expandSelection(ctx, c, bucket, keys)
 	if err != nil {
 		return res, err
@@ -129,7 +130,9 @@ func (a *App) deleteSelectionC(c *s3client.Client, bucket string, keys []string,
 	}
 	task.setTotal(len(all), fmt.Sprintf("s3://%s — deleting %d object(s)", bucket, len(all)))
 	a.emitLogSrc(LogInfo, "delete", bucket, fmt.Sprintf("deleting %d object(s)", len(all)))
-	res, err = transfer.DeleteKeys(ctx, c.S3, bucket, all)
+	res, err = transfer.DeleteKeysProg(ctx, c.S3, bucket, all, func(deleted int) {
+		task.progress(deleted)
+	})
 	task.progress(res.Deleted)
 	switch {
 	case err != nil:
@@ -202,7 +205,7 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 			parent = trimmed[:i+1]
 		}
 		dstPrefix := joinKeyNoSlash(parent, newName)
-		res, err := a.copyMove(ctx, c, bucket, []string{key}, bucket, dstPrefix, true)
+		res, err := a.copyMove(ctx, c, bucket, []string{key}, bucket, dstPrefix, true, nil)
 		if err != nil {
 			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s failed: %v", key, err))
 			return err
@@ -257,10 +260,15 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 	if move {
 		verb0 = "moving"
 	}
-	ctx, done := a.beginTask("copy", fmt.Sprintf("%s %d item(s): s3://%s → s3://%s/%s",
+	// A task, not a quick op: folder selections are walked into their full
+	// object list first (count phase), then copied one by one — live
+	// progress and current item all the way, cancellable from the
+	// Running tasks window.
+	task := a.tasks.add("copy", fmt.Sprintf("%s %d item(s): s3://%s → s3://%s/%s",
 		verb0, len(keys), bucket, dstBucket, dirPrefix(dstPrefix)))
-	defer func() { done(err) }()
-	res, err = a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move)
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	res, err = a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move, task)
 	verb := "copied"
 	if move {
 		verb = "moved"
@@ -282,11 +290,28 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 	return res, err
 }
 
-// copyMove implements copy/move for a selection (see CopySelection).
-func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, keys []string, dstBucket, dstPrefix string, move bool) (CopyResult, error) {
+// copyMove implements copy/move for a selection (see CopySelection). It
+// plans first (count phase: folders are walked into per-object src→dst
+// pairs), then copies pair by pair with live progress, and only deletes
+// the sources when every copy succeeded (move semantics, cleanup phase).
+// task may be nil (the single-key rename path runs without a task row).
+func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, keys []string, dstBucket, dstPrefix string, move bool, task *taskHandle) (CopyResult, error) {
 	res := CopyResult{}
 	var toDelete []string
 
+	type copyPair struct{ src, dst string }
+	// One group per selected item: a single file or one folder (marker +
+	// every object beneath it).
+	type copyGroup struct {
+		src    string // top-level selection item
+		marker string // destination folder marker to create ("" = file)
+		pairs  []copyPair
+	}
+
+	if task != nil {
+		task.setPhase(TaskPhaseCount)
+	}
+	var groups []copyGroup
 	for _, src := range keys {
 		if !strings.HasSuffix(src, "/") {
 			dstKey := joinKeyNoSlash(dstPrefix, path.Base(src))
@@ -294,51 +319,77 @@ func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, k
 				res.Errors = append(res.Errors, fmt.Sprintf("%s: source and destination are the same", src))
 				continue
 			}
-			if err := transfer.Copy(ctx, c.S3, bucket, src, dstBucket, dstKey); err != nil {
-				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", src, err))
-				continue
-			}
-			res.Copied++
-			if move {
-				toDelete = append(toDelete, src)
-			}
+			groups = append(groups, copyGroup{src: src, pairs: []copyPair{{src, dstKey}}})
 			continue
 		}
-
-		// Folder: create the destination marker, copy everything beneath.
 		name := path.Base(strings.TrimSuffix(src, "/"))
 		newPrefix := transfer.JoinKey(dstPrefix, name)
-		if err := putMarker(ctx, c.S3, dstBucket, newPrefix); err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", src, err))
-			continue
-		}
+		g := copyGroup{src: src, marker: newPrefix}
 		err := listing.Walk(ctx, c.S3, bucket, src, func(o s3types.Object) error {
 			key := aws.ToString(o.Key)
 			if strings.HasSuffix(key, "/") {
-				return nil // markers: destination marker created above
+				return nil // markers: destination marker created below
 			}
-			dstKey := joinKeyNoSlash(newPrefix, strings.TrimPrefix(key, src))
-			if err := transfer.Copy(ctx, c.S3, bucket, key, dstBucket, dstKey); err != nil {
-				return fmt.Errorf("%s: %w", key, err)
-			}
-			res.Copied++
-			if move {
-				toDelete = append(toDelete, key)
-			}
+			g.pairs = append(g.pairs, copyPair{
+				src: key,
+				dst: joinKeyNoSlash(newPrefix, strings.TrimPrefix(key, src)),
+			})
 			return nil
 		})
 		if err != nil {
 			res.Errors = append(res.Errors, err.Error())
 			continue
 		}
-		if move {
-			toDelete = append(toDelete, src) // the old marker too
+		groups = append(groups, g)
+	}
+	total := 0
+	for _, g := range groups {
+		total += len(g.pairs)
+	}
+	if task != nil {
+		task.setTotal(total, "")
+	}
+
+	done := 0
+	for _, g := range groups {
+		if g.marker != "" {
+			if err := putMarker(ctx, c.S3, dstBucket, g.marker); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", g.src, err))
+				continue
+			}
+		}
+		for _, p := range g.pairs {
+			if task != nil {
+				task.setCurrent(p.src)
+			}
+			if err := transfer.Copy(ctx, c.S3, bucket, p.src, dstBucket, p.dst); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", p.src, err))
+				continue
+			}
+			res.Copied++
+			done++
+			if task != nil {
+				task.progress(done)
+			}
+			if move {
+				toDelete = append(toDelete, p.src)
+			}
+		}
+		if move && g.marker != "" {
+			toDelete = append(toDelete, g.src) // the old marker too
 		}
 	}
 
 	// Delete sources only when every copy succeeded (move semantics).
 	if move && len(toDelete) > 0 && len(res.Errors) == 0 {
-		dr, err := transfer.DeleteKeys(ctx, c.S3, bucket, toDelete)
+		if task != nil {
+			task.setPhase(TaskPhaseCleanup)
+		}
+		dr, err := transfer.DeleteKeysProg(ctx, c.S3, bucket, toDelete, func(deleted int) {
+			if task != nil {
+				task.progress(deleted)
+			}
+		})
 		res.Moved = dr.Deleted
 		if err != nil {
 			return res, err

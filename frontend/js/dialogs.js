@@ -1524,22 +1524,56 @@ function runningTasksDom() {
 
   function renderTask(j) {
     const pct = taskPct(j);
-    const bar = el('div', { class: 'tr-bar' }, el('div', { style: `width:${pct}%` }));
-    const counts = j.totalUnits > 0 ? t('tasks.counts', { d: j.doneUnits, t: j.totalUnits }) : '';
-    const job = el('div', { class: `tr-job ${j.status}` },
+    const running = j.status === 'running' || j.status === 'queued';
+    // The bar: indeterminate shimmer while a task runs without a total
+    // (count phases, searches, streamed listings) — visible activity
+    // instead of a frozen 0%.
+    const indet = running && !j.totalUnits;
+    const bar = el('div', { class: `tr-bar${indet ? ' tr-indet' : ''}` },
+      el('div', { style: `width:${pct}%` }));
+
+    // Status chips: the state itself, the phase while counting or
+    // cleaning up, and the timeout flag that must outshout the rest.
+    const stKey = { running: 'transfer.stRunning', queued: 'transfer.stRunning', done: 'transfer.stDone', error: 'transfer.stError', canceled: 'transfer.stCanceled' }[j.status] || null;
+    const chips = [];
+    if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
+    if (running && j.phase === 'count') chips.push(el('span', { class: 'tr-chip st-phase', text: t('tasks.counting') }));
+    if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
+    if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
+    if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));
+
+    // Units + pace: counts, live speed and ETA while it runs; the
+    // lifetime average and the total duration ride finished rows.
+    const counts = j.totalUnits > 0
+      ? t('tasks.counts', { d: j.doneUnits, t: j.totalUnits })
+      : (j.doneUnits > 0 ? String(j.doneUnits) : '');
+    let pace = '';
+    if (running && j.speed > 0.05) {
+      // merged transfer rows carry bytes/sec; pure tasks carry units/sec
+      const sp = ['upload', 'download', 'transfer'].includes(j.kind)
+        ? fmtSpeed(j.speed) : `${j.speed >= 10 ? Math.round(j.speed) : j.speed.toFixed(1)}/s`;
+      pace = `@ ${sp}`;
+    }
+    if (running && j.etaMs > 0) pace += `${pace ? ' · ' : ''}${fmtEta(j.etaMs / 1000)}`;
+    if (!running && j.elapsedMs > 0) pace = t('transfer.doneIn', { t: fmtEta(j.elapsedMs / 1000).replace('~', '') });
+
+    const task = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
-        el('span', { class: 'tr-name', text: `${taskKindIcon(j.kind)} ${j.label || j.id}` }),
-        el('span', { class: 'tr-status', text: counts ? `${j.status} — ${counts}` : j.status }),
+        el('span', { class: 'tr-name', title: j.label || j.id, text: `${taskKindIcon(j.kind)} ${j.label || j.id}` }),
+        el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
-        (j.status === 'running' || j.status === 'queued')
-          ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { await api.CancelTask(j.id); } })
-          : null,
+        running ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { await api.CancelTask(j.id); } }) : null,
       ),
       bar,
+      (counts || pace) ? el('div', { class: 'tr-meta' },
+        el('span', { text: counts }),
+        el('span', { text: pace }),
+      ) : null,
+      (running && j.current) ? el('div', { class: 'tr-cur', title: j.current, text: j.current }) : null,
       j.error ? el('div', { class: 'tr-sub', text: j.error }) : null,
     );
-    job.dataset.id = j.id;
-    return job;
+    task.dataset.id = j.id;
+    return task;
   }
 
   draw();
