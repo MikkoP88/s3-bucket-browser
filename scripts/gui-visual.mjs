@@ -2165,6 +2165,10 @@ await step('delete-window-marker', async () => {
     || (await findCall('SourceDeleteSelection')) !== null, 4000, 'DeleteSelection (marker)');
   const c = (await findCall('DeleteSelection')) || (await findCall('SourceDeleteSelection'));
   await ok('DeleteSelection got the key', c && JSON.stringify(c.args).includes('readme.md'));
+  // plain mode keeps the exact force contract: it mirrors the preview's
+  // requiresL2 (false here) — the destructive modes are the ones that
+  // must not (versions are invisible to the object-count preview)
+  await ok('plain mode force mirrors the preview', c && c.args[c.args.length - 1] === false);
   await ok('marker path stayed marker', (await findCall('DeleteSelectionPermanent')) === null
     && (await findCall('SourceDeleteSelectionPermanent')) === null
     && (await findCall('DeleteSelectionKeepCurrent')) === null
@@ -2199,6 +2203,11 @@ await step('delete-window-keepcurrent', async () => {
     || (await findCall('SourceDeleteSelectionKeepCurrent')) !== null, 4000, 'DeleteSelectionKeepCurrent');
   const c = (await findCall('DeleteSelectionKeepCurrent')) || (await findCall('SourceDeleteSelectionKeepCurrent'));
   await ok('keep-current got the key', c && JSON.stringify(c.args).includes('readme.md'));
+  // regression: a destructive mode MUST send force=true even when the
+  // object-count preview says requiresL2=false — the backend thresholds
+  // on VERSIONS (hundreds can hide behind few current objects) and used
+  // to refuse these deletes with "typed confirmation (force) required"
+  await ok('keep-current sends force despite requiresL2=false', c && c.args[c.args.length - 1] === true);
 });
 
 await step('delete-window-permanent', async () => {
@@ -2229,6 +2238,7 @@ await step('delete-window-permanent', async () => {
     || (await findCall('SourceDeleteSelectionPermanent')) !== null, 4000, 'DeleteSelectionPermanent');
   const c = (await findCall('DeleteSelectionPermanent')) || (await findCall('SourceDeleteSelectionPermanent'));
   await ok('permanent got the key', c && JSON.stringify(c.args).includes('budget-2026.xlsx'));
+  await ok('permanent sends force despite requiresL2=false', c && c.args[c.args.length - 1] === true);
 });
 
 await step('shift-del-permanent-directory', async () => {
@@ -2250,6 +2260,11 @@ await step('shift-del-permanent-directory', async () => {
     || (await findCall('SourceDeleteSelectionPermanent')) !== null, 4000, 'Shift+Del permanent');
   const c = (await findCall('DeleteSelectionPermanent')) || (await findCall('SourceDeleteSelectionPermanent'));
   await ok('directory key routed to the purge backend', c && JSON.stringify(c.args).includes('photos/'));
+  // the multiselection-directory case: a versioned tree can sit far below
+  // the OBJECT threshold while holding hundreds of versions — the
+  // confirmed window (permanent preset + typed word when the setting is
+  // on) carries the force the backend's version gate demands
+  await ok('directory purge sends force despite requiresL2=false', c && c.args[c.args.length - 1] === true);
 });
 
 await step('version-marker-badges', async () => {
