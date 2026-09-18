@@ -84,6 +84,8 @@ func (a *App) CopySelectionVersions(srcSource, srcBucket string, keys []string, 
 	}
 
 	j := a.jobs.add("transfer", total+markers, totalBytes)
+	j.setMeta(path.Base(strings.TrimSuffix(keys[0], "/")),
+		s3Label(srcBucket, ""), s3Label(dstBucket, dstPrefix), len(keys), move)
 	id := j.info.ID
 	verb := "copying"
 	if move {
@@ -102,6 +104,7 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 	ctx := j.ctx
 	var lastErr string
 	failed := 0
+	n := 0 // 1-based ordinal across versions and markers
 
 	// Destination key mapping mirrors the plain copy path: exact objects
 	// land under their base name, folder prefixes re-root their subtree.
@@ -116,15 +119,16 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 		for _, t := range it.timelines {
 			dk := dstKey(it, t.Key)
 			if dk == "" || (srcBucket == dstBucket && dk == t.Key) {
+				n++
+				j.startFile(n, t.Key, 0)
 				failed++
 				lastErr = fmt.Sprintf("%s: source and destination are the same", t.Key)
 				j.fileDone(0, true)
 				continue
 			}
 			for _, v := range t.Versions {
-				j.mu.Lock()
-				j.info.CurrentFile = fmt.Sprintf("%s@%s", t.Key, v.VersionID)
-				j.mu.Unlock()
+				n++
+				j.startFile(n, fmt.Sprintf("%s@%s", t.Key, v.VersionID), v.Size)
 				if err := versioning.CopyOneVersion(ctx, srcC.S3, srcBucket, t.Key, v.VersionID, dstC.S3, dstBucket, dk); err != nil {
 					if ctx.Err() != nil {
 						a.finishJob(j, JobCanceled, "canceled")
@@ -133,16 +137,18 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 					failed++
 					lastErr = fmt.Sprintf("%s@%s: %v", t.Key, v.VersionID, err)
 					j.fileDone(v.Size, true)
-					j.emit(a.jobs, true)
+					j.emit(true)
 					continue
 				}
 				j.fileDone(v.Size, false)
-				j.emit(a.jobs, false)
+				j.emit(false)
 			}
 			if t.IsDeleted {
 				// Recreate the marker AFTER all versions of the key: the
 				// delete becomes the destination's current state, exactly
 				// as at the source.
+				n++
+				j.startFile(n, t.Key+" (delete marker)", 0)
 				if _, err := dstC.S3.DeleteObject(ctx, &s3.DeleteObjectInput{
 					Bucket: aws.String(dstBucket), Key: aws.String(dk),
 				}); err != nil {
@@ -152,7 +158,7 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 					continue
 				}
 				j.fileDone(0, false)
-				j.emit(a.jobs, true)
+				j.emit(true)
 			}
 		}
 	}
@@ -160,6 +166,8 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 	if failed == 0 && move {
 		// Everything copied — destroy the source timelines. A failure
 		// here leaves the job in error but the destination intact.
+		j.setPhase(PhaseCleanup)
+		j.emit(true)
 		for _, it := range items {
 			for _, t := range it.timelines {
 				if _, err := versioning.DeleteAllVersions(ctx, srcC.S3, srcBucket, t.Key); err != nil {

@@ -1,7 +1,7 @@
 // Modal framework + every dialog: confirmations (L1/L2 ladder), prompts,
 // properties, doctor, profile editor, transfer manager, help sheet.
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, parentPrefix } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, parentPrefix, basename } from './util.js';
 import { t } from './i18n.js';
 
 const root = () => document.getElementById('modal-root');
@@ -1251,7 +1251,15 @@ function openTransferManagerDom(onClose) {
     hist.seed(jobs);
     rows = jobs;
     const visible = hist.visible(jobs);
-    list.replaceChildren(...visible.map(renderJob));
+    // Same-named transfers get disambiguated the moment they collide:
+    // every title after the first in display order gains " (2)", " (3)"…
+    const seen = new Map();
+    visible.forEach((j) => {
+      const base = jobTitleBase(j);
+      seen.set(base, (seen.get(base) || 0) + 1);
+      j._dup = seen.get(base);
+    });
+    list.replaceChildren(...visible.map((j) => renderJob(j)));
     if (!visible.length) list.appendChild(el('div', { class: 'tm-empty', text: t('transfer.noTransfers') }));
     hist.redraw(jobs);
   }
@@ -1269,26 +1277,104 @@ function openTransferManagerDom(onClose) {
     return 0;
   }
 
+  // The title verb is localized here (the backend ships data, not
+  // language): arrow + Uploading/Downloading/Copying/Moving.
+  function jobVerb(j) {
+    if (j.op === 'upload') return { icon: '\u2191', label: t('transfer.verbUploading') };
+    if (j.op === 'download') return { icon: '\u2193', label: t('transfer.verbDownloading') };
+    return { icon: '\u21C4', label: t(j.move ? 'transfer.verbMoving' : 'transfer.verbCopying') };
+  }
+
+  // The name the row carries: the job's primary source item, else the
+  // in-flight file, else the id — so even a legacy-shaped job reads.
+  function jobName(j) {
+    return j.name || (j.currentFile ? basename(j.currentFile) : '') || j.id;
+  }
+
+  // Collision key for the duplicate numbering (verb + name, before the
+  // " +N" item count or the ordinal are attached).
+  function jobTitleBase(j) {
+    const v = jobVerb(j);
+    return `${v.label} ${jobName(j)}`;
+  }
+
   function renderJob(j) {
     const pct = jobPct(j);
-    const bar = el('div', { class: 'tr-bar' }, el('div', { style: `width:${pct}%` }));
+    const running = j.status === 'running';
+    const v = jobVerb(j);
+    // Title: "⇄ Copying photos +2 (2)" — verb, primary item, "N more"
+    // when several items ride the job, " (k)" when another visible row
+    // already answers to the same title.
+    let title = `${v.icon} ${v.label} ${jobName(j)}`;
+    if (j.items > 1) title += ` ${t('transfer.more', { n: j.items - 1 })}`;
+    if (j._dup > 1) title += ` (${j._dup})`;
+
+    // The bar: indeterminate shimmer when a running job has no totals
+    // to derive a width from (server-side copies before their settle).
+    const indet = running && !j.totalBytes && !j.totalFiles;
+    const bar = el('div', { class: `tr-bar${indet ? ' tr-indet' : ''}` },
+      el('div', { style: `width:${pct}%` }));
+
+    // Status chips: the state itself, the phase while running, and the
+    // critical/warn flags that must outshout everything else.
+    const stKey = { running: 'transfer.stRunning', done: 'transfer.stDone', error: 'transfer.stError', canceled: 'transfer.stCanceled', failed: 'transfer.stError' }[j.status] || null;
+    const chips = [];
+    if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
+    if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
+    if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
+    if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));
+    // byteless in-flight transfer = server-side copy: activity without
+    // percentages, said aloud instead of a frozen row
+    if (running && j.op === 'transfer' && j.currentFile && !j.currentTotal) {
+      chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.serverCopy') }));
+    }
+
+    // Counts + throughput: files, bytes, live speed and ETA while it
+    // runs; the lifetime average rides finished rows.
     const counts = t('transfer.filesCount', { d: j.doneFiles, t: j.totalFiles })
       + (j.failedFiles ? ` · ${t('transfer.failedCount', { n: j.failedFiles })}` : '')
       + (j.skippedFiles ? ` · ${t('transfer.skippedCount', { n: j.skippedFiles })}` : '');
     let bytes = `${fmtBytes(j.sentBytes)}${j.totalBytes ? ` / ${fmtBytes(j.totalBytes)}` : ''}`;
-    if (j.speedBps > 1 && j.status === 'running') {
-      bytes += ` @ ${fmtSpeed(j.speedBps)}`;
-      const remain = j.totalBytes > j.sentBytes ? (j.totalBytes - j.sentBytes) / j.speedBps : 0;
-      if (remain > 1) bytes += ` · ${fmtEta(remain)}`;
+    if (running && j.speedBps > 1) bytes += ` @ ${fmtSpeed(j.speedBps)}`;
+    if (running && j.etaMs > 0) bytes += ` · ${fmtEta(j.etaMs / 1000)}`;
+    if (!running && j.elapsedMs > 0) bytes += ` · ${t('transfer.doneIn', { t: fmtEta(j.elapsedMs / 1000).replace('~', '') })}`;
+
+    // The route line: where the bytes come from and where they go.
+    const route = (j.from || j.to)
+      ? el('div', { class: 'tr-route mono' },
+        el('span', { text: `${t('transfer.from')} ` }),
+        el('span', { class: 'tr-loc', text: j.from || '—' }),
+        el('span', { class: 'tr-arrow', text: ' \u2192 ' }),
+        el('span', { text: `${t('transfer.to')} ` }),
+        el('span', { class: 'tr-loc', text: j.to || '—' }))
+      : null;
+
+    // The now-transferring line: which file of how many is moving and
+    // its own progress — the multi-item case never shows a stale name.
+    let cur = null;
+    if (running && j.currentFile) {
+      const parts = [t('transfer.fileOf', { i: j.fileIndex || 1, t: j.totalFiles || 1 }), j.currentFile];
+      if (j.currentTotal > 0) {
+        const fpct = Math.floor((j.currentSent / j.currentTotal) * 100);
+        parts.push(`${fmtBytes(j.currentSent)} / ${fmtBytes(j.currentTotal)} (${fpct}%)`);
+      }
+      cur = el('div', { class: 'tr-cur', title: j.currentFile, text: parts.join(' · ') });
     }
-    const job = el('div', { class: `tr-job ${j.status}` },
+
+    const job = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
-        el('span', { class: 'tr-name', text: `${j.op === 'upload' ? '\u2191' : j.op === 'transfer' ? '\u21C4' : '\u2193'} ${j.currentFile || j.id}` }),
-        el('span', { class: 'tr-status', text: `${j.status} — ${counts}, ${bytes}` }),
+        el('span', { class: 'tr-name', title: title, text: title }),
+        el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
-        j.status === 'running' ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
+        running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
       ),
       bar,
+      el('div', { class: 'tr-meta' },
+        el('span', { text: counts }),
+        el('span', { text: bytes }),
+      ),
+      route,
+      cur,
       j.error ? el('div', { class: 'tr-sub', text: j.error }) : null,
     );
     job.dataset.id = j.id;

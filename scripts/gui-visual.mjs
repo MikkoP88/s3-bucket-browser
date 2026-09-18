@@ -393,9 +393,11 @@ function shim() {
       ? { open: false, name: '', path: '', dirty: false, sourceCount: 0 }
       : { open: true, name: 'work.s3bprofile', path: 'C:\\Users\\demo\\Documents\\work.s3bprofile', dirty: false, sourceCount: 5 },
     transfers: [
-      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
+      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
+        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200 },
       // failed/skipped ride the same record: the manager counts them aloud
-      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
+      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
+        name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
     ],
     // tracked non-transfer tasks (Running tasks window registry); the
     // RunningTasks shim merges these with the transfer jobs like the backend
@@ -610,7 +612,8 @@ function shim() {
     // (the backend's RunningTasks does the same join server-side)
     RunningTasks: () => JSON.parse(JSON.stringify([
       ...(world.transfers || []).map((j) => ({
-        id: j.id, kind: j.op, label: j.currentFile || j.id, status: j.status,
+        id: j.id, kind: j.op, status: j.status,
+        label: j.name ? j.name + (j.items > 1 ? ` +${j.items - 1}` : '') : (j.currentFile || j.id),
         doneUnits: (j.doneFiles || 0) + (j.failedFiles || 0) + (j.skippedFiles || 0),
         totalUnits: j.totalFiles || 0, startedAt: 0, error: j.error || '',
       })),
@@ -2658,6 +2661,23 @@ await step('transfers', async () => {
   }, trSel), 4000, 'history hidden'));
   await ok('running job leads the list', evalPage((s) => document.querySelector(`${s} .tr-job`)?.classList.contains('running') === true, trSel));
   await ok('running job offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), trSel));
+  // the full-picture row: action-verb title from the source name, the
+  // From → To route, and the now-transferring line with its own share
+  await ok('row titled action + source name (+N more)', evalPage((s) => {
+    const n = document.querySelector(`${s} .tr-job.running .tr-name`);
+    return !!n && /^\u2191 Uploading video-final\.mp4/.test(n.textContent) && /\+2 more/.test(n.textContent);
+  }, trSel));
+  await ok('From/To route rendered', evalPage((s) => {
+    const r = document.querySelector(`${s} .tr-job.running .tr-route`);
+    return !!r && r.textContent.includes('From:') && r.textContent.includes('D:\\shoot')
+      && r.textContent.includes(' \u2192 ') && r.textContent.includes('s3://team-files/shoot');
+  }, trSel));
+  await ok('current-file line shows ordinal + per-file share', evalPage((s) => {
+    const c = document.querySelector(`${s} .tr-job.running .tr-cur`);
+    return !!c && /File 2 \/ 3/.test(c.textContent) && /video-final\.mp4/.test(c.textContent)
+      && /22\.0 MB \/ 75\.0 MB \(29%\)/.test(c.textContent);
+  }, trSel));
+  await ok('status chip rendered', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .tr-chip.st-running`), trSel));
   await shotOf('transfers', trSel);
   // Show history reveals the pre-open rows again
   await evalPage((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, trSel);
@@ -2750,11 +2770,53 @@ await step('transfers', async () => {
     const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 0 && /show history/i.test(head?.textContent || '') && /1 hidden/.test(head?.textContent || '');
   }, trSel), 4000, 'collapsed'));
+  // the critical states: a byteless server-side copy in flight (stalled
+  // flag + no-totals shimmer), a timed-out job (the one error a user
+  // must never miss), and a second same-named upload (disambiguated)
+  await evalPage(() => {
+    window.__shim.world.transfers = [
+      ...window.__shim.world.transfers,
+      { id: 't5', op: 'transfer', status: 'running', currentFile: 'vault/archive.tar', totalFiles: 0, doneFiles: 0,
+        totalBytes: 0, sentBytes: 0, speedBps: 0, name: 'archive.tar', items: 1, from: 's3://vault',
+        to: 'lab:/mnt/pool', phase: 'transfer', fileIndex: 1, currentSent: 0, currentTotal: 0, stalled: true },
+      { id: 't6', op: 'download', status: 'error', currentFile: '', totalFiles: 1, doneFiles: 0, failedFiles: 1,
+        totalBytes: 11811160064, sentBytes: 6543114240, speedBps: 0, name: 'huge.iso', items: 1,
+        from: 's3://lab-dumps', to: 'E:\\iso', errorKind: 'timeout', error: 'huge.iso: read tcp ...: i/o timeout', elapsedMs: 30000 },
+      { id: 't7', op: 'upload', status: 'running', currentFile: 'C:\\redo\\video-final.mp4', totalFiles: 1, doneFiles: 0,
+        totalBytes: 78643200, sentBytes: 0, speedBps: 0, name: 'video-final.mp4', items: 1, from: 'C:\\redo',
+        to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 1, currentSent: 0, currentTotal: 78643200 },
+      // the same name again, also running: the disambiguating ordinal is
+      // per visible draw, so this one reads "(2)" next to t7's bare title
+      { id: 't8', op: 'upload', status: 'running', currentFile: 'E:\\redo2\\video-final.mp4', totalFiles: 1, doneFiles: 0,
+        totalBytes: 78643200, sentBytes: 39321600, speedBps: 2097152, name: 'video-final.mp4', items: 1, from: 'E:\\redo2',
+        to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 1, currentSent: 39321600, currentTotal: 78643200 },
+    ];
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('stalled job flagged with a warn chip', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="t5"]`);
+    return !!row && row.classList.contains('stalled') && /stalled/i.test(row.querySelector('.tr-chip.st-warn')?.textContent || '');
+  }, trSel), 4000, 'stall chip'));
+  await ok('byteless in-flight copy says server-side', evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="t5"]`);
+    return !!row && /server-side/i.test(row.textContent) && !!row.querySelector('.tr-bar.tr-indet');
+  }, trSel));
+  await ok('timed-out job wears the critical chip', evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="t6"]`);
+    return !!row && row.classList.contains('error') && /timed out/i.test(row.querySelector('.tr-chip.st-crit')?.textContent || '');
+  }, trSel));
+  await ok('same-named transfer disambiguated with (2)', evalPage((s) => {
+    const names = Array.from(document.querySelectorAll(`${s} .tr-job .tr-name`)).map((n) => n.textContent);
+    return names.some((x) => /^\u2191 Uploading video-final\.mp4 \(2\)$/.test(x));
+  }, trSel));
+  await shotOf('transfers-critical', trSel);
   // restore the default seeds for the steps that follow
   await evalPage(() => {
     window.__shim.world.transfers = [
-      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
-      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
+      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
+        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200 },
+      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
+        name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
     ];
   });
   await closePopout('transfers');
@@ -2780,7 +2842,7 @@ await step('running-tasks', async () => {
   if (tItem) await tItem.asElement().click();
   await waitFor(() => popoutVisible('tasks'), 4000, 'tasks popout');
   const popSel = '#popout-root .popout[data-pop="tasks"]';
-  await ok('transfer jobs merged into the task list', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, popSel)).includes('video-final.mp4'), 4000, 'merged jobs'));
+  await ok('transfer jobs merged into the task list', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, popSel)).includes('video-final.mp4 +2'), 4000, 'merged jobs'));
   await ok('search task shows its label', evalPage((s) => document.querySelector(s).textContent.includes('backup*'), popSel));
   // fresh window: the finished purge/delete (and the done transfer job
   // from before) are history — only live rows show, counted in the head
@@ -2835,8 +2897,10 @@ await step('running-tasks', async () => {
   await ok('empty state when nothing runs', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, popSel)).includes('No running tasks.'), 4000, 'empty state'));
   await evalPage(() => {
     window.__shim.world.transfers = [
-      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
-      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
+      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
+        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200 },
+      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
+        name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
     ];
   });
   await closePopout('tasks');
@@ -2860,6 +2924,8 @@ await step('status-badges', async () => {
   await ok('tasks badge click opens Running tasks', true);
   await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'running', totalFiles: 3, doneFiles: 1 }));
   await waitFor(async () => evalPage(() => !document.getElementById('status-jobs').classList.contains('hidden')), 4000, 'jobs badge');
+  await ok('jobs badge names the transfer and its share', waitFor(async () => evalPage(() =>
+    /^\u21C5 Uploading video-final\.mp4 \u2014 \d+%/.test(document.getElementById('status-jobs').textContent)), 4000, 'jobs badge text'));
   await page.click('#status-jobs');
   await waitFor(() => popoutVisible('transfers'), 4000, 'transfers popout');
   await ok('jobs badge click opens File transfers', true);
@@ -3017,7 +3083,7 @@ await step('popout-auto-height', async () => {
   await seed(6);
   await waitFor(() => trRows(6), 4000, 'six rows');
   const d2 = await geo();
-  await ok('height shrinks back to the content', d2.h > 320 && d2.h < 730 && d2.over === 0);
+  await ok('height shrinks back to the content', d2.h > 320 && d2.h < 740 && d2.over === 0 && d2.h < d1.h);
 
   // a manual height resize takes over: the window stops tracking
   await popDrag('transfers', 0, -80, 'grip');
@@ -3028,13 +3094,14 @@ await step('popout-auto-height', async () => {
   const d3 = await geo();
   await ok('manual height wins over content growth', Math.abs(d3.h - manual) <= 3 && d3.over > 0);
 
-  // ...and the resize never exceeds the space the content fills — with
-  // less content than the floor, the floor (300) is the ceiling too
+  // ...and the resize never exceeds the space the content fills — two
+  // full-info rows are their own ceiling now (the +400 drag lands back
+  // at the content, well under the manual height it left behind)
   await seed(2);
   await waitFor(() => trRows(2), 4000, 'two rows');
   await popDrag('transfers', 0, 400, 'grip');
   const d4 = await geo();
-  await ok('resize cannot exceed the content space', d4.h <= 303 && d4.over === 0);
+  await ok('resize cannot exceed the content space', d4.h > 300 && d4.h < 400 && d4.over === 0 && d4.h < manual);
   await popDrag('transfers', 0, -400, 'grip');
   await ok('minimum height is 300', Math.abs((await geo()).h - 300) <= 1);
 
@@ -3076,8 +3143,10 @@ await step('popout-window-views', async () => {
     if (!window.__shim) return;
     window.__shim.world.desktop = true;
     window.__shim.world.transfers = [
-      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
-      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
+      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
+        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200 },
+      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
+        name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
     ];
     window.__shim.world.tasks = [
       { id: 'task-12', kind: 'purge', label: 'purge s3://team-files/old/', status: 'done', doneUnits: 60, totalUnits: 60, startedAt: 1, endedAt: 2 },

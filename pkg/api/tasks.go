@@ -262,9 +262,15 @@ func (a *App) beginTask(kind, label string) (context.Context, func(error)) {
 func (a *App) RunningTasks() []TaskInfo {
 	out := []TaskInfo{}
 	for _, j := range a.jobs.snapshot() {
-		label := j.CurrentFile
+		label := j.Name
+		if label == "" {
+			label = j.CurrentFile
+		}
 		if label == "" {
 			label = j.ID
+		}
+		if j.Items > 1 {
+			label = fmt.Sprintf("%s +%d", label, j.Items-1)
 		}
 		out = append(out, TaskInfo{
 			ID: j.ID, Kind: j.Op, Label: label, Status: j.Status,
