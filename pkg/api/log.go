@@ -54,9 +54,9 @@ type LogSettings struct {
 // file-log scope selector options. Keep in sync with emitLog/emitLogSrc
 // call sites.
 var LogScopes = []string{
-	"admin", "app", "copy", "delete", "doctor", "download", "import",
-	"list", "mkdir", "profile", "rename", "settings", "share",
-	"sources", "transfer", "upload", "versions",
+	"admin", "app", "copy", "delete", "doctor", "download", "drag",
+	"import", "list", "mkdir", "profile", "rename", "settings",
+	"share", "sources", "transfer", "upload", "versions",
 }
 
 // GetLogSettings returns the current log-file preference.

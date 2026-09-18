@@ -3,12 +3,13 @@ package api
 import "fmt"
 
 // EventExitConfirm asks the frontend to confirm an exit that would lose
-// work (running transfers, unsaved profile changes). Payload: {reason}.
+// work (running transfers, running tasks, unsaved profile changes). Payload: {reason}.
 const EventExitConfirm = "exit:confirm"
 
 // exitBusyReason returns why the app should not exit right now, or "" for
-// a clean exit: any running transfer job, a dirty open profile file, or
-// unsaved session sources (the same states the profile bar badges).
+// a clean exit: any running transfer job, any running registry task, a
+// dirty open profile file, or unsaved session sources (the same states
+// the profile bar badges).
 func (a *App) exitBusyReason() string {
 	running := 0
 	var first JobInfo
@@ -24,6 +25,26 @@ func (a *App) exitBusyReason() string {
 		return fmt.Sprintf("%d transfer job(s) still running (e.g. %s: %d/%d file(s))",
 			running, first.Op, first.DoneFiles, first.TotalFiles)
 	}
+
+	// Registry tasks are the everything-else work: deep searches, bulk
+	// deletes, version purges, bucket emptying, class conversions, copies.
+	// 'list' rows are transient navigation (dropped on finish) and block
+	// nothing — quitting mid-listing loses no work.
+	running = 0
+	var firstTask TaskInfo
+	for _, tk := range a.tasks.snapshot() {
+		if tk.Kind == "list" || (tk.Status != TaskRunning && tk.Status != TaskQueued) {
+			continue
+		}
+		running++
+		if running == 1 {
+			firstTask = tk
+		}
+	}
+	if running > 0 {
+		return fmt.Sprintf("%d task(s) still running (e.g. %s: %s)", running, firstTask.Kind, firstTask.Label)
+	}
+
 	st := a.GetProfileFileState()
 	if st.Open && st.Dirty {
 		return fmt.Sprintf("the profile file %q has unsaved changes", st.Name)

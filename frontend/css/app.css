@@ -331,6 +331,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .sb-sep { width: 1px; height: 14px; background: var(--border); }
 .sb-jobs { color: var(--accent); cursor: pointer; }
 .sb-jobs:hover { text-decoration: underline; }
+.sb-tasks { color: var(--accent); cursor: pointer; }
+.sb-tasks:hover { text-decoration: underline; }
 .sb-log {
   font: inherit; color: var(--text-dim); background: none; border: none;
   padding: 0 2px; cursor: pointer; font-size: 12px;
@@ -518,7 +520,8 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
 /* Native popout windows (Wails v3 multi-window): the same frontend
    renders exactly one view full-bleed in its own OS window — the main
    chrome is hidden, and the OS provides move, resize, shadow and the
-   ability to leave the app window's bounds. */
+   ability to leave the app window's bounds. The in-page header goes
+   too: the OS title bar already carries the title and the close. */
 body.popout-win { overflow: hidden; }
 body.popout-win #app { display: none; }
 body.popout-win #popout-root { pointer-events: auto; }
@@ -529,7 +532,7 @@ body.popout-win .popout {
   border: none; border-radius: 0; box-shadow: none;
   animation: none;
 }
-body.popout-win .popout .modal-head { cursor: default; }
+body.popout-win .popout .modal-head { display: none; }
 body.popout-win .pop-grip { display: none; }
 
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; font-size: 12.5px; }
@@ -550,6 +553,11 @@ body.popout-win .pop-grip { display: none; }
 .tr-job .btn { padding: 2px 10px; font-size: 12px; }
 .tr-job .tr-pct { flex: none; min-width: 36px; text-align: right; font-size: 12px; color: var(--text-dim); }
 .tm-empty { color: var(--text-dim); padding: 16px 4px; }
+/* View-history header row (transfers / running tasks): toggle + count */
+.tm-head { display: flex; align-items: center; gap: 10px; min-height: 4px; margin-bottom: 6px; }
+.tm-head:empty { display: none; }
+.tm-head .btn { padding: 2px 10px; font-size: 12px; }
+.tm-head-n { font-size: 12px; color: var(--text-dim); }
 
 /* Conflict dialog: per-file source-vs-destination decisions */
 .modal.cf-modal { min-width: min(780px, 94vw); max-width: min(1000px, 96vw); }

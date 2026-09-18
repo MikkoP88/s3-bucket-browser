@@ -8,6 +8,62 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Transfers window opens itself — and closes itself, carefully.**
+  With Settings → File transfers → *Transfer window auto open/close*
+  (on by default) the File transfers window floats the moment a
+  transfer starts, so progress is always visible without a click. The
+  automatic close is guarded four ways: only a window the app opened
+  itself closes (any manual open — View menu, status bar — locks it
+  open), a failed or canceled job keeps it on screen for the
+  post-mortem (per-file failures count as not-successful too), and with
+  simultaneous transfers only the **last** running job's completion
+  closes it. A clean, all-done batch is the only thing that does.
+- **Status-bar ⚙ indicator always shows the active-task count.** The
+  ⚙ badge beside the transfers counter now always displays how many
+  tasks are currently running (e.g. "⚙ 2 tasks — search 3/10"), not
+  just when there are two or more. Clicking it opens — or focuses —
+  the Running tasks window.
+- **Quit guard warns about running tasks too.** The confirm dialog
+  that already fires for running transfers and unsaved profile work
+  now also fires when non-transfer tasks are running (deep searches,
+  bulk deletes, version purges, bucket emptying, storage-class
+  conversions, copies). It states the count and an example task;
+  transient directory listings do not trigger it.
+- **Popouts remember where you left them — for the session.** A
+  floating window reopens at its last dragged position and last
+  resized size, every time, until the app closes: native popout
+  windows keep an in-process rect snapshot (nothing on disk), in-page
+  popouts keep a session store that the next launch wipes. The
+  *Popout windows open centered on* setting is a preference, not
+  geometry, and survives.
+- **Running tasks — one window watches (and kills) every action.**
+  View → Running tasks opens a floating monitor modeled on the File
+  transfers manager, but listing *everything* the app is doing: transfer
+  jobs, deep searches, bulk deletes and version purges, bucket
+  emptying, storage-class conversions and server-side copies — each
+  with status, progress counts and a **Cancel** button. Anything that
+  hangs or runs too long can be stopped; destructive tasks are
+  count-then-act, so canceling during the counting phase destroys
+  nothing. To make that meaningful, the bulk engine operations (delete
+  selection and its version variants, `PurgeVersions`,
+  empty-bucket, storage-class conversion, selection copy) now run as
+  tracked, cancellable tasks instead of invisible 30-second-bounded
+  calls — a batch that used to fail on a big prefix now runs to
+  completion or is killed from the window. Deep searches appear under
+  their token (the search window's own cancel and the task list agree
+  on one ID); listing streams show only while running. New bindings
+  `RunningTasks`/`CancelTask`/`ClearFinishedTasks`; UI strings in all
+  15 languages.
+- **Popout windows open on the app's display (multi-monitor support).**
+  Native popout windows now open centered on the display that carries
+  the app's main window — inside that display's work area, so the
+  taskbar/dock never eats them and the popout follows the app onto
+  whatever monitor it lives on (previously every popout centered on
+  the app window's own rect). The original behavior stays available:
+  Settings → View → *Popout windows open centered on* picks "The
+  display the app is on" (default) or "The app window" — translated in
+  all 15 languages. In-page popouts (harness, browser and server
+  builds) are bounded by the app window either way and are unaffected.
 - **Drag out of the window as real files — plain drag, nothing to hold.**
   Dragging a files-only selection (S3 objects or a remote/local listing)
   out of the app window onto Explorer, Finder or the desktop now hands
@@ -52,9 +108,31 @@ follow [Semantic Versioning](https://semver.org/).
   filter is set, lines with no source stay out, exactly like the
   drawer's rule. The line's source now also lands in `events.jsonl`
   (and thus in `s3b log` output), where it was previously dropped.
+- **Transfers and tasks windows show what happened *since you looked*.**
+  A freshly opened File transfers or Running tasks window keeps rows
+  that finished before the open behind a *Show history* toggle (with a
+  count of the hidden rows) — the window answers "what is running
+  right now" instead of an all-day backlog, and one click brings the
+  whole story back. The toggle is always there while anything finished
+  exists: *Hide history* collapses every finished row on demand — the
+  ones that finished inside the open view included — leaving just the
+  live work. Translated in all 15 languages.
 
 ### Changed
 
+- **"Clear finished" is now "Clear" — and clears only what you see.**
+  Both windows' button lost the qualifier and gained scope: it removes
+  the finished rows currently visible (every finished row once
+  history is shown), while rows hidden as history — pre-open or
+  collapsed with *Hide history* — and any
+  running work are untouched. The backend bindings take an explicit
+  id list (`ClearFinishedTransfers`/`ClearFinishedTasks`); a null
+  list keeps the classic clear-all behavior for other callers.
+- **The Transfers feature is now called "File transfers".** The View menu
+  item, the manager window's title and the Settings section all carry the
+  clearer name — translated in all 15 languages; the in-app guide (F1),
+  the usage docs and the visual harness follow. A rename of the label
+  only: same manager, same engine, same shortcuts.
 - **Wails v2 → v3 (v3.0.0-beta.23) — same frontend, native popout
   windows.** The unmodified frontend now runs on the v3 runtime in the
   desktop webview or over plain HTTP: a small bridge restores the v2
@@ -104,6 +182,55 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Drag out of the window killed the webview — nothing ever dropped.**
+  The OLE `DoDragDrop` modal loop must run on the app's UI thread, the
+  one that owns the windows and pumps their messages; the drag-out
+  binding ran it on a plain worker goroutine, and inside the loop
+  WebView2 hit an invalid-state call (`resyncWebviewRasterizationScale`)
+  that took the whole GUI down mid-gesture — the drag cursor moved, the
+  webview died, no drop could ever arrive. The gesture now marshals onto
+  the main thread through a new desktop-shell hook
+  (`InvokeMain` → Wails' `InvokeSyncWithError`), with a dedicated STA
+  thread as the fallback when no desktop shell is installed
+  (server/headless builds and unit tests). Proven live by a purpose-built
+  rig (`scripts/drag-live.mjs` + `tools/dragprobe`, a real Win32 drop
+  target driven by synthetic input against the real app): the gesture
+  floats on the UI thread, negotiates DragEnter/DragOver with a copy
+  effect on a real external target, returns `DRAGDROP_S_DROP` on
+  release, and its delay-rendered CF_HDROP payload — pulled at
+  DragLeave, byte-identical to the GetData a real target's Drop makes —
+  hashes to exactly the staged objects. The rig also pinned a machine
+  property worth recording: on this Windows build ole32 never dispatches
+  the final `IDropTarget::Drop` for any injected (SendInput) release —
+  verified against WebView2's own registered target — so that last
+  dispatch is validated by the S_DROP return and the payload pull, and
+  needs a hardware drag to observe directly.
+- **Native popout windows showed a duplicate header and close icon.**
+  A view floating as a real OS window (File transfers, Running tasks,
+  Doctor, the guide, …) carried the OS title bar *and* the in-page
+  header strip with a second ×. When a view renders as a native
+  popout the in-page header is now hidden — one title, one close —
+  and the view's content starts at the top edge.
+- **Drag out of the window dropped nothing.** The OLE drag's two
+  success codes (`DRAGDROP_S_DROP` / `DRAGDROP_S_CANCEL`) were
+  swapped, so every mouse release read as a cancel and no drop ever
+  delivered — the drag cursor moved, the files never arrived. The
+  drop target's pre-release data probes could also block on staging
+  while the button was still held. Both are fixed, the HRESULT
+  values are pinned by a regression test, and dragging rows out
+  drops real files again.
+- **Finished jobs no longer read 0%.** Jobs with no byte totals
+  (server-side copies) and tasks with no unit totals (a bulk delete
+  whose counting phase was skipped) showed "Done — 0%": progress now
+  falls back through the file/unit counts to a finished 100%, and
+  error-status transfer jobs sort and badge as failures again.
+- **Status-bar badge clicks reliably open their window.** A native
+  popout that failed to materialize — or died without a close event —
+  left the badge click doing nothing. Opens are now verified through
+  a new `PopoutOpen` binding: a stale bookkeeping flag heals by
+  focusing or reopening, and a genuinely broken native path falls
+  back to the in-app popout for the session (with a notice) instead
+  of failing silently.
 - **"Require typing 'delete'" is now honored by every typed-`delete`
   guard.** Two flows demanded the typed word even with the setting
   disabled: the Versions window's per-version **Destroy** always opened

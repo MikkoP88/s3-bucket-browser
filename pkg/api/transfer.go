@@ -142,15 +142,27 @@ func (m *jobManager) snapshot() []JobInfo {
 	return out
 }
 
-func (m *jobManager) clearFinished() {
+// clearFinished retires finished jobs: every one when ids is nil (the
+// classic "clear all finished"), otherwise only the named ones — and
+// only if they really are finished. The transfer window passes the ids
+// it can actually see, so rows hidden as pre-open history survive.
+func (m *jobManager) clearFinished(ids []string) {
+	var only map[string]bool
+	if ids != nil {
+		only = make(map[string]bool, len(ids))
+		for _, id := range ids {
+			only[id] = true
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	kept := m.all[:0]
 	for _, j := range m.all {
 		j.mu.Lock()
 		running := j.info.Status == JobRunning
+		id := j.info.ID
 		j.mu.Unlock()
-		if running {
+		if running || (only != nil && !only[id]) {
 			kept = append(kept, j)
 		}
 	}
@@ -216,8 +228,10 @@ func (j *jobHandle) fileDone(size int64, failed bool) {
 // ActiveTransfers lists all jobs (running and finished) for the manager view.
 func (a *App) ActiveTransfers() []JobInfo { return a.jobs.snapshot() }
 
-// ClearFinishedTransfers removes done/error/canceled jobs from the list.
-func (a *App) ClearFinishedTransfers() { a.jobs.clearFinished() }
+// ClearFinishedTransfers removes done/error/canceled jobs from the list:
+// all of them when ids is null, otherwise only the named ones (running
+// jobs are never touched).
+func (a *App) ClearFinishedTransfers(ids []string) { a.jobs.clearFinished(ids) }
 
 // CancelTransfer cancels a running job by ID.
 func (a *App) CancelTransfer(id string) bool { return a.jobs.cancel(id) }

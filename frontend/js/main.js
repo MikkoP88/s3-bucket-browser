@@ -5,7 +5,7 @@ import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS } from './grid.js';
 import { Tree } from './tree.js';
 import {
-  confirm, prompt, properties, doctorDialog, transferManager,
+  confirm, prompt, properties, doctorDialog, transferManager, runningTasks,
   sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
@@ -99,6 +99,14 @@ async function boot() {
     document.body.classList.add('popout-win');
     renderPopoutView(popoutQS.get('popout'), popoutQS);
     return;
+  }
+  // Popout geometry is session state: a window reopens at its last
+  // position/size until the app closes, and the next launch starts
+  // fresh — wipe the leftovers a previous run persisted (the placement
+  // choice is a setting and survives). Popout windows never get here,
+  // so a floating view can't erase the session it lives in.
+  for (const k of Object.keys(localStorage)) {
+    if (k.startsWith('s3b-popout-') && k !== 's3b-popout-center') localStorage.removeItem(k);
   }
   applyColumnPrefs();
   $('status-version').textContent = `s3b v${await api.GetVersion()}`;
@@ -2108,7 +2116,7 @@ async function deleteBucket(bucket) {
 //   - every in-app copy/cut re-adopts the current seq as the baseline, and
 //     our own mirrors (OsClipboardSetFiles) re-adopt after writing, so the
 //     app's payload keeps precedence until someone copies elsewhere.
-// Settings → Transfers can disable the whole bridge (locked-down machines).
+// Settings → File transfers can disable the whole bridge (locked-down machines).
 const explorerClipOn = () => localStorage.getItem('s3b-os-clip') !== '0';
 let osClipBaseline = -1; // seq as of our last own clipboard interaction
 let osClipFilesReady = false; // OS clipboard holds files right now (menus)
@@ -2525,7 +2533,7 @@ async function copyS3Selection(origin, dest, move, plain) {
       try {
         await api.CopySelectionVersions(origin.source || '', origin.bucket, origin.keys,
           dest.source || '', dest.bucket, dest.dir || '', move);
-        toast(`${move ? 'Moving' : 'Copying'} version history — see Transfers`, 'ok');
+        toast(`${move ? 'Moving' : 'Copying'} version history — see File transfers`, 'ok');
         return 'versioned';
       } catch (err) {
         toast(`Versioned ${move ? 'move' : 'copy'} failed: ${err}`, 'error');
@@ -3183,6 +3191,8 @@ async function openSettings() {
       delTypeConfirm: delTypedOn,
       delAutoConfirm: delAutoConfirm,
       explorerClip: () => localStorage.getItem('s3b-os-clip') !== '0',
+      xferWin: () => localStorage.getItem('s3b-xfer-window') !== '0',
+      popoutCenter: () => (localStorage.getItem('s3b-popout-center') === 'app' ? 'app' : 'display'),
     },
     apply: {
       theme: (v) => { document.documentElement.dataset.theme = v; localStorage.setItem('s3b-theme', v); },
@@ -3212,6 +3222,12 @@ async function openSettings() {
         if (v) refreshOsClip(); else { osClipFilesReady = false; }
         updateCommandState();
       },
+      // Read fresh on every transfer-start decision (dialogs.js) — no
+      // other consumer needs notifying.
+      xferWin: (v) => localStorage.setItem('s3b-xfer-window', v ? '1' : '0'),
+      // Read fresh on every native popout open (dialogs.js) — no other
+      // consumer needs notifying.
+      popoutCenter: (v) => localStorage.setItem('s3b-popout-center', v === 'app' ? 'app' : 'display'),
     },
     log: {
       get: () => logSet,
@@ -3317,6 +3333,7 @@ function mountMenubar() {
         { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
         { label: t('menu.log'), kbd: 'Ctrl+L', action: toggleLogArea },
         { label: t('menu.transfers'), action: () => transferManager() },
+        { label: t('menu.tasks'), action: () => runningTasks() },
         { label: t('menu.filter'), kbd: 'Ctrl+F', action: () => { $('filter').focus(); $('filter').select(); } },
         null,
         {
@@ -3668,9 +3685,13 @@ function wireEvents() {
   $('status-editing').onclick = () => editingDialog(updateEditingStatus);
   $('status-log').onclick = toggleLogArea;
   // The status-bar jobs indicator opens the transfer manager (the toolbar
-  // Transfers button is gone; View menu carries it too).
+  // transfers button is gone; the View menu carries it too); the tasks
+  // indicator beside it opens the everything-monitor.
   $('status-jobs').title = 'Open the transfer manager';
   $('status-jobs').onclick = () => transferManager();
+  $('status-tasks').title = 'Open the running tasks window';
+  $('status-tasks').onclick = () => runningTasks();
+  onEvent('tasks:update', showTasksBadge);
   window.addEventListener('focus', updateEditingStatus);
   window.addEventListener('focus', () => {
     if (refreshOnFocus && !autoRefreshBlocked()) refreshCurrent(true);
@@ -3689,6 +3710,26 @@ function showTransfersBadge() {
       sb.classList.remove('hidden');
       const j = running[0];
       sb.textContent = `\u21C5 ${running.length > 1 ? `${running.length} jobs — ` : ''}${j.doneFiles}/${j.totalFiles} ${j.currentFile ? basename(j.currentFile) : ''} ${fmtBytes(j.sentBytes)}${j.totalBytes ? '/' + fmtBytes(j.totalBytes) : ''}`;
+    } else {
+      sb.classList.add('hidden');
+    }
+  });
+}
+
+// showTasksBadge mirrors the jobs indicator for the everything-monitor:
+// non-transfer tasks only (transfers have their own badge, directory
+// listings are transient navigation noise), click opens Running tasks;
+// the active-task count is always shown.
+function showTasksBadge() {
+  api.RunningTasks().then((tasks) => {
+    const live = tasks.filter((x) => (x.status === 'running' || x.status === 'queued')
+      && !['upload', 'download', 'transfer', 'list'].includes(x.kind));
+    const sb = $('status-tasks');
+    if (live.length) {
+      sb.classList.remove('hidden');
+      const x = live[0];
+      const counts = x.totalUnits ? ` ${x.doneUnits}/${x.totalUnits}` : '';
+      sb.textContent = `\u2699 ${live.length} ${live.length === 1 ? 'task' : 'tasks'} — ${x.kind}${counts}`;
     } else {
       sb.classList.add('hidden');
     }

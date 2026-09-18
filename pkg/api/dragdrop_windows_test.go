@@ -34,6 +34,18 @@ func TestHdropBytesLayout(t *testing.T) {
 	}
 }
 
+// The DRAGDROP_S_* codes are success HRESULTs DoDragDrop distinguishes by
+// exact value — swapping them turns every button release into a cancel and
+// no drop ever delivers, so pin the winerror.h values here.
+func TestDragDropHresultValues(t *testing.T) {
+	if dragdropSCancel != 0x00040100 {
+		t.Fatalf("DRAGDROP_S_CANCEL = 0x%08x, want 0x00040100", uint32(dragdropSCancel))
+	}
+	if dragdropSDrop != 0x00040101 {
+		t.Fatalf("DRAGDROP_S_DROP = 0x%08x, want 0x00040101", uint32(dragdropSDrop))
+	}
+}
+
 func TestFeMatchesHDROP(t *testing.T) {
 	ok := formatEtc{cfFormat: cfHDROP, dwAspect: dvaspectContent, tymed: tymedHGlobal, lindex: -1}
 	if !feMatchesHDROP(&ok) {

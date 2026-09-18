@@ -95,14 +95,16 @@ func (a *App) PurgePreview(bucket, prefix, mode string) (int, error) {
 }
 
 // PurgeVersions removes versions/markers under a prefix (L2/L3 in the GUI;
-// force mirrors `--force` on the CLI).
-func (a *App) PurgeVersions(bucket, prefix, mode string, force bool) (transfer.DeleteResult, error) {
+// force mirrors `--force` on the CLI). Runs as a tracked task — a purge
+// too big for the quick-op bound stays visible and cancelable.
+func (a *App) PurgeVersions(bucket, prefix, mode string, force bool) (res transfer.DeleteResult, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
 	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
+	task := a.tasks.add("purge", fmt.Sprintf("s3://%s/%s — purge %s versions", bucket, dirPrefix(prefix), mode))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
 	n, err := versioning.CountPurge(ctx, c.S3, bucket, dirPrefix(prefix), versioning.PurgeMode(mode))
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -111,7 +113,9 @@ func (a *App) PurgeVersions(bucket, prefix, mode string, force bool) (transfer.D
 		return transfer.DeleteResult{}, fmt.Errorf(
 			"%d version(s) would be removed — typed confirmation (force) required", n)
 	}
-	res, err := versioning.Purge(ctx, c.S3, bucket, dirPrefix(prefix), versioning.PurgeMode(mode))
+	task.setTotal(n, fmt.Sprintf("s3://%s/%s — purging %d %s version(s)", bucket, dirPrefix(prefix), n, mode))
+	res, err = versioning.Purge(ctx, c.S3, bucket, dirPrefix(prefix), versioning.PurgeMode(mode))
+	task.progress(res.Deleted)
 	if err != nil {
 		a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("purging %s versions under %s failed: %v", mode, dirPrefix(prefix), err))
 	} else if res.Deleted > 0 {
@@ -251,27 +255,31 @@ func (a *App) SourceDeleteSelectionPermanent(idOrName, bucket string, keys []str
 	return a.deleteSelectionPermanentC(c, bucket, keys, force)
 }
 
-func (a *App) deleteSelectionPermanentC(c *s3client.Client, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
-	ctx, cancel := a.quickCtx()
-	defer cancel()
+func (a *App) deleteSelectionPermanentC(c *s3client.Client, bucket string, keys []string, force bool) (out transfer.DeleteResult, err error) {
+	// Tracked task (Running tasks window): the count phase can walk a
+	// whole subtree — canceling there destroys nothing.
+	task := a.tasks.add("purge", fmt.Sprintf("s3://%s — destroy versions of %d item(s)", bucket, len(keys)))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
 
 	total := 0
 	for _, k := range keys {
 		n, err := a.countPermanent(ctx, c, bucket, k)
 		if err != nil {
-			return transfer.DeleteResult{}, err
+			return out, err
 		}
 		total += n
 	}
 	if total > deleteForceThreshold && !force {
-		return transfer.DeleteResult{}, fmt.Errorf(
+		return out, fmt.Errorf(
 			"%d version(s) selected — typed confirmation (force) required to delete permanently", total)
 	}
-	var out transfer.DeleteResult
+	task.setTotal(total, fmt.Sprintf("s3://%s — destroying %d version(s)/marker(s)", bucket, total))
 	for _, k := range keys {
 		res, err := a.purgePermanent(ctx, c, bucket, k)
 		out.Deleted += res.Deleted
 		out.Errors = append(out.Errors, res.Errors...)
+		task.progress(out.Deleted)
 		if err != nil {
 			a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("permanently deleting %s failed: %v", k, err))
 			return out, err
@@ -309,27 +317,31 @@ func (a *App) SourceDeleteSelectionKeepCurrent(idOrName, bucket string, keys []s
 	return a.deleteSelectionKeepCurrentC(c, bucket, keys, force)
 }
 
-func (a *App) deleteSelectionKeepCurrentC(c *s3client.Client, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
-	ctx, cancel := a.quickCtx()
-	defer cancel()
+func (a *App) deleteSelectionKeepCurrentC(c *s3client.Client, bucket string, keys []string, force bool) (out transfer.DeleteResult, err error) {
+	// Tracked task (Running tasks window) — same two-phase shape as the
+	// permanent path: cancel during counting erases nothing.
+	task := a.tasks.add("purge", fmt.Sprintf("s3://%s — clear history of %d item(s)", bucket, len(keys)))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
 
 	total := 0
 	for _, k := range keys {
 		n, err := a.countKeepCurrent(ctx, c, bucket, k)
 		if err != nil {
-			return transfer.DeleteResult{}, err
+			return out, err
 		}
 		total += n
 	}
 	if total > deleteForceThreshold && !force {
-		return transfer.DeleteResult{}, fmt.Errorf(
+		return out, fmt.Errorf(
 			"%d version(s) would be removed — typed confirmation (force) required to delete all but the current version", total)
 	}
-	var out transfer.DeleteResult
+	task.setTotal(total, fmt.Sprintf("s3://%s — removing %d noncurrent version(s)", bucket, total))
 	for _, k := range keys {
 		res, err := a.purgeKeepCurrent(ctx, c, bucket, k)
 		out.Deleted += res.Deleted
 		out.Errors = append(out.Errors, res.Errors...)
+		task.progress(out.Deleted)
 		if err != nil {
 			a.emitLogSrc(LogError, "versions", bucket, fmt.Sprintf("deleting history of %s failed: %v", k, err))
 			return out, err
@@ -393,15 +405,17 @@ func (a *App) purgePermanent(ctx context.Context, c *s3client.Client, bucket, ke
 
 // EmptyBucketAllVersions removes every version and delete marker (L2+L3 in
 // the GUI: typed bucket name + permanent warning). Used before bucket
-// removal on versioned buckets and by the "Empty bucket" tool.
-func (a *App) EmptyBucketAllVersions(bucket string) (transfer.DeleteResult, error) {
+// removal on versioned buckets and by the "Empty bucket" tool. Runs as a
+// tracked task — the one purge that can legitimately run for a long time.
+func (a *App) EmptyBucketAllVersions(bucket string) (res transfer.DeleteResult, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
 	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
-	res, err := versioning.EmptyBucketVersions(ctx, c.S3, bucket)
+	task := a.tasks.add("empty", fmt.Sprintf("s3://%s — empty bucket (all versions)", bucket))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	res, err = versioning.EmptyBucketVersions(ctx, c.S3, bucket)
 	if res.Deleted > 0 {
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	}

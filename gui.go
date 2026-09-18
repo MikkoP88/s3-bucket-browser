@@ -17,6 +17,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/api"
@@ -31,6 +33,36 @@ var frontendFS embed.FS
 // popoutPrefix namespaces the native popout window names ("popout:<id>") so
 // they can never collide with the main window.
 const popoutPrefix = "popout:"
+
+// rigBrowserArgs opens the app's WebView2 CDP port when the live drag-out
+// rig asks for it (S3B_RIG_CDP_PORT) — nil in every other run.
+func rigBrowserArgs() []string {
+	if p := os.Getenv("S3B_RIG_CDP_PORT"); p != "" {
+		return []string{"--remote-debugging-port=" + p}
+	}
+	return nil
+}
+
+// popoutRect is a native popout's last on-screen rectangle. popoutGeoms
+// remembers it per id for the session only: a reopen lands where the user
+// left the window (position AND size), and closing the app forgets
+// everything — the memory lives in the process, never on disk.
+type popoutRect struct{ x, y, w, h int }
+
+var (
+	popoutMu    sync.Mutex
+	popoutGeoms = map[string]popoutRect{}
+)
+
+// rememberPopout snapshots a popout window's rect on its way out; a
+// closing window still answers Position/Size.
+func rememberPopout(id string, w *application.WebviewWindow) {
+	x, y := w.Position()
+	ww, hh := w.Size()
+	popoutMu.Lock()
+	popoutGeoms[id] = popoutRect{x, y, ww, hh}
+	popoutMu.Unlock()
+}
 
 // lifecycle adapts the app's Startup to Wails v3's service lifecycle: Run
 // starts every service before it creates the first window, and Startup must
@@ -82,6 +114,14 @@ func Run(version string) error {
 			// runs app.Startup before the first window exists.
 			application.NewService(app),
 			application.NewService(&lifecycle{app: app}),
+		},
+		// Live-test rig hooks (scripts/drag-live.mjs): Wails' Go WebView2
+		// loader ignores the WEBVIEW2_* env vars, so CDP and profile
+		// isolation must ride the real options — set only when the rig
+		// exports these vars, never in normal use.
+		Windows: application.WindowsOptions{
+			AdditionalBrowserArgs: rigBrowserArgs(),
+			WebviewUserDataPath:   os.Getenv("S3B_RIG_WEBVIEW_PROFILE"),
 		},
 		OnShutdown: func() { app.Shutdown(context.Background()) },
 	})
@@ -236,11 +276,30 @@ func installShell(app3 *application.App, a *api.App) {
 			if geo.H > 0 {
 				opts.Height = geo.H
 			}
-			// Every popout opens centered on the app's main window —
-			// never the OS cascade — while a remembered size still
-			// shapes the window. A popout larger than the main window
+			// A rect remembered this session outranks everything: the
+			// window reopens exactly where the user left it, at the size
+			// they left it (session memory — see popoutGeoms).
+			popoutMu.Lock()
+			last, hadLast := popoutGeoms[id]
+			popoutMu.Unlock()
+			if hadLast {
+				opts.Width = last.w
+				opts.Height = last.h
+				opts.X, opts.Y = last.x, last.y
+				opts.InitialPosition = application.WindowXY
+			}
+			// Placement — never the OS cascade. The default ("display")
+			// centers the popout on the display carrying the app's main
+			// window (multi-monitor aware: the display's work area keeps
+			// the taskbar/dock out of the math, and the popout follows
+			// the app onto whatever display it lives on). "app" keeps
+			// the original behavior — centered on the main window's own
+			// rect. A screen lookup that fails falls back to the
+			// app-window rect; without a main window at all the OS
+			// places the window. A remembered size still shapes the
+			// window either way, and a popout larger than its anchor
 			// just spills around the shared center point.
-			if main, ok := app3.Window.GetByName("main"); ok {
+			if main, ok := app3.Window.GetByName("main"); ok && !hadLast {
 				w, h := opts.Width, opts.Height
 				if w <= 0 {
 					w = 640
@@ -248,16 +307,29 @@ func installShell(app3 *application.App, a *api.App) {
 				if h <= 0 {
 					h = 520
 				}
-				mx, my := main.Position()
-				mw, mh := main.Size()
-				opts.X, opts.Y = mx+(mw-w)/2, my+(mh-h)/2
+				placed := false
+				if geo.Center != "app" {
+					if scr, err := main.GetScreen(); err == nil && scr != nil {
+						wa := scr.WorkArea
+						opts.X = wa.X + (wa.Width-w)/2
+						opts.Y = wa.Y + (wa.Height-h)/2
+						placed = true
+					}
+				}
+				if !placed {
+					mx, my := main.Position()
+					mw, mh := main.Size()
+					opts.X, opts.Y = mx+(mw-w)/2, my+(mh-h)/2
+				}
 				opts.InitialPosition = application.WindowXY
 			}
 			w := app3.Window.NewWithOptions(opts)
 			// Tell the main window when a popout closes so its bookkeeping
 			// (per-id singletons, onClose callbacks) stays correct. Runs
-			// for user closes and ClosePopout alike.
+			// for user closes and ClosePopout alike — and snapshots the
+			// rect so the next open lands where this one was left.
 			w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
+				rememberPopout(id, w)
 				app3.Event.Emit(api.EventPopoutClosed, map[string]string{"id": id})
 			})
 			return true
@@ -271,6 +343,13 @@ func installShell(app3 *application.App, a *api.App) {
 			if w, ok := app3.Window.GetByName(popoutPrefix + id); ok {
 				w.Focus()
 			}
+		},
+		// The frontend's verification hook: a window id it believes open
+		// must answer true, or it falls back to the DOM popout and heals
+		// its flags (a window can die without the closing event).
+		PopoutOpen: func(id string) bool {
+			w, ok := app3.Window.GetByName(popoutPrefix + id)
+			return ok && w != nil && w.IsVisible()
 		},
 		// Screen point → main window CSS coordinates for the native
 		// drag-out: detects a gesture released over the app itself and
@@ -288,5 +367,11 @@ func installShell(app3 *application.App, a *api.App) {
 			}
 			return clientPoint(uintptr(h), sx, sy)
 		},
+		// The native drag-out's OLE modal loop must run on the thread that
+		// owns the app's windows and their message pump — the main thread.
+		// InvokeSyncWithError blocks the calling binding goroutine while
+		// the main thread runs the drag; DoDragDrop pumps messages itself,
+		// so the UI stays alive inside the gesture.
+		InvokeMain: application.InvokeSyncWithError,
 	})
 }

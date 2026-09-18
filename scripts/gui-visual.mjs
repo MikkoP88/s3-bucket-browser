@@ -393,6 +393,9 @@ function shim() {
       // failed/skipped ride the same record: the manager counts them aloud
       { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
     ],
+    // tracked non-transfer tasks (Running tasks window registry); the
+    // RunningTasks shim merges these with the transfer jobs like the backend
+    tasks: [],
     // CheckConflicts fixture — empty means a clean destination; the
     // conflict-view step seeds real collisions before uploading
     conflicts: [],
@@ -599,6 +602,33 @@ function shim() {
     }),
     RunDoctorCheck: (name) => ({ check: name, status: 'pass', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 're-run ok' }),
     ActiveTransfers: () => JSON.parse(JSON.stringify(world.transfers)),
+    // Running tasks = transfer jobs merged with the tracked-task registry
+    // (the backend's RunningTasks does the same join server-side)
+    RunningTasks: () => JSON.parse(JSON.stringify([
+      ...(world.transfers || []).map((j) => ({
+        id: j.id, kind: j.op, label: j.currentFile || j.id, status: j.status,
+        doneUnits: (j.doneFiles || 0) + (j.failedFiles || 0) + (j.skippedFiles || 0),
+        totalUnits: j.totalFiles || 0, startedAt: 0, error: j.error || '',
+      })),
+      ...(world.tasks || []),
+    ])),
+    CancelTask: (id) => {
+      world.taskCancels = [...(world.taskCancels || []), id];
+      world.tasks = (world.tasks || []).map((x) => (x.id === id && (x.status === 'running' || x.status === 'queued')
+        ? { ...x, status: 'canceled', error: 'canceled' } : x));
+      return true;
+    },
+    // Clear* mirrors the Go semantics exactly: null ids = clear every
+    // finished row, a list = only those finished rows, running work stays
+    ClearFinishedTasks: (ids) => {
+      world.tasks = (world.tasks || []).filter((x) => !((x.status !== 'running' && x.status !== 'queued') && (ids == null || ids.includes(x.id))));
+      world.transfers = (world.transfers || []).filter((x) => !(x.status !== 'running' && (ids == null || ids.includes(x.id))));
+      return {};
+    },
+    ClearFinishedTransfers: (ids) => {
+      world.transfers = (world.transfers || []).filter((x) => !(x.status !== 'running' && (ids == null || ids.includes(x.id))));
+      return {};
+    },
     // conflict pre-check (M12): whatever the step seeded, the dialog gets
     CheckConflicts: () => JSON.parse(JSON.stringify(world.conflicts || [])),
     ObjectVersions: () => JSON.parse(JSON.stringify(world.versions)),
@@ -1344,6 +1374,13 @@ await step('exit-guard', async () => {
   await ok('exit-anyway button offered', !!go);
   if (go) { await go.asElement().click(); await sleep(80); }
   await ok('exit anyway force-quits via ConfirmExit', (await findCall('ConfirmExit')) !== null);
+  // the guard also fires for non-transfer tasks (searches, purges, ...)
+  await evalPage(() => window.__emit('exit:confirm', { reason: '2 task(s) still running (e.g. purge: purging s3://b — 120 noncurrent version(s))' }));
+  await waitFor(modalVisible, 4000, 'exit confirm dialog (tasks)');
+  await ok('exit dialog states the running-tasks reason', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('task(s) still running'));
+  const cancel2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^cancel$/i.test(b.textContent.trim())) || null);
+  if (cancel2) { await cancel2.asElement().click(); await sleep(80); }
 });
 
 await step('help-guide', async () => {
@@ -1372,7 +1409,7 @@ await step('help-guide', async () => {
     }));
     await shot('guide');
     const tab = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .tabstrip .tab'))
-      .find((t) => /^transfers$/i.test(t.textContent.trim())) || null);
+      .find((t) => /^file transfers$/i.test(t.textContent.trim())) || null);
     if (tab) { await tab.asElement().click(); await sleep(80); }
     await ok('guide tab switch works', (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('multipart'));
     await closePopout('guide');
@@ -2459,27 +2496,251 @@ await step('delete-settings-modes', async () => {
 
 await step('transfers', async () => {
   await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'running', totalFiles: 3, doneFiles: 1 }));
-  // the toolbar Transfers button is gone — View menu (and the status-bar
+  // auto open/close (Settings → File transfers, default on): the first
+  // running job floats the window by itself — the menu walk below then
+  // focuses it (and locks it open, opening by hand)
+  await ok('transfer window auto-opens on the first running job', waitFor(() => popoutVisible('transfers'), 4000, 'auto-open'));
+  // the toolbar transfers button is gone — View menu (and the status-bar
   // jobs indicator) carry it
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
   await sleep(80);
   const trItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
     .find((i) => /transfers/i.test(i.textContent)) || null);
-  await ok('View→Transfers present', !!trItem);
+  await ok('View→File transfers present', !!trItem);
   if (trItem) await trItem.asElement().click();
   await waitFor(() => popoutVisible('transfers'), 4000, 'transfers popout');
-  await ok('job rendered with its current file', waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="transfers"]').textContent)).includes('video-final.mp4'), 4000, 'jobs'));
-  await ok('percent badge on every job', evalPage(() => {
-    const ps = Array.from(document.querySelectorAll('#popout-root .tr-pct'));
+  const trSel = '#popout-root .popout[data-pop="transfers"]';
+  await ok('job rendered with its current file', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, trSel)).includes('video-final.mp4'), 4000, 'jobs'));
+  // a fresh window hides the past: the finished t2 predates the open, so
+  // only the running job (the one that auto-opened this window) shows
+  // and the header offers the history behind a count
+  await ok('pre-open finished rows are history', waitFor(async () => evalPage((s) => {
+    const rows = document.querySelectorAll(`${s} .tr-job`);
+    const head = document.querySelector(`${s} .tm-head`);
+    return rows.length === 1 && /show history/i.test(head?.textContent || '') && /1 hidden/.test(head?.textContent || '');
+  }, trSel), 4000, 'history hidden'));
+  await ok('running job leads the list', evalPage((s) => document.querySelector(`${s} .tr-job`)?.classList.contains('running') === true, trSel));
+  await ok('running job offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), trSel));
+  await shotOf('transfers', trSel);
+  // Show history reveals the pre-open rows again
+  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await ok('Show history reveals the past', waitFor(async () => evalPage((s) => {
+    const rows = document.querySelectorAll(`${s} .tr-job`);
+    const head = document.querySelector(`${s} .tm-head`);
+    return rows.length === 2 && /hide history/i.test(head?.textContent || '');
+  }, trSel), 4000, 'history shown'));
+  await ok('percent badge on every job', evalPage((s) => {
+    const ps = Array.from(document.querySelectorAll(`${s} .tr-pct`));
     return ps.length === 2 && ps.every((p) => /\d+%/.test(p.textContent));
-  }));
-  await ok('running job leads the list', evalPage(() => document.querySelector('#popout-root .tr-job')?.classList.contains('running') === true));
-  await ok('failed and skipped counted aloud', evalPage(() => {
-    const t = document.querySelector('#popout-root .popout[data-pop="transfers"]').textContent;
+  }, trSel));
+  await ok('failed and skipped counted aloud', evalPage((s) => {
+    const t = document.querySelector(s).textContent;
     return /1 failed/.test(t) && /2 skipped/.test(t);
+  }, trSel));
+  // a zero-byte finished job (server-side copy shape) reads 100%, never 0%
+  await evalPage(() => {
+    window.__shim.world.transfers = [
+      ...window.__shim.world.transfers,
+      { id: 't3', op: 'transfer', status: 'done', currentFile: '', totalFiles: 4, doneFiles: 4, totalBytes: 0, sentBytes: 0, speedBps: 0 },
+    ];
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('zero-byte done job shows 100%', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="t3"]`);
+    return !!row && /^100%$/.test(row.querySelector('.tr-pct').textContent.trim());
+  }, trSel), 4000, 'pct fallback'));
+  // Hide history now collapses EVERY finished row on demand — the
+  // always-present toggle is the missing-button fix: rows that finished
+  // inside the open view hide too, not just the pre-open past
+  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await ok('Hide collapses every finished row, counted', waitFor(async () => evalPage((s) => {
+    const rows = document.querySelectorAll(`${s} .tr-job`);
+    const head = document.querySelector(`${s} .tm-head`);
+    return rows.length === 1 && /show history/i.test(head?.textContent || '') && /2 hidden/.test(head?.textContent || '');
+  }, trSel), 4000, 'hidden again'));
+  // a job finishing while history is hidden stays visible — Clear passes
+  // exactly the visible finished ids; the hidden past survives it (Go
+  // pins the same semantics)
+  await evalPage(() => {
+    window.__shim.world.transfers = [
+      ...window.__shim.world.transfers,
+      { id: 't4', op: 'download', status: 'done', currentFile: 'report-q3.pdf', totalFiles: 1, doneFiles: 1, totalBytes: 1048576, sentBytes: 1048576, speedBps: 0 },
+    ];
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('a job finishing while hidden stays visible', waitFor(async () => evalPage((s) => document.querySelectorAll(`${s} .tr-job`).length === 2 && !!document.querySelector(`${s} .tr-job[data-id="t4"]`), trSel), 4000, 't4 visible'));
+  await resetCalls();
+  await evalPage((s) => {
+    const b = Array.from(document.querySelectorAll(`${s} .modal-foot button`)).find((x) => /^clear$/i.test(x.textContent));
+    b?.click();
+  }, trSel);
+  await waitFor(async () => (await findCall('ClearFinishedTransfers')) !== null, 4000, 'ClearFinishedTransfers call');
+  const cc = await findCall('ClearFinishedTransfers');
+  await ok('Clear sends exactly the visible finished ids', cc && JSON.stringify(cc.args[0]) === '["t4"]');
+  await ok('hidden history survives Clear', evalPage(() => {
+    const ids = window.__shim.world.transfers.map((x) => x.id);
+    return !ids.includes('t4') && ids.includes('t2') && ids.includes('t3');
   }));
-  await ok('running job offers Cancel', evalPage(() => !!document.querySelector('#popout-root .tr-job.running .btn')));
-  await shotOf('transfers', '#popout-root .popout[data-pop="transfers"]');
+  // with everything visible, Clear clears all finished (null ids)
+  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await waitFor(async () => evalPage((s) => !!document.querySelector(`${s} .tr-job[data-id="t2"]`), trSel), 4000, 't2 back');
+  await resetCalls();
+  await evalPage((s) => {
+    const b = Array.from(document.querySelectorAll(`${s} .modal-foot button`)).find((x) => /^clear$/i.test(x.textContent));
+    b?.click();
+  }, trSel);
+  const c2 = await waitFor(async () => findCall('ClearFinishedTransfers'), 4000, 'second clear');
+  await ok('Clear with history shown sends null (clear all)', c2 && c2.args[0] === null);
+  await ok('every finished row cleared', waitFor(async () => evalPage((s) => document.querySelectorAll(`${s} .tr-job`).length === 1, trSel), 4000, 'only running left'));
+  // live work only: no finished rows anywhere, no toggle at all
+  await ok('no toggle while only running work exists', evalPage((s) => document.querySelector(`${s} .tm-head`).children.length === 0, trSel));
+  // the missing-button case itself: a job finishing INSIDE the open view
+  // brings the toggle with it (Hide history), and Hide collapses it
+  await evalPage(() => {
+    window.__shim.world.transfers = [
+      { ...window.__shim.world.transfers[0], status: 'done', sentBytes: 224975891 },
+    ];
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('a job finishing in view brings the toggle', waitFor(async () => evalPage((s) => {
+    const rows = document.querySelectorAll(`${s} .tr-job`);
+    const head = document.querySelector(`${s} .tm-head`);
+    return rows.length === 1 && /hide history/i.test(head?.textContent || '') && !/hidden/.test(head?.textContent || '');
+  }, trSel), 4000, 'toggle appears'));
+  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await ok('Hide collapses the in-view finish too', waitFor(async () => evalPage((s) => {
+    const rows = document.querySelectorAll(`${s} .tr-job`);
+    const head = document.querySelector(`${s} .tm-head`);
+    return rows.length === 0 && /show history/i.test(head?.textContent || '') && /1 hidden/.test(head?.textContent || '');
+  }, trSel), 4000, 'collapsed'));
+  // restore the default seeds for the steps that follow
+  await evalPage(() => {
+    window.__shim.world.transfers = [
+      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
+      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
+    ];
+  });
+  await closePopout('transfers');
+});
+
+await step('running-tasks', async () => {
+  // the everything-monitor: a tracked deep search and two finished
+  // chores ride beside the transfer jobs in one merged, cancelable list
+  await evalPage(() => {
+    window.__shim.world.tasks = [
+      { id: 'task-7', kind: 'search', label: '"backup*" — s3://team-files/', status: 'running', doneUnits: 2, totalUnits: 0, startedAt: 1 },
+      { id: 'task-8', kind: 'purge', label: 's3://team-files/old/ — purging 60 noncurrent version(s)', status: 'done', doneUnits: 60, totalUnits: 60, startedAt: 1, endedAt: 2 },
+      // done with unknown totals (bulk delete after its count phase was
+      // skipped): the bar must read 100%, never 0%
+      { id: 'task-11', kind: 'delete', label: 'bulk delete — s3://team-files/tmp/', status: 'done', doneUnits: 0, totalUnits: 0, startedAt: 1, endedAt: 2 },
+    ];
+  });
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  const tItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /running tasks/i.test(i.textContent)) || null);
+  await ok('View→Running tasks present', !!tItem);
+  if (tItem) await tItem.asElement().click();
+  await waitFor(() => popoutVisible('tasks'), 4000, 'tasks popout');
+  const popSel = '#popout-root .popout[data-pop="tasks"]';
+  await ok('transfer jobs merged into the task list', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, popSel)).includes('video-final.mp4'), 4000, 'merged jobs'));
+  await ok('search task shows its label', evalPage((s) => document.querySelector(s).textContent.includes('backup*'), popSel));
+  // fresh window: the finished purge/delete (and the done transfer job
+  // from before) are history — only live rows show, counted in the head
+  await ok('pre-open finished rows are history', waitFor(async () => evalPage((s) => {
+    const rows = document.querySelectorAll(`${s} .tr-job`);
+    const head = document.querySelector(`${s} .tm-head`);
+    return rows.length === 2 && /3 hidden/.test(head?.textContent || '');
+  }, popSel), 4000, 'history hidden'));
+  await ok('running task offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), popSel));
+  await shotOf('running-tasks', popSel);
+  // Show history: the finished rows reappear, the totals-less done task
+  // reads 100%
+  await evalPage((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, popSel);
+  await ok('done purge shows its counts', waitFor(async () => evalPage((s) => {
+    const t = document.querySelector(s).textContent;
+    return /done/.test(t) && /60 \/ 60/.test(t);
+  }, popSel), 4000, 'counts'));
+  await ok('done task with unknown totals reads 100%', evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="task-11"]`);
+    return !!row && /^100%$/.test(row.querySelector('.tr-pct').textContent.trim());
+  }, popSel));
+  // cancel dispatches with the row's id — target the search task (the
+  // upload job is also running and sorts first)
+  await evalPage((s) => {
+    const row = Array.from(document.querySelectorAll(`${s} .tr-job.running`)).find((r) => r.textContent.includes('backup*'));
+    row?.querySelector('.btn')?.click();
+  }, popSel);
+  await waitFor(async () => (await findCall('CancelTask')) !== null, 4000, 'CancelTask call');
+  const cc = await findCall('CancelTask');
+  await ok('cancel carries the task id', cc && cc.args[0] === 'task-7');
+  // Clear with history shown retires every finished row (null ids);
+  // the running upload job stays
+  await resetCalls();
+  await evalPage((s) => {
+    const b = Array.from(document.querySelectorAll(`${s} .modal-foot button`)).find((x) => /^clear$/i.test(x.textContent));
+    b?.click();
+  }, popSel);
+  await waitFor(async () => (await findCall('ClearFinishedTasks')) !== null, 4000, 'ClearFinishedTasks call');
+  const cl = await findCall('ClearFinishedTasks');
+  await ok('Clear with history shown sends null (clear all)', cl && cl.args[0] === null);
+  await ok('clear prunes done rows', waitFor(async () => !(await evalPage((s) => document.querySelector(s).textContent.includes('purging 60'), popSel)), 4000, 'pruned'));
+  // empty state once nothing runs — then restore the default seeds for
+  // the steps that follow
+  await evalPage(() => {
+    window.__shim.world.tasks = [];
+    window.__shim.world.transfers = [];
+  });
+  await evalPage((s) => {
+    const b = Array.from(document.querySelectorAll(`${s} .modal-foot button`)).find((x) => /^clear$/i.test(x.textContent));
+    b?.click();
+  }, popSel);
+  await ok('empty state when nothing runs', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, popSel)).includes('No running tasks.'), 4000, 'empty state'));
+  await evalPage(() => {
+    window.__shim.world.transfers = [
+      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
+      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
+    ];
+  });
+  await closePopout('tasks');
+});
+
+await step('status-badges', async () => {
+  // the ⚙ indicator mirrors the jobs badge: running non-transfer tasks
+  // surface in the status bar and click through to Running tasks; the
+  // ⇅ jobs badge clicks through to File transfers
+  await evalPage(() => {
+    window.__shim.world.tasks = [
+      { id: 'task-9', kind: 'search', label: '"log*" — s3://team-files/', status: 'running', doneUnits: 3, totalUnits: 0, startedAt: 1 },
+    ];
+  });
+  await evalPage(() => window.__shim.emit('tasks:update', {}));
+  await ok('tasks badge appears while a task runs', waitFor(async () => evalPage(() => !document.getElementById('status-tasks').classList.contains('hidden')), 4000, 'badge shown'));
+  await ok('badge names the running kind', waitFor(async () => evalPage(() => /search/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge text'));
+  await ok('badge always counts active tasks (one)', waitFor(async () => evalPage(() => /1 task\b/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge count 1'));
+  await page.click('#status-tasks');
+  await waitFor(() => popoutVisible('tasks'), 4000, 'tasks popout');
+  await ok('tasks badge click opens Running tasks', true);
+  await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'running', totalFiles: 3, doneFiles: 1 }));
+  await waitFor(async () => evalPage(() => !document.getElementById('status-jobs').classList.contains('hidden')), 4000, 'jobs badge');
+  await page.click('#status-jobs');
+  await waitFor(() => popoutVisible('transfers'), 4000, 'transfers popout');
+  await ok('jobs badge click opens File transfers', true);
+  // the counter always shows the total across simultaneous tasks
+  await evalPage(() => {
+    window.__shim.world.tasks = [
+      { id: 'task-9', kind: 'search', label: '"log*" — s3://team-files/', status: 'running', doneUnits: 3, totalUnits: 0, startedAt: 1 },
+      { id: 'task-10', kind: 'purge', label: 'purge s3://b', status: 'running', doneUnits: 0, totalUnits: 40, startedAt: 2 },
+    ];
+  });
+  await evalPage(() => window.__shim.emit('tasks:update', {}));
+  await ok('counter totals simultaneous tasks', waitFor(async () => evalPage(() => /2 tasks\b/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge count 2'));
+  // transfers never light the tasks badge (they own the ⇅ one) and the
+  // badge hides again when nothing runs
+  await evalPage(() => { window.__shim.world.tasks = []; });
+  await evalPage(() => window.__shim.emit('tasks:update', {}));
+  await ok('tasks badge hides when nothing runs', waitFor(async () => evalPage(() => document.getElementById('status-tasks').classList.contains('hidden')), 4000, 'badge hidden'));
+  await closePopout('tasks');
   await closePopout('transfers');
 });
 
@@ -2565,6 +2826,74 @@ await step('popouts', async () => {
   await page.keyboard.press('Escape');
   await sleep(80);
   await ok('second Escape clears the rest', evalPage(() => document.querySelectorAll('#popout-root .popout').length === 0));
+});
+
+await step('popout-window-views', async () => {
+  // A native popout window is its own webview at /?popout=<kind>: the
+  // same view code renders full-bleed (body.popout-win) while the OS
+  // window itself carries the title bar, move and close. Reproduced
+  // here with shim pages — the wails stub + desktop world make the
+  // module take the real branch (maybeNativePopout declines inside a
+  // popout-win). The contract: one view per window, app chrome gone,
+  // NO duplicate in-page header — and the session history (finished
+  // past behind Show history) works in the window too.
+  const seedPast = () => {
+    window.wails = { Call: { ByName: () => Promise.resolve() }, Events: { On: () => () => {} } };
+    if (!window.__shim) return;
+    window.__shim.world.desktop = true;
+    window.__shim.world.transfers = [
+      { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608 },
+      { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0 },
+    ];
+    window.__shim.world.tasks = [
+      { id: 'task-12', kind: 'purge', label: 'purge s3://team-files/old/', status: 'done', doneUnits: 60, totalUnits: 60, startedAt: 1, endedAt: 2 },
+    ];
+  };
+  const pw = await context.newPage();
+  pw.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await pw.addInitScript(shim);
+  await pw.addInitScript(seedPast);
+  await pw.goto(BASE + '?popout=transfers');
+  const trSel = '#popout-root .popout[data-pop="transfers"]';
+  await pw.waitForFunction((s) => !!document.querySelector(`${s} .tr-job`), trSel, { timeout: 8000 });
+  await ok('window renders one view, app chrome gone', await pw.evaluate((s) =>
+    document.body.classList.contains('popout-win')
+    && document.getElementById('app').offsetParent === null
+    && !!document.querySelector(s), trSel));
+  // the OS window carries the title bar: the in-page header must not
+  // duplicate it — no double header, no second close icon
+  await ok('no duplicate in-page header', await pw.evaluate((s) =>
+    document.querySelector(`${s} .modal-head`).offsetParent === null, trSel));
+  await ok('finished past is history in the window', await pw.evaluate((s) => {
+    const rows = document.querySelectorAll(`${s} .tr-job`);
+    const head = document.querySelector(`${s} .tm-head`);
+    return rows.length === 1 && /show history/i.test(head?.textContent || '') && /1 hidden/.test(head?.textContent || '');
+  }, trSel));
+  await pw.evaluate((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, trSel);
+  await pw.waitForFunction((s) => document.querySelectorAll(`${s} .tr-job`).length === 2, trSel, { timeout: 4000 });
+  await ok('Show history reveals the past in the window', true);
+  await pw.screenshot({ path: 'testartifacts/gui/popout-win-transfers.png' });
+  await pw.close();
+  // the tasks window: same contract over the merged list (t2 done +
+  // task-12 done hide; the running upload stays)
+  const pt = await context.newPage();
+  pt.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await pt.addInitScript(shim);
+  await pt.addInitScript(seedPast);
+  await pt.goto(BASE + '?popout=tasks');
+  const tkSel = '#popout-root .popout[data-pop="tasks"]';
+  await pt.waitForFunction((s) => !!document.querySelector(`${s} .tr-job`), tkSel, { timeout: 8000 });
+  await ok('tasks window: one running row, 2 hidden', await pt.evaluate((s) => {
+    const rows = document.querySelectorAll(`${s} .tr-job`);
+    const head = document.querySelector(`${s} .tm-head`);
+    return rows.length === 1 && /2 hidden/.test(head?.textContent || '');
+  }, tkSel));
+  await ok('tasks window: no duplicate header', await pt.evaluate((s) =>
+    document.querySelector(`${s} .modal-head`).offsetParent === null, tkSel));
+  await pt.evaluate((s) => { document.querySelector(`${s} .tm-head .btn`)?.click(); }, tkSel);
+  await pt.waitForFunction((s) => document.querySelectorAll(`${s} .tr-job`).length === 3, tkSel, { timeout: 4000 });
+  await ok('tasks window: history reveals the merged past', true);
+  await pt.close();
 });
 
 await step('dual-pane', async () => {
@@ -3506,7 +3835,7 @@ await step('os-copy-mirror-abort', async () => {
 });
 
 await step('os-clipboard-setting', async () => {
-  // Settings → Transfers → Explorer copy & paste: OFF kills the whole OS
+  // Settings → File transfers → Explorer copy & paste: OFF kills the whole OS
   // bridge (no reads, no writes, honest "Nothing to paste"); default is ON.
   const p6 = await context.newPage();
   p6.on('pageerror', (e) => { pageErrors.push(String(e)); });
@@ -3554,6 +3883,159 @@ await step('os-clipboard-setting', async () => {
   await ok('re-enabled: Explorer paste works again', up && /secret\.txt$/.test(up.args[0][0]));
   await p6.evaluate(() => localStorage.removeItem('s3b-os-clip')); // leave clean for later pages
   await p6.close();
+});
+
+await step('popout-center-setting', async () => {
+  // Settings → View → "Popout windows open centered on": display (the
+  // multi-monitor default — the monitor the app is on) or app window.
+  // Native popouts only; the choice reaches the backend as spec.center
+  // on every open (pinned Go-side by TestOpenPopoutCenterNormalized).
+  const p7 = await context.newPage();
+  p7.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await p7.addInitScript(shim);
+  await p7.goto(BASE);
+  await p7.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await ok('popout-center unset defaults to display', await p7.evaluate(() => localStorage.getItem('s3b-popout-center') === null));
+  await p7.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
+  await p7.waitForFunction(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .some((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')), null, { timeout: 4000 });
+  await p7.evaluate(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')).click());
+  await p7.waitForFunction(() => document.querySelector('#modal-root .set-row') !== null, null, { timeout: 4000 });
+  await ok('popout-center row in Settings → View', await p7.evaluate(() => !!Array.from(document.querySelectorAll('#modal-root .set-row'))
+    .find((x) => /popout windows open centered on/i.test(x.querySelector('.set-name')?.textContent || ''))));
+  await ok('popout-center offers display/app, defaults display', await p7.evaluate(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => /popout windows open centered on/i.test(x.querySelector('.set-name')?.textContent || ''))?.querySelector('select');
+    if (!sel) return false;
+    const vals = [...sel.options].map((o) => o.value);
+    return vals.length === 2 && vals[0] === 'display' && vals[1] === 'app' && sel.value === 'display';
+  }));
+  const pick = async (v) => p7.evaluate((val) => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => /popout windows open centered on/i.test(x.querySelector('.set-name')?.textContent || ''))?.querySelector('select');
+    sel.value = val;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return localStorage.getItem('s3b-popout-center');
+  }, v);
+  await ok('switch to app persists', (await pick('app')) === 'app');
+  await ok('switch back to display persists', (await pick('display')) === 'display');
+  await p7.evaluate(() => localStorage.removeItem('s3b-popout-center')); // leave clean
+  await p7.close();
+});
+
+await step('xfer-auto-window', async () => {
+  // Settings → File transfers → "Transfer window auto open/close"
+  // (default on): the first running job floats the window by itself; it
+  // closes itself only when the whole batch ends cleanly. Failures keep
+  // it on screen, a hand-opened window never auto-closes, and with
+  // simultaneous jobs only the last completion closes it.
+  const pa = await context.newPage();
+  pa.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await pa.addInitScript(shim);
+  await pa.goto(BASE);
+  await pa.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await ok('auto open/close on by default', await pa.evaluate(() => localStorage.getItem('s3b-xfer-window') === null));
+  const SEL = '#popout-root .popout[data-pop="transfers"]';
+  const vis = () => pa.evaluate((s) => !!document.querySelector(s), SEL);
+  const setJobs = (jobs) => pa.evaluate((j) => { window.__shim.world.transfers = j; }, jobs);
+  const poke = (j) => pa.evaluate((x) => window.__shim.emit('transfer:update', x), j);
+  const closeIt = () => pa.evaluate((s) => document.querySelector(`${s} .modal-head .x`)?.click(), SEL);
+  const run = { id: 'j1', op: 'upload', status: 'running', currentFile: 'a.bin', totalFiles: 2, doneFiles: 0, totalBytes: 100, sentBytes: 10, speedBps: 0 };
+  const done = { ...run, status: 'done', doneFiles: 2, sentBytes: 100 };
+  // auto-open on the rising edge — no menu, no click
+  await setJobs([run]);
+  await poke(run);
+  await ok('window auto-opens when a transfer starts', waitFor(vis, 4000, 'auto-open'));
+  // clean finish closes it again
+  await setJobs([done]);
+  await poke(done);
+  await ok('window auto-closes on a clean finish', waitFor(async () => !(await vis()), 4000, 'auto-close'));
+  // a failed job keeps the window on screen for the post-mortem
+  await setJobs([run]);
+  await poke(run);
+  await waitFor(vis, 4000, 'reopen');
+  const failed = { ...run, status: 'error', error: 'boom' };
+  await setJobs([failed]);
+  await poke(failed);
+  await sleep(600);
+  await ok('failed transfer prevents the auto-close', await vis());
+  await closeIt();
+  // simultaneous jobs: the first completion leaves it open, the LAST
+  // running job's completion closes it
+  const j2run = { ...run, id: 'j2', currentFile: 'b.bin' };
+  const j2done = { ...j2run, status: 'done', doneFiles: 2, sentBytes: 100 };
+  await setJobs([run, j2run]);
+  await poke(j2run);
+  await waitFor(vis, 4000, 'reopen for two jobs');
+  await setJobs([run, j2done]);
+  await poke(j2done);
+  await sleep(400);
+  await ok('still open while another job runs', await vis());
+  await setJobs([done, j2done]);
+  await poke(done);
+  await ok('last running job closes the window', waitFor(async () => !(await vis()), 4000, 'last close'));
+  // a hand-opened window never auto-closes — the status-bar click is a
+  // manual open and locks it
+  await setJobs([run]);
+  await poke(run);
+  await waitFor(vis, 4000, 'reopen');
+  await pa.click('#status-jobs');
+  await sleep(150);
+  await setJobs([done]);
+  await poke(done);
+  await sleep(600);
+  await ok('manually opened window never auto-closes', await vis());
+  await closeIt();
+  // setting off: no auto-open at all
+  await pa.evaluate(() => localStorage.setItem('s3b-xfer-window', '0'));
+  await setJobs([run]);
+  await poke(run);
+  await sleep(600);
+  await ok('setting off: no auto-open', !(await vis()));
+  await pa.evaluate(() => localStorage.removeItem('s3b-xfer-window'));
+  await pa.close();
+});
+
+await step('popout-session-geom', async () => {
+  // Popout geometry is session state: stale positions/sizes from a
+  // previous run are wiped at boot (the placement CHOICE is a setting
+  // and survives), and within the session a reopen still honors the
+  // remembered rect — only app close forgets it.
+  const pb = await context.newPage();
+  pb.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await pb.addInitScript(shim);
+  // the shim wipes s3b-* keys first; seed the stale state after it
+  await pb.addInitScript(() => {
+    localStorage.setItem('s3b-popout-keys', JSON.stringify({ x: -9000, y: -9000, w: 4000, h: 3000 }));
+    localStorage.setItem('s3b-popout-center', 'app');
+  });
+  await pb.goto(BASE);
+  await pb.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await ok('stale geometry wiped at boot', await pb.evaluate(() => localStorage.getItem('s3b-popout-keys') === null));
+  await ok('placement setting survives the wipe', await pb.evaluate(() => localStorage.getItem('s3b-popout-center') === 'app'));
+  // the wiped junk never strands the window
+  await pb.keyboard.press('F1');
+  await pb.waitForFunction(() => !!document.querySelector('#popout-root .popout[data-pop="keys"]'), null, { timeout: 4000 });
+  await ok('window opens on-screen without stale geometry', await pb.evaluate(() => {
+    const r = document.querySelector('#popout-root .popout[data-pop="keys"]').getBoundingClientRect();
+    return r.x >= 0 && r.y >= 0 && r.width < window.innerWidth;
+  }));
+  // mid-session, a remembered rect still places the reopen (width above
+  // the .wide CSS minimum — min-width would otherwise win over the store)
+  await pb.evaluate(() => localStorage.setItem('s3b-popout-keys', JSON.stringify({ x: 120, y: 140, w: 900, h: 460 })));
+  await pb.evaluate(() => document.querySelector('#popout-root .popout[data-pop="keys"] .modal-head .x')?.click());
+  await sleep(120);
+  await pb.keyboard.press('F1');
+  await pb.waitForFunction(() => !!document.querySelector('#popout-root .popout[data-pop="keys"]'), null, { timeout: 4000 });
+  await sleep(220); // let the .14s modal-in animation settle before measuring
+  await ok('reopen honors the remembered rect', await pb.evaluate(() => {
+    const r = document.querySelector('#popout-root .popout[data-pop="keys"]').getBoundingClientRect();
+    return Math.abs(r.x - 120) <= 2 && Math.abs(r.y - 140) <= 2 && Math.abs(r.width - 900) <= 2;
+  }));
+  await pb.evaluate(() => document.querySelector('#popout-root .popout[data-pop="keys"] .modal-head .x')?.click());
+  await pb.evaluate(() => localStorage.removeItem('s3b-popout-center'));
+  await pb.close();
 });
 
 await step('drag-urls', async () => {

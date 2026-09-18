@@ -13,13 +13,23 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// Native drag-out, Windows side: a dedicated STA thread floats the OLE drag
-// (DoDragDrop) with a hand-rolled IDataObject offering CF_HDROP and an
-// IDropSource. Everything the drop target sees is delay-rendered from the
-// staging download, so the gesture starts the moment the user drags and a
-// drop on Explorer blocks until the real files exist — then copies them.
-// This mirrors how Electron implements webContents.startDrag: the host, not
-// the webview, owns drags that must leave the window.
+// Native drag-out, Windows side: an OLE drag (DoDragDrop) floats with a
+// hand-rolled IDataObject offering CF_HDROP and an IDropSource. Everything
+// the drop target sees is delay-rendered from the staging download, so the
+// gesture starts the moment the user drags and a drop on Explorer blocks
+// until the real files exist — then copies them. This mirrors how Electron
+// implements webContents.startDrag: the host, not the webview, owns drags
+// that must leave the window.
+//
+// The gesture must run on the app's UI thread — the thread that owns the
+// source window, its message pump, and the mouse capture the OLE modal loop
+// takes over. DoDragDrop on any other thread desynchronizes the webview's
+// own drag/capture state: observed live, WebView2 dies with
+// ERROR_INVALID_STATE ~150ms into such a drag and takes the app with it.
+// The shell's InvokeMain hook (gui.go: application.InvokeSyncWithError)
+// marshals the whole loop onto that thread; a dedicated STA thread stands
+// in whenever no shell is attached or the UI thread refuses OLE
+// (RPC_E_CHANGED_MODE — an MTA apartment cannot host the drag).
 //
 // The same gesture serves INTERNAL drops: released over the app's own
 // window it is reported as drag:self-drop (client coordinates + release
@@ -29,22 +39,35 @@ import (
 // so the native drag must own every ending.
 
 var (
-	ole32dll    = windows.NewLazySystemDLL("ole32.dll")
-	pOleInit    = ole32dll.NewProc("OleInitialize")
-	pOleUninit  = ole32dll.NewProc("OleUninitialize")
-	pDoDragDrop = ole32dll.NewProc("DoDragDrop")
-	user32dll   = windows.NewLazySystemDLL("user32.dll")
-	pGetCursor  = user32dll.NewProc("GetCursorPos")
+	ole32dll        = windows.NewLazySystemDLL("ole32.dll")
+	pOleInit        = ole32dll.NewProc("OleInitialize")
+	pOleUninit      = ole32dll.NewProc("OleUninitialize")
+	pDoDragDrop     = ole32dll.NewProc("DoDragDrop")
+	user32dll       = windows.NewLazySystemDLL("user32.dll")
+	pGetCursor      = user32dll.NewProc("GetCursorPos")
+	pGetAsyncKeySta = user32dll.NewProc("GetAsyncKeyState")
+	kernel32dll     = windows.NewLazySystemDLL("kernel32.dll")
+	pGetCurThreadId = kernel32dll.NewProc("GetCurrentThreadId")
 )
 
-// HRESULTs and OLE constants (winerror.h).
+// lButtonDown reports the physical left-button state at call time. OLE's
+// grfKeyState (and our dragOutKeys mirror) lags a message pump; GetData
+// needs the truth of the instant.
+func lButtonDown() bool {
+	r, _, _ := pGetAsyncKeySta.Call(vkLButton)
+	return r&0x8000 != 0
+}
+
+// HRESULTs and OLE constants (winerror.h). NB: DRAGDROP_S_CANCEL is
+// 0x00040100 and DRAGDROP_S_DROP is 0x00040101 — swapping them makes every
+// button release end the gesture as a cancel, so no drop ever delivers.
 const (
 	hrOK                       = 0
 	hrNoInterface              = 0x80004002
 	hrNotImpl                  = 0x80004001
 	dvEFormatetc               = 0x80040064
-	dragdropSDrop              = 0x00040100
-	dragdropSCancel            = 0x00040101
+	dragdropSCancel            = 0x00040100
+	dragdropSDrop              = 0x00040101
 	dragdropSUseDefaultCursors = 0x00040102
 	mkLButton                  = 0x0001
 	mkShift                    = 0x0004
@@ -53,6 +76,7 @@ const (
 	dropEffectLink             = 4
 	tymedHGlobal               = 1
 	dvaspectContent            = 1
+	vkLButton                  = 0x01
 )
 
 // IIDs the drag objects answer QueryInterface with.
@@ -166,6 +190,16 @@ func doGetData(this, fe, medium uintptr) uintptr {
 	if _, _, over := dragOverSelf(); over {
 		return fillMedium(medium, nil)
 	}
+	// A probe while the button is still held (DragEnter / hover feedback)
+	// must refuse and return FAST: GetData runs on the drag's own STA
+	// thread inside the modal loop — blocking it on the staging download
+	// freezes the whole gesture (cursor and all) for as long as the bytes
+	// take, and every drag started meanwhile fails with "already in
+	// progress". The staged bytes are only ever promised to a real drop,
+	// which is the one GetData that runs after the button came up.
+	if lButtonDown() {
+		return dvEFormatetc
+	}
 	if obj.stage == nil || obj.stage.wait() != nil {
 		return dvEFormatetc // staging failed or timed out — refuse the drop
 	}
@@ -235,9 +269,15 @@ func dsRelease(this uintptr) uintptr {
 // DoDragDrop returns, it carries the modifier keys held at release.
 var dragOutKeys atomic.Uint32
 
+// dragQCD counts QueryContinueDrag calls of the live gesture: it is the
+// pulse of the OLE loop, logged when the gesture ends — a zero means the
+// modal loop never received a single mouse message.
+var dragQCD atomic.Int32
+
 // dsQueryContinueDrag ends the gesture: Escape cancels, a released left
 // button drops wherever the cursor sits.
 func dsQueryContinueDrag(this, esc, keys uintptr) uintptr {
+	dragQCD.Add(1)
 	dragOutKeys.Store(uint32(keys))
 	if esc != 0 {
 		return dragdropSCancel
@@ -307,49 +347,90 @@ func (a *App) dragOutRun(items []DragItem) error {
 	dragOutGesture.Store(true)
 	defer dragOutGesture.Store(false)
 
+	// UI thread first: it owns the windows and the pump the OLE modal loop
+	// must live in (see the file comment). The dedicated thread below is
+	// the fallback for shells without the hook — tests, server builds —
+	// and for a UI thread that refuses OLE.
+	if shell != nil && shell.InvokeMain != nil {
+		var fallback bool
+		err := shell.InvokeMain(func() error {
+			var e error
+			fallback, e = a.dragOutLoop(items, "ui-thread")
+			return e
+		})
+		if !fallback {
+			return err
+		}
+		a.emitLog(LogInfo, "drag", "ui-thread refused OLE (MTA) — dedicated-thread fallback")
+	}
 	done := make(chan error, 1)
 	go func() {
-		// DoDragDrop wants an STA thread; a fresh locked OS thread with
-		// OleInitialize is exactly that and leaves the app's threads alone.
+		// A fresh locked OS thread is a clean STA host that leaves every
+		// other thread alone.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		if hr, _, _ := pOleInit.Call(0); hrFailed(hr) {
-			done <- fmt.Errorf("OleInitialize failed (0x%08x)", uint32(hr))
-			return
-		}
-		defer pOleUninit.Call()
-
-		st := a.startDragStage(items)
-		obj := &dragDataObject{vtbl: &dragDataObjectVtbl, stage: st}
-		src := &dragDropSource{vtbl: &dragDropSourceVtbl}
-		var eff uint32
-		hr, _, _ := pDoDragDrop.Call(
-			uintptr(unsafe.Pointer(obj)),
-			uintptr(unsafe.Pointer(src)),
-			dropEffectCopy|dropEffectLink, // a drag-out copies (or links); never a move
-			uintptr(unsafe.Pointer(&eff)),
-		)
-		// DRAGDROP_S_DROP / _CANCEL are success endings of the gesture;
-		// either way the mouse is back — stop staging nobody will drop.
-		st.cancel()
-		// A non-cancelled gesture released over our own window is an
-		// internal drop: hand the frontend the coordinates and the
-		// release-time modifiers and let the ordinary move/copy logic run.
-		// Emitted before DragOutFiles resolves so the frontend's gesture
-		// flag is still up when the event lands.
-		if hr != dragdropSCancel && !hrFailed(hr) {
-			if cx, cy, over := dragOverSelf(); over {
-				keys := dragOutKeys.Load()
-				if shell != nil && shell.Emit != nil {
-					shell.Emit(EventDragSelfDrop, cx, cy, keys&mkShift != 0, keys&mkControl != 0)
-				}
-			}
-		}
-		runtime.KeepAlive(obj)
-		runtime.KeepAlive(src)
-		done <- nil
+		_, err := a.dragOutLoop(items, "own-thread")
+		done <- err
 	}()
 	return <-done
+}
+
+// rpcEChangedMode (RPC_E_CHANGED_MODE): the thread lives in an apartment
+// OLE drags cannot run in — the caller falls back to a dedicated thread.
+const rpcEChangedMode = 0x80010106
+
+// dragOutLoop floats the OLE drag to its end on the CALLING thread: OLE
+// initialization, the staging kick-off, the DoDragDrop modal loop and the
+// post-gesture bookkeeping (staging cancel, self-drop routing). It blocks
+// for as long as the gesture lasts and reports whether the caller should
+// retry on a dedicated thread (calling thread could not host OLE at all).
+// where names the thread in the drag log.
+func (a *App) dragOutLoop(items []DragItem, where string) (fallback bool, err error) {
+	tid, _, _ := pGetCurThreadId.Call()
+	hrInit, _, _ := pOleInit.Call(0)
+	a.emitLog(LogInfo, "drag", fmt.Sprintf(
+		"drag-out begin: %d items, %s, thread=%d, OleInitialize=0x%08x", len(items), where, tid, uint32(hrInit)))
+	if uint32(hrInit) == rpcEChangedMode {
+		return true, nil
+	}
+	if hrFailed(hrInit) {
+		return false, fmt.Errorf("OleInitialize failed (0x%08x)", uint32(hrInit))
+	}
+	// One OleUninitialize per successful OleInitialize — S_FALSE counts as
+	// a success and only drops the reference this call added.
+	defer pOleUninit.Call()
+
+	st := a.startDragStage(items)
+	obj := &dragDataObject{vtbl: &dragDataObjectVtbl, stage: st}
+	src := &dragDropSource{vtbl: &dragDropSourceVtbl}
+	var eff uint32
+	hr, _, _ := pDoDragDrop.Call(
+		uintptr(unsafe.Pointer(obj)),
+		uintptr(unsafe.Pointer(src)),
+		dropEffectCopy|dropEffectLink, // a drag-out copies (or links); never a move
+		uintptr(unsafe.Pointer(&eff)),
+	)
+	a.emitLog(LogInfo, "drag", fmt.Sprintf(
+		"drag-out end: hr=0x%08x effect=%d qcd=%d", uint32(hr), eff, dragQCD.Swap(0)))
+	// DRAGDROP_S_DROP / _CANCEL are success endings of the gesture;
+	// either way the mouse is back — stop staging nobody will drop.
+	st.cancel()
+	// A non-cancelled gesture released over our own window is an
+	// internal drop: hand the frontend the coordinates and the
+	// release-time modifiers and let the ordinary move/copy logic run.
+	// Emitted before DragOutFiles resolves so the frontend's gesture
+	// flag is still up when the event lands.
+	if hr != dragdropSCancel && !hrFailed(hr) {
+		if cx, cy, over := dragOverSelf(); over {
+			keys := dragOutKeys.Load()
+			if shell != nil && shell.Emit != nil {
+				shell.Emit(EventDragSelfDrop, cx, cy, keys&mkShift != 0, keys&mkControl != 0)
+			}
+		}
+	}
+	runtime.KeepAlive(obj)
+	runtime.KeepAlive(src)
+	return false, nil
 }
 
 // allocHDROP builds the CF_HDROP HGLOBAL for paths; ownership passes to the

@@ -3,7 +3,6 @@
 package api
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -19,8 +18,9 @@ const guiConvertThreshold = 50
 // ConvertStorageClass converts one or more objects to the storage class
 // via server-side self-copy. Keys ending in "/" expand to every object
 // under that prefix. Without force the call refuses batches larger than
-// guiConvertThreshold. Returns how many objects were converted.
-func (a *App) ConvertStorageClass(bucket string, keys []string, class string, force bool) (int, error) {
+// guiConvertThreshold. Returns how many objects were converted. Runs as
+// a tracked task (Running tasks window) with live progress.
+func (a *App) ConvertStorageClass(bucket string, keys []string, class string, force bool) (n int, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return 0, err
@@ -28,8 +28,9 @@ func (a *App) ConvertStorageClass(bucket string, keys []string, class string, fo
 	if !transfer.ValidStorageClass(class) {
 		return 0, fmt.Errorf("unknown storage class %q", class)
 	}
-	ctx, cancel := context.WithCancel(a.ctx)
-	defer cancel()
+	task := a.tasks.add("convert", fmt.Sprintf("s3://%s — convert to %s", bucket, class))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
 	// expand folder selections into their object keys
 	var flat []string
 	for _, k := range keys {
@@ -46,6 +47,7 @@ func (a *App) ConvertStorageClass(bucket string, keys []string, class string, fo
 	if !force && len(flat) > guiConvertThreshold {
 		return 0, fmt.Errorf("would convert %d object(s) — confirm to proceed", len(flat))
 	}
+	task.setTotal(len(flat), fmt.Sprintf("s3://%s — converting %d object(s) to %s", bucket, len(flat), class))
 	done := 0
 	a.emitLogSrc(LogInfo, "admin", bucket, fmt.Sprintf("converting %d object(s) to storage class %s", len(flat), class))
 	for _, k := range flat {
@@ -54,6 +56,7 @@ func (a *App) ConvertStorageClass(bucket string, keys []string, class string, fo
 			return done, err
 		}
 		done++
+		task.progress(done)
 	}
 	a.emitLogSrc(LogInfo, "admin", bucket, fmt.Sprintf("converted %d object(s) to %s", done, class))
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
