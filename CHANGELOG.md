@@ -6,6 +6,26 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Multi-selection delete on versioned buckets: the destructive modes
+  could never run.** The delete window's "Delete all but the current
+  version" and "Delete permanently" modes derive their `force` flag from
+  the delete preview's *object* count — but the backend gates them on the
+  *version* count, and hundreds of versions can hide behind a handful of
+  current objects (directories especially). Every such delete above the
+  50-version threshold failed with "N version(s) selected — typed
+  confirmation (force) required" whether the Require-typing setting was
+  on (the typed word was demanded, given, and then ignored) or off (no
+  path to force existed at all). The confirmed delete window — explicit
+  destructive-mode choice, amber consequence note, typed word whenever
+  the setting is on, and never auto-confirmable — now IS the force
+  contract for those two modes, matching the purge/empty-bucket flows;
+  the plain marker mode keeps mirroring the preview's object count,
+  which the backend re-counts identically. The visual harness pins all
+  four paths (marker, keep-current, permanent, Shift+Del directory) to
+  their exact force flags.
+
 ### Changed
 
 - **Show/Hide history moved to the bottom bar, styled like Clear.** In

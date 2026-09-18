@@ -1834,7 +1834,18 @@ async function deleteS3Keys(source, bucket, keys, preset, target, after) {
     classicMsg: `You are about to delete ${desc}.\n${undoNote}`,
   });
   if (mode === null) return;
-  const force = p.requiresL2; // every path above already confirmed
+  // force contract: the plain mode's backend gate re-counts the same
+  // objects this preview counted, so requiresL2 maps 1:1 onto it. The
+  // versioned destructive modes (keepcurrent/permanent) destroy VERSIONS —
+  // hundreds can hide behind a handful of current objects, which the
+  // object-count preview can never see — so requiresL2 would leave them
+  // under the backend's version threshold and the delete would ALWAYS fail
+  // with "N version(s) selected — typed confirmation (force) required"
+  // (typed word included). Their window never auto-confirms and never
+  // skips the explicit destructive-mode choice (plus the typed word
+  // whenever the Require-typing setting is on): the confirmed window IS
+  // the force contract, same as the purge/empty-bucket flows.
+  const force = mode !== '' || p.requiresL2;
   let res;
   if (mode === 'permanent') {
     res = source
