@@ -7,6 +7,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
@@ -17,6 +18,14 @@ import (
 const EventListPage = "list:page"
 
 const listPageSize = 1000
+
+// listWatchdog bounds how long a listing stream may go without producing
+// a page. A slow-but-alive endpoint resets it with every page (a million
+// object walk can run for minutes, page after page); a dead one — a
+// blackholed connection that accepts and never responds — is cut off and
+// REPORTED as a timeout instead of leaving the view's loading state up
+// forever. Var so tests can shorten it.
+var listWatchdog = quickOpTimeout
 
 // ListPage is one streamed chunk of a directory view.
 type ListPage struct {
@@ -63,6 +72,11 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 	a.streamMu.Lock()
 	a.streams[token] = cancel
 	a.streamMu.Unlock()
+	// Watchdog: every emitted page resets it. A listing that produces
+	// nothing for listWatchdog is a dead endpoint, not a big folder —
+	// cut it off (the timeout is reported on the final page).
+	var timedOut atomic.Bool
+	wd := time.AfterFunc(listWatchdog, func() { timedOut.Store(true); cancel() })
 	// Transient task: visible while it runs (a stuck listing is killable
 	// from the Running tasks window), gone when it ends — navigation
 	// would otherwise pile done rows up forever.
@@ -70,6 +84,10 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 		fmt.Sprintf("s3://%s/%s", bucket, prefix))
 
 	go func() {
+		// The watchdog lives as long as the listing goroutine, not the
+		// spawning call (which returns the token immediately — a Stop()
+		// deferred there would disarm it before the first page).
+		defer wd.Stop()
 		defer func() {
 			cancel()
 			a.streamMu.Lock()
@@ -79,6 +97,7 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 		total := 0
 		batch := make([]listing.Entry, 0, listPageSize)
 		emit := func(done bool, errMsg string) {
+			wd.Reset(listWatchdog)
 			a.emit(EventListPage, ListPage{
 				Token: token, Bucket: bucket, Prefix: prefix,
 				Entries: batch, Total: total, Done: done, Error: errMsg,
@@ -86,6 +105,10 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 			batch = make([]listing.Entry, 0, listPageSize)
 		}
 		err := listing.WalkDir(ctx, c.S3, bucket, prefix, listing.Options{}, func(e listing.Entry) error {
+			// Any progress resets the watchdog — a paginating walk whose
+			// pages trickle in slowly is alive; emit-level resets alone
+			// would starve small folders (a batch needs 1000 entries).
+			wd.Reset(listWatchdog)
 			batch = append(batch, e)
 			total++
 			if len(batch) >= listPageSize {
@@ -96,9 +119,16 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 		})
 		msg := ""
 		var ferr error
-		if err != nil && ctx.Err() == nil {
+		switch {
+		case err != nil && ctx.Err() == nil:
 			msg = err.Error()
 			ferr = err
+		case timedOut.Load():
+			// The watchdog fired: the source went silent mid-listing.
+			// Without this the final page would carry no error and the
+			// view would present a partial listing as complete.
+			msg = fmt.Sprintf("listing timed out — no data from the source for %s", listWatchdog)
+			ferr = context.DeadlineExceeded
 		}
 		task.progress(total)
 		task.finish(ferr, true)

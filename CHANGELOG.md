@@ -48,6 +48,45 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A slow or dead source can no longer pass an empty panel off as an
+  empty folder.** Every navigation into data that has not arrived yet
+  now shows the truth: an in-flight state — spinner, "Loading…" and
+  animated placeholder rows — for the whole time the listing is on the
+  wire, on S3 buckets, S3 object views, remote-engine folders and the
+  local pane alike. When the data lands, rows replace the skeleton in
+  one frame; when a folder really is empty, it says so with a proper
+  translated subtitle instead of a raw literal. A load that fails
+  renders a classified error state — timeouts ("The data source took
+  too long to respond", detected from the error shape) read
+  differently from other failures ("Could not load this view"), the
+  raw message sits under the title, and a **↻ Retry** button repeats
+  the exact navigation in one click. The same treatment covers the
+  Versions window (loading text while fetching, retry on failure).
+  Races are guarded on both panels: a response landing after a newer
+  navigation started is dropped, so a slow directory can never clobber
+  the one the user actually opened; silent background refreshes keep
+  the current rows on transient errors but the first failure of a
+  streak says so — the rows on screen may be out of date — instead of
+  letting stale rows masquerade as live ones. UI strings in all 15
+  languages.
+
+- **CLI `--timeout` is now one budget for the whole call, not one per
+  retry attempt.** The deadline used to live on
+  http.Client.Timeout, whose "Client.Timeout exceeded" error the AWS
+  SDK's retryer classifies as retryable — so each of the 3 attempts
+  paid the full budget again, plus backoff. Against a dead endpoint
+  `--timeout 3s` took ~12s, and the 5-minute default meant a
+  ~15-minute hang on a simple `ls`. The budget now rides each
+  request's context and a budget-expired error is marked terminal for
+  the retryer (fast transient failures — connection reset, 503 — keep
+  their retries), covers body streaming as well as headers, and never
+  extends a caller deadline that is already sooner. GUI paths run
+  deadline-less by design and are bounded by their own contexts; a
+  new 30s no-progress watchdog bounds server-side listing streams —
+  a stream that produces nothing for 30s (a dead endpoint) is cut
+  off and reported as a timeout, while a slow-but-alive source
+  resets the timer with every page it delivers.
+
 - **Tasks no longer jump from 0% to 100%.** Task progress updated the
   done-count silently — update events only fired on registry lifecycle
   changes — so a task that ran for 15+ seconds sat at 0% the whole way
@@ -105,6 +144,26 @@ follow [Semantic Versioning](https://semver.org/).
   and the resize grip.
 
 ### Added
+
+- **A fault-injection lab in the live test suites — bad, slow and dead
+  connections are now tested, not assumed.** `scripts/faultproxy.mjs`
+  is a TCP proxy in front of the real MinIO whose fault mode can be
+  switched live over a control port (so the SDK's keep-alive pool
+  cannot dodge it): **direct** passthrough, **latency** (every TCP
+  chunk held N ms), **throttle** (bytes paced at N B/s), **reset**
+  (connections killed with data pending → RST) and **blackhole**
+  (accepted, never answered — a dead endpoint). The CLI suite runs
+  copy/list round-trips through every mode and asserts the timeout
+  budget actually holds (`--timeout 3s` must fail in ~3s with a
+  clean, deadline-shaped error, not 12s of silent retries); the GUI
+  live walk points a whole source at the proxy and asserts the UX
+  contract end to end — skeleton rows while chunks crawl in, complete
+  rows landing anyway, a classified error with a working Retry after
+  mid-stream RSTs, and the stream-watchdog timeout state (plus
+  recovery) against a black hole. Stale proxies from failed runs are
+  cleared by port (Windows job-control kills don't reach node), and
+  the visual harness gained a shimmed loading-states step covering
+  skeleton, error+retry, the navigate-away race and the side pane.
 
 - **Theme can follow the OS (Auto (system))** — the third theme choice
   alongside Light and Dark, after the VS 2026 "use system setting". The

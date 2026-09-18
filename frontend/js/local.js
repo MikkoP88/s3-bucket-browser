@@ -43,6 +43,7 @@ export class LocalPane {
     this.bucket = '';     // s3 binding: the listed bucket ('' = buckets view)
     this.s3Seq = 0;       // s3 listing stream generation
     this.s3Off = null;    // s3 listing page-event unsubscribe
+    this.navSeq = 0;      // local/remote listing generation (stale-response guard)
     this.roots = [];
     this.binding = { kind: 'local', source: '' }; // what the pane is bound to
     this.sources = [];    // [{id,name,type}] fed by main after ListSources
@@ -252,13 +253,24 @@ export class LocalPane {
   hide() { $('local-pane').classList.add('hidden'); }
   get visible() { return !$('local-pane').classList.contains('hidden'); }
 
+  // setLoading marks the pane mid-listing: previous rows dim (honest about
+  // being stale, never blank) and the status line says work is in flight.
+  setLoading(on) {
+    $('local-pane').classList.toggle('is-loading', on);
+    if (on) $('local-status').textContent = '…';
+  }
+
   async navigate(dir, fromSync = false) {
     if (this.binding.kind === 'remote') return this.navigateRemote(dir, fromSync);
     if (this.binding.kind === 's3') return this.navigateS3({ bucket: this.bucket, prefix: dir || '' });
+    const seq = ++this.navSeq;
+    this.setLoading(true);
     try {
       const target = dir === '' || dir === '~' ? await app().LocalHome() : dir;
       const ents = await app().ListLocal(target);
+      if (seq !== this.navSeq) return; // superseded — user navigated on
       this.dir = target;
+      this.setLoading(false);
       this.grid.setRows(ents.map((e) => ({
         name: e.name,
         key: e.path,
@@ -271,6 +283,7 @@ export class LocalPane {
       this.updateStatus();
       if (this.sync && !fromSync) this.on.syncUp?.(this.dir);
     } catch (e) {
+      if (seq === this.navSeq) this.setLoading(false);
       this.on.openFail?.(e);
     }
   }
@@ -278,10 +291,14 @@ export class LocalPane {
   // navigateRemote lists one directory of the bound remote source; rows
   // carry the same shape as the main grid's remote views.
   async navigateRemote(dir, fromSync = false) {
+    const seq = ++this.navSeq;
+    this.setLoading(true);
     try {
       const path = dir && dir !== '~' ? dir : '/';
       const ents = await app().RemoteList(this.binding.source, path);
+      if (seq !== this.navSeq) return; // superseded — user navigated on
       this.dir = path;
+      this.setLoading(false);
       this.grid.setRows(ents.map((e) => ({
         name: e.name,
         key: e.key,
@@ -294,6 +311,7 @@ export class LocalPane {
       this.updateStatus();
       if (this.sync && !fromSync) this.on.syncUp?.(this.dir);
     } catch (e) {
+      if (seq === this.navSeq) this.setLoading(false);
       this.on.openFail?.(e);
     }
   }
@@ -311,12 +329,14 @@ export class LocalPane {
   async navigateS3({ bucket, prefix }) {
     this.cancelS3Stream();
     const seq = this.s3Seq;
+    this.setLoading(true);
     if (!bucket) {
       try {
         const buckets = await app().ListSourceBuckets(this.binding.source);
         if (seq !== this.s3Seq) return;
         this.bucket = '';
         this.dir = '';
+        this.setLoading(false);
         this.grid.setRows(buckets.map((b) => ({
           name: b.name, key: b.name, bucket: b.name, isDir: true, isBucket: true,
           lastModified: b.createdAt,
@@ -324,6 +344,7 @@ export class LocalPane {
         this.updateCrumb();
         this.updateStatus();
       } catch (e) {
+        if (seq === this.s3Seq) this.setLoading(false);
         this.on.openFail?.(e);
       }
       return;
@@ -333,7 +354,8 @@ export class LocalPane {
       () => app().ListSourceObjectsStream(this.binding.source, bucket, prefix || ''),
       (p) => {
         if (seq !== this.s3Seq) return; // superseded while pages still arrived
-        if (p.error) { this.on.openFail?.(p.error); this.cancelS3Stream(); return; }
+        if (p.error) { this.setLoading(false); this.on.openFail?.(p.error); this.cancelS3Stream(); return; }
+        this.setLoading(false);
         this.grid.appendRows((p.entries || []).map((e) => ({ ...e, bucket })));
         this.updateStatus();
         if (p.done) this.cancelS3Stream();
@@ -344,6 +366,7 @@ export class LocalPane {
       token = await stream.begin;
     } catch (e) {
       if (this.s3Off === stream.off) this.s3Off = null;
+      if (seq === this.s3Seq) this.setLoading(false);
       this.on.openFail?.(e);
       return;
     }

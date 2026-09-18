@@ -2,10 +2,16 @@ package s3client
 
 import (
 	"context"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 func TestNewLocalEndpoint(t *testing.T) {
@@ -84,5 +90,100 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 	if got := firstNonEmpty("", ""); got != "" {
 		t.Errorf("firstNonEmpty = %q", got)
+	}
+}
+
+// blackholeLis accepts TCP connections and never answers — a dead endpoint
+// (connection established, then silence forever).
+func blackholeLis(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			_ = c // hold the connection open; never read, never answer
+		}
+	}()
+	return "http://" + l.Addr().String()
+}
+
+// The timeout budget must bound the WHOLE SDK call, not each retry attempt:
+// with http.Client.Timeout the SDK's standard retryer classified the timeout
+// as retryable and paid the full budget again per attempt (3 × budget +
+// backoff against a dead endpoint). With the deadline on the request
+// context the attempt error is terminal — one budget, one attempt.
+func TestTimeoutIsOneBudgetNotPerAttempt(t *testing.T) {
+	url := blackholeLis(t)
+	c, err := New(context.Background(), profile.Profile{
+		Endpoint: url, Region: "us-east-1", PathStyle: true,
+		AccessKeyID: "k", SecretKey: "s",
+	}, Options{Timeout: 300 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now()
+	_, err = c.S3.ListBuckets(context.Background(), &s3.ListBucketsInput{})
+	elapsed := time.Since(t0)
+	if err == nil {
+		t.Fatal("ListBuckets unexpectedly succeeded against a dead endpoint")
+	}
+	if elapsed > 900*time.Millisecond {
+		t.Errorf("call took %v — the budget was paid more than once (retried)", elapsed)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "deadline") && !strings.Contains(msg, "canceled") && !strings.Contains(msg, "timeout") {
+		t.Errorf("error is not timeout-shaped: %v", err)
+	}
+}
+
+// The budget covers body streaming, not just headers: a response that
+// starts and then stalls mid-body must abort within the budget.
+func TestTimeoutCoversBodyStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("partial"))
+		w.(http.Flusher).Flush()
+		time.Sleep(30 * time.Second) // stall forever (mid-body)
+	}))
+	t.Cleanup(srv.CloseClientConnections) // Close() would wait out the handler
+	client := &http.Client{Transport: perRequestBudget{base: http.DefaultTransport, budget: 150 * time.Millisecond}}
+	t0 := time.Now()
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("headers should arrive within the budget: %v", err)
+	}
+	defer resp.Body.Close()
+	if _, err = io.ReadAll(resp.Body); err == nil {
+		t.Fatal("stalled body read unexpectedly succeeded")
+	}
+	if elapsed := time.Since(t0); elapsed > 2*time.Second {
+		t.Errorf("stalled body read took %v — budget not enforced on the stream", elapsed)
+	}
+}
+
+// A caller deadline sooner than the budget must be kept as-is: the budget
+// never extends an existing deadline, it only caps deadline-less requests.
+func TestBudgetKeepsSoonerCallerDeadline(t *testing.T) {
+	url := blackholeLis(t)
+	client := &http.Client{Transport: perRequestBudget{base: http.DefaultTransport, budget: 30 * time.Second}}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), 150*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+	t0 := time.Now()
+	if _, err = client.Do(req); err == nil {
+		t.Fatal("request unexpectedly succeeded against a dead endpoint")
+	}
+	if elapsed := time.Since(t0); elapsed > 2*time.Second {
+		t.Errorf("call took %v — the sooner caller deadline was ignored", elapsed)
 	}
 }

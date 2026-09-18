@@ -155,9 +155,11 @@ func (a *App) client(name string) (*s3client.Client, error) {
 	if c, ok := a.clients[name]; ok && name != "" {
 		return c, nil
 	}
-	// Timeout 0: no whole-request deadline — large uploads/downloads are
-	// bounded by the per-job cancellation instead (quick ops use quickCtx).
-	c, err := s3client.New(a.ctx, *cSrc.S3, s3client.Options{Timeout: 0})
+	// Timeout -1: no whole-request HTTP deadline. Quick ops (list/stat/
+	// presign/test) are bounded by quickCtx's 30s context; transfers are
+	// bounded by per-job cancellation — so a slow link never gets a file
+	// killed mid-stream, while nothing can hang forever.
+	c, err := s3client.New(a.ctx, *cSrc.S3, s3client.Options{Timeout: -1})
 	if err != nil {
 		return nil, err
 	}

@@ -2387,13 +2387,18 @@ export function versionsDialog(bucket, key, onChanged) {
   };
 
   async function draw() {
-    status.textContent = 'Loading…';
+    status.style.color = 'var(--text-dim)';
+    status.textContent = t('loading');
     let vers;
     try {
       vers = await api.ObjectVersions(bucket, key);
     } catch (err) {
       list.replaceChildren();
-      status.textContent = String(err);
+      // The failure is retryable in one click — a flaky source is the
+      // common cause, and retyping the whole flow would not be.
+      const retry = el('button', { class: 'btn', text: t('retry'), onclick: () => draw() });
+      retry.style.marginLeft = '10px';
+      status.replaceChildren(document.createTextNode(String(err)), retry);
       status.style.color = 'var(--danger)';
       return;
     }

@@ -71,6 +71,20 @@ let listSeq = 0;
 let listStream = { token: null, off: null };
 let pendingSelect = null; // {bucket, prefix, key} — row to select after load
 
+// View-load generation: guards the non-streaming listing paths (buckets,
+// remote folders) against the navigate-away race — a response that lands
+// after a newer navigation started is dropped instead of clobbering the
+// view the user is looking at.
+let viewSeq = 0;
+// Consecutive failed background (silent) refreshes. The first failure of
+// a streak tells the user the rows on screen are stale; recovery (any
+// completed refresh) clears the streak silently.
+let silentFailStreak = 0;
+function noteSilentFail() {
+  if (silentFailStreak === 0) toast(t('staleRefresh'), 'error');
+  silentFailStreak++;
+}
+
 // applyColumnPrefs restores the persisted visible-column sets (Settings →
 // View) and the delete-marker badge toggle for both grids. "name" is the
 // identity column — the grid forces it in; an unknown/empty stored value
@@ -494,20 +508,33 @@ async function loadView(loc, { silent = false } = {}) {
   // silent (background auto refresh): keep the current rows, selection and
   // breadcrumb on screen while the new listing is fetched — no flicker. New
   // data swaps in once, in a single frame.
+  // viewSeq: every navigation bumps it; a response that resolves after a
+  // NEWER navigation started is dropped, so a slow directory can never
+  // clobber the one the user actually opened (the classic A→B race).
+  const seq = ++viewSeq;
   if (!silent) grid.clearSelection();
   updateNavButtons();
   if (!silent) renderBreadcrumb();
   tree.markCurrent(loc);
-  hideEmpty();
+  // Non-silent navigation SHOWS work: skeleton rows + spinner while the
+  // listing is in flight — a blank panel reads as "empty folder" on a
+  // slow source, which is a lie until the response lands.
+  if (silent) hideEmpty();
+  else showLoading();
+  // A silent refresh that completes clears any stale-data notice streak.
+  let landed = false;
 
   try {
     if (loc.kind === 'buckets') {
       const src = await setViewSourceFor(loc);
       const buckets = await api.ListBuckets();
+      if (seq !== viewSeq) return; // superseded by a newer navigation
+      landed = true;
       currentEntries = buckets.map((b) => ({
         key: b.name, name: b.name, isDir: true, size: 0,
         lastModified: b.createdAt, bucketCreated: true,
       }));
+      hideEmpty();
       grid.setRows(currentEntries);
       renderFavorites();
       if (!currentEntries.length) {
@@ -521,6 +548,7 @@ async function loadView(loc, { silent = false } = {}) {
       $('btn-up').disabled = true;
     } else if (loc.kind === 'objects') {
       await setViewSourceFor(loc);
+      if (seq !== viewSeq) return;
       await loadObjectsStream(loc, silent);
       tree.reveal(loc).catch(() => {});
       localPane.syncTo(loc.prefix || '');
@@ -529,22 +557,30 @@ async function loadView(loc, { silent = false } = {}) {
       // sftp/scp/ftp/ftps/webdav/local source browsed through its remotefs
       // engine; rows carry the same shape as S3 listings
       const entries = await api.RemoteList(loc.source, loc.path || '/');
+      if (seq !== viewSeq) return; // superseded — drop the stale rows
+      landed = true;
       currentEntries = entries;
+      hideEmpty();
       grid.setRows(entries);
       if (!currentEntries.length) {
-        showEmpty(t('emptyFolder'), 'This folder is empty', []);
+        showEmpty(t('emptyFolder'), t('emptyFolderSub'), []);
       }
       tree.reveal(loc).catch(() => {});
       tree.updateRemoteDir(loc.source, loc.path || '/', entries);
       $('btn-up').disabled = !parentOf(loc);
     }
+    if (landed) silentFailStreak = 0;
   } catch (err) {
-    // A silent refresh keeps the current view on transient errors — only an
-    // explicit navigation shows the error state.
-    if (silent) return;
+    // A silent refresh keeps the current view on transient errors — but the
+    // FIRST failure of a streak tells the user the rows are now stale.
+    if (silent) {
+      if (seq === viewSeq) noteSilentFail();
+      return;
+    }
+    if (seq !== viewSeq) return;
     currentEntries = [];
     grid.setRows([]);
-    showEmpty('Could not list', String(err), []);
+    showListError(err);
   }
   updateStatus();
 }
@@ -571,13 +607,18 @@ async function loadObjectsStream(loc, silent = false) {
     (p) => {
       if (seq !== listSeq) return; // superseded while pages still arrived
       if (p.error) {
-        if (!silent) showEmpty('Could not list', p.error, []);
+        if (!silent) showListError(p.error);
+        else noteSilentFail();
         return;
       }
       if (silent) {
         buffered.push(...p.entries);
         currentEntries = buffered;
       } else {
+        // First data landed: the skeleton/loading overlay has done its
+        // job — rows now tell the story (idempotent, so every page can
+        // call it without layout cost once hidden).
+        hideEmpty();
         currentEntries.push(...p.entries);
         grid.appendRows(p.entries);
       }
@@ -602,6 +643,7 @@ async function loadObjectsStream(loc, silent = false) {
         }
         consumePendingSelect();
         updateStatus();
+        if (silent) silentFailStreak = 0; // a completed refresh = healthy
       }
     },
   );
@@ -612,7 +654,7 @@ async function loadObjectsStream(loc, silent = false) {
   } catch (err) {
     if (listStream.off === stream.off) listStream.off = null;
     if (seq !== listSeq || silent) return;
-    showEmpty('Could not list', String(err), []);
+    showListError(err);
     return;
   }
   if (seq !== listSeq) { api.CancelList(token).catch(() => {}); return; }
@@ -3078,7 +3120,11 @@ function wireToolbar() {
   $('btn-back').onclick = () => { if (nav.canBack()) nav.back(); };
   $('btn-forward').onclick = () => { if (nav.canForward()) nav.forwardGo(); };
   $('btn-up').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
-  $('btn-refresh').onclick = refreshCurrent;
+  // () => : a bare `onclick = refreshCurrent` would pass the MouseEvent in
+  // as `silent` (truthy) — the button refresh would silently skip the
+  // loading state and bury errors as stale-row toasts. Manual refresh is
+  // explicit: show the in-flight state, show errors.
+  $('btn-refresh').onclick = () => refreshCurrent();
   $('btn-upload').onclick = () => openMenu($('btn-upload'), uploadChoices(uploadFiles, uploadFolder));
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = togglePanes;
@@ -3424,7 +3470,7 @@ function mountMenubar() {
     {
       label: t('menu.view'),
       items: [
-        { label: t('menu.refresh'), kbd: 'F5', action: refreshCurrent },
+        { label: t('menu.refresh'), kbd: 'F5', action: () => refreshCurrent() },
         null,
         { label: t('menu.theme'), action: toggleTheme },
         { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
@@ -3879,8 +3925,37 @@ function showEmpty(title, sub, actions = []) {
   $('empty-title').textContent = title;
   $('empty-sub').textContent = sub;
   $('empty-actions').replaceChildren(...actions);
+  // An incoming empty/error state always displaces the loading one.
+  $('empty-state').classList.remove('is-loading');
+  $('load-skel').classList.add('hidden');
   $('empty-state').classList.remove('hidden');
 }
-function hideEmpty() { $('empty-state').classList.add('hidden'); }
+function hideEmpty() {
+  $('empty-state').classList.add('hidden');
+  $('empty-state').classList.remove('is-loading');
+  $('load-skel').classList.add('hidden');
+}
+// showLoading puts the panel in its in-flight state: spinner + skeleton
+// rows while a listing is on the wire. Called on every non-silent
+// navigation — the user must never see a blank panel (which reads as
+// "empty folder") while data is still arriving.
+function showLoading() {
+  $('empty-title').textContent = t('loading');
+  $('empty-sub').textContent = '';
+  $('empty-actions').replaceChildren();
+  $('load-skel').classList.remove('hidden');
+  $('empty-state').classList.add('is-loading');
+  $('empty-state').classList.remove('hidden');
+}
+// showListError renders a failed view load: the raw message, a title that
+// classifies timeouts (the single most action-relevant failure on a bad
+// connection) and a one-click Retry of the same navigation.
+function showListError(err) {
+  const msg = String(err?.message ?? err);
+  const timedOut = /timed?\s?[\s-]?out|timeout|deadline exceeded|context deadline/i.test(msg);
+  showEmpty(timedOut ? t('loadTimeout') : t('loadFailed'), msg, [
+    el('button', { class: 'btn primary', text: `\u21BB ${t('retry')}`, onclick: () => refreshCurrent() }),
+  ]);
+}
 
 boot();
