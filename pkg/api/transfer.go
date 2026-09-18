@@ -71,18 +71,18 @@ type JobInfo struct {
 	// and where the bytes are right now. Name/Items feed the localized
 	// "Copying photos +2" title; From/To the route line; the current-*
 	// triple the "File 2/3 — pic.jpg · 18/41 MB" line.
-	Move         bool   `json:"move"`               // transfer jobs: copy-then-delete
-	Name         string `json:"name,omitempty"`     // primary source item
-	Items        int    `json:"items"`              // top-level items dropped
-	From         string `json:"from,omitempty"`     // human source label
-	To           string `json:"to,omitempty"`       // human destination label
-	Phase        string `json:"phase"`              // "transfer" | "cleanup"
-	FileIndex    int    `json:"fileIndex"`          // 1-based in-flight file ordinal
-	CurrentSent  int64   `json:"currentSent"`       // bytes of the in-flight file
-	CurrentTotal int64   `json:"currentTotal"`      // its size (0 = unknown/server-side)
-	EtaMs        int64   `json:"etaMs,omitempty"`   // computed on emit while running
-	ElapsedMs    int64   `json:"elapsedMs,omitempty"` // stamped at finish
-	Stalled      bool   `json:"stalled"`            // no byte movement in stallAfter
+	Move         bool   `json:"move"`                // transfer jobs: copy-then-delete
+	Name         string `json:"name,omitempty"`      // primary source item
+	Items        int    `json:"items"`               // top-level items dropped
+	From         string `json:"from,omitempty"`      // human source label
+	To           string `json:"to,omitempty"`        // human destination label
+	Phase        string `json:"phase"`               // "transfer" | "cleanup"
+	FileIndex    int    `json:"fileIndex"`           // 1-based in-flight file ordinal
+	CurrentSent  int64  `json:"currentSent"`         // bytes of the in-flight file
+	CurrentTotal int64  `json:"currentTotal"`        // its size (0 = unknown/server-side)
+	EtaMs        int64  `json:"etaMs,omitempty"`     // computed on emit while running
+	ElapsedMs    int64  `json:"elapsedMs,omitempty"` // stamped at finish
+	Stalled      bool   `json:"stalled"`             // no byte movement in stallAfter
 	ErrorKind    string `json:"errorKind,omitempty"` // "timeout" | ""
 }
 
