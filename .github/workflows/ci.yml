@@ -29,7 +29,7 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
 
       - name: Vet
-        run: go vet ./...
+        run: go vet -tags gtk3 ./...
 
       # release.yml only runs on tags — lint every workflow here so a bad
       # edit can't wait silently for the next release to explode.
@@ -48,8 +48,13 @@ jobs:
             exit 1
           }
 
+      # Vet/test need the gtk3 tag since the Wails v3 migration: bare
+      # builds resolve Wails' default Linux frontend (gtk4/webkitgtk-6.0),
+      # which ubuntu-latest has never shipped — pkg-config fails before
+      # any code is checked. The gtk3 tag selects webkit2gtk 4.1 (the
+      # installed stack), same as the build matrix and release builds.
       - name: Test
-        run: go test -race ./...
+        run: go test -race -tags gtk3 ./...
 
   build:
     strategy:
