@@ -111,20 +111,26 @@ func (a *App) SourceDeleteSelection(idOrName, bucket string, keys []string, forc
 	return a.deleteSelectionC(c, bucket, keys, force)
 }
 
-func (a *App) deleteSelectionC(c *s3client.Client, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
-	ctx, cancel := a.quickCtx()
-	defer cancel()
+func (a *App) deleteSelectionC(c *s3client.Client, bucket string, keys []string, force bool) (res transfer.DeleteResult, err error) {
+	// A task, not a quick op: the Running-tasks window shows it and can
+	// kill it — canceling during the count/expand phase aborts before
+	// anything is deleted.
+	task := a.tasks.add("delete", fmt.Sprintf("s3://%s — %d selected item(s)", bucket, len(keys)))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
 
 	all, err := expandSelection(ctx, c, bucket, keys)
 	if err != nil {
-		return transfer.DeleteResult{}, err
+		return res, err
 	}
 	if len(all) > deleteForceThreshold && !force {
-		return transfer.DeleteResult{}, fmt.Errorf(
+		return res, fmt.Errorf(
 			"%d object(s) selected — typed confirmation (force) required to delete", len(all))
 	}
+	task.setTotal(len(all), fmt.Sprintf("s3://%s — deleting %d object(s)", bucket, len(all)))
 	a.emitLogSrc(LogInfo, "delete", bucket, fmt.Sprintf("deleting %d object(s)", len(all)))
-	res, err := transfer.DeleteKeys(ctx, c.S3, bucket, all)
+	res, err = transfer.DeleteKeys(ctx, c.S3, bucket, all)
+	task.progress(res.Deleted)
 	switch {
 	case err != nil:
 		a.emitLogSrc(LogError, "delete", bucket, fmt.Sprintf("deleting %d object(s) failed: %v", len(all), err))
@@ -241,15 +247,20 @@ type CopyResult struct {
 
 // CopySelection server-side copies (or moves) a selection into dstBucket/
 // dstPrefix. Sources are copied first and only deleted afterwards when
-// moving (count-then-act).
-func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix string, move bool) (CopyResult, error) {
+// moving (count-then-act). Runs as a tracked task (Running tasks window).
+func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix string, move bool) (res CopyResult, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return CopyResult{}, err
 	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
-	res, err := a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move)
+	verb0 := "copying"
+	if move {
+		verb0 = "moving"
+	}
+	ctx, done := a.beginTask("copy", fmt.Sprintf("%s %d item(s): s3://%s → s3://%s/%s",
+		verb0, len(keys), bucket, dstBucket, dirPrefix(dstPrefix)))
+	defer func() { done(err) }()
+	res, err = a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move)
 	verb := "copied"
 	if move {
 		verb = "moved"

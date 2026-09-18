@@ -188,7 +188,7 @@ Pinned by `pkg/core/profile/secure_test.go` and `pkg/api/secure_test.go`
   60-second scrub reduces the window but cannot hide it from concurrent
   processes. File-list sharing with File Explorer (Ctrl+C/Ctrl+V in
   either direction, including the staging mirror of remote copies) rides
-  the same channel and can be disabled entirely — Settings → Transfers
+  the same channel and can be disabled entirely — Settings → File transfers
   → *Explorer copy & paste* — on locked-down machines; the in-app
   clipboard then never touches the OS clipboard.
 - WebView storage (favorites, source bindings) stays per-user-protected

@@ -63,6 +63,11 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 	a.streamMu.Lock()
 	a.streams[token] = cancel
 	a.streamMu.Unlock()
+	// Transient task: visible while it runs (a stuck listing is killable
+	// from the Running tasks window), gone when it ends — navigation
+	// would otherwise pile done rows up forever.
+	task := a.tasks.addWithID(token, "list",
+		fmt.Sprintf("s3://%s/%s", bucket, prefix))
 
 	go func() {
 		defer func() {
@@ -89,9 +94,13 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 			return nil
 		})
 		msg := ""
+		var ferr error
 		if err != nil && ctx.Err() == nil {
 			msg = err.Error()
+			ferr = err
 		}
+		task.progress(total)
+		task.finish(ferr, true)
 		emit(true, msg)
 	}()
 	return token, nil

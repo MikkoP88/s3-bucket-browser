@@ -20,10 +20,14 @@ type PopoutSpec struct {
 	// (e.g. "popout=doctor&bucket=demo").
 	Query string `json:"query"`
 	// W/H size the window (zero falls back to the dialog's preferred
-	// size). Placement is the backend's: every popout opens centered
-	// on the app's main window.
+	// size). Placement is the backend's; Center picks the anchor — see
+	// ShellGeometry.Center.
 	W int `json:"w"`
 	H int `json:"h"`
+	// Center picks where the popout opens: "display" (default) centers it
+	// on the display carrying the app's main window; "app" centers it on
+	// the main window itself. Anything but "app" means "display".
+	Center string `json:"center"`
 }
 
 // OpenPopout creates the native popout window for spec.ID, or focuses the
@@ -36,8 +40,13 @@ func (a *App) OpenPopout(spec PopoutSpec) (bool, error) {
 	if spec.ID == "" {
 		return false, errors.New("popout id required")
 	}
+	center := spec.Center
+	if center != "app" {
+		center = "display" // the default; also swallows bogus values
+	}
 	return shell.OpenPopout(spec.ID, spec.Title, spec.Query, ShellGeometry{
 		W: spec.W, H: spec.H,
+		Center: center,
 	}), nil
 }
 
@@ -53,4 +62,15 @@ func (a *App) FocusPopout(id string) {
 	if shell != nil {
 		shell.FocusPopout(id)
 	}
+}
+
+// PopoutOpen reports whether a live popout window exists for id. The
+// frontend verifies with it that OpenPopout really produced a window
+// before it gives up on the DOM fallback — and heals its per-id flags
+// when a window died without the popout:closed event.
+func (a *App) PopoutOpen(id string) bool {
+	if shell == nil || shell.PopoutOpen == nil {
+		return false
+	}
+	return shell.PopoutOpen(id)
 }

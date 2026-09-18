@@ -197,6 +197,14 @@ export function settingsDialog(ctx) {
     row(t('settings.showVersions'), checkbox(s.showVersions?.() || false, (v) => a.showVersions?.(v)), t('settings.showVersionsHint')),
     row(t('settings.showMarkers'), checkbox(s.showMarkers?.() || false, (v) => a.showMarkers?.(v)), t('settings.showMarkersHint')),
     row(t('settings.showHidden'), checkbox(s.showHidden?.() || false, (v) => a.showHidden?.(v)), t('settings.showHiddenHint')),
+    // Native popout windows open centered on the display the app is on
+    // (multi-monitor aware); "app" pins them to the app window's center.
+    // In-page popouts are bounded by the app window either way.
+    row(t('settings.popoutCenter'), select(
+      [['display', t('settings.popoutCenterDisplay')], ['app', t('settings.popoutCenterApp')]],
+      s.popoutCenter(),
+      (v) => a.popoutCenter(v),
+    ), t('settings.popoutCenterHint')),
 
     ...colSection('settings.colsMain', s.cols?.() || [], (v) => a.cols?.(v)),
     ...colSection('settings.colsSide', s.colsLocal?.() || [], (v) => a.colsLocal?.(v)),
@@ -232,6 +240,10 @@ export function settingsDialog(ctx) {
     row(t('settings.showThrottle'), checkbox(s.showThrottle?.() || false, (v) => a.showThrottle?.(v))),
     row(t('settings.copyVersions'), checkbox(s.copyVersions?.() ?? true, (v) => a.copyVersions?.(v)), t('settings.copyVersionsHint')),
     row(t('settings.explorerClip'), checkbox(s.explorerClip?.() ?? true, (v) => a.explorerClip?.(v)), t('settings.explorerClipHint')),
+    // The transfers window opens itself when a transfer starts and
+    // closes itself on a clean, all-done batch — hand-opened windows
+    // never close on their own.
+    row(t('settings.xferWin'), checkbox(s.xferWin?.() ?? true, (v) => a.xferWin?.(v)), t('settings.xferWinHint')),
     row(t('settings.throttle'), select(
       RATE_STEPS.map(([v, label]) => [v, t(label)]),
       s.throttle(),

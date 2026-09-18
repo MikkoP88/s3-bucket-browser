@@ -35,12 +35,15 @@ type ShellDialog struct {
 	ShowHidden  bool
 }
 
-// ShellGeometry sizes a native popout window. Zero W/H fall back to the
-// dialog's preferred size. Placement is not part of the geometry: every
-// popout opens centered on the app's main window.
+// ShellGeometry sizes and places a native popout window. Zero W/H fall
+// back to the dialog's preferred size. Center picks the opening anchor:
+// "display" (the default) centers the popout on the display carrying the
+// app's main window — multi-monitor aware, inside the display's work
+// area; "app" centers it on the main window's own rect.
 type ShellGeometry struct {
-	W int
-	H int
+	W      int
+	H      int
+	Center string
 }
 
 // DesktopShell is the full desktop capability set. InstallDesktopShell
@@ -65,6 +68,10 @@ type DesktopShell struct {
 	OpenPopout  func(id, title, query string, geo ShellGeometry) bool
 	ClosePopout func(id string)
 	FocusPopout func(id string)
+	// PopoutOpen reports whether a live popout window exists for id.
+	// The frontend heals its bookkeeping with it when a window died
+	// without the popout:closed event. Optional: nil reads as false.
+	PopoutOpen func(id string) bool
 	// ScreenToClient maps a screen point into the main window's webview
 	// CSS coordinates and reports whether the point is over the window's
 	// client area. The native drag-out uses it to detect a drop landing
@@ -72,6 +79,12 @@ type DesktopShell struct {
 	// coordinates Explorer never provides. Optional: nil means "never over
 	// self" (server builds, tests, non-Windows).
 	ScreenToClient func(screenX, screenY int) (clientX, clientY int, over bool)
+	// InvokeMain runs fn on the application's UI thread, blocking until it
+	// returns. An OLE DoDragDrop must run on the thread that owns the
+	// source window and its message pump — the drag-out marshals its whole
+	// modal loop through here. Optional: nil (or any non-GUI build) sends
+	// the drag to a dedicated STA thread instead.
+	InvokeMain func(fn func() error) error
 }
 
 // shell is the installed desktop shell (nil outside the GUI).

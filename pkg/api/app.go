@@ -19,6 +19,7 @@ import (
 // Wails event names emitted by the service layer.
 const (
 	EventTransferUpdate = "transfer:update" // payload: JobInfo snapshot
+	EventTasksUpdate    = "tasks:update"    // payload: none — re-poll RunningTasks
 	EventS3Changed      = "s3:changed"      // payload: {bucket, prefix} — refresh views
 	EventLogLine        = "log:line"        // payload: LogLine — in-app log drawer
 )
@@ -47,6 +48,8 @@ type App struct {
 
 	jobs *jobManager
 
+	tasks *taskRegistry // every non-transfer task (tasks.go)
+
 	editorsMu sync.Mutex
 	editors   map[string]*editSession // open-in-editor sessions (editor.go)
 
@@ -67,7 +70,7 @@ type App struct {
 
 // New creates the service. version is shown in the About dialog / status bar.
 func New(version string) *App {
-	return &App{
+	a := &App{
 		version:  version,
 		clients:  map[string]*s3client.Client{},
 		engines:  map[string]remotefs.FS{},
@@ -77,21 +80,26 @@ func New(version string) *App {
 		searches: map[string]context.CancelFunc{},
 		streams:  map[string]context.CancelFunc{},
 	}
+	a.tasks = newTaskRegistry()
+	a.tasks.notify = func() { a.emit(EventTasksUpdate) }
+	return a
 }
 
 // Startup captures the Wails runtime context.
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	a.jobs.setContext(ctx)
+	a.tasks.setContext(ctx)
 	a.wipeWorkspaces() // secure.go: crash leftovers never survive a launch
 	a.emitLog(LogInfo, "app", "started "+a.version)
 }
 
-// Shutdown cancels any transfers, searches or listing streams still
-// running when the window closes.
+// Shutdown cancels any transfers, tasks, searches or listing streams
+// still running when the window closes.
 func (a *App) Shutdown(ctx context.Context) {
 	a.emitLog(LogInfo, "app", "stopped")
 	a.jobs.cancelAll()
+	a.tasks.cancelAll()
 	a.searchMu.Lock()
 	for _, cancel := range a.searches {
 		cancel()

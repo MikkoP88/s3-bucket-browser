@@ -10,7 +10,7 @@ Table of contents
   1. Getting started
   2. Supported data sources
   3. Browsing
-  4. Transfers — and migrating between sources
+  4. File transfers — and migrating between sources
   5. Versions & the safety ladder
   6. Bucket administration
   7. Security features
@@ -145,14 +145,23 @@ directory compare) with S3 and the local pane.
 
 ![Dual pane with directory compare](screenshots/dual-pane-compare.png)
 
-- **Floating windows** — the views you keep an eye on — Transfers, the
-  User guide, the keyboard map, the sources overview, the connection
-  Doctor — open as draggable non-modal popouts: no grey-out mask, the
-  app underneath stays fully usable while a transfer crawls or you
-  read the guide. They resize from the corner grip, stack like real
+- **Floating windows** — the views you keep an eye on — File transfers,
+  Running tasks, the User guide, the keyboard map, the sources overview,
+  the connection Doctor — open as draggable non-modal popouts: no
+  grey-out mask, the app underneath stays fully usable while a transfer
+  crawls or you read the guide. They resize from the corner grip,
+  stack like real
   windows (any press raises one, Escape closes the topmost), each
-  remembers where you left it, and reopening a view just focuses its
-  floating window instead of stacking a duplicate.
+  remembers where you left it — position **and** size survive every
+  reopen, and only closing the app forgets them — and reopening a view
+  just focuses its floating window instead of stacking a duplicate.
+  Native popout
+  windows open centered on the display the app window is on
+  (multi-display aware — they follow the app onto whatever monitor it
+  lives on); Settings → View → *Popout windows open centered on* pins
+  them to the app window's own center instead. A native popout carries
+  only the OS window chrome — the in-page header stays hidden, so there
+  is no second title bar or close icon.
 - **Light/dark theme** and 15 built-in languages (English default,
   auto-detect optional) — switchable in Settings.
 
@@ -160,7 +169,7 @@ directory compare) with S3 and the local pane.
 
 ---
 
-## 4. Transfers — and migrating between sources
+## 4. File transfers — and migrating between sources
 
 Every combination of the sources above transfers through the same
 engine, which makes **migration** — S3 → SFTP, WebDAV → S3, local →
@@ -186,22 +195,51 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   copy inside the app is mirrored onto the OS clipboard through a
   staging download (small selections only), so Ctrl+V in Explorer works
   too. **Last copy wins** on both sides. Machines that must not touch
-  the OS clipboard can turn the whole bridge off: Settings → Transfers
+  the OS clipboard can turn the whole bridge off: Settings → File transfers
   → *Explorer copy & paste* (on by default).
 - **Text instead of files** — the context menu (or Edit → Copy as)
   copies names, full paths or `s3://` URIs to the OS clipboard.
 - **Conflicts & speed** — every transfer states a conflict policy
   (overwrite / skip / rename) with a live pre-check that lists exactly
   which files collide, and can be throttled (256 kB/s … 10 MB/s).
-- **Transfer manager** — View → Transfers (or the status-bar counter)
-  shows every job with per-file and byte-level progress, speed and
-  cancel — in a floating window, so you can keep browsing while it
-  runs.
+- **Transfer manager** — View → File transfers (or the status-bar
+  counter) shows every job with per-file and byte-level progress, speed
+  and cancel — in a floating window, so you can keep browsing while it
+  runs. The window also opens **itself** the moment a transfer starts
+  and closes itself when the batch ends cleanly (Settings → File
+  transfers → *Transfer window auto open/close*, on by default). The
+  automatic close is careful: a failed or canceled transfer keeps the
+  window on screen, simultaneous transfers close it only when the last
+  one finishes, and a window you opened by hand never closes on its
+  own. A freshly opened window shows **what happened since it opened**;
+  finished jobs from before the open sit behind a *Show history* toggle
+  (with a count of hidden rows) — so a glance answers "what is running
+  right now" without the noise of an all-day backlog. The toggle stays
+  available whenever anything finished exists: *Hide history*
+  collapses all finished rows on demand — including jobs that finished
+  inside the open view — leaving just the live work. **Clear** removes
+  the finished rows you can see (all of them once history is shown);
+  running jobs always stay.
+- **Running tasks** — View → Running tasks (or the status-bar ⚙
+  indicator) is the everything-monitor. The ⚙ indicator always shows
+  a live count of active tasks (e.g. "⚙ 2 tasks — search 3/10") and
+  clicking it opens the Running tasks window. The list covers transfer
+  jobs, deep searches, bulk deletes, version purges, bucket emptying,
+  storage-class conversions — every action the app is taking, each
+  with progress and a **Cancel** button. Kill a task that hangs or
+  runs too long; destructive tasks count before they act, so canceling
+  during the counting phase destroys nothing. Bulk operations run as
+  tracked tasks with no fixed time limit — they finish, or you stop
+  them. The window keeps the same session history as File transfers —
+  pre-open finished rows hide behind *Show history*, *Hide history*
+  collapses everything finished on demand, and **Clear** retires what
+  is visible.
 
 ![Transfer manager](screenshots/transfers.png)
 
-Closing the window or quitting while transfers still run — or with
-unsaved profile work — asks first; nothing is dropped silently.
+Closing the window or quitting while transfers or other tasks still
+run — or with unsaved profile work — asks first; nothing is dropped
+silently.
 
 ---
 

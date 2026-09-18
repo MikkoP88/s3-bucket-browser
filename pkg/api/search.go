@@ -74,6 +74,10 @@ func (a *App) DeepSearch(bucket, prefix string, opts SearchOptions) (string, err
 	a.searchMu.Lock()
 	a.searches[token] = cancel
 	a.searchMu.Unlock()
+	// The search rides the unified task registry under its token, so
+	// CancelTask and the search window's own cancel agree on one ID.
+	task := a.tasks.addWithID(token, "search",
+		fmt.Sprintf("%q — s3://%s/%s", opts.Pattern, bucket, dirPrefix(prefix)))
 
 	go func() {
 		defer func() {
@@ -97,9 +101,13 @@ func (a *App) DeepSearch(bucket, prefix string, opts SearchOptions) (string, err
 			a.emit(EventSearchPage, SearchPage{Token: token, Entries: batch, Matched: matched})
 		}
 		done := SearchDone{Token: token, Scanned: stats.Scanned, Matched: stats.Matched}
+		var ferr error
 		if err != nil && ctx.Err() == nil {
 			done.Error = err.Error()
+			ferr = err
 		}
+		task.progress(matched)
+		task.finish(ferr, false)
 		a.emit(EventSearchDone, done)
 	}()
 	return token, nil

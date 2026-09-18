@@ -155,9 +155,35 @@ func TestJobManagerLifecycle(t *testing.T) {
 	}
 	<-j.ctx.Done()
 	j.info.Status = JobCanceled // as finishJob would
-	m.clearFinished()
+	m.clearFinished(nil)
 	if len(m.snapshot()) != 0 {
 		t.Error("finished job not cleared")
+	}
+
+	// id-scoped clear: a list retires only its members, an empty list
+	// retires nothing (a window with all history hidden must not wipe
+	// what it cannot see), nil retires everything finished
+	a := m.add("upload", 2, 10)
+	b := m.add("download", 2, 20)
+	a.info.Status = JobDone
+	b.info.Status = JobDone
+	m.clearFinished([]string{a.info.ID})
+	if got := m.snapshot(); len(got) != 1 || got[0].ID != b.info.ID {
+		t.Fatalf("scoped clear left %+v", got)
+	}
+	m.clearFinished([]string{})
+	if len(m.snapshot()) != 1 {
+		t.Fatal("empty id list must clear nothing")
+	}
+	m.clearFinished(nil)
+	if len(m.snapshot()) != 0 {
+		t.Fatal("nil ids must clear all finished")
+	}
+	// running work is never cleared, scoped or not
+	c := m.add("upload", 1, 5)
+	m.clearFinished([]string{c.info.ID})
+	if len(m.snapshot()) != 1 {
+		t.Fatal("running job cleared by scoped clear")
 	}
 }
 

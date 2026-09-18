@@ -251,25 +251,87 @@ if (window.wails?.Call?.ByName) {
 }
 const nativeWindows = () => nativeMode;
 const nativeOpen = new Set();
-onEvent('popout:closed', ({ id }) => nativeOpen.delete(id));
+onEvent('popout:closed', ({ id }) => {
+  nativeOpen.delete(id);
+  // a native transfers window closed by hand (or by ClosePopout) has no
+  // DOM onClose in the main window — this is its reset hook
+  if (id === 'transfers') xferAutoReset();
+});
+
+// nativeBroken downgrades the native path for the whole session: an
+// OpenPopout that resolved but produced no findable window makes the
+// promise worthless — every later popout floats in-page instead.
+let nativeBroken = false;
+// inDomFallback guards the fallback itself: a domOpen thunk may call
+// the very function that just failed natively, and that second pass
+// must take the DOM path unconditionally, not retry the native one.
+let inDomFallback = false;
+
+// domFallbackOpen runs a DOM-popout continuation with the fallback flag
+// up — every maybeNativePopout inside it answers false.
+function domFallbackOpen(thunk) {
+  inDomFallback = true;
+  try { thunk(); } finally { inDomFallback = false; }
+}
 
 // maybeNativePopout floats (or focuses) id as a native OS window and
 // returns true when the caller must stop — the window loads /?query and
-// renders the view itself. A remembered size survives reopens under the
-// same storage key the DOM popouts use; placement is the backend's job
-// (every popout opens centered on the app window).
-function maybeNativePopout({ id, query, title, w, h }) {
-  if (!nativeWindows()) return false;                                 // harness / browser
-  if (document.body.classList.contains('popout-win')) return false;   // we ARE the popout
-  if (nativeOpen.has(id)) { api.FocusPopout(id); return true; }
+// renders the view itself. domOpen is the in-page continuation for when
+// the native path cannot deliver a window (OpenPopout rejected, or the
+// promised window never materialized) — a badge or menu click is never
+// swallowed silently. A remembered size survives reopens under the same
+// storage key the DOM popouts use; placement is the backend's job —
+// centered on the display the app is on by default (multi-monitor
+// aware), or on the app window when Settings → View says so
+// (s3b-popout-center).
+function maybeNativePopout({ id, query, title, w, h, domOpen }) {
+  if (!nativeWindows() || nativeBroken || inDomFallback) return false; // harness / browser / broken
+  if (document.body.classList.contains('popout-win')) return false;    // we ARE the popout
+  if (nativeOpen.has(id)) {
+    // The flag can be stale — a window can die without a popout:closed
+    // event, and then every click would FocusPopout into nothing. Ask
+    // the backend: a live window focuses, a dead id releases the flag
+    // and the DOM continuation takes over.
+    api.PopoutOpen(id).then((open) => {
+      if (open) { api.FocusPopout(id); return; }
+      nativeOpen.delete(id);
+      if (id === 'transfers') xferAutoReset();
+      if (domOpen) domFallbackOpen(domOpen);
+    }).catch(() => api.FocusPopout(id)); // binding gone: trust the flag
+    return true;
+  }
   nativeOpen.add(id);
   let geo = null;
   try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
   api.OpenPopout({
     id, title, query,
     w: Math.max(0, geo?.w || w || 0), h: Math.max(0, geo?.h || h || 0),
-  }).catch((err) => { nativeOpen.delete(id); toast(`Popout: ${err}`, 'error'); });
+    center: localStorage.getItem('s3b-popout-center') === 'app' ? 'app' : 'display',
+  }).then(() => {
+    // A resolved OpenPopout should mean a window, but verify after a
+    // grace period — the whole session rides on this promise.
+    setTimeout(() => verifyNativePopout(id, domOpen), 400);
+  }).catch((err) => {
+    nativeOpen.delete(id);
+    toast(`Popout: ${err}`, 'error');
+    if (domOpen) domFallbackOpen(domOpen);
+  });
   return true;
+}
+
+// verifyNativePopout asks the backend whether the promised window is
+// alive; a no means the native path is unusable — downgrade the session
+// to DOM popouts and float this one in-page.
+function verifyNativePopout(id, domOpen) {
+  if (!nativeOpen.has(id)) return; // closed or already fallen back
+  api.PopoutOpen(id).then((open) => {
+    if (open || !nativeOpen.has(id)) return;
+    nativeOpen.delete(id);
+    nativeBroken = true;
+    if (id === 'transfers') xferAutoReset();
+    toast('Native popout windows unavailable — opening in-window instead', 'error');
+    if (domOpen) domFallbackOpen(domOpen);
+  }).catch(() => { /* verification unavailable: trust the resolved open */ });
 }
 
 // renderPopoutView runs inside a native popout window (?popout=<kind>):
@@ -282,8 +344,8 @@ export function renderPopoutView(kind, qs) {
   const id = kind === 'doctor' ? `doctor${bucket ? `:${bucket}` : ''}` : kind;
   const persist = () => {
     try {
-      // size only — the backend centers the window on the app window,
-      // so there is no position worth remembering
+      // size only — the backend centers the window (on the app's
+      // display by default), so there is no position worth remembering
       localStorage.setItem(`s3b-popout-${id}`, JSON.stringify({
         w: outerWidth, h: outerHeight,
       }));
@@ -293,6 +355,7 @@ export function renderPopoutView(kind, qs) {
   setInterval(persist, 2000);
   if (kind === 'doctor') doctorDialog(bucket);
   else if (kind === 'transfers') transferManager();
+  else if (kind === 'tasks') runningTasks();
   else if (kind === 'keys') helpSheet();
   else if (kind === 'guide') usageGuideDialog();
   else if (kind === 'sources') sourcesInfoDialog();
@@ -793,6 +856,9 @@ export function doctorDialog(bucket) {
     query: bucket ? `popout=doctor&bucket=${encodeURIComponent(bucket)}` : 'popout=doctor',
     title: `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`,
     w: 780, h: 640,
+    // self-referential on purpose: the fallback flag makes the second
+    // pass take the DOM path instead of retrying the native one
+    domOpen: () => doctorDialog(bucket),
   })) return;
   const summary = el('div', { class: 'doc-summary' });
   const list = el('div', { class: 'doc-list' });
@@ -935,41 +1001,142 @@ export function doctorDialog(bucket) {
   }).catch((err) => toast(`Doctor: ${err}`, 'error'));
 }
 
+// ---------- view history (transfers / running tasks share it) ----------
+// A freshly opened view shows only what happens from that moment on:
+// rows already finished when it opened start as "history" behind a
+// Show history toggle (the running job that auto-opened a transfer
+// window is current, so it shows). The toggle is always there while
+// any finished row exists — Hide collapses everything finished to
+// just the live work, Show brings it back. Clear passes the ids the
+// view can actually see to the backend, so hidden history survives it.
+function viewHistory(onToggle) {
+  const head = el('div', { class: 'tm-head' });
+  const hidden = new Set();
+  let show = false;
+  let seeded = false;
+  const fin = (j) => j.status !== 'running' && j.status !== 'queued';
+  const hideAll = (rows) => {
+    for (const j of rows) if (fin(j)) hidden.add(j.id);
+    show = false;
+  };
+  return {
+    head,
+    // seed captures the already-finished rows on the first draw; later
+    // draws drop ids that left the view (cleared behind our back).
+    seed(rows) {
+      if (!seeded) {
+        seeded = true;
+        for (const j of rows) if (fin(j)) hidden.add(j.id);
+      } else {
+        for (const id of hidden) if (!rows.some((j) => j.id === id)) hidden.delete(id);
+      }
+    },
+    visible(rows) { return rows.filter((j) => show || !hidden.has(j.id)); },
+    // ids for Clear: null = "every finished row" when nothing is hidden
+    // or history is shown; otherwise exactly the finished rows visible
+    // now (possibly none — an empty list clears nothing).
+    clearIds(rows) {
+      if (!hidden.size || show) return null;
+      return rows.filter((j) => fin(j) && !hidden.has(j.id)).map((j) => j.id);
+    },
+    redraw(rows) {
+      head.replaceChildren();
+      // toggle whenever finished rows exist — hidden ones (Show) or
+      // visible ones (Hide); a view of live work only has no toggle
+      if (!hidden.size && !rows.some((j) => fin(j))) return;
+      const revealing = hidden.size > 0 && !show;
+      head.appendChild(el('button', {
+        class: 'btn',
+        text: revealing ? t('popout.showHistory') : t('popout.hideHistory'),
+        onclick: () => { if (revealing) show = true; else hideAll(rows); onToggle(); },
+      }));
+      if (revealing) {
+        head.appendChild(el('span', {
+          class: 'tm-head-n',
+          text: t('popout.hiddenCount', { n: hidden.size }),
+        }));
+      }
+    },
+  };
+}
+
 // ---------- transfer manager ----------
+// transferManager is the user entry: opening by hand — View menu, status
+// bar, context menus — locks the window open (see xferAuto below); the
+// automatic path goes through openTransferManager directly.
 export function transferManager(onClose) {
-  if (maybeNativePopout({ id: 'transfers', query: 'popout=transfers', title: t('transfer.managerTitle'), w: 720, h: 560 })) {
+  xferAuto.manual = true;
+  return openTransferManager(onClose);
+}
+
+function openTransferManager(onClose) {
+  if (maybeNativePopout({
+    id: 'transfers', query: 'popout=transfers', title: t('transfer.managerTitle'), w: 720, h: 560,
+    domOpen: () => openTransferManagerDom(onClose),
+  })) {
     return { close: () => api.ClosePopout('transfers') };
   }
+  return openTransferManagerDom(onClose);
+}
+
+function openTransferManagerDom(onClose) {
   const list = el('div', {});
   let off = () => {};
   // A popout, not a modal: the whole point is watching jobs while the
   // app keeps working — no mask, draggable, one instance (reopening
   // focuses the floating window). Unsubscribes transfer:update on close.
+  const hist = viewHistory(() => draw());
   const pop = openPopout({
     id: 'transfers',
     title: t('transfer.managerTitle'),
-    body: list,
+    body: el('div', {}, hist.head, list),
     wide: true,
     buttons: [
-      { label: t('transfer.clearFinished'), onclick: async () => { await api.ClearFinishedTransfers(); draw(); } },
+      { label: t('transfer.clear'), onclick: () => clearVisible() },
     ],
-    onClose: () => { off(); onClose?.(); },
+    onClose: () => { off(); xferAutoReset(); onClose?.(); },
   });
   // already floating: focus() did the work — the first instance owns
   // the subscription, a second one would leak it
   if (!pop.fresh) return { close: pop.close };
 
+  let rows = [];
+
+  // Clear retires exactly what the window shows (viewHistory decides
+  // the ids); null still means "every finished job" for the nothing-
+  // hidden case.
+  function clearVisible() {
+    api.ClearFinishedTransfers(hist.clearIds(rows)).finally(() => draw());
+  }
+
   async function draw() {
     const jobs = await api.ActiveTransfers();
     // Running jobs stay on top; the rest keep their order.
-    const rank = { running: 0, queued: 1, done: 2, canceled: 3, failed: 4 };
+    const rank = { running: 0, queued: 1, done: 2, canceled: 3, error: 4, failed: 4 };
     jobs.sort((x, y) => (rank[x.status] ?? 9) - (rank[y.status] ?? 9));
-    list.replaceChildren(...jobs.map(renderJob));
-    if (!jobs.length) list.appendChild(el('div', { class: 'tm-empty', text: t('transfer.noTransfers') }));
+    hist.seed(jobs);
+    rows = jobs;
+    const visible = hist.visible(jobs);
+    list.replaceChildren(...visible.map(renderJob));
+    if (!visible.length) list.appendChild(el('div', { class: 'tm-empty', text: t('transfer.noTransfers') }));
+    hist.redraw(jobs);
+  }
+
+  // jobPct: byte totals can be zero (server-side copies settle their
+  // bytes at the end, some jobs never count them) — a finished job is
+  // always 100%, a running one without bytes derives its bar from the
+  // file counts.
+  function jobPct(j) {
+    if (j.totalBytes > 0) return Math.min(100, (j.sentBytes / j.totalBytes) * 100);
+    if (j.status === 'done') return 100;
+    if (j.totalFiles > 0) {
+      return Math.min(100, ((j.doneFiles + j.failedFiles + j.skippedFiles) / j.totalFiles) * 100);
+    }
+    return 0;
   }
 
   function renderJob(j) {
-    const pct = j.totalBytes > 0 ? Math.min(100, (j.sentBytes / j.totalBytes) * 100) : 0;
+    const pct = jobPct(j);
     const bar = el('div', { class: 'tr-bar' }, el('div', { style: `width:${pct}%` }));
     const counts = t('transfer.filesCount', { d: j.doneFiles, t: j.totalFiles })
       + (j.failedFiles ? ` · ${t('transfer.failedCount', { n: j.failedFiles })}` : '')
@@ -999,11 +1166,165 @@ export function transferManager(onClose) {
   return { close: () => pop.close() };
 }
 
+// ---------- transfer window auto open/close ----------
+// The File transfers window is the one view that has nothing to show
+// until something runs. With Settings → File transfers → "Transfer
+// window auto open/close" on (the default) it opens itself the moment a
+// transfer starts and closes itself when the batch is over. The close
+// is guarded four ways: only the window the app opened itself closes
+// (any manual open — menu, status bar — locks it open for good), a
+// failed or canceled job keeps it on screen, per-file failures count
+// as not-successful too, and with simultaneous transfers only the LAST
+// running job's completion closes it.
+const xferWinSetting = () => localStorage.getItem('s3b-xfer-window') !== '0';
+const xferAuto = { open: false, manual: false, failed: false, close: null };
+let xferHadRunning = false;
+
+function xferWindowOpen() {
+  if (nativeWindows()) return nativeOpen.has('transfers');
+  return popouts.has('transfers');
+}
+
+function xferAutoReset() {
+  xferAuto.open = false;
+  xferAuto.manual = false;
+  xferAuto.failed = false;
+  xferAuto.close = null;
+}
+
+function xferAutoClose() {
+  const close = xferAuto.close;
+  xferAutoReset(); // first — the close handle's own event must find a clean state
+  try { close?.(); } catch { /* window already gone */ }
+}
+
+// xferAutoUpdate rides every transfer:update: it opens the window on the
+// rising edge (no running job → some running job) and evaluates the
+// close guards on every update after that.
+async function xferAutoUpdate(j) {
+  // A native popout window floats exactly one view; its own instance of
+  // this module must never fight the main window's auto-manager.
+  if (document.body.classList.contains('popout-win')) return;
+  if (j && (j.status === 'error' || j.status === 'canceled'
+    || (j.status !== 'running' && j.failedFiles))) xferAuto.failed = true;
+  let running = false;
+  try { running = (await api.ActiveTransfers()).some((x) => x.status === 'running'); }
+  catch { return; }
+  if (running && !xferHadRunning && xferWinSetting() && !xferWindowOpen()) {
+    const h = openTransferManager();
+    xferAuto.open = true;
+    xferAuto.manual = false;
+    xferAuto.failed = false;
+    xferAuto.close = h?.close;
+  }
+  xferHadRunning = running;
+  if (!running && xferAuto.open && !xferAuto.manual && !xferAuto.failed) xferAutoClose();
+}
+onEvent('transfer:update', (j) => { xferAutoUpdate(j); });
+
 // fmtEta renders a remaining-seconds estimate for running jobs.
 function fmtEta(secs) {
   if (secs >= 3600) return `~${Math.round(secs / 3600)}h`;
   if (secs >= 60) return `~${Math.round(secs / 60)}m`;
   return `~${Math.round(secs)}s`;
+}
+
+// ---------- running tasks ----------
+// taskKindIcon prefixes a task row: transfers reuse the manager's
+// arrows; every other kind shows its name in brackets (language-neutral
+// and self-describing — no icon set needed).
+function taskKindIcon(kind) {
+  if (kind === 'upload') return '\u2191';
+  if (kind === 'download') return '\u2193';
+  if (kind === 'transfer') return '\u21C4';
+  return `[${kind}]`;
+}
+
+// runningTasks is the everything-monitor: transfer jobs, deep searches,
+// bulk deletes/purges/conversions — every tracked action with a Cancel
+// for whatever hangs or runs too long. Modeled on the transfer manager
+// (same floating-window contract: no mask, one instance, live redraw).
+export function runningTasks() {
+  if (maybeNativePopout({
+    id: 'tasks', query: 'popout=tasks', title: t('tasks.title'), w: 720, h: 520,
+    domOpen: runningTasksDom,
+  })) {
+    return { close: () => api.ClosePopout('tasks') };
+  }
+  return runningTasksDom();
+}
+
+function runningTasksDom() {
+  const list = el('div', {});
+  const offs = [];
+  const hist = viewHistory(() => draw());
+  const pop = openPopout({
+    id: 'tasks',
+    title: t('tasks.title'),
+    body: el('div', {}, hist.head, list),
+    wide: true,
+    buttons: [
+      { label: t('tasks.clear'), onclick: () => clearVisible() },
+    ],
+    onClose: () => { offs.forEach((off) => off()); },
+  });
+  // already floating: the first instance owns the subscriptions
+  if (!pop.fresh) return { close: pop.close };
+
+  let rows = [];
+
+  // Clear retires exactly what the window shows (viewHistory decides
+  // the ids); null still means "every finished row" for the nothing-
+  // hidden case.
+  function clearVisible() {
+    api.ClearFinishedTasks(hist.clearIds(rows)).finally(() => draw());
+  }
+
+  async function draw() {
+    const tasks = await api.RunningTasks();
+    // Running first, queued next, then finished states; stable within a rank.
+    const rank = { running: 0, queued: 1, done: 2, canceled: 3, error: 4 };
+    tasks.sort((x, y) => (rank[x.status] ?? 9) - (rank[y.status] ?? 9));
+    hist.seed(tasks);
+    rows = tasks;
+    const visible = hist.visible(tasks);
+    list.replaceChildren(...visible.map(renderTask));
+    if (!visible.length) list.appendChild(el('div', { class: 'tm-empty', text: t('tasks.empty') }));
+    hist.redraw(tasks);
+  }
+
+  // Unit totals can be zero (unknown before a count phase) — a finished
+  // task is always 100%.
+  function taskPct(j) {
+    if (j.totalUnits > 0) return Math.min(100, (j.doneUnits / j.totalUnits) * 100);
+    return j.status === 'done' ? 100 : 0;
+  }
+
+  function renderTask(j) {
+    const pct = taskPct(j);
+    const bar = el('div', { class: 'tr-bar' }, el('div', { style: `width:${pct}%` }));
+    const counts = j.totalUnits > 0 ? t('tasks.counts', { d: j.doneUnits, t: j.totalUnits }) : '';
+    const job = el('div', { class: `tr-job ${j.status}` },
+      el('div', { class: 'tr-top' },
+        el('span', { class: 'tr-name', text: `${taskKindIcon(j.kind)} ${j.label || j.id}` }),
+        el('span', { class: 'tr-status', text: counts ? `${j.status} — ${counts}` : j.status }),
+        el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
+        (j.status === 'running' || j.status === 'queued')
+          ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { await api.CancelTask(j.id); } })
+          : null,
+      ),
+      bar,
+      j.error ? el('div', { class: 'tr-sub', text: j.error }) : null,
+    );
+    job.dataset.id = j.id;
+    return job;
+  }
+
+  draw();
+  // jobs still speak transfer:update; everything else speaks tasks:update
+  offs.push(onEvent('tasks:update', () => draw()));
+  offs.push(onEvent('transfer:update', () => draw()));
+  return { close: pop.close };
 }
 
 // ---------- data source editor (M8: any connection type) ----------
@@ -1346,7 +1667,7 @@ export function sourceEditor(existing, onSaved) {
 
 // ---------- help sheet (F1) ----------
 export function helpSheet() {
-  if (maybeNativePopout({ id: 'keys', query: 'popout=keys', title: 'Keyboard shortcuts', w: 640, h: 620 })) return;
+  if (maybeNativePopout({ id: 'keys', query: 'popout=keys', title: 'Keyboard shortcuts', w: 640, h: 620, domOpen: helpSheet })) return;
   const rows = [
     ['Enter', 'Open bucket / folder / download object'],
     ['F2', 'Rename'],
@@ -1393,12 +1714,12 @@ const GUIDE_SECTIONS = [
     ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and type a path like s3://bucket/folder/ to jump directly. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here.'],
   ]],
-  ['Transfers', [
+  ['File transfers', [
     ['Upload', 'Toolbar ▲ and the context menus open one Upload menu: Files… (Ctrl+U) picks files, Folder… a whole directory tree — or just drag files/folders from the OS anywhere onto the window.'],
     ['Download', 'Toolbar ▼, Ctrl+D, Enter, or the context menu. Multistep downloads/uploads are multipart and resumable per file.'],
     ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move. Need the text instead? The context menu (or Edit → Copy as) copies names, full paths or s3:// URIs to the OS clipboard.'],
     ['Conflicts & speed', 'Every transfer asks for a conflict policy (overwrite / skip / rename) unless a default is set in Settings, and can be throttled (256 kB/s … 10 MB/s).'],
-    ['Transfer manager', 'View → Transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel.'],
+    ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel.'],
   ]],
   ['Versions & safety', [
     ['Versioning', 'Buckets with versioning show a 🔄 icon in the tree. Open an object\u2019s context menu → Versions for the timeline: restore a previous version as latest, view text diffs, or purge old versions.'],
@@ -1421,7 +1742,7 @@ const GUIDE_SECTIONS = [
 ];
 
 export function usageGuideDialog() {
-  if (maybeNativePopout({ id: 'guide', query: 'popout=guide', title: 'User guide', w: 860, h: 640 })) return;
+  if (maybeNativePopout({ id: 'guide', query: 'popout=guide', title: 'User guide', w: 860, h: 640, domOpen: usageGuideDialog })) return;
   const strip = el('div', { class: 'tabstrip' });
   const content = el('div', { class: 'tabbody' });
   const select = (name) => {
@@ -1476,7 +1797,7 @@ const SOURCE_KINDS = [
 ];
 
 export function sourcesInfoDialog() {
-  if (maybeNativePopout({ id: 'sources', query: 'popout=sources', title: 'Supported data sources', w: 680, h: 620 })) return;
+  if (maybeNativePopout({ id: 'sources', query: 'popout=sources', title: 'Supported data sources', w: 680, h: 620, domOpen: sourcesInfoDialog })) return;
   const body = el('div', { class: 'guide' },
     SOURCE_KINDS.map(([name, lines]) => el('div', { class: 'guide-item' },
       el('div', { class: 'guide-h', text: name }),
