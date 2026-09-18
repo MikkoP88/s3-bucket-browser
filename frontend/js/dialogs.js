@@ -85,6 +85,14 @@ const popRoot = () => document.getElementById('popout-root');
 const popouts = new Map(); // id -> handle
 let popZ = 60; // sibling z-order counter (modal-root stays above at 100)
 
+// The monitoring windows (File transfers, Running tasks) ride the Windows
+// file-transfer footprint: 490x300 default AND minimum, the height
+// tracking the content up to 740px — beyond that the window stays put and
+// the content scrolls inside. A manual height resize takes over for the
+// window's life (never growing past what the content fills); reopening
+// starts the tracking fresh. See openPopout's autoH.
+const XFER_PROFILE = { w: 490, h: 300, minW: 490, minH: 300, maxH: 740 };
+
 function clampPop(box) {
   const vw = window.innerWidth, vh = window.innerHeight;
   // never strand a window: at least 60px stay reachable horizontally
@@ -98,7 +106,7 @@ function clampPop(box) {
 // footLeft: element pinned to the left end of the footer bar — style it
 // with class 'left' (see .modal-foot .left) so its margin-right:auto keeps
 // the action buttons on the right. Rendered even with no buttons.
-export function openPopout({ id, title, body, buttons = [], footLeft = null, wide = false, cls = '', onClose }) {
+export function openPopout({ id, title, body, buttons = [], footLeft = null, wide = false, cls = '', autoH = null, onClose }) {
   const existing = popouts.get(id);
   if (existing) { existing.focus(); return { ...existing, fresh: false }; }
 
@@ -133,7 +141,7 @@ export function openPopout({ id, title, body, buttons = [], footLeft = null, wid
     })));
 
   const box = el('div', {
-    class: `popout${wide ? ' wide' : ''}${cls ? ' ' + cls : ''}`,
+    class: `popout${wide ? ' wide' : ''}${autoH ? ' autoh' : ''}${cls ? ' ' + cls : ''}`,
     role: 'dialog', 'aria-label': title, 'data-pop': id,
   },
     el('div', { class: 'modal-head' },
@@ -156,6 +164,9 @@ export function openPopout({ id, title, body, buttons = [], footLeft = null, wid
   popouts.set(id, handle);
   // any pointer press raises the window above its siblings
   box.addEventListener('pointerdown', () => handle.focus(), true);
+  // the delegated grip handler reads the profile (its floors/cap differ
+  // from the generic 320x180 minimum)
+  if (autoH) box._autoH = autoH;
 
   // geometry: remembered placement/size, else centered in the app window
   let geo = null;
@@ -166,22 +177,45 @@ export function openPopout({ id, title, body, buttons = [], footLeft = null, wid
     // content, sized full-bleed by CSS (body.popout-win .popout). Never
     // pin it with inline geometry: the OS owns size and position now,
     // and inline px would freeze the content while the user resizes
-    // the window.
+    // the window. The auto-height windows go one further — the
+    // controller below drives the OS window itself to fit the content.
+    if (autoH) installAutoHeight(id, box, autoH);
     handle.focus();
     return handle;
   }
   if (geo?.w) {
-    box.style.width = `${Math.max(320, Math.min(geo.w, window.innerWidth - 16))}px`;
-    box.style.height = `${Math.max(180, Math.min(geo.h || 0, window.innerHeight - 16))}px`;
-    // a remembered size outranks the CSS maxima (they only shape the
-    // default, content-driven size)
-    box.style.maxWidth = 'none';
-    box.style.maxHeight = 'none';
-    box.style.left = `${geo.x || 0}px`;
-    box.style.top = `${geo.y || 0}px`;
+    box.style.width = `${Math.max(autoH ? autoH.minW : 320, Math.min(geo.w, window.innerWidth - 16))}px`;
+    if (autoH) {
+      // an auto-height window restores placement and width only: the
+      // height tracks the content afresh on every reopen, and the CSS
+      // cap (not remembered geometry) owns the maximum
+      box.style.left = `${geo.x || 0}px`;
+      box.style.top = `${geo.y || 0}px`;
+    } else {
+      box.style.height = `${Math.max(180, Math.min(geo.h || 0, window.innerHeight - 16))}px`;
+      // a remembered size outranks the CSS maxima (they only shape the
+      // default, content-driven size)
+      box.style.maxWidth = 'none';
+      box.style.maxHeight = 'none';
+      box.style.left = `${geo.x || 0}px`;
+      box.style.top = `${geo.y || 0}px`;
+    }
   } else {
     box.style.left = `${Math.max(16, (window.innerWidth - box.offsetWidth) / 2)}px`;
     box.style.top = `${Math.max(16, (window.innerHeight - box.offsetHeight) / 2)}px`;
+  }
+  if (autoH) {
+    // CSS-driven height changes fire no event, yet the window grows
+    // downward from a pinned top: keep the whole thing on screen as the
+    // content comes and goes (a centered 300px window at the 740 cap
+    // would otherwise spill past the viewport bottom). A manual size
+    // (inline height) leaves placement to the user.
+    new MutationObserver(() => {
+      if (box.style.height) return;
+      const top = parseFloat(box.style.top) || 0;
+      const fit = Math.max(0, Math.min(top, window.innerHeight - box.offsetHeight));
+      if (Math.abs(fit - top) >= 1) box.style.top = `${Math.round(fit)}px`;
+    }).observe(box, { childList: true, subtree: true, characterData: true });
   }
   clampPop(box);
   handle.focus();
@@ -214,12 +248,31 @@ document.addEventListener('pointerdown', (e) => {
   const ow = box.offsetWidth, oh = box.offsetHeight;
   const resize = !!grip;
   box.classList.toggle('dragging', !resize);
+  // auto-height windows carry their own floor (the Windows file-transfer
+  // footprint) and never take more height than their content fills
+  const auto = box._autoH || null;
+  const floorW = auto ? auto.minW : 320;
+  const floorH = auto ? auto.minH : 180;
   const move = (ev) => {
     if (resize) {
-      box.style.width = `${Math.max(320, Math.min(ow + ev.clientX - sx, window.innerWidth - 16))}px`;
-      box.style.height = `${Math.max(180, Math.min(oh + ev.clientY - sy, window.innerHeight - 16))}px`;
+      // the tallest an auto window may get: what its content fills.
+      // Measured as the natural (height:auto) height before the next
+      // paint — the CSS max-height already caps that reading at the
+      // profile cap, exactly the ceiling we want.
+      let capH = window.innerHeight - 16;
+      if (auto) {
+        const keep = box.style.height;
+        box.style.height = 'auto';
+        const natural = box.offsetHeight;
+        box.style.height = keep;
+        capH = Math.min(auto.maxH, Math.max(auto.minH, natural), capH);
+      }
+      box.style.width = `${Math.max(floorW, Math.min(ow + ev.clientX - sx, window.innerWidth - 16))}px`;
+      box.style.height = `${Math.max(floorH, Math.min(oh + ev.clientY - sy, capH))}px`;
       box.style.maxWidth = 'none';
-      box.style.maxHeight = 'none';
+      // an auto window keeps its CSS cap; a plain one loses all maxima
+      // to the remembered size
+      if (!auto) box.style.maxHeight = 'none';
     } else {
       box.style.left = `${ox + ev.clientX - sx}px`;
       box.style.top = `${oy + ev.clientY - sy}px`;
@@ -234,7 +287,10 @@ document.addEventListener('pointerdown', (e) => {
     if (pid) localStorage.setItem(`s3b-popout-${pid}`, JSON.stringify({
       x: parseFloat(box.style.left) || 0,
       y: parseFloat(box.style.top) || 0,
-      w: box.offsetWidth, h: box.offsetHeight,
+      w: box.offsetWidth,
+      // an auto-height window never persists its height — it tracks the
+      // content afresh on every reopen
+      ...(box._autoH ? {} : { h: box.offsetHeight }),
     }));
   };
   window.addEventListener('pointermove', move);
@@ -289,7 +345,7 @@ function domFallbackOpen(thunk) {
 // centered on the display the app is on by default (multi-monitor
 // aware), or on the app window when Settings → View says so
 // (s3b-popout-center).
-function maybeNativePopout({ id, query, title, w, h, domOpen }) {
+function maybeNativePopout({ id, query, title, w, h, minW = 0, minH = 0, maxH = 0, domOpen }) {
   if (!nativeWindows() || nativeBroken || inDomFallback) return false; // harness / browser / broken
   if (document.body.classList.contains('popout-win')) return false;    // we ARE the popout
   if (nativeOpen.has(id)) {
@@ -306,11 +362,20 @@ function maybeNativePopout({ id, query, title, w, h, domOpen }) {
     return true;
   }
   nativeOpen.add(id);
+  // auto-height windows (minH > 0) always open at their profile default:
+  // the height tracks the content afresh, so a remembered height would
+  // only flash before the content fit overrides it — and reopening must
+  // re-enable the tracking (the backend skips its session height for
+  // them too)
+  const auto = minH > 0;
   let geo = null;
-  try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
+  if (!auto) {
+    try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
+  }
   api.OpenPopout({
     id, title, query,
     w: Math.max(0, geo?.w || w || 0), h: Math.max(0, geo?.h || h || 0),
+    minW, minH, maxH,
     center: localStorage.getItem('s3b-popout-center') === 'app' ? 'app' : 'display',
   }).then(() => {
     // A resolved OpenPopout should mean a window, but verify after a
@@ -339,6 +404,54 @@ function verifyNativePopout(id, domOpen) {
   }).catch(() => { /* verification unavailable: trust the resolved open */ });
 }
 
+// installAutoHeight drives a native auto-height popout window (File
+// transfers, Running tasks — the Windows file-transfer footprint): while
+// automatic, the window's height tracks its content between the
+// profile's floor and cap, and the body scrolls inside beyond the cap.
+// The first height change the window did not order itself (the user
+// dragging the OS border) disables the tracking for the window's life —
+// but a manual size never exceeds what the content fills; the cap keeps
+// enforcing either way. Reopening starts the tracking fresh. Our own
+// ResizePopout round-trips raise window resize events too, so a
+// suppress counter — not height matching — separates the two: the
+// webview's outerHeight can differ from the SetSize value by chrome or
+// DPI, and an exact-match test would misfire.
+function installAutoHeight(id, box, p) {
+  const body = box.querySelector('.modal-body');
+  const foot = box.querySelector('.modal-foot');
+  // the height the window must be to show its content whole (the box is
+  // full-bleed here: no border, no padding, head hidden by CSS)
+  const contentH = () => body.scrollHeight + (foot ? foot.offsetHeight : 0);
+  // OS-window height -> webview height delta (title bar etc.)
+  const chrome = () => window.outerHeight - window.innerHeight;
+  let auto = true;
+  let suppress = 0; // self-resizes still in flight
+  const apply = (innerH) => {
+    suppress++;
+    Promise.resolve(api.ResizePopout(id, window.outerWidth, Math.round(innerH + chrome())))
+      .finally(() => setTimeout(() => { suppress = Math.max(0, suppress - 1); }, 150));
+  };
+  let lastH = window.innerHeight;
+  window.addEventListener('resize', () => {
+    const hChanged = window.innerHeight !== lastH;
+    lastH = window.innerHeight;
+    if (suppress > 0) return; // ours — the fit() below already covers it
+    if (!hChanged) { fit(); return; } // width-only: re-fit to the reflow
+    auto = false; // the user took the height — tracking is off for life
+    // ...but never more window than the content fills (the OS minimum
+    // still floors it)
+    const cap = Math.min(p.maxH, Math.max(p.minH, contentH()));
+    if (window.innerHeight > cap) apply(cap);
+  });
+  const fit = () => {
+    if (!auto) return;
+    const want = Math.min(p.maxH, Math.max(p.minH, contentH()));
+    if (Math.abs(want - window.innerHeight) > 1) apply(want);
+  };
+  new MutationObserver(fit).observe(body, { childList: true, subtree: true, characterData: true });
+  fit();
+}
+
 // renderPopoutView runs inside a native popout window (?popout=<kind>):
 // the same exported dialogs render through the DOM path into this
 // window's #popout-root, full-bleed (body.popout-win, app.css). The
@@ -347,7 +460,11 @@ function verifyNativePopout(id, domOpen) {
 export function renderPopoutView(kind, qs) {
   const bucket = qs.get('bucket') || '';
   const id = kind === 'doctor' ? `doctor${bucket ? `:${bucket}` : ''}` : kind;
-  const persist = () => {
+  // the auto-height windows never persist a size: their height tracks
+  // the content afresh on every open, and their default size is the
+  // profile's — the backend's session memory keeps the placement
+  const persistSize = kind !== 'transfers' && kind !== 'tasks';
+  const persist = persistSize ? () => {
     try {
       // size only — the backend centers the window (on the app's
       // display by default), so there is no position worth remembering
@@ -355,7 +472,7 @@ export function renderPopoutView(kind, qs) {
         w: outerWidth, h: outerHeight,
       }));
     } catch { /* storage unavailable — best effort */ }
-  };
+  } : () => {};
   addEventListener('beforeunload', persist);
   setInterval(persist, 2000);
   if (kind === 'doctor') doctorDialog(bucket);
@@ -1078,7 +1195,8 @@ export function transferManager(onClose) {
 
 function openTransferManager(onClose) {
   if (maybeNativePopout({
-    id: 'transfers', query: 'popout=transfers', title: t('transfer.managerTitle'), w: 720, h: 560,
+    id: 'transfers', query: 'popout=transfers', title: t('transfer.managerTitle'),
+    ...XFER_PROFILE,
     domOpen: () => openTransferManagerDom(onClose),
   })) {
     return { close: () => api.ClosePopout('transfers') };
@@ -1097,7 +1215,7 @@ function openTransferManagerDom(onClose) {
     id: 'transfers',
     title: t('transfer.managerTitle'),
     body: el('div', {}, list),
-    wide: true,
+    autoH: XFER_PROFILE,
     footLeft: hist.foot,
     buttons: [
       { label: t('transfer.clear'), onclick: () => clearVisible() },
@@ -1254,7 +1372,8 @@ function taskKindIcon(kind) {
 // (same floating-window contract: no mask, one instance, live redraw).
 export function runningTasks() {
   if (maybeNativePopout({
-    id: 'tasks', query: 'popout=tasks', title: t('tasks.title'), w: 720, h: 520,
+    id: 'tasks', query: 'popout=tasks', title: t('tasks.title'),
+    ...XFER_PROFILE,
     domOpen: runningTasksDom,
   })) {
     return { close: () => api.ClosePopout('tasks') };
@@ -1270,7 +1389,7 @@ function runningTasksDom() {
     id: 'tasks',
     title: t('tasks.title'),
     body: el('div', {}, list),
-    wide: true,
+    autoH: XFER_PROFILE,
     footLeft: hist.foot,
     buttons: [
       { label: t('tasks.clear'), onclick: () => clearVisible() },

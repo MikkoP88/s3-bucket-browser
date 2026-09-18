@@ -24,6 +24,12 @@ type PopoutSpec struct {
 	// ShellGeometry.Center.
 	W int `json:"w"`
 	H int `json:"h"`
+	// MinW/MinH/MaxH are optional resize bounds (zero = the shell's own
+	// defaults). MinH > 0 marks the auto-height windows whose height
+	// tracks their content — see ShellGeometry.
+	MinW int `json:"minW"`
+	MinH int `json:"minH"`
+	MaxH int `json:"maxH"`
 	// Center picks where the popout opens: "display" (default) centers it
 	// on the display carrying the app's main window; "app" centers it on
 	// the main window itself. Anything but "app" means "display".
@@ -47,6 +53,7 @@ func (a *App) OpenPopout(spec PopoutSpec) (bool, error) {
 	return shell.OpenPopout(spec.ID, spec.Title, spec.Query, ShellGeometry{
 		W: spec.W, H: spec.H,
 		Center: center,
+		MinW:   spec.MinW, MinH: spec.MinH, MaxH: spec.MaxH,
 	}), nil
 }
 
@@ -61,6 +68,17 @@ func (a *App) ClosePopout(id string) {
 func (a *App) FocusPopout(id string) {
 	if shell != nil {
 		shell.FocusPopout(id)
+	}
+}
+
+// ResizePopout resizes the popout window for id (no-op when none). The
+// auto-height windows (transfers, running tasks) drive it as their
+// content grows and shrinks: the window itself tracks the content between
+// its min and max, so ResizePopout is the only way content height ever
+// reaches the OS window.
+func (a *App) ResizePopout(id string, w, h int) {
+	if shell != nil && shell.ResizePopout != nil {
+		shell.ResizePopout(id, w, h)
 	}
 }
 

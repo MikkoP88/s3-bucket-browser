@@ -270,6 +270,17 @@ func installShell(app3 *application.App, a *api.App) {
 				MinWidth:  360,
 				MinHeight: 220,
 			}
+			// Per-window resize bounds when the caller passes them (the
+			// auto-height windows pin the Windows file-transfer footprint).
+			if geo.MinW > 0 {
+				opts.MinWidth = geo.MinW
+			}
+			if geo.MinH > 0 {
+				opts.MinHeight = geo.MinH
+			}
+			if geo.MaxH > 0 {
+				opts.MaxHeight = geo.MaxH
+			}
 			if geo.W > 0 {
 				opts.Width = geo.W
 			}
@@ -278,13 +289,20 @@ func installShell(app3 *application.App, a *api.App) {
 			}
 			// A rect remembered this session outranks everything: the
 			// window reopens exactly where the user left it, at the size
-			// they left it (session memory — see popoutGeoms).
+			// they left it (session memory — see popoutGeoms) — except
+			// the HEIGHT of an auto-height window (MinH > 0 marks it):
+			// its height tracks the content again on every reopen, so a
+			// remembered height would just flash before the content
+			// re-fit overrides it.
+			autoH := geo.MinH > 0
 			popoutMu.Lock()
 			last, hadLast := popoutGeoms[id]
 			popoutMu.Unlock()
 			if hadLast {
 				opts.Width = last.w
-				opts.Height = last.h
+				if !autoH {
+					opts.Height = last.h
+				}
 				opts.X, opts.Y = last.x, last.y
 				opts.InitialPosition = application.WindowXY
 			}
@@ -342,6 +360,13 @@ func installShell(app3 *application.App, a *api.App) {
 		FocusPopout: func(id string) {
 			if w, ok := app3.Window.GetByName(popoutPrefix + id); ok {
 				w.Focus()
+			}
+		},
+		// The auto-height windows' content fit: the in-window controller
+		// measures its content and drives this as jobs come and go.
+		ResizePopout: func(id string, w, h int) {
+			if win, ok := app3.Window.GetByName(popoutPrefix + id); ok {
+				win.SetSize(w, h)
 			}
 		},
 		// The frontend's verification hook: a window id it believes open
