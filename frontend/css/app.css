@@ -320,6 +320,40 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .empty-sub { color: var(--text-dim); max-width: 460px; white-space: pre-line; }
 .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 14px; }
 
+/* In-flight variant: the panel is FETCHING, not empty — a spinner takes
+   the icon's place and skeleton rows stand in for the listing that has
+   not arrived yet, so a slow source can never read as an empty folder. */
+.empty-state.is-loading .empty-icon { display: none; }
+.empty-state.is-loading::before {
+  content: ''; width: 26px; height: 26px; border-radius: 50%;
+  border: 3px solid var(--border); border-top-color: var(--accent);
+  animation: load-spin .9s linear infinite;
+}
+@keyframes load-spin { to { transform: rotate(360deg); } }
+.load-skel { display: flex; flex-direction: column; gap: 10px; width: min(380px, 78%); margin-top: 10px; }
+.load-skel.hidden { display: none; }
+.load-skel div {
+  height: 13px; border-radius: 4px;
+  background: linear-gradient(90deg, var(--border-soft) 25%, var(--border) 50%, var(--border-soft) 75%);
+  background-size: 200% 100%;
+  animation: load-skel 1.3s ease-in-out infinite;
+}
+.load-skel div:nth-child(1) { width: 88%; }
+.load-skel div:nth-child(2) { width: 100%; }
+.load-skel div:nth-child(3) { width: 94%; }
+.load-skel div:nth-child(4) { width: 70%; }
+.load-skel div:nth-child(5) { width: 55%; }
+@keyframes load-skel { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .empty-state.is-loading::before { animation-duration: 2.4s; }
+  .load-skel div { animation: none; }
+}
+
+/* Side pane mid-navigation: rows of the previous directory dim while the
+   next one loads — honest about being stale, never blank. */
+.local-pane.is-loading .grid-body { opacity: .55; }
+.local-pane.is-loading #local-status { color: var(--accent); }
+
 /* ================= Status bar ================= */
 .statusbar {
   display: flex; align-items: center; gap: 8px;

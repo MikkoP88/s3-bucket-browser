@@ -164,7 +164,9 @@ func (a *App) TestCredentialDraft(id string) TestResult {
 		if a.ctx == nil {
 			return TestResult{OK: false, Message: errNoContext.Error()}
 		}
-		c, err := s3client.New(a.ctx, *src.S3, s3client.Options{Timeout: 0})
+		// No whole-request HTTP deadline — the 10s probe context below
+		// is the single bound.
+		c, err := s3client.New(a.ctx, *src.S3, s3client.Options{Timeout: -1})
 		if err != nil {
 			return TestResult{OK: false, Message: err.Error()}
 		}
@@ -279,7 +281,8 @@ func (a *App) listCandidateBuckets(src profile.Source) ([]string, error) {
 	if a.ctx == nil {
 		return nil, errNoContext
 	}
-	c, err := s3client.New(a.ctx, *src.S3, s3client.Options{Timeout: 0})
+	// No whole-request HTTP deadline — the 15s context below is the bound.
+	c, err := s3client.New(a.ctx, *src.S3, s3client.Options{Timeout: -1})
 	if err != nil {
 		return nil, err
 	}

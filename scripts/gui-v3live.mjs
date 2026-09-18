@@ -23,6 +23,9 @@
 // transfer manager → dual pane → New folder → DnD upload → versions →
 // conflict overwrite → A/B diff → DnD download (bytes verified) → rename →
 // deep Find → remote engines (sftp/ftp/webdav round-trip + cross-engine) →
+// fault lab (scripts/faultproxy.mjs: latency/throttle/reset/blackhole in
+// front of the same MinIO — skeleton states, classified error vs watchdog
+// timeout, Retry recovery) →
 // i18n → settings/theme → log area → profile save/close/open through the
 // real bindings → server restart (session model) → Delete Window cleanup
 // (marker + permanent purge). A screenshot is captured from EVERY view.
@@ -47,7 +50,7 @@ const PROFILE = path.join(ART, 'walk.s3bprofile');
 const USERDIR = path.join(ART, 'browser-profile');
 const SRV_EXE = path.join(ROOT, 'testartifacts', 's3b-server.exe');
 const SRVLOG = path.join(ART, 'server.log');
-const VERSION = 'v1.1.0-beta.13-7-wails3';
+const VERSION = 'v1.1.0-beta.14-9-wails3';
 
 const arg = (k) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 ? process.argv[i + 1] : null; };
 const HEADED = process.argv.includes('--headed');
@@ -307,6 +310,18 @@ async function runDeleteWindow(mode = '') {
 }
 async function crumbRoot() {
   await evalPage(() => document.querySelector('#breadcrumb .crumb')?.click());
+  await sleep(120);
+}
+// bucketRoot clicks the BUCKET crumb (the one labeled with the bucket name)
+// — crumbRoot clicks the SOURCE crumb, which lands on the bucket LIST
+// (ListBuckets), not the bucket's object root. The fault lab asserts on
+// bucket-root rows, so it must navigate here.
+async function bucketRoot() {
+  await evalPage((b) => {
+    const c = Array.from(document.querySelectorAll('#breadcrumb .crumb'))
+      .find((x) => x.textContent.trim() === b);
+    c?.click();
+  }, BUCKET);
   await sleep(120);
 }
 async function treeOpen(label) {
@@ -797,10 +812,10 @@ async function walk() {
     await treeOpen(SRCNAME);
     await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 15000, 'back on s3');
     await menuClick(/^settings$/i, /settings/i);
-    await waitFor(() => page.locator('#modal-root .set-body select').count().then((n) => n > 0), 5000, 'settings dialog');
+    await waitFor(() => page.locator('#modal-root .set-page select').count().then((n) => n > 0), 5000, 'settings dialog');
     // The language select carries language-code options; the theme select
     // next to it only has light/dark — target by the 'fi' option value.
-    const langSel = page.locator('#modal-root .set-body select').filter({ has: page.locator('option[value="fi"]') });
+    const langSel = page.locator('#modal-root .set-page select').filter({ has: page.locator('option[value="fi"]') });
     await waitFor(() => langSel.count().then((n) => n === 1), 5000, 'language select');
     const opts = await langSel.first().evaluate((s) => Array.from(s.options).map((o) => o.value));
     process.stdout.write(`   language options: [${opts.join(', ')}]\n`);
@@ -823,10 +838,10 @@ async function walk() {
     // settings dialog may still be open from the language step
     if (!(await modalVisible())) {
       await menuClick(/^settings$/i, /settings/i);
-      await waitFor(() => page.locator('#modal-root .set-body select').count().then((n) => n > 0), 5000, 'settings dialog');
+      await waitFor(() => page.locator('#modal-root .set-page select').count().then((n) => n > 0), 5000, 'settings dialog');
     }
-    const themeSel = page.locator('#modal-root .set-body select').first();
-    // find the theme select: it holds 'dark'
+    // find the theme select across all pages: it holds 'dark'
+    const themeSel = page.locator('#modal-root .set-page select').filter({ has: page.locator('option[value="dark"]') }).first();
     const isTheme = await themeSel.evaluate((s) => Array.from(s.options).some((o) => o.value === 'dark'));
     const rows = await evalPage(() => document.querySelectorAll('#modal-root .set-row').length);
     await ok(`settings dialog renders (${rows} rows)`, rows >= 3);
@@ -927,6 +942,167 @@ async function walk() {
     await ok(`bucket root back to pre-existing data [${left.join(', ')}]`, left.some((k) => k.startsWith(SEED)) && !left.some((k) => k.startsWith(PREFIX) && !k.endsWith('/')));
     await shot('36-cleaned');
   });
+
+  // ---------- slow & broken connections (scripts/faultproxy.mjs) ----------
+  // A second S3 source points at a TCP fault-injection proxy in front of the
+  // SAME MinIO. The proxy's HTTP control plane lets one long-lived process
+  // serve the whole scenario list (direct → latency → throttle → reset →
+  // blackhole) while the SDK's keep-alive pool stays connected to it — the
+  // real-world "the connection went bad mid-session" case, not a fresh dial
+  // per scenario. zz-slowwalk/ is seeded with 120 objects so throttled
+  // listings take visible, assertable seconds.
+  {
+    const FPORT = 19000, FCTL = 19001;
+    const FSRC = 'minio-fault', SLOW = 'zz-slowwalk', SLOWN = 120;
+    const sh = (c) => execFileSync('docker', ['exec', 's3b-e2e-minio', 'sh', '-c', c], { stdio: 'pipe' }).toString();
+    const ctl = (p, opts) => fetch(`http://127.0.0.1:${FCTL}${p}`, { signal: AbortSignal.timeout(3000), ...opts })
+      .then((r) => r.json());
+    const setMode = (patch) => ctl('/mode', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    // the file panel's in-flight contract: empty-state visible, flagged
+    // is-loading, skeleton rows underneath — never a blank panel
+    const inFlight = () => evalPage(() => {
+      const e = document.getElementById('empty-state');
+      return !!e && !e.classList.contains('hidden') && e.classList.contains('is-loading')
+        && !document.getElementById('load-skel').classList.contains('hidden');
+    });
+    // the failure contract: settled error page (not loading) with a
+    // classified title, the raw message and a Retry action
+    const errState = () => evalPage(() => {
+      const e = document.getElementById('empty-state');
+      if (!e || e.classList.contains('hidden') || e.classList.contains('is-loading')) return null;
+      return {
+        title: document.getElementById('empty-title').textContent,
+        sub: document.getElementById('empty-sub').textContent,
+        retry: Array.from(document.querySelectorAll('#empty-actions .btn'))
+          .some((b) => b.textContent.includes('Retry')),
+      };
+    });
+    const clickRetry = () => evalPage(() => {
+      Array.from(document.querySelectorAll('#empty-actions .btn'))
+        .find((b) => b.textContent.includes('Retry'))?.click();
+    });
+    // logical item count from the status bar — the grid virtualizes (only
+    // the visible slice + overscan is in the DOM), so a 120-row folder can
+    // never show 115 DOM rows however complete the listing is
+    const totalItems = () => evalPage(() => {
+      const m = (document.getElementById('status-selection')?.textContent || '').match(/^(\d+)/);
+      return m ? Number(m[1]) : 0;
+    });
+    // a crashed earlier run can leave a stale proxy owning the ports (still
+    // stuck in its last fault mode) — clear them before listening
+    const clearFaultPorts = () => {
+      try {
+        execFileSync('bash', [path.join(ROOT, 'scripts', 'kill-faultports.sh'), String(FPORT), String(FCTL)], { stdio: 'ignore' });
+      } catch { /* best effort */ }
+    };
+    clearFaultPorts();
+    const fx = spawn(process.execPath, [path.join(ROOT, 'scripts', 'faultproxy.mjs'),
+      '--listen', String(FPORT), '--control', String(FCTL), '--target', '127.0.0.1:9000']);
+    fx.stdout.on('data', (d) => fs.appendFileSync(SRVLOG, `[faultproxy] ${d}`));
+    fx.stderr.on('data', (d) => fs.appendFileSync(SRVLOG, `[faultproxy!] ${d}`));
+    try {
+      await waitFor(async () => (await ctl('/state')).mode === 'direct', 10000, 'faultproxy control plane');
+
+      await step('fault lab: 120-object prefix + source behind the proxy (direct control)', async () => {
+        sh('mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 || true');
+        sh(`rm -rf /tmp/slowseed; mkdir -p /tmp/slowseed; i=0; while [ "$i" -lt ${SLOWN} ]; do echo "slowwalk payload $i" > /tmp/slowseed/f-$(printf '%03d' "$i").txt; i=$((i+1)); done`);
+        sh(`mc rm --recursive --force local/${BUCKET}/${SLOW}/ >/dev/null 2>&1 || true`);
+        sh(`mc cp --recursive /tmp/slowseed/ local/${BUCKET}/${SLOW}/ >/dev/null`);
+        const seeded = sh(`mc ls --recursive local/${BUCKET}/${SLOW}/ | wc -l`).trim();
+        await ok(`seeded ${BUCKET}/${SLOW}/ with ${seeded} objects`, Number(seeded) === SLOWN);
+        await call('SaveSource', {
+          name: FSRC, type: 's3', bucket: BUCKET,
+          s3: { name: FSRC, endpoint: `http://127.0.0.1:${FPORT}`, region: REGION, accessKeyId: KEY, secretKey: SECRET, pathStyle: true },
+        });
+        await page.reload();
+        await treeOpen(FSRC);
+        await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'listing through the proxy');
+        await ok('control: bucket root lists through the proxy (direct mode)', true);
+        const st = await ctl('/state');
+        await ok(`proxy carried the listing (connections=${st.connections})`, st.connections >= 1);
+        await shot('37-fault-direct');
+      });
+
+      await step('latency +250ms per chunk: skeleton during listing, rows land whole', async () => {
+        // delay per TCP chunk × ~25 response chunks must stay comfortably
+        // under the 30s stream watchdog — at 900ms the 112KB listing hit
+        // ~31s and was (correctly) killed as a dead-slow source.
+        await setMode({ mode: 'latency', delayMs: 250 });
+        await dblClickRow(`${SLOW}/`);
+        await waitFor(inFlight, 6000, 'in-flight skeleton');
+        await ok('spinner + skeleton rows while chunks crawl in', true);
+        await shot('38-fault-latency-skeleton');
+        await waitFor(async () => (await totalItems()) >= SLOWN - 5, 20000, 'slowwalk rows under latency');
+        await ok(`latency: listing completed anyway (${await totalItems()} items)`, true);
+      });
+
+      await step('throttle 8KB/s: seconds-long listing stays live and completes', async () => {
+        // the 120-object listing is ~32KB of XML: at 8Kbps that is ~4s of
+        // paced transfer (assert ≥3s below) while chunks keep resetting
+        // the 30s no-progress watchdog — alive, just slow.
+        await setMode({ mode: 'throttle', bps: 8192 });
+        await bucketRoot();
+        await waitFor(async () => (await rowKeys()).includes(`${SLOW}/`), 30000, 'throttled root listing');
+        const t0 = Date.now();
+        await dblClickRow(`${SLOW}/`);
+        await waitFor(inFlight, 6000, 'in-flight skeleton');
+        await ok('skeleton shows while the listing trickles in', true);
+        await shot('39-fault-throttle-skeleton');
+        await waitFor(async () => (await totalItems()) >= SLOWN - 5, 60000, 'slowwalk rows under throttle');
+        const secs = ((Date.now() - t0) / 1000).toFixed(1);
+        await ok(`throttle: full listing in ${secs}s (paced, not stalled)`, Date.now() - t0 >= 3000);
+      });
+
+      await step('reset (RST mid-session): classified error + Retry recovers', async () => {
+        await setMode({ mode: 'reset' });
+        await bucketRoot();
+        const st = await waitFor(errState, 30000, 'reset error state');
+        await ok(`reset → "${st.title}" + Retry (${st.sub.slice(0, 60)}…)`,
+          /could not load/i.test(st.title) && st.retry);
+        await shot('40-fault-reset-error');
+        await setMode({ mode: 'direct' });
+        await clickRetry();
+        await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'rows after retry');
+        await ok('Retry after reset re-listed the bucket root', true);
+      });
+
+      await step('blackhole: dead endpoint → stream watchdog → timeout state + Retry recovers', async () => {
+        await setMode({ mode: 'blackhole' });
+        await dblClickRow(`${SLOW}/`);
+        await waitFor(inFlight, 6000, 'skeleton while the source is silent');
+        await ok('skeleton holds while the endpoint never answers', true);
+        // the backend watchdog fires at 30s; budget generously for it
+        const st = await waitFor(errState, 50000, 'watchdog timeout state');
+        await ok(`watchdog → "${st.title}" (${st.sub.slice(0, 60)}…)`, /took too long/i.test(st.title));
+        await shot('41-fault-blackhole-timeout');
+        await setMode({ mode: 'direct' });
+        await clickRetry();
+        await waitFor(async () => (await totalItems()) >= SLOWN - 5, 30000, 'rows after retry');
+        await ok('Retry after blackhole recovered the listing', true);
+      });
+
+      await step('fault lab teardown: fault source + seeded prefix removed', async () => {
+        await call('RemoveSource', FSRC);
+        await page.reload();
+        await treeOpen(SRCNAME);
+        const nodes = await evalPage(() => Array.from(document.querySelectorAll('#tree .tnode'))
+          .map((n) => (n.querySelector('.tlabel')?.textContent || '').trim()));
+        await ok(`fault source gone from the sidebar [${nodes.join(', ')}]`, !nodes.includes(FSRC));
+        sh(`mc rm --recursive --force local/${BUCKET}/${SLOW}/ >/dev/null 2>&1 || true`);
+        const left = sh(`mc ls --recursive local/${BUCKET}/${SLOW}/ 2>&1 | wc -l`).trim();
+        await ok(`seeded prefix purged (${left} objects left)`, Number(left) === 0);
+        await shot('42-fault-teardown');
+      });
+    } finally {
+      try { await setMode({ mode: 'direct' }); } catch { /* proxy may already be gone */ }
+      fx.kill();
+      clearFaultPorts(); // fx.kill covers the happy path; ports are the source of truth
+    }
+  }
 }
 
 // ---------- shutdown ----------

@@ -271,6 +271,91 @@ case "$lock_out" in
     fail "bucket lock enable: $lock_out" ;;
 esac
 
+step "bad/slow connections: faultproxy lab (latency/throttle/reset/blackhole)"
+# scripts/faultproxy.mjs is a TCP fault-injection proxy with an HTTP control
+# plane: one process serves the whole scenario list while the CLI's keep-alive
+# pool stays connected to it — the "connection went bad mid-session" class,
+# not a fresh dial per scenario. CLI contract under test: slow links still
+# succeed with correct output, dead links fail CLEANLY and inside the
+# --timeout budget (never a 5-minute default hang).
+if command -v node >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+  FPORT=19000 FCTL=19001
+  # A previously failed run can leave its faultproxy alive holding the ports
+  # (MSYS job-control kills do not reach node on Windows) — still sitting in
+  # whatever fault mode killed that run. Clear the ports up front and use
+  # the same port-based kill in the EXIT trap.
+  FPID=""
+  fault_stop() {
+    [ -n "$FPID" ] && kill "$FPID" >/dev/null 2>&1 || true
+    bash "$ROOT/scripts/kill-faultports.sh" "$FPORT" "$FCTL" >/dev/null 2>&1 || true
+  }
+  trap 'fault_stop; rm -rf "$WORK"' EXIT
+  fault_stop
+  node "$ROOT/scripts/faultproxy.mjs" --listen "$FPORT" --control "$FCTL" \
+    --target 127.0.0.1:9000 >/dev/null 2>&1 &
+  FPID=$!
+  for _ in $(seq 1 50); do
+    curl -s "http://127.0.0.1:$FCTL/state" >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+  fmode() { curl -s -X POST -H 'content-type: application/json' -d "$1" \
+    "http://127.0.0.1:$FCTL/mode" >/dev/null; }
+  "$BIN" source add faultlab --type s3 --endpoint "http://127.0.0.1:$FPORT" \
+    --access-key minioadmin --secret-key minioadmin >/dev/null
+
+  # direct (control): the proxy itself is transparent
+  direct_out="$("$BIN" ls "s3://$BUCKET" --recursive --json --profile faultlab)"
+  printf '%s\n' "$direct_out" | grep -q 'copy/readme-v2.md' || fail "fault lab control listing"
+  pass "direct: listing through the proxy OK"
+
+  # latency: every TCP chunk held 600ms — slow but correct
+  fmode '{"mode":"latency","delayMs":600}'
+  t0=$SECONDS
+  lat_out="$("$BIN" ls "s3://$BUCKET" --recursive --json --profile faultlab)"
+  printf '%s\n' "$lat_out" | grep -q 'copy/readme-v2.md' || fail "listing under latency"
+  [ $((SECONDS - t0)) -ge 1 ] || fail "latency run was instant — delay not applied"
+  pass "latency: correct listing, visibly slower ($((SECONDS - t0))s)"
+
+  # throttle 1KB/s: paced, still complete
+  fmode '{"mode":"throttle","bps":1024}'
+  t0=$SECONDS
+  thr_out="$("$BIN" ls "s3://$BUCKET" --recursive --json --profile faultlab)"
+  printf '%s\n' "$thr_out" | grep -q 'copy/readme-v2.md' || fail "listing under throttle"
+  [ $((SECONDS - t0)) -ge 2 ] || fail "throttled run too fast — pacing not applied"
+  pass "throttle: listing trickled in but complete ($((SECONDS - t0))s)"
+
+  # reset: RST mid-session — hard error, no hang, no partial success
+  fmode '{"mode":"reset"}'
+  if "$BIN" ls "s3://$BUCKET" --profile faultlab >/dev/null 2>&1; then
+    fail "ls unexpectedly survived a reset connection"
+  else
+    pass "reset: rejected cleanly"
+  fi
+
+  # blackhole: dead endpoint — the per-request --timeout must fire (3s),
+  # not the 5-minute default
+  fmode '{"mode":"blackhole"}'
+  t0=$SECONDS
+  bh_out="$("$BIN" ls "s3://$BUCKET" --profile faultlab --timeout 3s 2>&1 || true)"
+  [ $((SECONDS - t0)) -le 10 ] || fail "blackhole ls took $((SECONDS - t0))s — timeout not honored"
+  case "$bh_out" in
+    *'timed out'*|*timeout*|*deadline*|*context*) ;;
+    *) fail "blackhole error is not a timeout: $bh_out" ;;
+  esac
+  pass "blackhole: timed out on schedule ($((SECONDS - t0))s), clean error"
+
+  # recovery: with the fault cleared the same source works again
+  fmode '{"mode":"direct"}'
+  rec_out="$("$BIN" ls "s3://$BUCKET" --recursive --json --profile faultlab)"
+  printf '%s\n' "$rec_out" | grep -q 'copy/readme-v2.md' || fail "post-fault recovery listing"
+  pass "recovery: source healthy again after the fault cleared"
+
+  "$BIN" source remove faultlab | grep -q 'removed source' || fail "faultlab cleanup"
+  kill "$FPID" >/dev/null 2>&1 || true
+else
+  printf 'SKIP  fault lab: node/curl not available\n'
+fi
+
 step "bucket removal + cleanup"
 # Versioned bucket with markers: rb --force must purge version history too (M4).
 "$BIN" rb "s3://$BUCKET" --force | grep -q 'removed bucket' || fail "rb --force (versioned)"

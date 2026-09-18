@@ -265,7 +265,9 @@ func (a *App) TestS3Draft(in profile.Source) TestResult {
 	if a.ctx == nil {
 		return TestResult{OK: false, Message: errNoContext.Error()}
 	}
-	c, err := s3client.New(a.ctx, *in.S3, s3client.Options{Timeout: 0})
+	// No whole-request HTTP deadline — the 10s test context below is the
+	// single bound.
+	c, err := s3client.New(a.ctx, *in.S3, s3client.Options{Timeout: -1})
 	if err != nil {
 		return TestResult{OK: false, Message: err.Error()}
 	}

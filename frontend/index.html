@@ -58,6 +58,12 @@
           <div class="empty-title" id="empty-title"></div>
           <div class="empty-sub" id="empty-sub"></div>
           <div class="empty-actions" id="empty-actions"></div>
+          <!-- in-flight state: animated placeholder rows standing in for
+               the listing that has not arrived yet — a blank panel reads
+               as "empty folder", this reads as "working on it" -->
+          <div class="load-skel hidden" id="load-skel" aria-hidden="true">
+            <div></div><div></div><div></div><div></div><div></div>
+          </div>
         </div>
       </div>
 

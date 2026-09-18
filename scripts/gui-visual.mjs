@@ -402,6 +402,11 @@ function shim() {
     // tracked non-transfer tasks (Running tasks window registry); the
     // RunningTasks shim merges these with the transfer jobs like the backend
     tasks: [],
+    // loading/timeout fault injection (loading-states step): the listing /
+    // buckets / remote / local handlers consult this — { listDelayMs,
+    // listError, listBeginError, bucketsDelayMs, bucketsError, remoteDelayMs,
+    // remoteError, localDelayMs, localError }; null = healthy backend.
+    fault: null,
     // CheckConflicts fixture — empty means a clean destination; the
     // conflict-view step seeds real collisions before uploading
     conflicts: [],
@@ -550,22 +555,57 @@ function shim() {
   const H = {
     GetVersion: () => '1.1.0-beta.13',
     ListSources: () => JSON.parse(JSON.stringify(world.sources)),
-    ListBuckets: () => JSON.parse(JSON.stringify(world.buckets)),
+    // fault-injectable listing paths: delays hold the answer past the
+    // navigation so in-flight UI states are observable; listError rides the
+    // done page exactly like the backend watchdog timeout does; listBeginError
+    // rejects the stream call itself (client-resolution failure).
+    ListBuckets: async () => {
+      const f = world.fault || {};
+      if (f.bucketsDelayMs) await new Promise((r) => setTimeout(r, f.bucketsDelayMs));
+      if (f.bucketsError) throw new Error(f.bucketsError);
+      return JSON.parse(JSON.stringify(world.buckets));
+    },
     ListSourceBuckets: (_src) => JSON.parse(JSON.stringify(world.buckets)),
     TestSource: (_idOrName) => ({ ok: true, message: 'connected — bucket accessible' }),
     ListObjectsStream: (bucket, prefix) => {
+      const f = world.fault || {};
+      if (f.listBeginError) throw new Error(f.listBeginError);
       const t = token();
-      emit('list:page', { token: t, entries: listPrefix(bucket, prefix), done: true });
+      const send = () => emit('list:page', {
+        token: t,
+        entries: f.listError ? [] : listPrefix(bucket, prefix),
+        done: true,
+        error: f.listError || '',
+      });
+      if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
       return t;
     },
     ListSourceObjectsStream: (_src, bucket, prefix) => {
+      const f = world.fault || {};
+      if (f.listBeginError) throw new Error(f.listBeginError);
       const t = token();
-      emit('list:page', { token: t, entries: listPrefix(bucket, prefix), done: true });
+      const send = () => emit('list:page', {
+        token: t,
+        entries: f.listError ? [] : listPrefix(bucket, prefix),
+        done: true,
+        error: f.listError || '',
+      });
+      if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
       return t;
     },
     CancelList: () => ({}),
-    RemoteList: (source, dir) => remoteChildren(source, dir),
-    ListLocal: (dir) => JSON.parse(JSON.stringify(world.local[dir] || [])),
+    RemoteList: async (source, dir) => {
+      const f = world.fault || {};
+      if (f.remoteDelayMs) await new Promise((r) => setTimeout(r, f.remoteDelayMs));
+      if (f.remoteError) throw new Error(f.remoteError);
+      return remoteChildren(source, dir);
+    },
+    ListLocal: async (dir) => {
+      const f = world.fault || {};
+      if (f.localDelayMs) await new Promise((r) => setTimeout(r, f.localDelayMs));
+      if (f.localError) throw new Error(f.localError);
+      return JSON.parse(JSON.stringify(world.local[dir] || []));
+    },
     LocalRoots: () => ['C:\\', 'D:\\'],
     LocalHome: () => 'C:\\Users\\demo',
     LocalParent: (p) => localParent(p),
@@ -1062,6 +1102,101 @@ await step('filter', async () => {
   await shot('filter');
   await page.fill('#filter', '');
   await sleep(120);
+});
+
+// The loading/timeout contract (M-slow-connections): a listing that has not
+// answered yet NEVER reads as an empty folder — spinner + skeleton rows say
+// "working on it"; watchdog-style timeouts get their own title + a Retry
+// that really re-runs the listing; silent background failures keep the
+// stale rows and announce themselves once; a slow response that resolves
+// after a newer navigation is dropped, not painted over the fresh view.
+await step('loading-states', async () => {
+  // -- in-flight skeleton --
+  await evalPage(() => { window.__shim.world.fault = { listDelayMs: 800 }; });
+  await page.click('#btn-refresh');
+  await ok('skeleton + spinner while the listing is in flight', evalPage(() =>
+    document.getElementById('empty-state').classList.contains('is-loading')
+    && !document.getElementById('load-skel').classList.contains('hidden')));
+  await shot('loading-skeleton');
+  await ok('delayed listing lands', waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'delayed listing'));
+  await ok('skeleton cleared once rows land', evalPage(() =>
+    !document.getElementById('empty-state').classList.contains('is-loading')
+    && document.getElementById('load-skel').classList.contains('hidden')));
+
+  // -- watchdog timeout: classified title + retry that recovers --
+  await evalPage(() => {
+    window.__shim.world.fault = { listError: 'listing timed out — no data from the source for 30s' };
+  });
+  await page.click('#btn-refresh');
+  // the shim defers event dispatch ~20ms — wait for the timeout TITLE, not
+  // just "some title" (that would pass on the transient 'Loading…')
+  await waitFor(() => evalPage(() => document.getElementById('empty-title').textContent.includes('took too long')), 4000, 'timeout error state');
+  await ok('timeout gets its own title', (await txt('#empty-title')).includes('took too long'));
+  await ok('raw backend message shown as the sub-line', (await txt('#empty-sub')).includes('no data from the source'));
+  const retryBtn = await elOrNull(() => Array.from(document.querySelectorAll('#empty-actions button'))
+    .find((b) => /retry/i.test(b.textContent)) || null);
+  await ok('retry button offered', !!retryBtn);
+  await shot('loading-timeout-error');
+  const callsBefore = (await calls()).filter((c) => c.m === 'ListObjectsStream').length;
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await retryBtn.asElement().click();
+  await ok('retry re-invokes the listing', waitFor(async () =>
+    (await calls()).filter((c) => c.m === 'ListObjectsStream').length > callsBefore, 4000, 'retry call'));
+  await ok('view recovers after retry', waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'rows after retry'));
+
+  // -- non-timeout failure: the generic title, never false "timeout" wording --
+  await evalPage(() => { window.__shim.world.fault = { listError: 'connection refused' }; });
+  await page.click('#btn-refresh');
+  await waitFor(() => evalPage(() => document.getElementById('empty-title').textContent.includes('Could not load')), 4000, 'generic error state');
+  await ok('non-timeout error uses the generic title', (await txt('#empty-title')).includes('Could not load'));
+  await shot('loading-generic-error');
+
+  // -- silent background refresh failure: stale rows beat a blank panel --
+  // (restore healthy rows first — the generic-error check above left the
+  // grid empty, and "kept" only means anything when there was content)
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await page.click('#btn-refresh');
+  await ok('rows restored before the silent-failure check', waitFor(async () =>
+    (await rowKeys()).includes('readme.md'), 6000, 'rows restored'));
+  await evalPage(() => { window.__shim.world.fault = { listError: 'connection refused' }; });
+  await evalPage(() => window.__shim.emit('s3:changed', { bucket: 'team-files' }));
+  await sleep(300);
+  await ok('silent failure keeps the previous rows', (await rowKeys()).includes('readme.md'));
+  await ok('silent failure toasts the stale-content signal', (await txt('#toasts')).includes('Background refresh failed'));
+  await evalPage(() => { window.__shim.world.fault = null; });
+
+  // -- navigate-away race: a late response must not clobber the newer view --
+  await evalPage(() => { window.__shim.world.fault = { remoteDelayMs: 900 }; });
+  await clickTree('backup-box');
+  await ok('remote view shows its in-flight state too', evalPage(() =>
+    document.getElementById('empty-state').classList.contains('is-loading')));
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await clickTree('team-files'); // supersede with a fast S3 listing
+  await ok('newer view wins while the old one is pending', waitFor(async () =>
+    (await rowKeys()).includes('readme.md'), 6000, 'superseding view'));
+  await sleep(1100); // let the stale RemoteList resolve — it must be dropped
+  await ok('stale late response does not clobber the view', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .filter((r) => r._model).map((r) => r._model.key);
+    return rows.includes('readme.md') && !rows.some((k) => k.startsWith('/'));
+  }));
+
+  // -- side pane: dimmed pane + ellipsis status while its listing pends --
+  await page.click('#btn-panes');
+  await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane open at local home');
+  await evalPage(() => { window.__shim.world.fault = { remoteDelayMs: 800 }; });
+  await page.selectOption('#local-src', 'src-box');
+  await ok('side pane flags its in-flight listing', evalPage(() =>
+    document.getElementById('local-pane').classList.contains('is-loading')
+    && document.getElementById('local-status').textContent === '\u2026'));
+  await shot('loading-side-pane');
+  await ok('side pane listing lands', waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote rows'));
+  await ok('side pane loading flag cleared', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('is-loading')));
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await page.selectOption('#local-src', 'local');
+  await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane back to local');
+  await page.click('#btn-panes'); // close: later steps expect a single pane
 });
 
 await step('selection-status', async () => {
