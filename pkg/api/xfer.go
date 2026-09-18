@@ -150,6 +150,7 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 	}
 	j := a.jobs.add("transfer", len(plan.files), plan.total)
 	j.src = xferDestSource(dest)
+	j.setMeta(xferTitle(items, localPaths), xferFromLabel(items, localPaths), xferDestLabel(dest), len(items)+len(localPaths), move)
 	id := j.info.ID
 	verb := "copying"
 	if move {
@@ -160,6 +161,36 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 	logDecisions(a, "transfer", decisions)
 	go a.runXfer(j, plan, dst, policy, maxBPS, move, decisions)
 	return id, nil
+}
+
+// xferTitle names a cross-source job after the first dropped item (S3
+// object/prefix, remote path or local-pane path).
+func xferTitle(items []XferItem, localPaths []string) string {
+	if len(items) > 0 {
+		return leafName(items[0].Key)
+	}
+	return filepath.Base(localPaths[0])
+}
+
+// xferFromLabel renders the read side of the route line: the view source
+// as s3://bucket, a named source as "name:dir", the local pane as a
+// folder.
+func xferFromLabel(items []XferItem, localPaths []string) string {
+	if len(items) > 0 {
+		it := items[0]
+		if it.Source == "" {
+			return s3Label(it.Bucket, "")
+		}
+		dir := path.Dir(strings.TrimSuffix(it.Key, "/"))
+		if dir == "." || dir == "/" {
+			dir = ""
+		}
+		if dir != "" {
+			return it.Source + ":" + dir
+		}
+		return it.Source
+	}
+	return filepath.Dir(localPaths[0])
 }
 
 // xferDestSource is the log source tag of a transfer destination: the S3
@@ -536,10 +567,8 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
-		j.mu.Lock()
-		j.info.CurrentFile = f.srcPath
-		j.mu.Unlock()
-		j.emit(a.jobs, true)
+		j.startFile(i+1, f.srcPath, f.size)
+		j.emit(true)
 
 		unlock := a.lockSrcs(f.srcLock, dst.lockID)
 		pol := filePolicy(decisions, f.dstPath, policy)
@@ -554,6 +583,7 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 			}
 			j.mu.Lock()
 			j.info.Error = fmt.Sprintf("%s: %v", leafName(f.srcPath), err)
+			j.info.ErrorKind = timeoutKind(err.Error())
 			j.mu.Unlock()
 			failed[f.item] = true
 			j.fileDone(f.size, true)
@@ -572,12 +602,14 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 				touched[dst.bucket] = true
 			}
 		}
-		j.emit(a.jobs, true)
+		j.emit(true)
 	}
 
 	// Move: delete source items whose every file transferred cleanly. A
 	// skipped or failed file taints the whole item — nothing is removed.
 	if move {
+		j.setPhase(PhaseCleanup)
+		j.emit(true)
 		for k := range plan.dels {
 			d := &plan.dels[k]
 			if failed[d.item] || skipped[d.item] || ctx.Err() != nil {
@@ -589,6 +621,7 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 			if err != nil {
 				j.mu.Lock()
 				j.info.Error = fmt.Sprintf("delete source %s: %v", d.root, err)
+				j.info.ErrorKind = timeoutKind(err.Error())
 				j.mu.Unlock()
 				a.emitLogSrc(LogError, "transfer", j.src, fmt.Sprintf("job %s: source cleanup failed: %v", j.info.ID, err))
 			}

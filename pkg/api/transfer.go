@@ -29,6 +29,18 @@ const (
 	JobCanceled = "canceled"
 )
 
+// Job phases (what the worker is doing right now — the status says
+// running, the phase says why nothing moves yet).
+const (
+	PhaseTransfer = "transfer"
+	PhaseCleanup  = "cleanup" // move: deleting fully-transferred sources
+)
+
+// stallAfter is how long a known-size in-flight file may sit without a
+// byte moving before the job is flagged Stalled (the ticker keeps the
+// flag honest in both directions).
+const stallAfter = 10 * time.Second
+
 // Conflict policies shared by upload and download.
 const (
 	PolicyOverwrite = "overwrite"
@@ -54,6 +66,24 @@ type JobInfo struct {
 	SpeedBps     float64 `json:"speedBps"`
 	StartedAt    int64   `json:"startedAt"` // unix millis
 	Error        string  `json:"error,omitempty"`
+
+	// The full-picture fields: what the row is called, where data flows,
+	// and where the bytes are right now. Name/Items feed the localized
+	// "Copying photos +2" title; From/To the route line; the current-*
+	// triple the "File 2/3 — pic.jpg · 18/41 MB" line.
+	Move         bool   `json:"move"`               // transfer jobs: copy-then-delete
+	Name         string `json:"name,omitempty"`     // primary source item
+	Items        int    `json:"items"`              // top-level items dropped
+	From         string `json:"from,omitempty"`     // human source label
+	To           string `json:"to,omitempty"`       // human destination label
+	Phase        string `json:"phase"`              // "transfer" | "cleanup"
+	FileIndex    int    `json:"fileIndex"`          // 1-based in-flight file ordinal
+	CurrentSent  int64   `json:"currentSent"`       // bytes of the in-flight file
+	CurrentTotal int64   `json:"currentTotal"`      // its size (0 = unknown/server-side)
+	EtaMs        int64   `json:"etaMs,omitempty"`   // computed on emit while running
+	ElapsedMs    int64   `json:"elapsedMs,omitempty"` // stamped at finish
+	Stalled      bool   `json:"stalled"`            // no byte movement in stallAfter
+	ErrorKind    string `json:"errorKind,omitempty"` // "timeout" | ""
 }
 
 // DownloadItem pairs an object key with its size (sizes come from the grid,
@@ -67,15 +97,19 @@ type DownloadItem struct {
 
 // jobHandle is one running/finished transfer.
 type jobHandle struct {
-	mu       sync.Mutex
-	info     JobInfo
-	src      string // source tag for log lines (bucket / source name)
-	ctx      context.Context
-	cancel   context.CancelFunc
-	start    time.Time
-	lastEm   time.Time
-	doneBase int64 // bytes of fully transferred files
-	fileSent int64 // bytes of the in-flight file
+	mu         sync.Mutex
+	info       JobInfo
+	src        string // source tag for log lines (bucket / source name)
+	ctx        context.Context
+	cancel     context.CancelFunc
+	start      time.Time
+	lastEm     time.Time
+	doneBase   int64 // bytes of fully transferred files
+	fileSent   int64 // bytes of the in-flight file
+	mgr        *jobManager
+	lastByteAt time.Time // last time a byte actually moved
+	lastEmSent int64     // SentBytes at the previous emit (EMA speed input)
+	lastEmAt   time.Time // when that was
 }
 
 // jobManager owns all jobs in insertion order.
@@ -112,22 +146,52 @@ func (m *jobManager) add(op string, totalFiles int, totalBytes int64) *jobHandle
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seq++
+	now := time.Now()
 	j := &jobHandle{info: JobInfo{
 		ID:         fmt.Sprintf("%s-%d", op, m.seq),
 		Op:         op,
 		Status:     JobRunning,
 		TotalFiles: totalFiles,
 		TotalBytes: totalBytes,
-		StartedAt:  time.Now().UnixMilli(),
+		StartedAt:  now.UnixMilli(),
+		Phase:      PhaseTransfer,
 	}}
 	base := m.ctx
 	if base == nil {
 		base = context.Background()
 	}
 	j.ctx, j.cancel = context.WithCancel(base)
-	j.start = time.Now()
+	j.start = now
+	j.mgr = m
+	j.lastByteAt = now
+	j.lastEmAt = now
 	m.all = append(m.all, j)
+	// The heartbeat: progress callbacks only fire when the engine reads
+	// bytes — a server-side copy, a slow HeadObject or a hung socket
+	// would otherwise freeze the row at its last snapshot. The ticker
+	// keeps emitting (speed decays, ETA moves, Stalled can appear) until
+	// the job leaves "running".
+	go j.heartbeat()
 	return j
+}
+
+// heartbeat re-emits a running job ~4x/second and maintains the Stalled
+// flag. It exits as soon as the job finishes (finishJob is the only
+// status transition, and it happens-before this read under j.mu).
+func (j *jobHandle) heartbeat() {
+	t := time.NewTicker(250 * time.Millisecond)
+	defer t.Stop()
+	for range t.C {
+		j.mu.Lock()
+		if j.info.Status != JobRunning {
+			j.mu.Unlock()
+			return
+		}
+		j.info.Stalled = j.info.Phase == PhaseTransfer &&
+			j.info.CurrentTotal > 0 && time.Since(j.lastByteAt) > stallAfter
+		j.mu.Unlock()
+		j.emit(false)
+	}
 }
 
 func (m *jobManager) snapshot() []JobInfo {
@@ -185,7 +249,11 @@ func (m *jobManager) cancel(id string) bool {
 }
 
 // emit pushes a JobInfo snapshot to the frontend (throttled unless force).
-func (j *jobHandle) emit(m *jobManager, force bool) {
+// Besides the raw counters it keeps the derived numbers honest: an EMA
+// speed over the bytes moved since the previous emit, and the ETA those
+// two imply. This is the ONLY path that computes them, so the heartbeat
+// ticker keeps a quiet job's row alive simply by calling emit.
+func (j *jobHandle) emit(force bool) {
 	j.mu.Lock()
 	now := time.Now()
 	if !force && now.Sub(j.lastEm) < emitInterval {
@@ -194,21 +262,82 @@ func (j *jobHandle) emit(m *jobManager, force bool) {
 	}
 	j.lastEm = now
 	info := j.info
-	if elapsed := now.Sub(j.start).Seconds(); elapsed > 0 && info.SentBytes > 0 {
-		info.SpeedBps = float64(info.SentBytes) / elapsed
+	// EMA speed: weigh the instantaneous rate since the last emit with
+	// the smoothed history, so one fast burst doesn't fling the number
+	// around and a stall decays it visibly toward zero.
+	if dt := now.Sub(j.lastEmAt).Seconds(); dt > 0.05 {
+		inst := float64(info.SentBytes-j.lastEmSent) / dt
+		if inst < 0 {
+			inst = 0
+		}
+		const w = 0.35
+		if info.SpeedBps <= 0 || j.lastEmSent == 0 {
+			info.SpeedBps = inst
+		} else {
+			info.SpeedBps = (1-w)*info.SpeedBps + w*inst
+		}
+		j.info.SpeedBps = info.SpeedBps
+		j.lastEmSent = info.SentBytes
+		j.lastEmAt = now
 	}
-	ctx := m.ctx
+	if info.Status == JobRunning && info.TotalBytes > 0 && info.SentBytes > 0 &&
+		info.SpeedBps > 1 && info.TotalBytes > info.SentBytes {
+		info.EtaMs = int64(float64(info.TotalBytes-info.SentBytes) / info.SpeedBps * 1000)
+		j.info.EtaMs = info.EtaMs
+	} else if j.info.EtaMs != 0 {
+		j.info.EtaMs = 0
+		info.EtaMs = 0
+	}
+	m := j.mgr
 	j.mu.Unlock()
-	if ctx != nil {
+	if m != nil && m.ctx != nil {
 		emitEvent(EventTransferUpdate, info)
 	}
 }
 
-// progress is the per-byte callback wired into the engine's transfer options.
+// progress is the per-byte callback wired into the engine's transfer
+// options. THE live path: it emits (throttled) on every read, so a
+// 15-second single-file transfer paints its percentage as it climbs
+// instead of jumping 0% → 100% at the end.
 func (j *jobHandle) progress(sent, total int64) {
 	j.mu.Lock()
 	j.fileSent = sent
 	j.info.SentBytes = j.doneBase + sent
+	j.info.CurrentSent = sent
+	if total > 0 {
+		j.info.CurrentTotal = total
+	}
+	j.lastByteAt = time.Now()
+	j.mu.Unlock()
+	j.emit(false)
+}
+
+// startFile announces the next in-flight file: its 1-based ordinal, its
+// display path and its expected size (0 = unknown / server-side copy).
+func (j *jobHandle) startFile(idx int, name string, size int64) {
+	j.mu.Lock()
+	j.info.FileIndex = idx
+	j.info.CurrentFile = name
+	j.info.CurrentSent = 0
+	j.info.CurrentTotal = size
+	j.info.Stalled = false
+	j.lastByteAt = time.Now()
+	j.mu.Unlock()
+}
+
+// setMeta stamps the identity fields (title name, item count, route).
+func (j *jobHandle) setMeta(name, from, to string, items int, move bool) {
+	j.mu.Lock()
+	j.info.Name, j.info.From, j.info.To = name, from, to
+	j.info.Items = items
+	j.info.Move = move
+	j.mu.Unlock()
+}
+
+// setPhase labels what the worker is doing between "running" snapshots.
+func (j *jobHandle) setPhase(p string) {
+	j.mu.Lock()
+	j.info.Phase = p
 	j.mu.Unlock()
 }
 
@@ -218,7 +347,10 @@ func (j *jobHandle) fileDone(size int64, failed bool) {
 	j.doneBase += size
 	j.fileSent = 0
 	j.info.SentBytes = j.doneBase
+	j.info.CurrentSent = 0
+	j.info.CurrentTotal = 0
 	j.info.DoneFiles++
+	j.lastByteAt = time.Now()
 	if failed {
 		j.info.FailedFiles++
 	}
@@ -266,11 +398,40 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 	}
 	j := a.jobs.add("upload", len(pairs), total)
 	j.src = bucket
+	j.setMeta(uploadTitle(paths), filepath.Dir(paths[0]), s3Label(bucket, dirPrefix(prefix)), len(paths), false)
 	id := j.info.ID
 	a.emitLogSrc(LogInfo, "upload", bucket, fmt.Sprintf("job %s: uploading %d file(s) (%d bytes) to %s/%s", id, len(pairs), total, bucket, dirPrefix(prefix)))
 	logDecisions(a, "upload", decisions)
 	go a.runUpload(j, c, bucket, pairs, policy, decisions, maxBPS)
 	return id, nil
+}
+
+// uploadTitle names an upload after its first dropped item (the row is
+// "Uploading <name>", the item count rides beside it).
+func uploadTitle(paths []string) string { return filepath.Base(paths[0]) }
+
+// s3Label renders an S3 location as "s3://bucket/prefix".
+func s3Label(bucket, prefix string) string {
+	prefix = strings.Trim(prefix, "/")
+	if prefix == "" {
+		return "s3://" + bucket
+	}
+	return "s3://" + bucket + "/" + prefix
+}
+
+// timeoutKind classifies an error string for the critical "Timed out"
+// treatment in the transfer rows. Empty means an ordinary error.
+func timeoutKind(errMsg string) string {
+	if errMsg == "" {
+		return ""
+	}
+	s := strings.ToLower(errMsg)
+	for _, k := range []string{"timeout", "timed out", "deadline exceeded", "context deadline"} {
+		if strings.Contains(s, k) {
+			return "timeout"
+		}
+	}
+	return ""
 }
 
 // logDecisions records the conflict dialog's per-file choices in the log.
@@ -288,15 +449,13 @@ func logDecisions(a *App, scope string, decisions map[string]string) {
 
 func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs []uploadPair, policy string, decisions map[string]string, maxBPS int64) {
 	ctx := j.ctx
-	for _, p := range pairs {
+	for i, p := range pairs {
 		if ctx.Err() != nil {
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
-		j.mu.Lock()
-		j.info.CurrentFile = p.local
-		j.mu.Unlock()
-		j.emit(a.jobs, true)
+		j.startFile(i+1, p.local, p.size)
+		j.emit(true)
 
 		pol := filePolicy(decisions, p.key, policy)
 		if pol == PolicySkip { // user kept the destination file
@@ -304,7 +463,7 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 			j.info.SkippedFiles++
 			j.mu.Unlock()
 			j.fileDone(0, false)
-			j.emit(a.jobs, true)
+			j.emit(true)
 			continue
 		}
 
@@ -325,10 +484,11 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 			}
 			j.mu.Lock()
 			j.info.Error = fmt.Sprintf("%s: %v", filepath.Base(p.local), err)
+			j.info.ErrorKind = timeoutKind(err.Error())
 			j.mu.Unlock()
 		}
 		j.fileDone(p.size, err != nil)
-		j.emit(a.jobs, true)
+		j.emit(true)
 	}
 
 	j.mu.Lock()
@@ -346,12 +506,23 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 // transfer history log (JSONL M3).
 func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	j.mu.Lock()
+	now := time.Now()
 	id, done, totalFiles, sentBytes, failedFiles, skipped :=
 		j.info.ID, j.info.DoneFiles, j.info.TotalFiles, j.info.SentBytes, j.info.FailedFiles, j.info.SkippedFiles
 	j.info.Status = status
 	j.info.Error = errMsg
+	j.info.ErrorKind = timeoutKind(errMsg)
 	j.info.CurrentFile = ""
-	if status == JobDone {
+	j.info.CurrentSent = 0
+	j.info.CurrentTotal = 0
+	j.info.Stalled = false
+	j.info.EtaMs = 0
+	j.info.ElapsedMs = now.Sub(j.start).Milliseconds()
+	// The finished row keeps the lifetime average — "done in 12s at
+	// 8 MB/s" — rather than the last live EMA sample.
+	if elapsed := now.Sub(j.start).Seconds(); elapsed > 0 && sentBytes > 0 {
+		j.info.SpeedBps = float64(sentBytes) / elapsed
+	} else {
 		j.info.SpeedBps = 0
 	}
 	logEntry := struct {
@@ -365,7 +536,7 @@ func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 		SentBytes    int64  `json:"sentBytes"`
 		Error        string `json:"error,omitempty"`
 	}{
-		At:           time.Now().Format(time.RFC3339),
+		At:           now.Format(time.RFC3339),
 		Op:           j.info.Op,
 		Status:       status,
 		TotalFiles:   j.info.TotalFiles,
@@ -376,7 +547,7 @@ func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 		Error:        errMsg,
 	}
 	j.mu.Unlock()
-	j.emit(a.jobs, true)
+	j.emit(true)
 	a.logTransfer(logEntry)
 	a.emitLogSrc(jobStatusLevel(status), logEntry.Op, j.src,
 		fmt.Sprintf("job %s finished: %s — %d/%d file(s), %d bytes sent, %d failed, %d skipped",
@@ -510,6 +681,7 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	}
 	j := a.jobs.add("download", len(items), total)
 	j.src = bucket
+	j.setMeta(downloadTitle(items), s3Label(bucket, ""), destDir, len(items), false)
 	id := j.info.ID
 	a.emitLogSrc(LogInfo, "download", bucket, fmt.Sprintf("job %s: downloading %d object(s) (%d bytes) from %s to %s", id, len(items), total, bucket, destDir))
 	logDecisions(a, "download", decisions)
@@ -517,17 +689,24 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	return id, nil
 }
 
+// downloadTitle names a download after its first item (honoring a local
+// rename override when the grid shipped one).
+func downloadTitle(items []DownloadItem) string {
+	if it := items[0]; it.Local != "" {
+		return path.Base(it.Local)
+	}
+	return path.Base(strings.TrimSuffix(items[0].Key, "/"))
+}
+
 func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items []DownloadItem, destDir, policy string, decisions map[string]string, maxBPS int64) {
 	ctx := j.ctx
-	for _, it := range items {
+	for i, it := range items {
 		if ctx.Err() != nil {
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
-		j.mu.Lock()
-		j.info.CurrentFile = it.Key
-		j.mu.Unlock()
-		j.emit(a.jobs, true)
+		j.startFile(i+1, it.Key, it.Size)
+		j.emit(true)
 
 		rel := it.Local
 		if rel == "" {
@@ -561,10 +740,11 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 			}
 			j.mu.Lock()
 			j.info.Error = fmt.Sprintf("%s: %v", it.Key, err)
+			j.info.ErrorKind = timeoutKind(err.Error())
 			j.mu.Unlock()
 		}
 		j.fileDone(it.Size, err != nil)
-		j.emit(a.jobs, true)
+		j.emit(true)
 	}
 
 	j.mu.Lock()

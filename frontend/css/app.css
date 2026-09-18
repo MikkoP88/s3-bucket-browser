@@ -559,9 +559,32 @@ body.popout-win .pop-grip { display: none; }
 .tr-job .tr-status { font-size: 12px; color: var(--text-dim); }
 .tr-job.done .tr-status { color: var(--ok); }
 .tr-job.error .tr-status, .tr-job.canceled .tr-status { color: var(--danger); }
-.tr-bar { height: 6px; background: var(--border-soft); border-radius: 3px; overflow: hidden; margin: 6px 0; }
+.tr-bar { height: 6px; background: var(--border-soft); border-radius: 3px; overflow: hidden; margin: 6px 0; position: relative; }
 .tr-bar > div { height: 100%; background: var(--accent); width: 0; transition: width .3s ease; }
 .tr-job.error .tr-bar > div { background: var(--danger); }
+/* Indeterminate: a running job with no countable totals yet (server-side
+   copy in flight) shimmers instead of sitting at a dead 0%. */
+.tr-bar.tr-indet::after {
+  content: ''; position: absolute; inset: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: tr-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes tr-shimmer { 0% { transform: translateX(-110%); } 100% { transform: translateX(400%); } }
+@media (prefers-reduced-motion: reduce) { .tr-bar.tr-indet::after { animation: none; opacity: .4; } }
+.tr-job .tr-chips { flex: none; display: flex; gap: 4px; align-items: center; }
+.tr-chip { font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 8px; border: 1px solid var(--border-soft); color: var(--text-dim); white-space: nowrap; }
+.tr-chip.st-running { color: var(--accent); border-color: var(--accent); }
+.tr-chip.st-done { color: var(--ok); border-color: var(--ok); }
+.tr-chip.st-error, .tr-chip.st-canceled { color: var(--danger); border-color: var(--danger); }
+.tr-chip.st-warn { color: var(--warn); border-color: var(--warn); }
+.tr-chip.st-crit { color: #fff; background: var(--danger); border-color: var(--danger); font-weight: 600; }
+.tr-chip.st-phase { font-style: italic; }
+.tr-job .tr-meta { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--text-dim); }
+.tr-job .tr-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-job .tr-route { font-size: 11px; color: var(--text-dim); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-job .tr-route .tr-loc { color: var(--text); }
+.tr-job .tr-cur { font-size: 12px; margin-top: 2px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-job.stalled .tr-bar > div { background: var(--warn); }
 .tr-job .tr-sub { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-job .btn { padding: 2px 10px; font-size: 12px; }
 .tr-job .tr-pct { flex: none; min-width: 36px; text-align: right; font-size: 12px; color: var(--text-dim); }

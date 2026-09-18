@@ -8,6 +8,42 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **File transfers rows now carry the whole picture: action + name, route,
+  current item, speed, ETA and every state.** Every job row is titled by
+  what it does and what it works on — "↑ Uploading video-final.mp4 +2",
+  verb plus the primary source item plus how many more ride the job — and
+  when two visible jobs answer to the same title the second gets a
+  "(2)" suffix so they can never be confused. Under the title a route
+  line spells out From: and To: (local path or s3://bucket/prefix on one
+  side, the destination on the other), and while several files ride one
+  job a current-file line always names what is moving right now — "File
+  2 / 3 · video-take-7.mp4 · 22.0 MB / 75.0 MB (29%)" — so the row can
+  never sit on a stale name for minutes. The meta line keeps counts and
+  bytes and now shows the live speed and a remaining-time estimate while
+  running, and the lifetime average ("in 43s") once finished. State is
+  chipped instead of implied: the status itself, a "Cleaning up" phase
+  chip while a move deletes its sources, a "Stalled" warning chip when a
+  known-size file stops making byte progress for over 10 seconds, a
+  critical "Timed out" chip when the failure was a timeout, and an
+  explicit "Server-side copy" chip (with an indeterminate shimmer bar)
+  for in-flight S3-to-S3 copies that legitimately carry no byte counts.
+  The status-bar badge follows suit — "⇅ Uploading video-final.mp4 —
+  31% @ 8.0 MB/s" — and the Running tasks window lists transfer jobs
+  under their name with the "+N" item count.
+
+### Fixed
+
+- **Transfers no longer jump from 0% to 100%.** Progress events were
+  only emitted at file boundaries, so a single file large enough to take
+  15+ seconds produced exactly two updates — 0 bytes at the start and
+  "done" at the end — with the bar frozen at 0% the entire time in
+  between. The engine now emits on every progress callback (throttled to
+  100 ms) and a per-job heartbeat re-emits every 250 ms regardless, so
+  the percentage, the EMA-smoothed speed and the ETA all tick in real
+  time even when the underlying stream reports nothing. Timeouts are
+  additionally classified (timeout, deadline exceeded, context deadline)
+  and surface as an explicit error kind on the job.
+
 - **Settings rebuilt as a Visual Studio 2026-style two-pane dialog with
   search.** The single scrolling list of sections is gone: a category
   navigation (Appearance, View, Refresh, Editing, Deleting, Logging,

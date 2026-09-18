@@ -1,6 +1,6 @@
 // S3 Bucket Browser — application shell (Explorer layout).
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtDate, basename, debounce, srcIconEl } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, basename, debounce, srcIconEl } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS } from './grid.js';
 import { Tree } from './tree.js';
@@ -3806,7 +3806,21 @@ function showTransfersBadge() {
     if (running.length) {
       sb.classList.remove('hidden');
       const j = running[0];
-      sb.textContent = `\u21C5 ${running.length > 1 ? `${running.length} jobs — ` : ''}${j.doneFiles}/${j.totalFiles} ${j.currentFile ? basename(j.currentFile) : ''} ${fmtBytes(j.sentBytes)}${j.totalBytes ? '/' + fmtBytes(j.totalBytes) : ''}`;
+      const name = j.name || (j.currentFile ? basename(j.currentFile) : '') || j.id;
+      let pct = 0;
+      if (j.totalBytes > 0) pct = Math.floor((j.sentBytes / j.totalBytes) * 100);
+      else if (j.totalFiles > 0) pct = Math.floor(((j.doneFiles + j.failedFiles + j.skippedFiles) / j.totalFiles) * 100);
+      let text;
+      if (running.length > 1) {
+        text = `\u21C5 ${running.length} \u2014 ${name} ${pct}%`;
+      } else {
+        const verb = j.op === 'upload' ? t('transfer.verbUploading')
+          : j.op === 'download' ? t('transfer.verbDownloading')
+            : t(j.move ? 'transfer.verbMoving' : 'transfer.verbCopying');
+        text = `\u21C5 ${verb} ${name} \u2014 ${pct}%`;
+        if (j.speedBps > 1) text += ` @ ${fmtSpeed(j.speedBps)}`;
+      }
+      sb.textContent = text;
     } else {
       sb.classList.add('hidden');
     }
