@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Small windows are a first-class scenario.** A new visual-harness sweep
+  resizes the app window to 1024×640 and 820×560 and reopens every flagship
+  surface — Settings, the keyboard shortcuts, File transfers — proving
+  dialogs clamp to the viewport (the 880px tier included), popouts re-clamp
+  their remembered placement, and no button or scroll ever strands
+  off-screen.
+
 - **Running tasks now really monitors everything.** Four long operations
   that ran silently are registered tasks with progress and a **Cancel**
   button: deleting a bucket (with all its contents — no fixed time
@@ -185,6 +192,21 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **No more theme flash on launch.** The palettes live on the
+  `data-theme` attribute, which the app set only after `main.js` booted —
+  every start painted one frame with unset colors (white flash for dark
+  users, worst on cold start). A tiny pre-paint script in `<head>` now
+  resolves the saved choice — or the system preference — before the
+  first paint, in sync with `initTheme()`.
+- **Dialog close buttons are a real hit target.** The × on every modal
+  and floating window was a bare 16px glyph — the smallest clickable
+  thing in the app. It now carries padding (negative margins keep the
+  layout pixel-identical) and lights up on hover.
+- **CLI typos are usage errors, not crashes.** Cobra's own invocation
+  failures — unknown command, unknown flag, wrong argument count — were
+  reported as `unexpected:` with exit code 3 (the app-failure class).
+  They now read `usage error:` with a `run 's3b --help'` hint and exit 2,
+  matching every other usage classification in the tree.
 - **Version-preserving paste of a folder no longer flattens it.** The
   versioned copy path (the default whenever the destination bucket has
   versioning enabled) mapped every source key of a pasted folder straight

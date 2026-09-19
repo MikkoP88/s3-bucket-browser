@@ -4,6 +4,20 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>S3 Bucket Browser</title>
+  <script>
+    // Pre-paint theme: the palettes live on [data-theme], so without this
+    // the first frame renders with unset colors and flashes. Must stay in
+    // sync with initTheme() in js/main.js: saved explicit choice, else the
+    // system preference. Runs before the stylesheet — no visual flash.
+    (function () {
+      try {
+        var t = localStorage.getItem('s3b-theme');
+        if (t !== 'light' && t !== 'dark')
+          t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { /* storage unavailable — initTheme() decides */ }
+    })();
+  </script>
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body data-file-drop-target>
@@ -55,7 +69,7 @@
           <div class="grid-canvas" id="grid-canvas"></div>
         </div>
         <div class="empty-state hidden" id="empty-state">
-          <div class="empty-icon" id="empty-icon">&#128193;</div>
+          <div class="empty-icon">&#128193;</div>
           <div class="empty-title" id="empty-title"></div>
           <div class="empty-sub" id="empty-sub"></div>
           <div class="empty-actions" id="empty-actions"></div>

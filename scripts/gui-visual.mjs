@@ -3313,6 +3313,10 @@ await step('transfers', async () => {
   await ok('hidden staging job renders nowhere', evalPage((s) =>
     !document.querySelector(`${s} .tr-job[data-id="t9"]`)
     && !/clip\.dat/.test(document.querySelector(s).textContent), trSel));
+  // the tallest auto-height state sits at the viewport's bottom edge on
+  // default placement — lift it fully into view for the artifact shot
+  // (same treatment as the running-tasks window)
+  await evalPage((s) => { const p = document.querySelector(s); if (p) p.style.top = '72px'; }, trSel);
   await shotOf('transfers-critical', trSel);
   // restore the default seeds for the steps that follow
   await evalPage(() => {
@@ -5349,6 +5353,61 @@ await step('shortcut-keys', async () => {
   await ok('F9 opens the side pane', waitFor(async () => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane open'));
   await page.keyboard.press('F9');
   await ok('F9 closes it again', waitFor(async () => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed'));
+});
+
+await step('small-viewport-sweep', async () => {
+  // The OS window is user-resizable, so small viewports are a first-class
+  // scenario, not an edge case: every flagship surface must stay fully
+  // usable inside one. Dialogs clamp through the shared max-width
+  // (100vw - 48px), popouts through their own caps — and nothing may push
+  // the page into horizontal scroll, leave the viewport, or clip its
+  // action buttons off-screen.
+  const vp0 = page.viewportSize();
+  const openMenu = async (menuRe, needle) => {
+    await page.locator('#menubar .mb-title', { hasText: menuRe }).first().click();
+    await sleep(80);
+    // needle is a plain string: closures evaluated in the page cannot
+    // capture Node-side variables (regexes travel as .source strings)
+    const item = await elOrNull((n) => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => i.textContent.toLowerCase().includes(n) && !i.classList.contains('has-sub')) || null, needle);
+    if (item) await item.asElement().click();
+    return !!item;
+  };
+  for (const [w, h] of [[1024, 640], [820, 560]]) {
+    await page.setViewportSize({ width: w, height: h });
+    await sleep(150);
+    // Settings — the 880px flagship must clamp to the shrunken viewport
+    await ok(`settings opens at ${w}x${h}`, await openMenu(/settings/i, 'settings'));
+    await waitFor(modalVisible, 4000, 'settings modal');
+    await sleep(220); // past modal-in before measuring
+    await ok(`settings clamped and whole at ${w}x${h}`, (await layoutAudit()).ok && await evalPage(() =>
+      document.querySelector('#modal-root .modal').getBoundingClientRect().width <= window.innerWidth - 40));
+    await shot(`ux-small-settings-${w}`);
+    await closeModal();
+    // the wide keysheet popout (720 tier) still fits
+    await page.keyboard.press('F1');
+    await waitFor(() => popoutVisible('keys'), 4000, 'keysheet');
+    await sleep(220);
+    await ok(`keysheet fits ${w}x${h}`, (await layoutAudit()).ok);
+    await closePopout('keys');
+    // the fixed-490 auto-height transfers window still fits
+    await evalPage(() => window.__shim.emit('transfer:update', { id: 'sv1', op: 'upload', status: 'running', name: 'small-view.bin', totalFiles: 2, doneFiles: 1 }));
+    await ok(`transfers open at ${w}x${h}`, await openMenu(/view/i, 'transfers'));
+    await waitFor(() => popoutVisible('transfers'), 4000, 'transfers popout');
+    await sleep(220);
+    await ok(`transfers fit ${w}x${h}`, (await layoutAudit()).ok);
+    await shot(`ux-small-transfers-${w}`);
+    // clean the seeded job the way the transfers step does
+    await evalPage(() => { window.__shim.world.transfers = []; });
+    await evalPage((s) => {
+      const b = Array.from(document.querySelectorAll(`${s} .modal-foot button`)).find((x) => /^clear$/i.test(x.textContent));
+      b?.click();
+    }, popSel('transfers'));
+    await closePopout('transfers');
+  }
+  await page.setViewportSize({ width: vp0.width, height: vp0.height });
+  await sleep(150);
+  await ok('viewport restored, layout clean', (await layoutAudit()).ok);
 });
 
 await step('layout-audit', async () => {

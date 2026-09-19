@@ -2,6 +2,25 @@ package cli
 
 import "testing"
 
+// Cobra's own invocation failures (unknown command, wrong arg count) are
+// user typos: they must classify as usage errors (exit 2, "usage error:")
+// and never as app failures (exit 3, "unexpected:").
+func TestExecuteUsageClassification(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"unknown command", []string{"definitely-not-a-cmd"}},
+		{"missing required arg", []string{"rm"}},
+		{"unknown flag", []string{"ls", "--definitely-not-a-flag"}},
+	}
+	for _, c := range cases {
+		if code := Execute(c.args); code != exitUsage {
+			t.Errorf("Execute(%v) = exit %d, want exitUsage (%d)", c.args, code, exitUsage)
+		}
+	}
+}
+
 func TestParseS3URI(t *testing.T) {
 	cases := []struct {
 		in             string

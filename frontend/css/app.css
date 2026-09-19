@@ -518,7 +518,11 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
   padding: 12px 16px; border-bottom: 1px solid var(--border-soft);
   font-weight: 600; font-size: 14px;
 }
-.modal-head .x { cursor: pointer; color: var(--text-dim); font-size: 16px; }
+/* Close affordance: the × is a real hit target (padded, not glyph-sized)
+   and answers hover — it was the smallest clickable thing in the app. */
+.modal-head .x { cursor: pointer; color: var(--text-dim); font-size: 16px;
+  padding: 2px 6px; margin: -2px -6px; border-radius: 4px; line-height: 1.2; }
+.modal-head .x:hover { color: var(--text); background: var(--border-soft); }
 .modal-body { padding: 16px; overflow: auto; }
 .modal-foot {
   display: flex; justify-content: flex-end; gap: 8px;
