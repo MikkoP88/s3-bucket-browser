@@ -2018,7 +2018,7 @@ const GUIDE_SECTIONS = [
     ['Grid', 'Click, Ctrl+click and Shift+click to select, Ctrl+A for all, Ctrl+I to invert, drag a marquee, or just type to jump to an item. The funnel row under the header filters per column; right-click the header to pick columns; Ctrl+F focuses the quick filter.'],
     ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and type a path like s3://bucket/folder/ to jump directly. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here.'],
-    ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size.'],
+    ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size. Clicking any app window — main or popout — brings the whole group forward above other applications, with the clicked window on top.'],
     ['Edit files in place', 'Right-click a file → Edit opens it in the app you pick (the OS "Open with" chooser) or the system default; every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost.'],
   ]],
   ['File transfers', [
