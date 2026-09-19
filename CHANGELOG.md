@@ -8,6 +8,36 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Help → Doctor now opens a source picker**: a small window listing every
+  S3 data source — bucket-scoped sources carry their bucket, account-wide
+  ones show "all buckets of this key" — so you choose exactly what to
+  analyze before the diagnosis window opens. Picking a source switches the
+  engine's view source to it, then runs the same Doctor as always. The
+  right-click **Doctor…** on a source/bucket node is untouched and still
+  goes straight to the window; the picker is only the Help menu's front
+  door. Picker title/hint/no-sources strings are localized in all 15
+  languages.
+- **Help → License window + a single source of license identity.** The
+  app's license identity (product, holder, year, license name/version,
+  text and repo URLs) now lives in one place — `frontend/js/license.js` —
+  and both the About box and the new Help → License popout read from it.
+  The License window summarizes the PolyForm Internal Use 1.0.0 terms,
+  links the canonical text, and points third-party attribution at the
+  NOTICE file and release SBOM (summary, not a copy — nothing to drift).
+  The About box's license line was also corrected to the exact LICENSE
+  wording ("PolyForm Internal Use License 1.0.0 — Copyright (c) 2026
+  MikkoP88").
+- **User guide accuracy + coverage pass.** The File transfers tab's
+  conflicts entry no longer claims "every transfer asks for a conflict
+  policy" — it now matches the real behavior (live destination pre-check;
+  clean destinations start immediately, only real collisions open the
+  per-file dialog). New entries cover the two-way Explorer clipboard,
+  drag-out download, transfer-window auto open/close and history toggle,
+  the Running tasks monitor, floating popout windows, in-place file
+  editing, the Settings dialog (theme, languages, engine tuning, Secure
+  Storage) and the Delete Window (the old one-line "safety ladder" note).
+  The Doctor entry documents the picker. The keyboard map gains the
+  missing Ctrl+Shift+F (deep find) row.
 - **Engine tuning is now in Settings — the six budgets the engine ran on
   hardcoded defaults for are first-class, honored-live settings.** A new
   **Settings → Network** page carries **Listing timeout** (how long a
@@ -38,6 +68,11 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The right-click menu of an S3 data source no longer carries "Open
+  buckets view".** Clicking the source already opens its content (buckets
+  for account-wide sources, the bucket's objects for bucket-scoped ones),
+  so the extra navigation entry was redundant noise; every source type
+  behaves the same way now.
 - **Running tasks rows now carry the whole picture: phase, current item,
   live speed, ETA and every finish stamp.** Every long-running task —
   copy, move, delete, permanent/keep-current purge, purge-all,

@@ -3,6 +3,7 @@
 import { api, onEvent, subscribeStream } from './api.js';
 import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, parentPrefix, basename } from './util.js';
 import { t } from './i18n.js';
+import { LICENSE } from './license.js';
 
 const root = () => document.getElementById('modal-root');
 
@@ -1952,6 +1953,7 @@ export function helpSheet() {
     ['Ctrl+A', 'Select all'],
     ['Ctrl+I', 'Invert selection'],
     ['Ctrl+F', 'Filter'],
+    ['Ctrl+Shift+F', 'Deep find — search everything under the open bucket/folder'],
     ['F5', 'Refresh'],
     ['Alt+\u2190 / \u2192', 'Back / forward'],
     ['Alt+\u2191, Backspace', 'Go to parent'],
@@ -1981,29 +1983,34 @@ const GUIDE_SECTIONS = [
     ['Import existing credentials', '"Import S3 Credential" (File menu or the empty state) reads credential files — AWS INI (~/.aws/credentials), rclone, JSON, .env, encrypted .s3bprofile — or a KMS service (Vault, AWS SM, Azure, GCP). Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3. Test each candidate before importing.'],
     ['Save your workspace', 'Data sources live in the session until saved. Ctrl+S / File → Save As writes an encrypted .s3bprofile you can reopen, keep or share; the status bar counts unsaved sources.'],
     ['Secrets', 'Keys and passwords are stored in the OS keyring (Windows Credential Manager, macOS Keychain, Linux SecretService) when available, with a 0600-permission file fallback on headless hosts.'],
+    ['Settings', 'The Settings menu opens one dialog with a page tree: theme (light/dark), 15 languages, view options, network timeouts and S3 retries, the transfer engine (multipart part size, parts in flight, stall threshold), delete gates and security — including the opt-in Secure Storage mode that encrypts the whole source store. Every change applies immediately; no restart.'],
   ]],
   ['Browsing', [
     ['Sidebar tree', 'Sources → buckets → folders. Click to navigate; right-click a node for Properties, Admin panel, transfers and more.'],
     ['Grid', 'Click, Ctrl+click and Shift+click to select, Ctrl+A for all, Ctrl+I to invert, drag a marquee, or just type to jump to an item. The funnel row under the header filters per column; right-click the header to pick columns; Ctrl+F focuses the quick filter.'],
     ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and type a path like s3://bucket/folder/ to jump directly. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here.'],
+    ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size.'],
+    ['Edit files in place', 'Right-click a file → Edit opens it in the app you pick (the OS "Open with" chooser) or the system default; every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost.'],
   ]],
   ['File transfers', [
     ['Upload', 'Toolbar ▲ and the context menus open one Upload menu: Files… (Ctrl+U) picks files, Folder… a whole directory tree — or just drag files/folders from the OS anywhere onto the window.'],
-    ['Download', 'Toolbar ▼, Ctrl+D, Enter, or the context menu. Multistep downloads/uploads are multipart and resumable per file.'],
+    ['Download', 'Toolbar ▼, Ctrl+D, Enter, or the context menu. Multistep downloads/uploads are multipart and resumable per file. Dragging rows out of the window onto Explorer, Finder or the desktop downloads them as real files.'],
     ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move. Need the text instead? The context menu (or Edit → Copy as) copies names, full paths or s3:// URIs to the OS clipboard.'],
-    ['Conflicts & speed', 'Every transfer asks for a conflict policy (overwrite / skip / rename) unless a default is set in Settings, and can be throttled (256 kB/s … 10 MB/s).'],
-    ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel.'],
+    ['Two-way Explorer clipboard', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. A copy made inside the app mirrors small selections onto the OS clipboard, so Ctrl+V works in Explorer too. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
+    ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 10 MB/s).'],
+    ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle.'],
+    ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, deep searches, bulk deletes, version purges — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
   ]],
   ['Versions & safety', [
     ['Versioning', 'Buckets with versioning show a 🔄 icon in the tree. Open an object\u2019s context menu → Versions for the timeline: restore a previous version as latest, view text diffs, or purge old versions.'],
     ['Undo delete', 'Deleted objects leave a delete marker — "Versions → undo delete" brings the object back in one click. On versioned buckets Del asks marker-vs-permanent; Shift+Del goes straight to permanent. Rows with markers in their history carry a ⛔ badge; a folder whose every file is delete-marked shows ⛔ all deleted.'],
     ['Object Lock', 'Locked buckets show a 🔒 icon; retention (GOVERNANCE/COMPLIANCE) and legal hold are per version, with the same confirm gates as the CLI.'],
-    ['Safety ladder', 'Deletes count first and act second; large selections require a typed confirmation; removing a bucket means typing its name.'],
+    ['The Delete Window', 'Every destructive action — selection deletes, bucket deletes, version purges, force-emptying — confirms in the same window: it counts first (what, how many, how big), states the consequence in plain language, and asks you to type for the biggest ones (removing a bucket means typing its name). On versioned buckets you choose between a restorable delete marker, clearing old versions, or permanent deletion. Settings → Deleting tunes the gates.'],
   ]],
   ['Administration', [
     ['Admin panel', 'Right-click a bucket → Admin panel: versioning, policy, ACL, CORS, lifecycle, encryption, public-access block, website, tags, versions and lock — one tabbed dialog.'],
-    ['Doctor', 'Help → Doctor runs a guided diagnosis: DNS → TCP → TLS → auth → permissions, with one-click re-runs of individual checks.'],
+    ['Doctor', 'Help → Doctor opens a picker of your S3 sources — choose one and it runs a guided diagnosis: DNS → TCP → TLS → auth → permissions, with one-click re-runs of individual checks. Right-clicking a bucket → Doctor… goes straight there.'],
     ['Presign & storage class', 'The context menu creates time-limited pre-signed URLs and converts objects between storage classes (server-side copy).'],
     ['Properties', 'Context menu → Properties shows full metadata for buckets, folders, objects and sources — provider, region, versioning, lock, encryption, policy state.'],
   ]],
@@ -2079,6 +2086,28 @@ export function sourcesInfoDialog() {
     )),
   );
   openPopout({ id: 'sources', title: 'Supported data sources', body, wide: true });
+}
+
+// ---------- license information (Help menu) ----------
+// Identity comes from license.js — the single source shared with the About
+// box — and the normative text stays in LICENSE/NOTICE at the repo root.
+// This window is a summary, not a copy, so it cannot drift out of date.
+export function licenseDialog() {
+  if (maybeNativePopout({ id: 'license', query: 'popout=license', title: t('menu.license'), w: 640, h: 560, domOpen: licenseDialog })) return;
+  const body = el('div', { class: 'guide' },
+    el('div', { class: 'guide-item' },
+      el('div', { class: 'guide-h', text: LICENSE.product }),
+      el('div', { class: 'guide-p', text: `Copyright (c) ${LICENSE.year} ${LICENSE.holderFull}.` }),
+      el('div', { class: 'guide-p', text: `${LICENSE.name} ${LICENSE.version}. The full license text is published by the Polyform Project and ships as LICENSE in the repository and release archives:` }),
+      el('div', { class: 'guide-p mono', text: LICENSE.url }),
+      el('div', { class: 'guide-p', text: `Source code and releases: ${LICENSE.repo}` }),
+    ),
+    el('div', { class: 'guide-item' },
+      el('div', { class: 'guide-h', text: 'Third-party components' }),
+      el('div', { class: 'guide-p', text: 'This product includes third-party software licensed under Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause and ISC terms — among them the AWS SDK for Go, Wails, Cobra, go-keyring, pkg/sftp, jlaffaye/ftp and their dependencies. The complete attribution inventory (every direct dependency with its license, plus the full pinned module graph) ships in the NOTICE file next to the binary and in the release SBOM.' }),
+    ),
+  );
+  openPopout({ id: 'license', title: t('menu.license'), body, wide: true });
 }
 
 // ---------- conflict policy + transfer throttle ----------

@@ -10,8 +10,9 @@ import {
   versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   renderPopoutView,
-  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm,
+  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog,
 } from './dialogs.js';
+import { LICENSE, licenseLine } from './license.js';
 import { LocalPane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
 import { setCommandContext, updateCommandState, commandState } from './commands.js';
@@ -1523,7 +1524,6 @@ function showTreeMenu(e, node) {
       null,
       ['Delete bucket\u2026', '', goThen(() => deleteBucket(node.bucket)), !st.hasProfile],
       null,
-      ['Open buckets view', '', () => nav.to({ kind: 'buckets', source: node.source })],
       ['Refresh', 'F5', () => tree.reload(node.id)],
       ['Reconnect', '', async () => {
         try {
@@ -1612,8 +1612,6 @@ function showTreeMenu(e, node) {
       ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
       null,
       ['Delete bucket\u2026', '', goThen(() => deleteBucket(node.bucket)), !st.hasProfile],
-      null,
-      ['Open buckets view', '', () => nav.to({ kind: 'buckets', source: node.source })],
     ]);
     return;
   }
@@ -2551,6 +2549,48 @@ async function bucketProperties(bucket) {
 
 function runDoctor(bucket) {
   doctorDialog(bucket || '');
+}
+
+// doctorPicker is the Help menu's front door to the Doctor: a small window
+// listing every S3 source, so the user picks what to analyze. Picking a
+// source switches the engine's view source to it (the doctor addresses the
+// source the main view is browsing) and opens the regular doctor window —
+// bucket-scoped sources carry their bucket, account-wide ones diagnose the
+// endpoint itself. The right-click "Doctor…" path on a source/bucket node
+// stays exactly as it was; this picker only replaces the menu entry.
+function doctorPicker() {
+  const s3s = sources.filter((s) => s.type === 's3');
+  if (!s3s.length) {
+    toast(t('doctor.pickNone'), 'error');
+    return;
+  }
+  const rows = s3s.map((s) => el('div', {
+    class: 'picker-row',
+    role: 'button',
+    tabindex: '0',
+    onclick: () => pick(s),
+    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') pick(s); },
+  },
+  srcIconEl('s3', s.color),
+  el('div', { class: 'picker-main' },
+    el('div', { class: 'picker-name', text: s.name }),
+    el('div', { class: 'picker-sub', text: s.bucket ? `s3://${s.bucket}` : 'account-wide — all buckets of this key' }),
+  ),
+  ));
+  let modal;
+  const pick = async (s) => {
+    modal?.close();
+    await setViewSourceFor({ source: s.name });
+    runDoctor(s.bucket || '');
+  };
+  modal = openModal({
+    title: t('doctor.pickTitle'),
+    body: el('div', {},
+      el('div', { class: 'picker-hint', text: t('doctor.pickHint') }),
+      el('div', { class: 'picker-list' }, rows),
+    ),
+    buttons: [{ label: t('dlg.cancel') }],
+  });
 }
 
 // ============================ drag & drop ============================
@@ -3546,7 +3586,9 @@ function mountMenubar() {
         { label: t('menu.sources'), action: sourcesInfoDialog },
         { label: t('menu.keys'), kbd: 'F1', action: helpSheet },
         null,
-        { label: t('menu.doctor'), action: () => runDoctor(nav.current?.kind === 'objects' ? nav.current.bucket : ''), enabled: () => st().canDoctor },
+        { label: t('menu.doctor'), action: doctorPicker, enabled: () => st().canDoctor },
+        null,
+        { label: t('menu.license'), action: licenseDialog },
         { label: t('menu.about'), action: aboutDialog },
       ],
     },
@@ -3566,9 +3608,9 @@ function aboutDialog() {
       el('div', { class: 'k', text: t('menu.aboutPublisher') }),
       el('div', { class: 'v', text: 'MikkoP88' }),
       el('div', { class: 'k', text: t('menu.aboutLicense') }),
-      el('div', { class: 'v', text: 'PolyForm Internal Use 1.0.0 — Copyright (c) MikkoP88' }),
+      el('div', { class: 'v', text: licenseLine() }),
       el('div', { class: 'k', text: t('menu.aboutUrl') }),
-      el('div', { class: 'v mono', text: 'https://github.com/MikkoP88/s3-bucket-browser' }),
+      el('div', { class: 'v mono', text: LICENSE.repo }),
     );
   };
   draw('');
