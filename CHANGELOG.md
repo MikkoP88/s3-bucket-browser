@@ -71,18 +71,21 @@ follow [Semantic Versioning](https://semver.org/).
 - **Copy is now a true two-part action: nothing happens until Paste.**
   Ctrl+C on remote/S3 rows used to start a real staging download into a
   temp clipboard directory before anything was pasted; it now stages
-  references only — no transfer-engine call, no temp download, nothing
-  touches the OS clipboard — and the actual transfer or server-side copy
-  runs at Ctrl+V in the destination. Copying real local files in the
-  dual-pane local view still hands them to the OS clipboard (so Ctrl+V
-  in Explorer keeps working), and the Explorer → app direction is
-  unchanged: Ctrl+C in File Explorer, Ctrl+V in the app uploads the
-  files. The two-part sweep also covers the internal staging the drag-out
-  download needs: those scratch transfers are now flagged hidden and are
-  invisible everywhere — never a row in File transfers, never in Running
-  tasks, never on the status-bar badges, never an auto-opened window.
-  Only real transfers show: data source ↔ data source, and local
-  machine ↔ app (drag, copy & paste).
+  references only — no visible transfer, nothing downloads — and the
+  actual transfer or server-side copy runs at Ctrl+V in the destination.
+  Explorer owns its paste (there is no second step we control there), so
+  that one direction is served at copy time: small selections
+  (≤ 500 files / 256 MB) are mirrored onto the OS clipboard through a
+  staging download flagged hidden, and a cut never mirrors — an Explorer
+  paste of a cut would move. Copying real local files in the dual-pane
+  local view still hands them to the OS clipboard directly, and the
+  Explorer → app direction is unchanged: Ctrl+C in File Explorer, Ctrl+V
+  in the app uploads the files. The two-part sweep also covers the
+  internal staging the drag-out download needs: those scratch transfers
+  are now flagged hidden and are invisible everywhere — never a row in
+  File transfers, never in Running tasks, never on the status-bar
+  badges, never an auto-opened window. Only real transfers show: data
+  source ↔ data source, and local machine ↔ app (drag, copy & paste).
 - **File transfers rows stack their route vertically.** The From and To
   locations now render one above the other (each leg truncating its own
   path) instead of sharing a line behind a "→" arrow — long paths no
