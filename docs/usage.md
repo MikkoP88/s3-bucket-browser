@@ -207,12 +207,16 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   cross-source drags spool through an encrypted temp workspace when
   Secure Storage is on.
 - **Shared with File Explorer** — Ctrl+C in Explorer, Ctrl+V here: the
-  copied files upload into the open folder. Copies made inside the app
-  stage references only — nothing downloads until you paste, and pasting
-  runs the transfer then. Copying real local files in the dual-pane
-  local view still hands them to the OS clipboard, so Ctrl+V in Explorer
-  works for those. **Last copy wins** on both sides. Machines that must
-  not touch the OS clipboard can turn the whole bridge off: Settings →
+  copied files upload into the open folder. The other direction works
+  too: Ctrl+C on remote rows quietly mirrors small selections (≤ 500
+  files / 256 MB) onto the OS clipboard through a hidden staging
+  download — never a row in File transfers, never an auto-opened window
+  — so Ctrl+V in Explorer pastes real files; pasting inside the app
+  still uses the reference copy and runs the transfer then. Copying
+  real local files in the dual-pane local view hands them to the OS
+  clipboard directly. Cut never mirrors — an Explorer paste of a cut
+  would move. **Last copy wins** on both sides. Machines that must not
+  touch the OS clipboard can turn the whole bridge off: Settings →
   File transfers → *Explorer copy & paste* (on by default).
 - **Text instead of files** — the context menu (or Edit → Copy as)
   copies names, full paths or `s3://` URIs to the OS clipboard.
@@ -395,7 +399,7 @@ you'll use daily:
 | Ctrl+F | focus quick filter |
 | Ctrl+Shift+F | deep search |
 | Ctrl+U / Ctrl+D | upload files / download selection |
-| Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste (paste runs the real transfer; Explorer paste-in supported) |
+| Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste (in-app paste runs the real transfer; copy also mirrors small selections onto Explorer's clipboard) |
 | Ctrl+A / Ctrl+I | select all / invert selection |
 | Del / Shift+Del | delete window / permanent path |
 | F9 | dual pane |

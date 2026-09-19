@@ -4195,7 +4195,10 @@ await step('paste-parity', async () => {
   await sleep(200);
   c = await findCall('CopySelection');
   await ok('Ctrl+X/V moves', c && c.args[4] === true && c.args[2] === 'team-files');
-  // remote clipboard → paste into S3 streams through TransferCross
+  // remote clipboard → paste into S3 streams through TransferCross. The
+  // Ctrl+C also fires the OS-clipboard mirror's HIDDEN staging transfer
+  // (dest = the local clipboard dir) — the assert picks the REAL transfer
+  // by its bucket destination and its non-hidden flag
   await resetCalls();
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'remote listing');
@@ -4205,8 +4208,8 @@ await step('paste-parity', async () => {
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects view');
   await page.keyboard.press('Control+v');
   await sleep(200);
-  c = await findCall('TransferCross');
-  await ok('remote paste routes through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[2].bucket === 'team-files');
+  c = (await calls()).filter((x) => x.m === 'TransferCross' && x.args[2]?.bucket === 'team-files').at(-1) || null;
+  await ok('remote paste routes through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[7] === false);
 });
 
 await step('copy-versions-choice', async () => {
@@ -4418,34 +4421,47 @@ await step('sidebar-resize', async () => {
   await ok('double-click resets the width', evalPage(() => localStorage.getItem('s3b-sidebar-w') === null) && Math.abs(w2 - w0) < 2);
 });
 
-await step('copy-stages-references', async () => {
-  // Ctrl+C on remote rows stages REFERENCES only: no transfer-engine
-  // call, no temp download, nothing touches the OS clipboard — the real
-  // action runs at paste time (the two-part Copy → Paste contract)
+await step('os-copy-mirror', async () => {
+  // Ctrl+C on remote rows does BOTH jobs now: the app clipboard stages
+  // REFERENCES (an in-app paste runs the real transfer itself, asserted
+  // below) while the OS-clipboard mirror stages the selection for
+  // Explorer through a HIDDEN job — invisible in every list and window
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'remote listing');
   await resetCalls();
+  // paste-parity's Ctrl+C left staging polls parked on the busy seed
+  // queue. Idling the queue here would wake BOTH polls and whichever
+  // SetFiles lands first bumps the seq — the other's clobber guard then
+  // aborts it (a 50/50 on OUR mirror dying). Kill every EARLIER pending
+  // mirror deterministically: bump the seq (their guards see the change
+  // and abort), then idle the queue so OUR 700ms poll fires into an
+  // empty engine with a stable seq.
+  await evalPage(() => {
+    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
+    window.__shim.world.transfers = [];
+  });
   await clickRow('backup.sh');
   await page.keyboard.press('Control+c');
-  await sleep(600); // any (wrong) staging path would have fired by now
-  await ok('copy triggers no transfer-engine call', evalPage(() =>
-    !window.__shim.calls.some((x) => x.m === 'TransferCross' || x.m === 'Upload')));
-  // the seq-baseline READ is fine (paste precedence depends on it) — the
-  // WRITE is not: no files ever land on the OS clipboard at copy time
-  await ok('copy never writes the OS clipboard', evalPage(() =>
-    !window.__shim.calls.some((x) => x.m === 'OsClipboardSetFiles')));
-  await ok('no transfers window auto-opened', evalPage(() =>
+  await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'staging transfer');
+  const c = await findCall('TransferCross');
+  await ok('copy stages through a HIDDEN transfer', c && c.args[7] === true);
+  await ok('staging lands in the clipboard dir', c && c.args[2].kind === 'local' && /s3b-clip/.test(c.args[2].dir || ''));
+  await ok('staging uses the overwrite policy', c && c.args[3] === 'overwrite');
+  await ok('hidden staging opens no transfers window', evalPage(() =>
     !document.querySelector('#popout-root .popout[data-pop="transfers"]')));
-  // the paste then runs the real action — the cross-source transfer
-  // fires exactly once, at Paste
+  await waitFor(async () => (await calls()).some((x) => x.m === 'OsClipboardSetFiles'
+    && (x.args[0] || []).some((p) => /backup\.sh$/.test(p))), 8000, 'backup.sh handed to the OS clipboard');
+  await ok('staged file handed to the OS clipboard', true);
+  // the in-app paste then runs the REAL action: a second, visible
+  // TransferCross for the destination bucket — not the hidden staging
   await clickTree('team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects view');
   await resetCalls();
   await page.keyboard.press('Control+v');
   await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'paste runs the transfer');
-  const c = await findCall('TransferCross');
-  await ok('paste dispatches the real transfer once', c && c.args[0][0].source === 'backup-box'
-    && c.args[0][0].key === '/backup.sh' && c.args[2].bucket === 'team-files');
+  const p = await findCall('TransferCross');
+  await ok('paste dispatches the real (visible) transfer', p && p.args[0][0].source === 'backup-box'
+    && p.args[0][0].key === '/backup.sh' && p.args[2].bucket === 'team-files' && p.args[7] === false);
 });
 
 await step('os-clipboard-paste', async () => {
@@ -4486,8 +4502,10 @@ await step('os-clipboard-precedence', async () => {
   await p4.addInitScript(shim);
   await p4.goto(BASE);
   await p4.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
-  // fresh world seeds running jobs for the transfer-manager UI — clear
-  // them so nothing floats a window over the keyboard work below
+  // fresh world seeds running jobs for the transfer-manager UI — idle the
+  // queue so nothing floats a window over the keyboard work below AND the
+  // copies' 700ms mirror polls settle immediately (see the os-copy-mirror
+  // step for the same dance)
   await p4.evaluate(() => { window.__shim.world.transfers = []; });
   const openBucket = async (name, key) => {
     await p4.evaluate((b) => Array.from(document.querySelectorAll('#tree .tnode'))
@@ -4510,12 +4528,12 @@ await step('os-clipboard-precedence', async () => {
     window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
   }, file);
 
-  // (a) in-app copy (references staged, nothing downloads) → Explorer
-  // copies something else → the Explorer files MUST win
+  // (a) in-app copy (hidden mirror settles) → Explorer copies something
+  // else → the Explorer files MUST win over the stale app payload
   await openBucket('team-files', 'readme.md');
   await selectRow('readme.md');
   await p4.keyboard.press('Control+c');
-  await sleep(400); // the app clipboard lands synchronously — no staging
+  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'OsClipboardSetFiles'), null, { timeout: 8000 });
   await explorerCopy('C:\\Users\\demo\\Downloads\\notes.txt');
   await p4.evaluate(() => { window.__shim.calls.length = 0; });
   await p4.keyboard.press('Control+v');
@@ -4527,7 +4545,10 @@ await step('os-clipboard-precedence', async () => {
   // (server-side CopySelection, no Upload of staged files)
   await selectRow('readme.md');
   await p4.keyboard.press('Control+c');
-  await sleep(400); // references only — the OS clipboard never moves
+  // wait for THIS copy's own hidden mirror — the staged readme.md landing
+  // on the OS clipboard — before pasting elsewhere
+  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'OsClipboardSetFiles'
+    && (x.args[0] || []).some((p) => /readme\.md$/.test(p))), null, { timeout: 8000 });
   await openBucket('logs-2026', 'app/');
   await p4.evaluate(() => { window.__shim.calls.length = 0; });
   await p4.keyboard.press('Control+v');
@@ -4536,6 +4557,45 @@ await step('os-clipboard-precedence', async () => {
   const noUp = await p4.evaluate(() => !window.__shim.calls.some((x) => x.m === 'Upload'));
   await ok('unchanged OS clipboard keeps app payload precedence', cp && cp.args[0] === 'team-files' && cp.args[2] === 'logs-2026' && noUp);
   await p4.close();
+});
+
+await step('os-copy-mirror-abort', async () => {
+  // clobber guard: the user copies elsewhere while a copy's hidden staging
+  // download is in flight → the late OS mirror must abort, not replace
+  // their clipboard
+  const p5 = await context.newPage();
+  p5.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await p5.addInitScript(shim);
+  await p5.goto(BASE);
+  await p5.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await p5.evaluate(() => Array.from(document.querySelectorAll('#tree .tnode'))
+    .find((n) => n.querySelector('.tlabel')?.textContent === 'backup-box')?.click());
+  await p5.waitForFunction(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .some((r) => r._model && r._model.key === '/backup.sh'), null, { timeout: 8000 });
+  await p5.evaluate(() => { window.__shim.calls.length = 0; });
+  // trusted click (see the precedence step) — a synthetic click would leave
+  // the selection empty and make the copy a no-op, turning this into a
+  // vacuous pass
+  {
+    const h = await p5.evaluateHandle(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === '/backup.sh') || null);
+    const el = h.asElement();
+    if (!el) throw new Error('no /backup.sh row');
+    await el.click();
+  }
+  await p5.keyboard.press('Control+c');
+  // hidden staging transfer queued; the "user copy" must land BEFORE the
+  // 700ms idle poll — bump the seq and idle the engine immediately
+  await p5.evaluate(() => {
+    window.__shim.world.osClip = ['C:\\Users\\demo\\Downloads\\other.txt'];
+    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
+    window.__shim.world.transfers = [];
+  });
+  await sleep(1800); // well past the idle poll
+  const mirror = await p5.evaluate(() => (window.__shim.calls || []).filter((x) => x.m === 'OsClipboardSetFiles'));
+  const kept = await p5.evaluate(() => (window.__shim.world.osClip || [])[0]);
+  await ok('late mirror aborted, user clipboard kept', mirror.length === 0 && /other\.txt$/.test(kept || ''));
+  await p5.close();
 });
 
 await step('os-clipboard-setting', async () => {
