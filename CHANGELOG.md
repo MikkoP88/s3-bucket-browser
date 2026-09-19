@@ -8,6 +8,15 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Clicking any app window brings the whole window group forward.** The
+  main window and the native popouts now behave as one stack: focus any
+  of them — click, Alt-Tab, a View menu reopen — and every app window is
+  raised above other applications, the clicked one on top and the rest
+  keeping their relative stacking (remembered across raises, so repeated
+  clicks never shuffle the popouts). Siblings are lifted with
+  `SetWindowPos(SWP_NOACTIVATE)`, so nothing steals the focus from the
+  window you clicked; minimized windows stay minimized and rejoin on
+  their next focus. In-page popouts (server/browser mode) are unaffected.
 - **Help → Doctor now opens a source picker**: a small window listing every
   S3 data source — bucket-scoped sources carry their bucket, account-wide
   ones show "all buckets of this key" — so you choose exactly what to

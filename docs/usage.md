@@ -156,6 +156,10 @@ directory compare) with S3 and the local pane.
   remembers where you left it — position **and** size survive every
   reopen, and only closing the app forgets them — and reopening a view
   just focuses its floating window instead of stacking a duplicate.
+  Clicking **any** app window — the main one or a popout — brings the
+  whole group forward above other applications (the clicked window on
+  top, the rest keeping their stacking), so the app never ends up
+  scattered window by window behind other programs.
   File transfers and Running tasks are the exceptions: their width is
   a fixed 490 px footprint that never moves (native windows are not
   user-resizable at all; the grip adjusts the height only), and what

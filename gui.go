@@ -52,6 +52,12 @@ type popoutRect struct{ x, y, w, h int }
 var (
 	popoutMu    sync.Mutex
 	popoutGeoms = map[string]popoutRect{}
+	// groupOrder remembers the app windows' stacking as top-first names
+	// (see raiseWindowGroup): a group raise must re-stack the siblings in
+	// their previous relative order, and Windows offers no cheap query
+	// for "my windows, top to bottom" — so the app tracks what it last
+	// did and folds live windows into it (orderGroup).
+	groupOrder []string
 )
 
 // rememberPopout snapshots a popout window's rect on its way out; a
@@ -187,6 +193,7 @@ func Run(version string) error {
 	mainWindow.OnWindowEvent(events.Common.WindowRuntimeReady, func(*application.WindowEvent) {
 		guihealth.MarkWindowUp() // window + webview exist — start succeeded
 	})
+	installGroupRaise(app3) // any app window clicked → the whole group comes forward
 	installShell(app3, app)
 	return app3.Run()
 }
@@ -414,4 +421,98 @@ func installShell(app3 *application.App, a *api.App) {
 		// so the UI stays alive inside the gesture.
 		InvokeMain: application.InvokeSyncWithError,
 	})
+}
+
+// installGroupRaise hooks the window-group behavior: when ANY app window
+// (main or a popout) is clicked or otherwise focused, every app window
+// comes forward as a group — the way classic multi-window tools behave —
+// instead of the user digging each popout out from under other apps one
+// at a time. The focused window ends on top of the group and keeps the
+// focus; the siblings are lifted with SetWindowPos(SWP_NOACTIVATE), so
+// nothing steals it, and their relative stacking is preserved
+// (groupOrder) so repeated clicks never shuffle the popouts. Minimised
+// windows stay minimised — raising one cannot show it — and rejoin the
+// group on their next focus.
+func installGroupRaise(app3 *application.App) {
+	hook := func(wn application.Window) {
+		wn.OnWindowEvent(events.Common.WindowFocus, func(*application.WindowEvent) {
+			raiseWindowGroup(app3, wn.Name())
+		})
+	}
+	for _, wn := range app3.Window.GetAll() {
+		hook(wn) // the main window exists before this install runs
+	}
+	app3.Window.OnCreate(hook) // popouts created later
+}
+
+// raiseWindowGroup lifts every live app window above other applications,
+// ending with the focused one topmost. Wails dispatches OnWindowEvent
+// callbacks on goroutines (not the main thread), so the InvokeSync-backed
+// window calls and the cross-thread SetWindowPos are both safe here.
+func raiseWindowGroup(app3 *application.App, focused string) {
+	hwnds := map[string]uintptr{}
+	var names []string
+	for _, wn := range app3.Window.GetAll() {
+		if wn.Name() == "" || !wn.IsVisible() || wn.IsMinimised() {
+			continue
+		}
+		h := wn.NativeWindow()
+		if h == nil {
+			continue
+		}
+		names = append(names, wn.Name())
+		hwnds[wn.Name()] = uintptr(h)
+	}
+	if len(names) < 2 {
+		return // a single window has no group to raise
+	}
+	popoutMu.Lock()
+	groupOrder = orderGroup(groupOrder, names, focused)
+	order := append([]string(nil), groupOrder...)
+	popoutMu.Unlock()
+	// Raise bottom-first: each call tops its window within the group, so
+	// applying the reversed slice lands order[0] — the focused window —
+	// on top last.
+	for i := len(order) - 1; i >= 0; i-- {
+		raiseNoActivate(hwnds[order[i]])
+	}
+}
+
+// orderGroup merges the remembered stacking order with the live
+// creation-ordered window names (top-first out): closed windows drop out,
+// windows never seen before join at the bottom, and the focused window
+// takes the top slot — the siblings keep their previous relative order.
+func orderGroup(order, live []string, focused string) []string {
+	remaining := make(map[string]bool, len(live))
+	for _, n := range live {
+		remaining[n] = true
+	}
+	var focusedLive bool
+	out := make([]string, 0, len(live))
+	for _, n := range order {
+		if !remaining[n] {
+			continue // closed since the last raise — forget it
+		}
+		remaining[n] = false
+		if n == focused {
+			focusedLive = true
+			continue // moves to the top slot below
+		}
+		out = append(out, n)
+	}
+	for _, n := range live { // first-seen windows join at the bottom
+		if !remaining[n] {
+			continue
+		}
+		remaining[n] = false
+		if n == focused {
+			focusedLive = true
+			continue
+		}
+		out = append(out, n)
+	}
+	if focusedLive {
+		out = append([]string{focused}, out...)
+	}
+	return out
 }
