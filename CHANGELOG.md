@@ -8,6 +8,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **New file — the WinSCP flow for objects.** Shift+F4, the 📄+ toolbar
+  button or *New file…* in the context menu opens a name + type dialog
+  (a dozen common extensions, or none) with a live preview of the exact
+  object name. The empty object is created first — the name is composed
+  server-side and an extension already in the name is never doubled —
+  and the created key is returned straight to the editor handoff (the
+  OS "Open with" chooser by default, respecting Settings → Editing).
+  Cancelling the picker, or having no app at all, still leaves the
+  created empty file behind; nothing is lost. Works on S3 buckets and
+  on remote sources (creation only), and is tracked as a 📄 Creating
+  task in the Running-tasks window like every other operation.
 - **Clicking any app window brings the whole window group forward.** The
   main window and the native popouts now behave as one stack: focus any
   of them — click, Alt-Tab, a View menu reopen — and every app window is

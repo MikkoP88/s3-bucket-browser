@@ -10,7 +10,7 @@ import {
   versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   renderPopoutView,
-  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb,
+  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile,
 } from './dialogs.js';
 import { LICENSE, licenseLine } from './license.js';
 import { LocalPane, aggregateCompare } from './local.js';
@@ -1323,6 +1323,7 @@ function showContextMenu(e, rows) {
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
     items.push(null);
     items.push(['New folder', 'Ctrl+Shift+N', () => newFolder()]);
+    items.push(['New file\u2026', 'Shift+F4', () => newFile()]);
     items.push(null);
     items.push(['Refresh', 'F5', () => refreshCurrent()]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties(), !sel]);
@@ -1341,6 +1342,7 @@ function showContextMenu(e, rows) {
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
     items.push(null);
     items.push(['New folder', 'Ctrl+Shift+N', () => newFolder()]);
+    items.push(['New file\u2026', 'Shift+F4', () => newFile()]);
     if (sel === 1 && !rows[0].isDir) {
       items.push(['Edit', '', () => editObject(rows[0])]);
     }
@@ -1395,6 +1397,7 @@ function showEmptyAreaMenu(e) {
       null,
       ...uploadMenu(uploadFiles, uploadFolder),
       ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
+    ['New file\u2026', 'Shift+F4', () => newFile(), !st.canNewFolder],
       null,
       ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
       ['Select all', 'Ctrl+A', () => grid.selectAll()],
@@ -1408,6 +1411,7 @@ function showEmptyAreaMenu(e) {
     null,
     ...uploadMenu(uploadFiles, uploadFolder, !st.canUpload),
     ['New folder', 'Ctrl+Shift+N', () => newFolder(), !st.canNewFolder],
+    ['New file\u2026', 'Shift+F4', () => newFile(), !st.canNewFolder],
     null,
     ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
     ['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, loc.prefix || '', openSearchResult), !st.canFind],
@@ -2168,6 +2172,44 @@ async function newFolder() {
   } catch (err) {
     toast(`Create folder failed: ${err}`, 'error');
   }
+}
+
+// newFile is the WinSCP-style New file: name + type dialog, the empty
+// object is created FIRST, then the editor handoff is best-effort —
+// cancelling the app picker (or having no app) must still leave the
+// created empty file behind.
+async function newFile() {
+  const loc = nav.current;
+  if (loc.kind === 'remote') {
+    const r = await promptFile({ title: 'New file', dir: loc.path || '' });
+    if (!r) return;
+    try {
+      const p = await api.RemoteCreateFile(loc.source, loc.path || '', r.name, r.ext);
+      toast(`Created ${p}`, 'ok');
+      refreshCurrent();
+    } catch (err) {
+      toast(`Create file failed: ${err}`, 'error');
+    }
+    return;
+  }
+  if (loc.kind !== 'objects') { toast('Open a bucket first'); return; }
+  const r = await promptFile({ title: 'New file', dir: loc.prefix || '' });
+  if (!r) return;
+  let key = '';
+  try {
+    key = await api.CreateFile(loc.bucket, loc.prefix || '', r.name, r.ext);
+    toast('File created', 'ok');
+    refreshCurrent();
+  } catch (err) {
+    toast(`Create file failed: ${err}`, 'error');
+    return;
+  }
+  try {
+    const chooseApp = localStorage.getItem('s3b-edit-choose-app') !== '0';
+    await api.EditObject(loc.bucket, key, chooseApp);
+    toast(`Opening ${key.split('/').pop()} — saves upload automatically`, 'ok');
+    updateEditingStatus();
+  } catch { /* cancelled picker / no app: the empty file stays */ }
 }
 
 // deleteRemoteSelection: count-then-act delete on a remote source through
@@ -3179,6 +3221,7 @@ function wireToolbar() {
   $('btn-panes').onclick = togglePanes;
   $('btn-find').onclick = findFromHere;
   $('btn-newfolder').onclick = newFolder;
+  $('btn-newfile').onclick = newFile;
   $('btn-theme').onclick = toggleTheme;
   $('btn-help').onclick = helpSheet;
   $('filter').addEventListener('input', debounce(() => {
@@ -3859,6 +3902,7 @@ function wireKeys() {
     if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); saveProfileFileUi(); return; }
     if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); downloadSelection(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newFolder(); return; }
+    if (e.shiftKey && e.key === 'F4') { e.preventDefault(); newFile(); return; }
     if (e.key === 'Escape') { grid.clearSelection(); return; }
 
     // grid navigation keys (arrows, Enter, type-to-jump)

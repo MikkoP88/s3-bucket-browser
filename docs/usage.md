@@ -138,6 +138,18 @@ directory compare) with S3 and the local pane.
 
 ![Deep search](screenshots/deep-search.png)
 
+- **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
+  *New file…* in the context menu opens a small dialog for a file name
+  and type (a dozen common extensions, or none). The empty object is
+  created first, then handed to the editor you pick — the OS
+  "Open with" chooser by default, respecting the Settings → Editing
+  choice. Cancelling the picker, or having no app, still leaves the
+  created empty file behind; nothing is lost. The dialog previews the
+  exact object name live, and the name composes the way you expect
+  (`notes` + `md` → `notes.md`; an extension already in the name is
+  not doubled). Works on S3 and on remote sources (creation only);
+  shows as a 📄 *Creating* task in Running tasks.
+
 - **Dual pane** — F9 opens a local-filesystem pane (or another source)
   beside the main view, WinSCP-style: drag between panes, synchronized
   browsing, and **Compare** color-codes newer / older / size-diff /
@@ -250,9 +262,9 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   a live count of active tasks (e.g. "⚙ 2 tasks — search 3/10") and
   clicking it opens the Running tasks window. The list covers transfer
   jobs, deep searches, bulk deletes, version purges, bucket emptying,
-  storage-class conversions, folder creation — every action the app is
-  taking, each with progress and a **Cancel** button. Kill a task that hangs or
-  runs too long; destructive tasks count before they act, so canceling
+  storage-class conversions, folder and file creation — every action
+  the app is taking, each with progress and a **Cancel** button. Kill a
+  task that hangs or runs too long; destructive tasks count before they act, so canceling
   during the counting phase destroys nothing. Bulk operations run as
   tracked tasks with no fixed time limit — they finish, or you stop
   them. The window keeps the same session history as File transfers —
