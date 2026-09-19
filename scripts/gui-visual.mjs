@@ -2667,9 +2667,9 @@ await step('content-versions-window', async () => {
   await waitFor(async () => (await findCall('PrefixVersionStats')) !== null, 4000, 'PrefixVersionStats');
   // the settings step ticked the marker toggle: the count line carries the
   // marker segment and marked children grow a Markers… button
-  await waitFor(async () => /version\(s\)/.test(await evalPage(() => document.querySelector('#modal-root .field')?.textContent || '')), 4000, 'content version count');
+  await waitFor(async () => /version\(s\)/.test(await evalPage(() => document.querySelector('#modal-root .dlg-status')?.textContent || '')), 4000, 'content version count');
   await ok('one-line count with marker segment while opted in', evalPage(() => {
-    const stats = document.querySelector('#modal-root .field')?.textContent || '';
+    const stats = document.querySelector('#modal-root .dlg-status')?.textContent || '';
     const h = document.querySelector('#modal-root .modal-head span')?.textContent || '';
     return /^content versions — s3:\/\//i.test(h)
       && /^9 version\(s\) · Delete markers: 2$/.test(stats)
@@ -2694,7 +2694,7 @@ await step('content-versions-window', async () => {
   // away — versions only
   await evalPage(() => localStorage.setItem('s3b-show-markers', '0'));
   await openDocs();
-  await waitFor(async () => /^9 version\(s\)$/.test(await evalPage(() => document.querySelector('#modal-root .field')?.textContent || '')), 4000, 'marker-free count line');
+  await waitFor(async () => /^9 version\(s\)$/.test(await evalPage(() => document.querySelector('#modal-root .dlg-status')?.textContent || '')), 4000, 'marker-free count line');
   await ok('markers fold away when the toggle is off', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#modal-root .ver-row'));
     const t = document.getElementById('modal-root').textContent;
