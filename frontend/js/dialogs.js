@@ -95,11 +95,13 @@ const popouts = new Map(); // id -> handle
 let popZ = 60; // sibling z-order counter (modal-root stays above at 100)
 
 // The monitoring windows (File transfers, Running tasks) ride the Windows
-// file-transfer footprint: 490x300 default AND minimum, the height
-// tracking the content up to 740px — beyond that the window stays put and
-// the content scrolls inside. A manual height resize takes over for the
-// window's life (never growing past what the content fills); reopening
-// starts the tracking fresh. See openPopout's autoH.
+// file-transfer footprint: a FIXED 490px width and a 300px minimum height
+// that tracks the content up to 740px — beyond that the window stays put
+// and the content scrolls inside. The width is never user-resizable and
+// never remembered (neither tier of the app may change it); a manual
+// height resize takes over for the window's life (never growing past
+// what the content fills); reopening starts the tracking fresh. See
+// openPopout's autoH.
 const XFER_PROFILE = { w: 490, h: 300, minW: 490, minH: 300, maxH: 740 };
 
 // popoutsRemembered gates the per-id geometry store (s3b-popout-<id>):
@@ -120,7 +122,7 @@ function clampPop(box) {
 // footLeft: element pinned to the left end of the footer bar — style it
 // with class 'left' (see .modal-foot .left) so its margin-right:auto keeps
 // the action buttons on the right. Rendered even with no buttons.
-export function openPopout({ id, title, body, buttons = [], footLeft = null, wide = false, cls = '', autoH = null, onClose }) {
+function openPopout({ id, title, body, buttons = [], footLeft = null, wide = false, cls = '', autoH = null, onClose }) {
   const existing = popouts.get(id);
   if (existing) { existing.focus(); return { ...existing, fresh: false }; }
 
@@ -199,15 +201,16 @@ export function openPopout({ id, title, body, buttons = [], footLeft = null, wid
     handle.focus();
     return handle;
   }
-  if (geo?.w) {
-    box.style.width = `${Math.max(autoH ? autoH.minW : 320, Math.min(geo.w, window.innerWidth - 16))}px`;
+  if (geo?.w || (autoH && (geo?.x || geo?.y))) {
     if (autoH) {
-      // an auto-height window restores placement and width only: the
-      // height tracks the content afresh on every reopen, and the CSS
-      // cap (not remembered geometry) owns the maximum
+      // an auto-height window restores PLACEMENT only: the width is the
+      // fixed 490px profile footprint (never remembered, never resized)
+      // and the height tracks the content afresh on every reopen — the
+      // CSS cap (not remembered geometry) owns the maximum
       box.style.left = `${geo.x || 0}px`;
       box.style.top = `${geo.y || 0}px`;
     } else {
+      box.style.width = `${Math.max(320, Math.min(geo.w || 560, window.innerWidth - 16))}px`;
       box.style.height = `${Math.max(180, Math.min(geo.h || 0, window.innerHeight - 16))}px`;
       // a remembered size outranks the CSS maxima (they only shape the
       // default, content-driven size)
@@ -283,11 +286,15 @@ document.addEventListener('pointerdown', (e) => {
         box.style.height = keep;
         capH = Math.min(auto.maxH, Math.max(auto.minH, natural), capH);
       }
-      box.style.width = `${Math.max(floorW, Math.min(ow + ev.clientX - sx, window.innerWidth - 16))}px`;
+      // auto-height windows resize VERTICALLY ONLY — the 490px footprint
+      // width is fixed (CSS pins it; the grip never touches it)
+      if (!auto) {
+        box.style.width = `${Math.max(floorW, Math.min(ow + ev.clientX - sx, window.innerWidth - 16))}px`;
+        box.style.maxWidth = 'none';
+      }
       box.style.height = `${Math.max(floorH, Math.min(oh + ev.clientY - sy, capH))}px`;
-      box.style.maxWidth = 'none';
-      // an auto window keeps its CSS cap; a plain one loses all maxima
-      // to the remembered size
+      // a plain window's remembered size outranks the CSS maxima; an
+      // auto window keeps its cap
       if (!auto) box.style.maxHeight = 'none';
     } else {
       box.style.left = `${ox + ev.clientX - sx}px`;
@@ -300,14 +307,18 @@ document.addEventListener('pointerdown', (e) => {
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     const pid = box.dataset.pop;
-    if (pid && popoutsRemembered()) localStorage.setItem(`s3b-popout-${pid}`, JSON.stringify({
-      x: parseFloat(box.style.left) || 0,
-      y: parseFloat(box.style.top) || 0,
-      w: box.offsetWidth,
-      // an auto-height window never persists its height — it tracks the
-      // content afresh on every reopen
-      ...(box._autoH ? {} : { h: box.offsetHeight }),
-    }));
+    if (pid && popoutsRemembered()) localStorage.setItem(`s3b-popout-${pid}`, JSON.stringify(
+      box._autoH
+        // an auto-height window persists PLACEMENT ONLY — the width is
+        // the fixed profile footprint and the height tracks the content
+        // afresh on every reopen
+        ? { x: parseFloat(box.style.left) || 0, y: parseFloat(box.style.top) || 0 }
+        : {
+          x: parseFloat(box.style.left) || 0,
+          y: parseFloat(box.style.top) || 0,
+          w: box.offsetWidth,
+          h: box.offsetHeight,
+        }));
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
@@ -378,11 +389,11 @@ function maybeNativePopout({ id, query, title, w, h, minW = 0, minH = 0, maxH = 
     return true;
   }
   nativeOpen.add(id);
-  // auto-height windows (minH > 0) always open at their profile default:
-  // the height tracks the content afresh, so a remembered height would
-  // only flash before the content fit overrides it — and reopening must
-  // re-enable the tracking (the backend skips its session height for
-  // them too)
+  // auto-height windows (minH > 0) always open at their profile default
+  // and non-resizable: the height tracks the content afresh (a remembered
+  // height would only flash before the content fit overrides it), the
+  // width is the fixed 490px footprint, and the backend skips its whole
+  // remembered size for them
   const auto = minH > 0;
   let geo = null;
   if (!auto && popoutsRemembered()) {
@@ -421,17 +432,18 @@ function verifyNativePopout(id, domOpen) {
 }
 
 // installAutoHeight drives a native auto-height popout window (File
-// transfers, Running tasks — the Windows file-transfer footprint): while
-// automatic, the window's height tracks its content between the
-// profile's floor and cap, and the body scrolls inside beyond the cap.
-// The first height change the window did not order itself (the user
-// dragging the OS border) disables the tracking for the window's life —
-// but a manual size never exceeds what the content fills; the cap keeps
-// enforcing either way. Reopening starts the tracking fresh. Our own
+// transfers, Running tasks — the Windows file-transfer footprint). The
+// window is created non-resizable (the backend's DisableResize — see
+// OpenPopout), so the ONLY sizing is ours: the height tracks the content
+// between the profile's floor and cap, and the body scrolls inside
+// beyond the cap. The WIDTH is never touched — ResizePopout is called
+// with w=0, which the backend reads as "keep the current width": the
+// 490px default from creation stays put for the window's life (passing
+// window.outerWidth instead fed a rounding feedback loop through the
+// DIP<->physical conversion and made the width drift). Our own
 // ResizePopout round-trips raise window resize events too, so a
-// suppress counter — not height matching — separates the two: the
-// webview's outerHeight can differ from the SetSize value by chrome or
-// DPI, and an exact-match test would misfire.
+// suppress counter separates them from outside causes (DPI change
+// above all); a width-only resize is a reflow — re-fit to it.
 function installAutoHeight(id, box, p) {
   const body = box.querySelector('.modal-body');
   const foot = box.querySelector('.modal-foot');
@@ -440,27 +452,20 @@ function installAutoHeight(id, box, p) {
   const contentH = () => body.scrollHeight + (foot ? foot.offsetHeight : 0);
   // OS-window height -> webview height delta (title bar etc.)
   const chrome = () => window.outerHeight - window.innerHeight;
-  let auto = true;
   let suppress = 0; // self-resizes still in flight
   const apply = (innerH) => {
     suppress++;
-    Promise.resolve(api.ResizePopout(id, window.outerWidth, Math.round(innerH + chrome())))
+    Promise.resolve(api.ResizePopout(id, 0, Math.round(innerH + chrome())))
       .finally(() => setTimeout(() => { suppress = Math.max(0, suppress - 1); }, 150));
   };
-  let lastH = window.innerHeight;
+  let lastW = window.innerWidth;
   window.addEventListener('resize', () => {
-    const hChanged = window.innerHeight !== lastH;
-    lastH = window.innerHeight;
-    if (suppress > 0) return; // ours — the fit() below already covers it
-    if (!hChanged) { fit(); return; } // width-only: re-fit to the reflow
-    auto = false; // the user took the height — tracking is off for life
-    // ...but never more window than the content fills (the OS minimum
-    // still floors it)
-    const cap = Math.min(p.maxH, Math.max(p.minH, contentH()));
-    if (window.innerHeight > cap) apply(cap);
+    const wChanged = window.innerWidth !== lastW;
+    lastW = window.innerWidth;
+    if (suppress > 0) return;    // ours — the MutationObserver fit covers it
+    if (wChanged) fit();         // reflow: re-fit the height to the new width
   });
   const fit = () => {
-    if (!auto) return;
     const want = Math.min(p.maxH, Math.max(p.minH, contentH()));
     if (Math.abs(want - window.innerHeight) > 1) apply(want);
   };
@@ -558,7 +563,7 @@ export function versionChoiceDialog({ move = false, defaultOn = true } = {}) {
 // typed partition. typedOn arms the partition; typedWord is what it asks
 // for — 'delete' (the Require-typing setting) or an escalation word (the
 // bucket's own name, 'purge') that applies regardless of that setting.
-export function deleteWindow({
+function deleteWindow({
   target, summary, modes = [], mode = '', typedOn = false,
   typedWord = 'delete', warn = '', confirmLabel = '', title = '',
 }) {
@@ -2127,7 +2132,7 @@ function savedThrottle() {
   return parseInt(localStorage.getItem('s3b-throttle') || '0', 10) || 0;
 }
 
-export function showThrottle() {
+function showThrottle() {
   return localStorage.getItem('s3b-show-throttle') === '1';
 }
 

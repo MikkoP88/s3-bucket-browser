@@ -44,8 +44,10 @@ type ShellDialog struct {
 // MinW/MinH/MaxH carry optional resize bounds (zero = the shell's own
 // defaults). MinH > 0 also marks the auto-height windows (transfers,
 // running tasks — the Windows file-transfer footprint): their height
-// tracks the content between MinH and MaxH, so a remembered session
-// height must not pin them on reopen.
+// tracks the content between MinH and MaxH and their width is a fixed
+// footprint, so the shell makes them non-user-resizable and a remembered
+// session size (either dimension) must not pin them on reopen — only
+// placement is honored.
 type ShellGeometry struct {
 	W      int
 	H      int
@@ -78,7 +80,8 @@ type DesktopShell struct {
 	ClosePopout func(id string)
 	FocusPopout func(id string)
 	// ResizePopout resizes the popout window for id (no-op when none).
-	// The auto-height windows call it as their content grows and shrinks.
+	// The auto-height windows call it as their content grows and
+	// shrinks; w <= 0 means "keep the current width".
 	ResizePopout func(id string, w, h int)
 	// PopoutOpen reports whether a live popout window exists for id.
 	// The frontend heals its bookkeeping with it when a window died

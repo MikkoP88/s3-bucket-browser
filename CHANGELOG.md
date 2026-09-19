@@ -68,6 +68,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Windows no longer change size with their content.** Every standard
+  dialog and popout now sits on one of three fixed width tiers — 560 px
+  for base dialogs, 720 px for the wide views (deep search, versions,
+  the keyboard map), 880 px for Settings, Admin and conflict resolution,
+  each clamped to the viewport — so switching a Settings category,
+  flattening the tree with the settings search, or walking Admin
+  sub-pages keeps the window pixel-stable while the content scrolls
+  inside instead of re-widthing it mid-interaction. The growing lists
+  got the same treatment: the versions diff, version batches, the Delete
+  window's breakdown and imported credentials render in fixed-height
+  scroll lists rather than stretching the window taller as rows stream
+  in, and the Admin guide spans its wider tier. A dead-styling sweep
+  across the frontend turned up no dead CSS classes — only three
+  redundant JS `export` keywords (removed).
 - **The right-click menu of an S3 data source no longer carries "Open
   buckets view".** Clicking the source already opens its content (buckets
   for account-wide sources, the bucket's objects for bucket-scoped ones),
@@ -113,6 +127,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **File transfers and Running tasks hold their width.** The two
+  auto-height windows drifted sideways: the height-fit loop re-reported
+  the window's own width on every resize (each pass picked up a
+  pixel-rounding delta and fed it back in), the session memory then
+  pinned whatever width it had drifted to, and a user drag could
+  stretch the window on top of both. The fit now resizes height only —
+  "keep the current width" is an explicit resize argument the backend
+  honors — the 490 px footprint is pinned in CSS, only placement is
+  remembered between reopens, and the native windows are
+  non-user-resizable outright (the app's own height fits still resize
+  them). The in-page fallback's grip is height-only to match.
 - **A dialog no longer widens the moment it shows an error.** Raw backend
   errors are one long line of unbreakable tokens (URLs, host ids, request
   ids), and every dialog is a content-sized box: the first error used to

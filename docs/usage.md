@@ -156,6 +156,10 @@ directory compare) with S3 and the local pane.
   remembers where you left it — position **and** size survive every
   reopen, and only closing the app forgets them — and reopening a view
   just focuses its floating window instead of stacking a duplicate.
+  File transfers and Running tasks are the exceptions: their width is
+  a fixed 490 px footprint that never moves (native windows are not
+  user-resizable at all; the grip adjusts the height only), and what
+  they remember between reopens is placement, not size.
   Native popout
   windows open centered on the display the app window is on
   (multi-display aware — they follow the app onto whatever monitor it

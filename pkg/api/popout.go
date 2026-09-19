@@ -75,7 +75,10 @@ func (a *App) FocusPopout(id string) {
 // auto-height windows (transfers, running tasks) drive it as their
 // content grows and shrinks: the window itself tracks the content between
 // its min and max, so ResizePopout is the only way content height ever
-// reaches the OS window.
+// reaches the OS window. w <= 0 keeps the current width — the
+// auto-height windows have a fixed footprint width and never re-report
+// it (a webview-reported outerWidth drifts through the DIP<->physical
+// rounding).
 func (a *App) ResizePopout(id string, w, h int) {
 	if shell != nil && shell.ResizePopout != nil {
 		shell.ResizePopout(id, w, h)
