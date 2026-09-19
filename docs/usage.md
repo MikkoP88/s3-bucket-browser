@@ -147,7 +147,8 @@ directory compare) with S3 and the local pane.
 
 - **Floating windows** — the views you keep an eye on — File transfers,
   Running tasks, the User guide, the keyboard map, the sources overview,
-  the connection Doctor — open as draggable non-modal popouts: no
+  the license information, the connection Doctor — open as draggable
+  non-modal popouts: no
   grey-out mask, the app underneath stays fully usable while a transfer
   crawls or you read the guide. They resize from the corner grip,
   stack like real
@@ -333,10 +334,16 @@ offers, same confirm gates.
 
 ![Admin panel](screenshots/admin-panel.png)
 
-- **Doctor** — Help → Doctor (or `s3b doctor s3://bucket`) runs a guided
-  diagnosis: DNS → TCP → TLS → auth → permissions, with plain-language
-  remediation and one-click re-runs of individual checks — in a floating
-  window that doesn't block the app while it runs.
+- **Doctor** — Help → Doctor opens a picker of your S3 sources — pick one
+  and the guided diagnosis runs: DNS → TCP → TLS → auth → permissions,
+  with plain-language remediation and one-click re-runs of individual
+  checks — in a floating window that doesn't block the app while it runs.
+  Right-clicking a bucket or data source → **Doctor…** skips the picker
+  and diagnoses that target directly (same window, same checks).
+- **License** — Help → License shows the app's license identity (PolyForm
+  Internal Use 1.0.0) and a third-party attribution summary pointing at
+  the NOTICE file and release SBOM; the About box carries the same
+  one-line identity from a single shared source.
 - **Presign & storage class** — the context menu creates time-limited
   pre-signed URLs (computed locally) and converts objects between
   storage classes via server-side self-copy.

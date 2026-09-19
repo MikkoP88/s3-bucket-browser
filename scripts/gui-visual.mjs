@@ -1462,7 +1462,7 @@ await step('tree-bucket-scoped-source', async () => {
   // step covers the flyout itself)
   await ok('bucket-scoped menu has bucket-grade items', /upload/i.test(items) && /admin panel/i.test(items) && /delete bucket/i.test(items) && /paste here/i.test(items));
   await ok('bucket-scoped menu keeps source management', /edit source/i.test(items) && /reconnect/i.test(items) && /remove source/i.test(items));
-  await ok('bucket-scoped menu can reach the buckets view', /open buckets view/i.test(items));
+  await ok('bucket-scoped menu no longer offers the buckets view', !/open buckets view/i.test(items));
   await shot('tree-bucket-scoped');
   await closeCtx();
 });
@@ -1587,8 +1587,30 @@ await step('help-guide', async () => {
     const tab = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .tabstrip .tab'))
       .find((t) => /^file transfers$/i.test(t.textContent.trim())) || null);
     if (tab) { await tab.asElement().click(); await sleep(80); }
-    await ok('guide tab switch works', (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('multipart'));
+    const ftTxt = await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent);
+    await ok('guide tab switch works', ftTxt.includes('multipart'));
+    // the conflicts entry must match the real behavior (live pre-check,
+    // dialog only on collisions) — not the old "always asks" claim
+    await ok('guide conflicts text is accurate', ftTxt.includes('only real collisions') && !ftTxt.includes('Every transfer asks for a conflict policy'));
+    const vtab = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .tabstrip .tab'))
+      .find((t) => /^versions & safety$/i.test(t.textContent.trim())) || null);
+    if (vtab) { await vtab.asElement().click(); await sleep(80); }
+    await ok('guide covers the Delete Window', (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('The Delete Window'));
     await closePopout('guide');
+  }
+  // Help → License: the single-source license identity (license.js)
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  const lic = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /^license$/i.test(i.textContent.trim())) || null);
+  await ok('Help→License present', !!lic);
+  if (lic) {
+    await lic.asElement().click();
+    await waitFor(() => popoutVisible('license'), 4000, 'license popout');
+    const ltxt = await evalPage(() => document.querySelector('#popout-root .popout[data-pop="license"]').textContent);
+    await ok('license window shows identity + third-party summary', ltxt.includes('PolyForm Internal Use License 1.0.0') && ltxt.includes('Third-party components') && ltxt.includes('NOTICE'));
+    await shot('license');
+    await closePopout('license');
   }
   await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
   await sleep(80);
@@ -1630,6 +1652,7 @@ await step('about-keysheet', async () => {
   await page.keyboard.press('F1');
   await waitFor(() => popoutVisible('keys'), 4000, 'keysheet');
   await ok('keysheet lists shortcuts', waitFor(async () => (await evalPage(() => document.querySelectorAll('#popout-root .help-grid .row').length)) >= 18, 4000, 'keys rows'));
+  await ok('keysheet covers deep find', evalPage(() => Array.from(document.querySelectorAll('#popout-root .help-grid .row kbd')).some((k) => k.textContent.includes('Ctrl+Shift+F'))));
   await ok('keysheet uses the wide size class', evalPage(() => document.querySelector('#popout-root .popout.wide') !== null));
   await ok('keysheet layout clean', (await layoutAudit()).ok);
   await shot('keysheet');
@@ -2143,7 +2166,9 @@ await step('source-editor-autoname', async () => {
 });
 
 await step('doctor', async () => {
-  // the toolbar Doctor button is gone — Help menu carries it
+  // the toolbar Doctor button is gone — Help menu carries it, and Help →
+  // Doctor now opens a source picker first (right-click Doctor… on a
+  // bucket still goes straight to the window)
   await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
   await sleep(80);
   const docItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
@@ -2151,7 +2176,19 @@ await step('doctor', async () => {
   await ok('Help→Doctor present', !!docItem);
   if (!docItem) return;
   await docItem.asElement().click();
+  await waitFor(modalVisible, 4000, 'doctor picker modal');
+  await ok('picker lists S3 sources only', waitFor(async () => {
+    const names = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .picker-row .picker-name')).map((n) => n.textContent));
+    return ['hetzner', 'website-prod', 'nightly'].every((n) => names.includes(n))
+      && !names.includes('backup-box') && !names.includes('dav-claims');
+  }, 4000, 'picker rows'));
+  await shot('doctor-picker');
+  const row = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .picker-row'))
+    .find((r) => r.textContent.includes('website-prod')) || null);
+  if (row) await row.asElement().click();
   await waitFor(() => popoutVisible('doctor'), 4000, 'doctor popout');
+  // bucket-scoped pick routes the diagnosis at that source's bucket
+  await ok('picker routed doctor to s3://www-assets', waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop^="doctor"] .pop-head span, #popout-root .popout[data-pop^="doctor"] .popout-title, #popout-root .popout[data-pop^="doctor"]').textContent)).includes('www-assets'), 4000, 'doctor title'));
   await ok('doctor checks listed', waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop^="doctor"]').textContent)).includes('Connectivity'), 4000, 'checks'));
   const run = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop^="doctor"] button'))
     .find((b) => /run all/i.test(b.textContent)) || null);
@@ -2159,6 +2196,8 @@ await step('doctor', async () => {
   if (run) {
     await run.asElement().click();
     await waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop^="doctor"]').textContent)).includes('warn'), 4000, 'report');
+    const call = await findCall('RunDoctor');
+    await ok('RunDoctor addressed the picked bucket', call && call.args[0] === 'www-assets');
   }
   await shotOf('doctor', '#popout-root .popout[data-pop^="doctor"]');
   await closePopout('doctor');

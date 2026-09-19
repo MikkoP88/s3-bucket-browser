@@ -679,6 +679,15 @@ async function walk() {
 
   await step('doctor (real checks over the bridge)', async () => {
     await menuClick(/help/i, /doctor/i);
+    // Help → Doctor opens the source picker first (S3 sources only;
+    // right-click Doctor… on a bucket still bypasses it)
+    await waitFor(() => evalPage(() => document.querySelectorAll('#modal-root .picker-row').length > 0), 5000, 'doctor picker');
+    const names = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .picker-row .picker-name')).map((n) => n.textContent));
+    await ok(`picker lists S3 sources (${names.join(', ')})`, names.includes(SRCNAME));
+    await shot('09-doctor-picker');
+    const row = await elOrNull((want) => Array.from(document.querySelectorAll('#modal-root .picker-row'))
+      .find((r) => r.textContent.includes(want)) || null, SRCNAME);
+    await row.asElement().click();
     // doctor floats as an in-page popout (#popout-root), not a modal
     await waitFor(() => evalPage(() => {
       const p = document.querySelector('#popout-root .popout');
@@ -713,6 +722,12 @@ async function walk() {
     await waitFor(() => evalPage(() => document.querySelectorAll('#popout-root .popout').length > 0), 5000, 'sources popout');
     await ok('supported data sources popout (in-page)', true);
     await shot('13-sources-popout');
+    await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout .modal-head .x')).forEach((x) => x.click()));
+    // license window (single-source identity from license.js)
+    await menuClick(/help/i, /license/i);
+    await waitFor(() => evalPage(() => document.querySelectorAll('#popout-root .popout').length > 0), 5000, 'license popout');
+    await ok('license popout shows the PolyForm identity', (await evalPage(() => document.querySelector('#popout-root .popout').textContent)).includes('PolyForm Internal Use License'));
+    await shot('13b-license-popout');
     await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout .modal-head .x')).forEach((x) => x.click()));
   });
 
