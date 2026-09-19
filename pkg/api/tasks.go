@@ -35,7 +35,7 @@ const (
 // TaskInfo is the Running-tasks view model (event payload and list row).
 type TaskInfo struct {
 	ID         string  `json:"id"`
-	Kind       string  `json:"kind"` // transfer|move|copy|search|list|delete|purge|empty|convert|mkdir
+	Kind       string  `json:"kind"` // transfer|move|copy|search|list|delete|purge|empty|convert|mkdir|mkfile
 	Label      string  `json:"label"`
 	Status     string  `json:"status"`
 	DoneUnits  int     `json:"doneUnits"`

@@ -967,6 +967,75 @@ export function prompt({ title, label, value = '', okLabel = 'OK', password = fa
   });
 }
 
+// ---------- new file (WinSCP-style) ----------
+
+// FILE_TYPES is the New-file dialog's type dropdown: common text-ish
+// extensions plus "no extension" for anything else.
+const FILE_TYPES = [
+  ['txt', 'Text file (*.txt)'],
+  ['md', 'Markdown (*.md)'],
+  ['json', 'JSON (*.json)'],
+  ['xml', 'XML (*.xml)'],
+  ['csv', 'CSV (*.csv)'],
+  ['yaml', 'YAML (*.yaml)'],
+  ['ini', 'INI (*.ini)'],
+  ['html', 'HTML (*.html)'],
+  ['js', 'JavaScript (*.js)'],
+  ['py', 'Python (*.py)'],
+  ['sh', 'Shell script (*.sh)'],
+  ['log', 'Log (*.log)'],
+  ['', 'No extension'],
+];
+
+// composeFileName mirrors the Go rule (pkg/api browse.go) for the live
+// preview only — the backend composes the authoritative name.
+export function composeFileName(name, ext) {
+  name = String(name || '').trim().replace(/^[/\s]+|[/\s]+$/g, '');
+  ext = String(ext || '').trim().replace(/^[.\s]+|[.\s]+$/g, '');
+  if (!ext) return name;
+  const cur = (name.match(/\.([^.]+)$/) || [])[1] || '';
+  if (cur.toLowerCase() !== ext.toLowerCase()) return `${name.replace(/\.+$/, '')}.${ext}`;
+  return name;
+}
+
+// promptFile asks for a base name and a type suffix with a live preview
+// of the resulting object name. Resolves { name, ext } on Create, null
+// on cancel — the caller creates the file either way the backend decides.
+export function promptFile({ title = 'New file', dir = '' } = {}) {
+  let settled = false;
+  return new Promise((resolve) => {
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const input = el('input', { class: 'input', value: 'new-file', spellcheck: 'false' });
+    const sel = el('select', { class: 'input', style: 'width:auto' },
+      FILE_TYPES.map(([v, l]) => el('option', { value: v }, l)));
+    const base = dir ? `${dir.endsWith('/') ? dir : `${dir}/`}` : '';
+    const preview = el('div', { class: 'mono', style: 'margin-top:10px; font-size:12px; color:var(--text-dim);' });
+    const upd = () => { preview.textContent = `Creates: ${base}${composeFileName(input.value, sel.value)}`; };
+    input.addEventListener('input', upd);
+    sel.addEventListener('change', upd);
+    const submit = (close) => { done({ name: input.value.trim(), ext: sel.value }); close(); };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(closeRef.close); });
+    const closeRef = openModal({
+      title,
+      body: el('div', {},
+        el('label', { class: 'field', text: 'File name:' }),
+        input,
+        el('label', { class: 'field', text: 'Type (extension):' }),
+        sel,
+        preview,
+      ),
+      buttons: [
+        { label: 'Cancel', onclick: (c) => { done(null); c(); } },
+        { label: 'Create', class: 'primary', onclick: submit },
+      ],
+      onClose: () => done(null),
+    });
+    input.focus();
+    input.select();
+    upd();
+  });
+}
+
 // ---------- properties ----------
 // rows values are strings or DOM nodes (pills etc.).
 export function properties(title, rows) {
@@ -1489,6 +1558,7 @@ export function taskKindVerb(j) {
   if (j.kind === 'search') return { icon: '\uD83D\uDD0D', label: t('tasks.verbSearch') };
   if (j.kind === 'list') return { icon: '\u2261', label: t('tasks.verbListing') };
   if (j.kind === 'mkdir') return { icon: '\u2795', label: t('tasks.verbMkdir') };
+  if (j.kind === 'mkfile') return { icon: '\u{1F4C4}', label: t('tasks.verbMkdir') };
   return null;
 }
 
@@ -1988,6 +2058,7 @@ export function helpSheet() {
     ['Alt+\u2191, Backspace', 'Go to parent'],
     ['Type letters', 'Jump to item'],
     ['Ctrl+Shift+N', 'New folder'],
+    ['Shift+F4', 'New file'],
     ['Ctrl+U / Ctrl+D', 'Upload files / download selection'],
     ['F9', 'Toggle dual-pane local browser'],
     ['Ctrl+L', 'Toggle log area'],
@@ -2021,6 +2092,7 @@ const GUIDE_SECTIONS = [
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here.'],
     ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size. Clicking any app window — main or popout — brings the whole group forward above other applications, with the clicked window on top.'],
     ['Edit files in place', 'Right-click a file → Edit opens it in the app you pick (the OS "Open with" chooser) or the system default; every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost.'],
+    ['New file', 'Shift+F4, the 📄+ toolbar button, or New file… in the context menu creates an empty object with the name and type you pick (the WinSCP flow), then opens it in your editor. Cancelling the app picker — or having no app at all — still leaves the created empty file behind.'],
   ]],
   ['File transfers', [
     ['Upload', 'Toolbar ▲ and the context menus open one Upload menu: Files… (Ctrl+U) picks files, Folder… a whole directory tree — or just drag files/folders from the OS anywhere onto the window.'],
@@ -2029,7 +2101,7 @@ const GUIDE_SECTIONS = [
     ['Two-way Explorer clipboard', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. The other direction works too — Ctrl+C here quietly stages small selections onto the OS clipboard (a hidden download that never shows in File transfers) so Ctrl+V in Explorer pastes them; pasting inside the app still uses the reference copy and runs the real transfer then. Cut never mirrors — an Explorer paste of a cut would move. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
     ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 10 MB/s).'],
     ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle.'],
-    ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, deep searches, bulk deletes, version purges, folder creation — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
+    ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, deep searches, bulk deletes, version purges, folder and file creation — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
   ]],
   ['Versions & safety', [
     ['Versioning', 'Buckets with versioning show a 🔄 icon in the tree. Open an object\u2019s context menu → Versions for the timeline: restore a previous version as latest, view text diffs, or purge old versions.'],

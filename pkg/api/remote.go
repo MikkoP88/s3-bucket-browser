@@ -199,6 +199,34 @@ func (a *App) RemoteMkdir(idOrName, dir string) (err error) {
 	return err
 }
 
+// RemoteCreateFile creates a new empty file on a non-S3 source and
+// returns its full path. Tracked as a task like its S3 twin. (There is
+// no remote editor flow — the file is simply created, WinSCP's "leave it
+// empty" outcome.)
+func (a *App) RemoteCreateFile(idOrName, dir, name, ext string) (created string, err error) {
+	src, fs, err := a.remoteSource(idOrName)
+	if err != nil {
+		return "", err
+	}
+	composed := composeFileName(name, ext)
+	if composed == "" || strings.Contains(composed, "/") {
+		return "", fmt.Errorf("invalid file name")
+	}
+	full := remotefs.CleanPath(dir + "/" + composed)
+	task := a.tasks.add("mkfile", fmt.Sprintf("%s:%s", idOrName, full))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	unlock := a.lockSrcs(src.ID)
+	defer unlock()
+	err = fs.Create(ctx, full, strings.NewReader(""))
+	if err != nil {
+		a.emitLogSrc(LogError, "mkfile", idOrName, fmt.Sprintf("create %s failed: %v", full, err))
+	} else {
+		a.emitLogSrc(LogInfo, "mkfile", idOrName, fmt.Sprintf("created %s", full))
+	}
+	return full, err
+}
+
 // RemoteRename renames one file or directory within its source. newName is
 // a bare name (Explorer semantics, like the S3 RenameObject command); the
 // entry keeps its parent directory and its kind (folder keys keep the

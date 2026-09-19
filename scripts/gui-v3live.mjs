@@ -760,6 +760,42 @@ async function walk() {
     await waitFor(async () => (await rowKeys()).length === 0, 10000, 'empty folder view');
   });
 
+  await step('New file: dialog + real CreateFile (no editor side effects)', async () => {
+    // The dialog UI is exercised with Cancel only: submitting would run the
+    // real EditObject handoff and pop the OS "Open with" picker on the test
+    // machine. The creation path itself goes through the real bridge.
+    await page.keyboard.press('Shift+F4');
+    await waitFor(() => evalPage(() => !!document.querySelector('#modal-root input.input')), 4000, 'new-file prompt');
+    await shot('16b-newfile-prompt');
+    await ok('prompt defaults + live preview', evalPage(() => {
+      const m = document.getElementById('modal-root');
+      const input = m.querySelector('input.input');
+      const sel = m.querySelector('select');
+      return input.value === 'new-file' && sel.value === 'txt'
+        && /Creates:\s*new-file\.txt/.test(m.textContent);
+    }));
+    await evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((x) => /cancel/i.test(x.textContent));
+      b?.click();
+    });
+    await sleep(150);
+    await ok('dialog cancel creates nothing', await evalPage(() => !document.querySelector('#modal-root .modal')));
+    // direct binding: the real PutObject path, name+ext composed server-side
+    const key = await call('CreateFile', BUCKET, `${PREFIX}/`, 'live-note', 'md');
+    await ok(`CreateFile returned the composed key (${key})`, key === `${PREFIX}/live-note.md`);
+    const st1 = await call('StatObject', BUCKET, key);
+    await ok(`object exists on the server, size 0 (etag ${st1?.etag})`, !!st1 && st1.size === 0);
+    // dedup: a name already carrying the extension composes to the same key
+    const key2 = await call('CreateFile', BUCKET, `${PREFIX}/`, 'live-note.md', 'md');
+    await ok('extension dedup composes the same key', key2 === key);
+    // the refresh lists the created file
+    await page.keyboard.press('F5');
+    await waitFor(async () => (await rowKeys()).includes(key), 20000, 'new file row');
+    await ok('created file lists in the grid', true);
+    await shot('16c-newfile-grid');
+  });
+
   await step('DnD upload through the bridge (local row → grid body)', async () => {
     const upload = async (file) => {
       await dnd(await sideRow(file), await bodyH());

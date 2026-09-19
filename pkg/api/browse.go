@@ -342,6 +342,60 @@ func (a *App) createFolderC(ctx context.Context, c *s3client.Client, bucket, pre
 	return err
 }
 
+// composeFileName joins a base name and a type suffix the way the New-file
+// dialog previews it: the extension is appended (once) unless the name
+// already ends with it. Matching is case-insensitive, and a dotted or
+// spaced extension (".txt", " txt") counts as "txt".
+func composeFileName(name, ext string) string {
+	name = strings.Trim(name, "/ ")
+	if name == "" || name == "." || name == ".." {
+		return "" // no usable base — callers reject this
+	}
+	ext = strings.Trim(ext, ". ")
+	if ext == "" {
+		return name
+	}
+	if cur := strings.TrimPrefix(path.Ext(name), "."); !strings.EqualFold(cur, ext) {
+		return strings.TrimSuffix(name, ".") + "." + ext
+	}
+	return name
+}
+
+// CreateFile makes a new empty object under prefix (WinSCP-style New
+// file): name and optional type suffix are composed server-side and the
+// created key is returned so the caller can hand it straight to the
+// editor. Addresses the source the main view is browsing (SetViewSource).
+func (a *App) CreateFile(bucket, prefix, name, ext string) (key string, err error) {
+	c, err := a.client("")
+	if err != nil {
+		return "", err
+	}
+	task := a.tasks.add("mkfile", fmt.Sprintf("s3://%s/%s", bucket, joinKeyNoSlash(prefix, composeFileName(name, ext))))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	return a.createFileC(ctx, c, bucket, prefix, name, ext)
+}
+
+func (a *App) createFileC(ctx context.Context, c *s3client.Client, bucket, prefix, name, ext string) (string, error) {
+	composed := composeFileName(name, ext)
+	if composed == "" || strings.Contains(composed, "/") {
+		return "", errors.New("invalid file name")
+	}
+	key := joinKeyNoSlash(prefix, composed) // plain object form, no trailing slash
+	_, err := c.S3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(nil),
+	})
+	if err == nil {
+		a.emitLogSrc(LogInfo, "mkfile", bucket, fmt.Sprintf("file %s created", key))
+		a.emit(EventS3Changed, map[string]string{"bucket": bucket, "prefix": dirPrefix(prefix)})
+	} else {
+		a.emitLogSrc(LogError, "mkfile", bucket, fmt.Sprintf("creating file %s failed: %v", key, err))
+	}
+	return key, err
+}
+
 // RunDoctor runs the deep diagnosis for a bucket and returns the report.
 func (a *App) RunDoctor(bucket string) (*doctor.Report, error) {
 	c, err := a.client("")

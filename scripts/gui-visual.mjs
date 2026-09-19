@@ -501,6 +501,17 @@ function shim() {
     const name = world.remote[source] ? source : world.sources.find((s) => s.id === source)?.name;
     return children(world.remote[name] || [], dir || '/', true);
   };
+  // composeName mirrors the backend's composeFileName rule: the created
+  // shims return the same key the Go side would
+  const composeName = (name, ext) => {
+    let n = String(name || '').trim().replace(/^[/\s]+|[/\s]+$/g, '');
+    const x = String(ext || '').trim().replace(/^[.\s]+|[.\s]+$/g, '');
+    if (x) {
+      const cur = (n.match(/\.([^.]+)$/) || [])[1] || '';
+      if (cur.toLowerCase() !== x.toLowerCase()) n = `${n.replace(/\.+$/, '')}.${x}`;
+    }
+    return n;
+  };
   const localParent = (p) => {
     const t = String(p || '').replace(/[\\/]+$/, '');
     const i = Math.max(t.lastIndexOf('\\'), t.lastIndexOf('/'));
@@ -809,6 +820,26 @@ function shim() {
     },
     CreateFolder: (bucket, prefix, name) => {
       (world.objects[bucket] = world.objects[bucket] || []).push({ key: `${prefix || ''}${name}/`, size: 0 });
+      return {};
+    },
+    // file creation mirrors the backend: compose name+ext, push the empty
+    // object, and RETURN the created key (the editor handoff uses it)
+    CreateFile: (bucket, prefix, name, ext) => {
+      const key = `${prefix || ''}${composeName(name, ext)}`;
+      (world.objects[bucket] = world.objects[bucket] || []).push({ key, size: 0 });
+      return key;
+    },
+    RemoteCreateFile: (src, dir, name, ext) => {
+      const full = `${(dir && dir.endsWith('/')) ? dir : `${dir}/`}${composeName(name, ext)}`;
+      const rn = world.remote[src] ? src : world.sources.find((s) => s.id === src)?.name;
+      (world.remote[rn] = world.remote[rn] || []).push({ key: full, size: 0 });
+      return full;
+    },
+    // the editor handoff is best-effort by design: editReject simulates
+    // the user cancelling the OS "Open with" picker — the created empty
+    // file must survive it
+    EditObject: async () => {
+      if (world.editReject) throw new Error('cancelled');
       return {};
     },
     // ---- OS interop ----
@@ -2613,6 +2644,86 @@ await step('new-folder-tree-sync', async () => {
   }, 'new-folder');
 });
 
+await step('new-file', async () => {
+  // WinSCP-style New file: name + type dialog, the empty object is
+  // created FIRST, then the editor handoff uses the key CreateFile
+  // RETURNED — cancelling the handoff must still leave the file
+  await navObjects('team-files');
+  await resetCalls();
+  await ok('toolbar New-file button wired', evalPage(() => {
+    const b = document.getElementById('btn-newfile');
+    return !!b && /new file/i.test(b.title);
+  }));
+  await page.keyboard.press('Shift+F4');
+  await waitFor(modalVisible, 4000, 'new-file prompt');
+  // dialog defaults: name 'new-file', type txt, and the live preview
+  // composes exactly what the backend will create
+  await ok('prompt defaults + live preview', evalPage(() => {
+    const m = document.getElementById('modal-root');
+    const input = m.querySelector('input.input');
+    const sel = m.querySelector('select');
+    return input.value === 'new-file' && sel.value === 'txt'
+      && /Creates:\s*new-file\.txt/.test(m.textContent);
+  }));
+  const setPromptName = (v) => evalPage((n) => {
+    const i = document.querySelector('#modal-root input.input');
+    i.value = n;
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  }, v);
+  await setPromptName('notes.md');
+  await ok('preview appends a differing extension', evalPage(() =>
+    /Creates:\s*notes\.md\.txt/.test(document.getElementById('modal-root').textContent)));
+  await setPromptName('notes.txt');
+  await ok('preview dedups a matching extension', evalPage(() =>
+    /Creates:\s*notes\.txt(?!\.)/.test(document.getElementById('modal-root').textContent)));
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await findCall('CreateFile')) !== null, 4000, 'CreateFile call');
+  const cf = await findCall('CreateFile');
+  await ok('CreateFile got bucket/prefix/name/ext', Array.isArray(cf.args)
+    && cf.args[0] === 'team-files' && cf.args[1] === '' && cf.args[2] === 'notes.txt' && cf.args[3] === 'txt');
+  // the editor handoff targets the RETURNED key — single source of truth
+  await waitFor(async () => (await findCall('EditObject')) !== null, 4000, 'EditObject handoff');
+  const eo = await findCall('EditObject');
+  await ok('editor handoff opens the returned key', eo
+    && eo.args[0] === 'team-files' && eo.args[1] === 'notes.txt');
+  await waitFor(async () => (await rowKeys()).includes('notes.txt'), 4000, 'grid row');
+  await ok('created file shows in the grid', (await rowKeys()).includes('notes.txt'));
+  await ok('tree stays folder-only (no file nodes)', !(await treeRow('notes.txt')));
+  // ---- cancel path: the OS picker rejected — the empty file survives ----
+  await resetCalls();
+  await evalPage(() => { window.__shim.world.editReject = true; });
+  await page.keyboard.press('Shift+F4');
+  await waitFor(modalVisible, 4000, 'new-file prompt (2)');
+  await setPromptName('scratch');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await findCall('CreateFile')) !== null, 4000, 'CreateFile call (2)');
+  await waitFor(async () => (await rowKeys()).includes('scratch.txt'), 4000, 'grid row (2)');
+  await ok('cancelled editor leaves the empty file behind',
+    (await rowKeys()).includes('scratch.txt') && !(await modalVisible()));
+  await evalPage(() => { delete window.__shim.world.editReject; });
+  // ---- menu wiring: New file… beside New folder; Cancel creates nothing ----
+  await resetCalls();
+  await openCtx('readme.md');
+  await ctxItem(/^new file/i);
+  await waitFor(modalVisible, 4000, 'new-file prompt via menu');
+  await ok('context menu opens the New-file dialog', true);
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+      .find((x) => /cancel/i.test(x.textContent));
+    b?.click();
+  });
+  await sleep(150);
+  await ok('dialog cancel creates nothing', (await findCall('CreateFile')) === null);
+  // restore the fixture for later steps
+  await evalPage(() => {
+    const o = window.__shim.world.objects['team-files'];
+    for (const k of ['notes.txt', 'scratch.txt']) {
+      const i = o.findIndex((e) => e.key === k);
+      if (i >= 0) o.splice(i, 1);
+    }
+  });
+});
+
 await step('delete-window-marker', async () => {
   // versioned bucket: the window lists all three delete types with the
   // marker ('') default. The typed partition is OFF by default (a Settings
@@ -3234,6 +3345,9 @@ await step('running-tasks', async () => {
       // folder creation is a tracked kind too (CreateFolder/RemoteMkdir):
       // the + Creating verb leads its row like every other action type
       { id: 'task-14', kind: 'mkdir', label: 's3://team-files/plans/', status: 'running', doneUnits: 0, totalUnits: 0, startedAt: 2 },
+      // file creation (CreateFile/RemoteCreateFile): same Creating verb
+      // under the document icon
+      { id: 'task-15', kind: 'mkfile', label: 's3://team-files/notes.txt', status: 'running', doneUnits: 0, totalUnits: 0, startedAt: 2 },
     ];
   });
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
@@ -3251,7 +3365,7 @@ await step('running-tasks', async () => {
   await ok('pre-open finished rows are history', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
     const head = document.querySelector(`${s} .modal-foot .left`);
-    return rows.length === 4 && /4 hidden/.test(head?.textContent || '');
+    return rows.length === 5 && /4 hidden/.test(head?.textContent || '');
   }, popSel), 4000, 'history hidden'));
   await ok('running task offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), popSel));
   // the action type always leads the row: verb + label for every kind,
@@ -3262,6 +3376,7 @@ await step('running-tasks', async () => {
       'task-7': /^\uD83D\uDD0D Searching "backup\*"/,
       'task-12': /^\u21C4 Copying 1 item\(s\): s3:\/\/team-files/,
       'task-14': /^\u2795 Creating s3:\/\/team-files\/plans\//,
+      'task-15': /^\uD83D\uDCC4 Creating s3:\/\/team-files\/notes\.txt/,
     };
     return Object.entries(want).every(([id, re]) =>
       re.test(document.querySelector(`${s} .tr-job[data-id="${id}"] .tr-name`)?.textContent || ''));
