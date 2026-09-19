@@ -16,6 +16,7 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
     r.replaceChildren();
     document.removeEventListener('keydown', esc, true);
     document.removeEventListener('keydown', trap, true);
+    r.removeEventListener('mousedown', onBackdrop);
     prevFocus?.focus?.();
     onClose?.(result);
   };
@@ -56,7 +57,14 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
     el('div', { class: 'modal-body' }, body),
     foot,
   );
-  box.addEventListener('mousedown', (e) => { if (e.target === r) close(null); });
+  // Backdrop click closes (dismiss = null): the listener must sit on the
+  // backdrop itself — r is box's PARENT, so an event targeted at r never
+  // bubbles through box; on box this handler could never fire. And because
+  // r is SHARED by every modal, close() must remove it — otherwise each
+  // modal leaves a stale close() behind and one backdrop press fires them
+  // all, each wiping whatever modal is open at the time.
+  const onBackdrop = (e) => { if (e.target === r) close(null); };
+  r.addEventListener('mousedown', onBackdrop);
   r.replaceChildren(box);
   // initial focus: first form control, else first button
   const firstCtl = box.querySelector('input, select, textarea') || box.querySelector('.modal-foot .btn');
@@ -710,7 +718,7 @@ export async function runDeleteWindow({
 // and hung on "Loading…" — folders get this window instead. No refresh
 // button: every action reloads what it changed.
 export function contentVersionsDialog(bucket, prefix, onChanged) {
-  const stats = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: t('loading') });
+  const stats = el('div', { class: 'dlg-status', text: t('loading') });
   const kids = el('div', { class: 'ver-list' });
 
   async function draw() {
@@ -777,7 +785,7 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
 // (the context menu keeps opening it) yet shows no marker versions
 // until the user opts in.
 export function markersDialog(bucket, key, isDir, onChanged) {
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: t('loading') });
+  const status = el('div', { class: 'dlg-status', text: t('loading') });
   const list = el('div', { class: 'ver-list' });
   let listed = [];
   const sel = new Set(); // selected versionIds
@@ -1638,7 +1646,7 @@ export function sourceEditor(existing, onSaved) {
     } }),
   ));
 
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const status = el('div', { class: 'dlg-status' });
 
   // ---- auto-filled name (kept until the user edits it) ----
   let nameDirty = !!existing?.name;
@@ -1818,13 +1826,21 @@ export function sourceEditor(existing, onSaved) {
     status,
   );
 
-  openModal({
+  const m = openModal({
     title: existing ? `Edit source — ${existing.name}` : 'Add data source',
+    // fixed width (srcw-modal): the dialog must not widen when the Test
+    // result or an error line appears — a raw backend error is full of
+    // unbreakable tokens that would otherwise stretch the content width
+    cls: 'srcw-modal',
     body,
     buttons: [
       {
         label: 'Test',
         onclick: async () => {
+          // one test in flight at a time — a second click while the first
+          // dials would race two results onto the status line
+          const testBtn = m.btns[0];
+          testBtn.disabled = true;
           status.textContent = 'Testing\u2026';
           status.style.color = 'var(--text-dim)';
           try {
@@ -1864,6 +1880,8 @@ export function sourceEditor(existing, onSaved) {
           } catch (err) {
             status.textContent = `\u274C ${err}`;
             status.style.color = 'var(--danger)';
+          } finally {
+            testBtn.disabled = false;
           }
         },
       },
@@ -2332,7 +2350,7 @@ const asMillis = (v) => (typeof v === 'string' ? Date.parse(v) : v);
 
 export function versionsDialog(bucket, key, onChanged) {
   const list = el('div', { class: 'ver-list' });
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const status = el('div', { class: 'dlg-status' });
   // A/B version picks (Panels v2): any two versions can be compared —
   // metadata always, a unified text diff when both sides are text.
   const pick = { a: null, b: null };
@@ -2472,7 +2490,7 @@ export function versionsDialog(bucket, key, onChanged) {
 function versionDiffDialog(bucket, key, va, vb) {
   const short = (id) => (!id ? '(null version)' : (id.length > 12 ? `\u2026${id.slice(-8)}` : id));
   const meta = el('div', { class: 'verd-meta' });
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const status = el('div', { class: 'dlg-status' });
   const diffBox = el('div', { class: 'diff' });
 
   const mrow = (label, a, b, head = false) => el('div', { class: `verd-mrow${head ? ' verd-mhead' : ''}` },
@@ -3077,7 +3095,7 @@ export function findDialog(bucket, prefix = '', onOpen) {
         .map((c) => el('option', { value: c }, c || '— any —'))),
     limit: el('input', { class: 'input', type: 'number', min: '0', value: '0' }),
   };
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const status = el('div', { class: 'dlg-status' });
   const list = el('div', { class: 'ver-list', role: 'list' });
   let token = null;
   let running = false;
@@ -3200,7 +3218,7 @@ export function classDialog(bucket, rows, onChanged) {
   const targets = ['STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE'];
   const sel = el('select', { class: 'input', style: 'width:auto' }, targets.map((c) => el('option', { value: c }, c)));
   sel.value = 'GLACIER';
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const status = el('div', { class: 'dlg-status' });
   const folders = rows.filter((r) => r.isDir).length;
 
   const run = async (force) => {
@@ -3250,7 +3268,7 @@ export function classDialog(bucket, rows, onChanged) {
 // per-item status — the batch-progress surface for multi-run commands.
 // run(item) throws to mark a failure; Stop (or closing) abandons the rest.
 function batchDialog({ title, intro = '', items, run, onDone }) {
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)', text: `0/${items.length}` });
+  const status = el('div', { class: 'dlg-status', text: `0/${items.length}` });
   const list = el('div', { class: 'batch-list' });
   let stopped = false;
 
@@ -3340,7 +3358,7 @@ export function lockDialog(bucket, rows, onChanged) {
 
 function lockDialogOne(bucket, row, onChanged) {
   const key = row.key;
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const status = el('div', { class: 'dlg-status' });
   const mode = el('select', { class: 'input', style: 'width:auto' },
     ['GOVERNANCE', 'COMPLIANCE'].map((m) => el('option', { value: m }, m)));
   const until = el('input', { class: 'input mono', value: '+30d', spellcheck: 'false' });
@@ -3607,7 +3625,7 @@ const KMS_SERVICES = [
 function kmsFetchDialog(onCandidates, onDone) {
   const service = el('select', { class: 'input' }, KMS_SERVICES.map(([v, l]) => el('option', { value: v }, l)));
   const holder = el('div', { style: 'margin-top:4px' });
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const status = el('div', { class: 'dlg-status' });
   const inputs = {};
   const drawFields = () => {
     const def = KMS_PARAM_DEFS[service.value] || [];
@@ -3668,7 +3686,7 @@ function kmsFetchDialog(onCandidates, onDone) {
 export function importCredsDialog(onImported) {
   let candidates = [];
   const list = el('div', { class: 'cred-list' });
-  const status = el('div', { class: 'field', style: 'min-height:18px;color:var(--text-dim)' });
+  const status = el('div', { class: 'dlg-status' });
 
   const add = (cs) => {
     candidates = cs.map((c) => ({ ...c, checked: true, tested: null }));
