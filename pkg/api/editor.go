@@ -67,8 +67,10 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 		return EditInfo{}, fmt.Errorf("%s is a folder", key)
 	}
 
+	// engine tuning (Settings → Transfers) applies to editor pulls too
+	partSize, conc := a.partTunables()
 	if err := transfer.DownloadFile(context.Background(), c.S3, bucket, key, local,
-		transfer.DownloadOptions{}); err != nil {
+		transfer.DownloadOptions{PartSize: partSize, Concurrency: conc}); err != nil {
 		return EditInfo{}, err
 	}
 	_ = os.Chmod(local, 0o600) // object contents: owner-only in every mode
@@ -139,8 +141,10 @@ func (a *App) uploadEdit(s *editSession) error {
 	if err != nil {
 		return err
 	}
+	// engine tuning (Settings → Transfers) applies to editor pushes too
+	partSize, conc := a.partTunables()
 	return transfer.UploadFile(context.Background(), c.S3, s.Local, s.Bucket, s.Key,
-		transfer.UploadOptions{})
+		transfer.UploadOptions{PartSize: partSize, Concurrency: conc})
 }
 
 // done signals app shutdown (nil ctx before Startup = never).

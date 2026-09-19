@@ -47,17 +47,18 @@ func TestStallFlagFollowsByteMovement(t *testing.T) {
 		t.Fatal("fresh movement flagged stalled")
 	}
 
-	// Simulate a hung read: rewind the last byte time beyond the stall
-	// window and let the heartbeat's own logic judge it.
+	// Simulate a hung read: rewind the last byte time beyond the job's
+	// captured stall window (the Settings → Transfers threshold, default
+	// 10s) and let the heartbeat's own logic judge it.
 	j.mu.Lock()
-	j.lastByteAt = time.Now().Add(-stallAfter - time.Second)
+	j.lastByteAt = time.Now().Add(-j.stallAfter - time.Second)
 	j.mu.Unlock()
 	j.mu.Lock()
 	stalled := j.info.Status == JobRunning && j.info.Phase == PhaseTransfer &&
-		j.info.CurrentTotal > 0 && time.Since(j.lastByteAt) > stallAfter
+		j.info.CurrentTotal > 0 && time.Since(j.lastByteAt) > j.stallAfter
 	j.mu.Unlock()
 	if !stalled {
-		t.Fatal("no movement for >stallAfter did not count as stalled")
+		t.Fatal("no movement beyond the stall threshold did not count as stalled")
 	}
 
 	// Bytes moving again clears it (progress + startFile both refresh).

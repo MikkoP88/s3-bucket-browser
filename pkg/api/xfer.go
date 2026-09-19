@@ -665,7 +665,9 @@ func (a *App) xferOne(ctx context.Context, f *xferFile, dst xferDestSide, policy
 	}
 	// Local pane → S3 reuses the battle-tested UploadFile.
 	if f.srcKind == "local" && dst.kind == "s3" {
-		if err := transfer.UploadFile(ctx, dst.client.S3, f.srcPath, dst.bucket, f.dstPath, transfer.UploadOptions{MaxBPS: maxBPS, Progress: fn}); err != nil {
+		partSize, conc := a.partTunables() // Settings → Transfers engine tuning
+		if err := transfer.UploadFile(ctx, dst.client.S3, f.srcPath, dst.bucket, f.dstPath,
+			transfer.UploadOptions{MaxBPS: maxBPS, Progress: fn, PartSize: partSize, Concurrency: conc}); err != nil {
 			return "", err
 		}
 		return "copied", nil
@@ -712,10 +714,11 @@ func (a *App) xferOne(ctx context.Context, f *xferFile, dst xferDestSide, policy
 	}
 
 	var err error
+	partSize, conc := a.partTunables() // Settings → Transfers engine tuning
 	switch dst.kind {
 	case "s3":
 		err = transfer.UploadReader(ctx, dst.client.S3, r, size, dst.bucket, f.dstPath,
-			transfer.UploadOptions{MaxBPS: maxBPS, Progress: fn})
+			transfer.UploadOptions{MaxBPS: maxBPS, Progress: fn, PartSize: partSize, Concurrency: conc})
 	case "remote":
 		err = a.xferRemoteCreate(ctx, dst, f.dstPath, r, size, fn, maxBPS, madeDirs)
 	default:

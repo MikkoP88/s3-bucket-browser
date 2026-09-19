@@ -3304,6 +3304,8 @@ async function openSettings() {
   try { logSet = await api.GetLogSettings(); } catch { /* binding missing pre-Startup */ }
   let secSet = { enabled: false, keyringAvailable: false, keyringBackend: '', editorDir: '', spoolDir: '' };
   try { secSet = await api.GetSecureStorage(); } catch { /* binding missing pre-Startup */ }
+  let tunSet = null;
+  try { tunSet = await api.GetTuning(); } catch { /* binding missing pre-Startup */ }
   settingsDialog({
     state: {
       theme: () => localStorage.getItem('s3b-theme') || 'auto',
@@ -3400,14 +3402,34 @@ async function openSettings() {
         return secSet;
       },
     },
+    // Engine tuning (pkg/api/tuning.go): every value is honored Go-side —
+    // the listing watchdog and quick-op budgets, the SDK retryer, the
+    // multipart shape at every transfer site, the Stalled flag threshold —
+    // and persisted in appsettings.json, so it survives restarts. set
+    // pushes the whole snapshot; the stored (clamped) truth comes back and
+    // re-syncs the selects.
+    engine: {
+      get: () => tunSet,
+      set: async (v) => {
+        try {
+          tunSet = await api.SetTuning(
+            v.listingTimeoutMs || 0, v.compareTimeoutMs || 0, v.retryAttempts || 0,
+            v.partSizeMiB || 0, v.partConcurrency || 0, v.stallAfterMs || 0,
+          );
+        } catch (e) { toast(String(e), 'error'); }
+        return tunSet;
+      },
+    },
     // Reset to defaults: wipe every persisted shell knob and reload.
-    // Favorites are data, not settings — they survive. The file-log
-    // preference (logsettings.json, Go-side) resets through its binding.
+    // Favorites are data, not settings — they survive. The Go-side
+    // preferences (logsettings.json, appsettings.json) reset through
+    // their bindings — 0 means "default" per field.
     reset: () => {
       const favs = localStorage.getItem('s3b-favs');
       localStorage.clear();
       if (favs !== null) localStorage.setItem('s3b-favs', favs);
       try { api.SetLogSettings('default', '', [], [], []); } catch { /* best effort */ }
+      try { api.SetTuning(0, 0, 0, 0, 0, 0); } catch { /* best effort */ }
       window.location.reload();
     },
   });

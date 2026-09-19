@@ -166,7 +166,7 @@ func (a *App) TestCredentialDraft(id string) TestResult {
 		}
 		// No whole-request HTTP deadline — the 10s probe context below
 		// is the single bound.
-		c, err := s3client.New(a.ctx, *src.S3, s3client.Options{Timeout: -1})
+		c, err := s3client.New(a.ctx, *src.S3, a.s3Opts())
 		if err != nil {
 			return TestResult{OK: false, Message: err.Error()}
 		}
@@ -282,7 +282,7 @@ func (a *App) listCandidateBuckets(src profile.Source) ([]string, error) {
 		return nil, errNoContext
 	}
 	// No whole-request HTTP deadline — the 15s context below is the bound.
-	c, err := s3client.New(a.ctx, *src.S3, s3client.Options{Timeout: -1})
+	c, err := s3client.New(a.ctx, *src.S3, a.s3Opts())
 	if err != nil {
 		return nil, err
 	}

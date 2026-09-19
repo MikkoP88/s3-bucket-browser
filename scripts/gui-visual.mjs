@@ -427,6 +427,11 @@ function shim() {
       editorDir: 'C:\\Users\\vis\\AppData\\Local\\Temp\\s3b-edit',
       spoolDir: 'C:\\Users\\vis\\AppData\\Local\\Temp\\s3b-tmp',
     },
+    // engine tuning (Settings → Network / Transfer engine): the defaults a
+    // fresh install runs with; SetTuning mirrors the backend's
+    // zero-means-default semantics (no clamping needed — the walk only
+    // picks curated steps)
+    tuning: { listingTimeoutMs: 30000, compareTimeoutMs: 300000, retryAttempts: 3, partSizeMiB: 0, partConcurrency: 0, stallAfterMs: 10000 },
     versions: [
       { versionId: '', isLatest: true, isDeleteMarker: false, size: 1234, storageClass: 'STANDARD', etag: '"v3"', lastModified: daysAgo(1) },
       { versionId: 'ver-0002', isLatest: false, isDeleteMarker: false, size: 1100, storageClass: 'STANDARD', etag: '"v2"', lastModified: daysAgo(8) },
@@ -737,6 +742,18 @@ function shim() {
     SetLogSettings: (mode, dir, levels, scopes, sources) => {
       world.logSettings = { ...world.logSettings, mode, dir, levels: levels || [], scopes: scopes || [], sources: sources || [] };
       return JSON.parse(JSON.stringify(world.logSettings));
+    },
+    GetTuning: () => JSON.parse(JSON.stringify(world.tuning)),
+    SetTuning: (listingMs, compareMs, retries, partMiB, conc, stallMs) => {
+      world.tuning = {
+        listingTimeoutMs: listingMs > 0 ? listingMs : 30000,
+        compareTimeoutMs: compareMs > 0 ? compareMs : 300000,
+        retryAttempts: retries > 0 ? retries : 3,
+        partSizeMiB: partMiB > 0 ? partMiB : 0,
+        partConcurrency: conc > 0 ? conc : 0,
+        stallAfterMs: stallMs > 0 ? stallMs : 10000,
+      };
+      return JSON.parse(JSON.stringify(world.tuning));
     },
     GetSecureStorage: () => JSON.parse(JSON.stringify(world.secure)),
     SetSecureStorage: (on) => {
@@ -1646,7 +1663,7 @@ await step('settings-dialog', async () => {
     s.dispatchEvent(new Event('input', { bubbles: true }));
     return true;
   }, q);
-  await ok('category nav rendered (8 pages)', evalPage(() => document.querySelectorAll('#modal-root .set-nav-item').length === 8));
+  await ok('category nav rendered (9 pages)', evalPage(() => document.querySelectorAll('#modal-root .set-nav-item').length === 9));
   await ok('search box present', evalPage(() => !!document.querySelector('#modal-root .set-search')));
   await ok('appearance page active first', evalPage(() => {
     const p = document.querySelector('#modal-root .set-page[data-cat="appearance"]');
@@ -1717,6 +1734,41 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /show hidden \(delete-marked\) objects/i.test(x))
       && rows.some((x) => /explorer copy & paste/i.test(x));
   }));
+  // engine tuning: the Network page carries the timeout/retry rows and the
+  // File-transfers page the Transfer-engine group; changing a select rides
+  // the WHOLE snapshot to SetTuning (zero fields = Default/Auto)
+  await ok('network page carries the engine-tuning rows', evalPage(() => {
+    const p = document.querySelector('#modal-root .set-page[data-cat="network"]');
+    if (!p) return false;
+    const rows = Array.from(p.querySelectorAll('.set-row')).map((r) => r.textContent);
+    return rows.some((x) => /listing timeout/i.test(x))
+      && rows.some((x) => /compare timeout/i.test(x))
+      && rows.some((x) => /s3 retry attempts/i.test(x));
+  }));
+  await ok('transfers page carries the transfer-engine group', evalPage(() => {
+    const p = document.querySelector('#modal-root .set-page[data-cat="transfers"]');
+    if (!p) return false;
+    const secs = Array.from(p.querySelectorAll('.set-section')).map((s) => s.textContent);
+    const rows = Array.from(p.querySelectorAll('.set-row')).map((r) => r.textContent);
+    return secs.some((x) => /transfer engine/i.test(x))
+      && rows.some((x) => /multipart part size/i.test(x))
+      && rows.some((x) => /parts in flight/i.test(x))
+      && rows.some((x) => /stall threshold/i.test(x));
+  }));
+  await evalPage(() => {
+    const p = document.querySelector('#modal-root .set-page[data-cat="network"]');
+    const sel = Array.from(p.querySelectorAll('select'))
+      .find((s) => Array.from(s.options).some((o) => o.value === '300000'));
+    if (!sel) return false;
+    sel.value = '60000';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  });
+  await waitFor(async () => (await findCall('SetTuning')) !== null, 4000, 'SetTuning on listing-timeout change');
+  const tc = await findCall('SetTuning');
+  await ok('listing-timeout change rides the whole tuning snapshot', tc
+    && tc.args[0] === 60000 && tc.args[1] === 300000 && tc.args[2] === 3
+    && tc.args[3] === 0 && tc.args[5] === 10000);
   await shot('settings-new-rows');
   // Search: typing flattens the book — matching rows from every category
   // visible in one list, per-category match counts in the nav, non-matching

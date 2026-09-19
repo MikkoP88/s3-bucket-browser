@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/appsettings"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
@@ -35,11 +36,6 @@ const (
 	PhaseTransfer = "transfer"
 	PhaseCleanup  = "cleanup" // move: deleting fully-transferred sources
 )
-
-// stallAfter is how long a known-size in-flight file may sit without a
-// byte moving before the job is flagged Stalled (the ticker keeps the
-// flag honest in both directions).
-const stallAfter = 10 * time.Second
 
 // Conflict policies shared by upload and download.
 const (
@@ -82,7 +78,7 @@ type JobInfo struct {
 	CurrentTotal int64  `json:"currentTotal"`        // its size (0 = unknown/server-side)
 	EtaMs        int64  `json:"etaMs,omitempty"`     // computed on emit while running
 	ElapsedMs    int64  `json:"elapsedMs,omitempty"` // stamped at finish
-	Stalled      bool   `json:"stalled"`             // no byte movement in stallAfter
+	Stalled      bool   `json:"stalled"`             // no byte movement within the stall threshold
 	ErrorKind    string `json:"errorKind,omitempty"` // "timeout" | ""
 }
 
@@ -110,14 +106,16 @@ type jobHandle struct {
 	lastByteAt time.Time // last time a byte actually moved
 	lastEmSent int64     // SentBytes at the previous emit (EMA speed input)
 	lastEmAt   time.Time // when that was
+	stallAfter time.Duration
 }
 
 // jobManager owns all jobs in insertion order.
 type jobManager struct {
-	ctx context.Context
-	mu  sync.Mutex
-	all []*jobHandle
-	seq int
+	ctx        context.Context
+	mu         sync.Mutex
+	all        []*jobHandle
+	seq        int
+	stallAfter time.Duration // Stalled threshold for NEW jobs (Settings → Transfers)
 }
 
 func newJobManager() *jobManager { return &jobManager{} }
@@ -125,6 +123,15 @@ func newJobManager() *jobManager { return &jobManager{} }
 func (m *jobManager) setContext(ctx context.Context) {
 	m.mu.Lock()
 	m.ctx = ctx
+	m.mu.Unlock()
+}
+
+// setStallAfter updates the Stalled threshold for future jobs; running
+// jobs keep the value they captured at start (a mid-job change must not
+// flip a live row's flag on its own).
+func (m *jobManager) setStallAfter(d time.Duration) {
+	m.mu.Lock()
+	m.stallAfter = d
 	m.mu.Unlock()
 }
 
@@ -165,6 +172,13 @@ func (m *jobManager) add(op string, totalFiles int, totalBytes int64) *jobHandle
 	j.mgr = m
 	j.lastByteAt = now
 	j.lastEmAt = now
+	// Captured at start: later setting changes skip live jobs. Managers
+	// that never ran Startup (unit tests) fall back to the stored/default
+	// threshold so a zero value can never make every job "stalled".
+	j.stallAfter = m.stallAfter
+	if j.stallAfter <= 0 {
+		j.stallAfter = appsettings.Load().StallAfter()
+	}
 	m.all = append(m.all, j)
 	// The heartbeat: progress callbacks only fire when the engine reads
 	// bytes — a server-side copy, a slow HeadObject or a hung socket
@@ -188,7 +202,7 @@ func (j *jobHandle) heartbeat() {
 			return
 		}
 		j.info.Stalled = j.info.Phase == PhaseTransfer &&
-			j.info.CurrentTotal > 0 && time.Since(j.lastByteAt) > stallAfter
+			j.info.CurrentTotal > 0 && time.Since(j.lastByteAt) > j.stallAfter
 		j.mu.Unlock()
 		j.emit(false)
 	}
@@ -468,7 +482,8 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 		}
 
 		key := p.key
-		opts := transfer.UploadOptions{Progress: j.progress, MaxBPS: maxBPS}
+		partSize, conc := a.partTunables() // Settings → Transfers engine tuning
+		opts := transfer.UploadOptions{Progress: j.progress, MaxBPS: maxBPS, PartSize: partSize, Concurrency: conc}
 		switch pol {
 		case PolicyRename:
 			if alt, err := uniqueRemoteKey(ctx, c, bucket, key); err == nil {
@@ -729,9 +744,12 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 			}
 		}
 
+		partSize, conc := a.partTunables() // Settings → Transfers engine tuning
 		err := transfer.DownloadFile(ctx, c.S3, bucket, it.Key, local, transfer.DownloadOptions{
-			Progress: j.progress,
-			MaxBPS:   maxBPS,
+			Progress:    j.progress,
+			MaxBPS:      maxBPS,
+			PartSize:    partSize,
+			Concurrency: conc,
 		})
 		if err != nil {
 			if ctx.Err() != nil {

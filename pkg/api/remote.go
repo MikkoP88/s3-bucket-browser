@@ -5,7 +5,6 @@
 package api
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -338,7 +337,7 @@ func (a *App) testRemoteSource(src profile.Source) TestResult {
 		return TestResult{OK: false, Message: err.Error()}
 	}
 	defer fs.Close()
-	ctx, cancel := context.WithTimeout(a.ctx, quickOpTimeout)
+	ctx, cancel := a.quickCtx() // the Settings → Network listing timeout bounds the probe
 	defer cancel()
 	entries, err := fs.List(ctx, "/")
 	if err != nil {

@@ -30,6 +30,10 @@ type Options struct {
 	// request-context deadline. 0 = 30s default; negative = no deadline at
 	// all (caller bounds ops with contexts/watchdogs).
 	Timeout time.Duration
+	// RetryAttempts is the retryer's max attempts per request (transient
+	// failures only — connection resets, 5xx; budget-expiry and caller
+	// cancellation stay terminal). 0 = SDK default (3).
+	RetryAttempts int
 }
 
 // Client bundles the SDK client with the resolved configuration.
@@ -82,6 +86,9 @@ func New(ctx context.Context, p profile.Profile, opts Options) (*Client, error) 
 		credOpts = append(credOpts, config.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(accessKey, secretKey, sessionToken),
 		))
+	}
+	if opts.RetryAttempts > 0 {
+		credOpts = append(credOpts, config.WithRetryMaxAttempts(opts.RetryAttempts))
 	}
 
 	httpClient := &http.Client{}
