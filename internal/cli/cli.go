@@ -164,10 +164,41 @@ func Execute(args []string) int {
 			}
 			return ee.code
 		}
+		// Cobra's own invocation failures (unknown command or flag, wrong
+		// argument count) are user typos, not app failures — label them as
+		// usage errors and point at help instead of crying "unexpected".
+		if isCobraUsageError(err) {
+			fmt.Fprintln(os.Stderr, "usage error:", err)
+			fmt.Fprintf(os.Stderr, "run '%s --help' for usage\n", root.Name())
+			return exitUsage
+		}
 		fmt.Fprintln(os.Stderr, "unexpected:", err)
 		return exitUnexpected
 	}
 	return exitOK
+}
+
+// isCobraUsageError reports whether err is one of cobra/pflag's stable
+// invocation-error phrasings (unknown command/flag, missing flag value,
+// bad flag value, wrong argument count). The app's own errors never
+// start with these prefixes — they arrive as exitError above.
+func isCobraUsageError(err error) bool {
+	s := err.Error()
+	for _, p := range []string{
+		"unknown command ",
+		"unknown flag:",
+		"unknown shorthand flag:",
+		"flag needs an argument",
+		"invalid argument ",
+		"accepts ",
+		"requires at least ",
+		"subcommand is required",
+	} {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // store loads the profile store, running the one-way M8 migration (legacy
