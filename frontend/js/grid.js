@@ -204,7 +204,6 @@ export class Grid {
   cycleSort(id) {
     if (this.sortKey === id) this.sortDir = -this.sortDir;
     else { this.sortKey = id; this.sortDir = 1; }
-    if (id === 'name' || id === 'storageClass') this.sortDir = this.sortDir; // lexical
     this.apply();
     this.renderHead();
   }

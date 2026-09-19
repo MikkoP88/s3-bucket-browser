@@ -96,7 +96,23 @@ let pass = 0, fail = 0; const failures = [];
 async function step(name, fn) {
   process.stdout.write(`== ${name}\n`);
   try { const v = await fn(); pass++; return v; }
-  catch (err) { fail++; failures.push(`${name}: ${err.message}`); console.error(`   FAIL: ${err.message}`); }
+  catch (err) {
+    fail++; failures.push(`${name}: ${err.message}`); console.error(`   FAIL: ${err.message}`);
+    // stall triage: dump the flight recorder at the moment of failure (the
+    // fault lab reloads the page later, which would wipe it)
+    try {
+      const obs = await evalPage(() => (window.__obs || []).slice(-150));
+      if (obs.length) {
+        console.log(`   FLIGHT RECORDER (last ${obs.length} events):`);
+        for (const l of obs) console.log(`     ${l}`);
+      }
+      const logs = await evalPage(() => (window.__logs || []).slice(-40));
+      if (logs.length) {
+        console.log(`   BACKEND log:line (last ${logs.length}):`);
+        for (const l of logs) console.log(`     ${l}`);
+      }
+    } catch { /* recorder optional */ }
+  }
   finally { await dismissUI(); }
 }
 async function dismissUI() {
@@ -153,6 +169,28 @@ const sideRow = (label) => elOrNull((l) => {
 }, label);
 const bodyH = () => page.evaluateHandle(() => document.getElementById('grid-body'));
 const sideBodyH = () => page.evaluateHandle(() => document.getElementById('local-grid-body'));
+// The grids are virtualized (grid.js renders only the scrolled window +
+// overscan), so a row can exist in the model yet be absent from the DOM —
+// names()/rowKeys()/sideKeys() would never see it. The engine fixture roots
+// accumulate one run-dir per walk, and a v-prefixed RUNID always sorts to
+// the bottom, past the render window. Filtering to the target collapses
+// the view onto it (the user's own find-it-fast path) — grid.apply()
+// re-applies the filter to every fresh listing, so it survives refreshes.
+async function filterTo(text) {
+  await page.locator('#filter').fill(text);
+  await sleep(250); // the app debounces the filter input 120ms
+}
+async function clearFilter() { await filterTo(''); }
+// The side pane has no filter box; scrolling its body to the bottom pulls
+// the last-sorting rows (a v-RUNID dir is always last at a fixture root)
+// into the render window.
+async function sideScrollBottom() {
+  await evalPage(() => {
+    const b = document.getElementById('local-grid-body');
+    if (b) b.scrollTop = b.scrollHeight;
+  });
+  await sleep(200);
+}
 async function rowAction(label, kind) {
   const h = await waitFor(async () => {
     const r = await (kind === 'side' ? sideRow(label) : gridRow(label));
@@ -202,6 +240,41 @@ async function modalVisible() {
 }
 async function modalText() {
   return evalPage(() => document.querySelector('#modal-root .modal')?.textContent || '');
+}
+// Flight recorder for stall triage: every breadcrumb swap, grid row-set
+// change and loading-overlay toggle, plus the backend log stream — all
+// timestamped in-page. Re-armed at boot and at the engines step (page
+// reloads wipe it); dumped from main() when the walk ends with failures.
+async function installRecorder() {
+  await evalPage(() => {
+    window.__recorderOff?.(); // disarm any previous generation first
+    window.__logs = [];
+    const offLog = window.runtime.EventsOn('log:line', (l) => window.__logs
+      .push(`${l.level || '?'}|${l.scope || ''}|${l.source || ''}|${l.message || ''}`));
+    window.__obs = [];
+    const t0 = performance.now();
+    const rec = (what, detail) => window.__obs
+      .push(`${Math.round(performance.now() - t0)}ms ${what} ${detail}`);
+    const watches = [];
+    const watch = (node, opts, fn) => {
+      const mo = new MutationObserver(fn);
+      mo.observe(node, opts);
+      watches.push(mo);
+    };
+    const bc = document.getElementById('breadcrumb');
+    if (bc) watch(bc, { childList: true, subtree: true, characterData: true },
+      () => rec('CRUMB', JSON.stringify((bc.textContent || '').trim().slice(0, 70))));
+    const gb = document.getElementById('grid-body');
+    if (gb) watch(gb, { childList: true },
+      (m) => rec('GRID', `mut=${m.length} rows=${gb.querySelectorAll('.grid-row').length}`));
+    const sk = document.getElementById('load-skel');
+    if (sk) watch(sk, { attributes: true, attributeFilter: ['class'] },
+      () => rec('SKEL', sk.classList.contains('hidden') ? 'hidden' : 'SHOWN'));
+    window.__recorderOff = () => {
+      watches.forEach((mo) => mo.disconnect());
+      try { offLog?.(); } catch { /* runtime may be re-initializing */ }
+    };
+  });
 }
 async function ctxItem(re) {
   const h = await elOrNull((src) => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
@@ -456,6 +529,7 @@ async function walk() {
     await ok(`runtime event round-trip (emit→on): ${JSON.stringify(got)}`, got && got.n === 42);
     await waitFor(() => txt('#status-version').then((s) => s.includes(VERSION)), 15000, 'version in status bar');
     await ok('status bar shows the build version', true);
+    await installRecorder();
     await waitFor(() => evalPage(() => Array.from(document.querySelectorAll('#empty-actions .btn')).length > 0), 10000, 'onboarding actions');
     await ok('onboarding empty state shown', true);
     await ok('menubar rendered', await evalPage(() => document.querySelectorAll('#menubar .mb-title').length >= 4));
@@ -495,6 +569,54 @@ async function walk() {
     await clickFooter(/^save$/i);
     await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(SEED)), 20000, 'bucket root listing');
     await ok('bucket root listed through the v3 bridge', true);
+  });
+
+  // The dialog-width regression guard: a raw backend error is one long line
+  // of unbreakable tokens (URLs, host ids). The source editor is width-pinned
+  // (.srcw-modal) and its status strip wraps (.dlg-status overflow-wrap) —
+  // before those fixes the first error shoved the dialog out to 720px.
+  await step('add-source dialog: error keeps pinned width + wraps', async () => {
+    await page.locator('#sidebar-head .side-add').click();
+    await waitFor(() => page.locator('#modal-root .modal.srcw-modal input.input').count().then((n) => n >= 6), 5000, 'source editor fields');
+    await sleep(250); // let the modal-in entry animation finish — getBoundingClientRect
+    //                 includes its transform, so measuring mid-animation reads short
+    const before = await evalPage(() => document.querySelector('#modal-root .modal.srcw-modal').getBoundingClientRect().width);
+    const inputs = page.locator('#modal-root .modal.srcw-modal input.input');
+    await inputs.nth(0).fill('dead-endpoint');
+    await inputs.nth(1).fill(BUCKET);
+    await inputs.nth(2).fill('http://127.0.0.1:9'); // connection refused, fast
+    await inputs.nth(3).fill(REGION);
+    await inputs.nth(4).fill(KEY);
+    await inputs.nth(5).fill(SECRET);
+    await clickFooter(/^test$/i);
+    await waitFor(async () => /❌/.test(await modalText()), 20000, 'dead-endpoint error on the status strip');
+    const after = await evalPage(() => {
+      const m = document.querySelector('#modal-root .modal.srcw-modal');
+      const s = m.querySelector('.dlg-status');
+      return { width: m.getBoundingClientRect().width, cw: s.clientWidth, sw: s.scrollWidth };
+    });
+    await ok(`width pinned at ${Math.round(after.width)}px before AND after the error (${Math.round(before)}px)`,
+      Math.abs(after.width - before) <= 1 && Math.abs(after.width - 560) <= 1);
+    await ok('error text wraps inside the status strip (no horizontal overflow)', after.sw <= after.cw + 1);
+    await shot('04b-source-error-width');
+    await closeModal();
+  });
+
+  // Backdrop click closes: the handler used to sit on the dialog box while
+  // testing for the backdrop as target — an event that can never bubble
+  // that way, so it silently never fired.
+  await step('modal: backdrop mousedown closes', async () => {
+    await page.locator('#sidebar-head .side-add').click();
+    await waitFor(() => evalPage(() => !!document.querySelector('#modal-root .modal.srcw-modal')), 5000, 'modal open');
+    const pt = await evalPage(() => {
+      const r = document.querySelector('#modal-root .modal').getBoundingClientRect();
+      return { x: Math.round(r.left / 2), y: Math.round(r.top + 10) }; // on the backdrop, beside the dialog
+    });
+    await page.mouse.move(pt.x, pt.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await sleep(150);
+    await ok('backdrop press closed the modal', await evalPage(() => !document.querySelector('#modal-root .modal')));
   });
 
   await step('session-only status chip', async () => {
@@ -729,6 +851,7 @@ async function walk() {
       await ok('remote engine section skipped (no containers up)', true);
       return;
     }
+    await installRecorder(); // fresh trace: this step's waits are where stalls show up
     walk.engines = engines;
     for (const e of engines) {
       await treeOpen(SRCNAME);
@@ -738,9 +861,11 @@ async function walk() {
       await bodyCtx();
       await ctxItem(/new folder/i);
       await answerPrompt(RUNID);
+      await filterTo(RUNID); // virtualized grid: filter renders the fresh dir
       await waitFor(async () => (await names()).includes(RUNID), 20000, `${e.label}: ${RUNID} dir`);
-      await dblClickRow(RUNID);
+      await dblClickRow(RUNID); // still filtered — the single row is rendered
       await waitFor(async () => (await rowKeys()).length === 0, 10000, `${e.label}: empty run dir`);
+      await clearFilter();
       await page.locator('#local-crumb').click();
       await answerPrompt(FIX);
       await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'fixture tree on the local side');
@@ -762,8 +887,10 @@ async function walk() {
       }, 20000, `${e.label}: docs/`);
       await ok(`${e.label}: space, unicode, empty file and nested dir intact`, true);
       await crumbRoot();
+      await filterTo(RUNID);
       await waitFor(async () => (await names()).includes(RUNID), 10000, `${e.label}: back at root`);
       await dblClickRow(RUNID);
+      await clearFilter();
       await waitFor(async () => (await names()).includes('tree'), 10000, `${e.label}: run dir`);
       const dst = path.join(FIX, `rt-${e.label}`);
       await mkdir(dst, { recursive: true });
@@ -778,7 +905,9 @@ async function walk() {
       await ok(`${e.label}: round-trip byte-identical (${a.length} files)`, JSON.stringify(a) === JSON.stringify(b));
       await shot(`r3-${e.label}-roundtrip`);
       await crumbRoot();
+      await filterTo(RUNID);
       await waitFor(async () => (await names()).includes(RUNID), 10000, `${e.label}: root again`);
+      await clearFilter();
     }
     if (engines.length >= 2) {
       const from = engines[0];
@@ -786,11 +915,19 @@ async function walk() {
       await bodyCtx();
       await ctxItem(/new folder/i);
       await answerPrompt(`x-${RUNID}`);
+      await filterTo(`x-${RUNID}`);
       await waitFor(async () => (await names()).includes(`x-${RUNID}`), 20000, 'cross-engine dir');
       await dblClickRow(`x-${RUNID}`);
       await waitFor(async () => (await rowKeys()).length === 0, 10000, 'empty cross dir');
+      await clearFilter();
       await page.locator('#local-src').selectOption({ label: `live-${from.label} (${from.type})` });
-      await waitFor(async () => (await sideKeys()).includes(RUNID), 15000, `${from.label} on the side`);
+      // virtualized side pane: RUNID sorts last at the fixture root, and the
+      // listing may still be in flight — keep scrolling to the bottom inside
+      // the wait so the row renders once the real canvas height exists
+      await waitFor(async () => {
+        await sideScrollBottom();
+        return (await sideKeys()).includes(RUNID);
+      }, 15000, `${from.label} on the side`);
       const runDir = await rowAction(RUNID, 'side');
       await runDir.dblclick();
       await waitFor(async () => (await sideKeys()).includes('tree'), 15000, `${from.label}: run dir on side`);

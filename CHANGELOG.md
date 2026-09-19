@@ -48,6 +48,36 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A dialog no longer widens the moment it shows an error.** Raw backend
+  errors are one long line of unbreakable tokens (URLs, host ids, request
+  ids), and every dialog is a content-sized box: the first error used to
+  shove the Add/Edit data source window — and every dialog with a status
+  line — out to its maximum width and hold it there. All eleven dialog
+  status strips now share a proper `.dlg-status` style that wraps anywhere
+  (the inline `min-height` styles they carried before matched no CSS rule
+  at all), the source editor is width-pinned like the Delete window so its
+  form never reflows when a Test result or error appears, and the same
+  wrap treatment went to the remaining raw-error surfaces: the main
+  panel's error subtitle, toasts, the directory browser's status line and
+  the credential importer's per-source test result. While there: clicking
+  a modal's backdrop now actually closes it (the listener sat on the
+  dialog while testing for the backdrop as the event target — an event
+  that can never bubble that way, so the handler had never fired), the
+  source editor's Test button disables itself while a dial is in flight
+  so two results can't race onto the status line, and a dead
+  self-assignment left over in the grid's sort cycle is gone. The
+  backdrop handler also removes itself on close — it sits on the modal
+  root every dialog shares, so before the fix each opened dialog left
+  another stale close behind and one backdrop press fired them all,
+  each wiping whatever modal was open at the time. Pinned by a live
+  walk that grew two steps (error-width lock, backdrop close) and had
+  its engine waits made virtualization-proof — the grid renders only
+  the scrolled window plus overscan, so a freshly made folder can exist
+  yet sit outside the DOM; the walk now filters the view onto its
+  target first and keeps the side pane scrolled while it waits, and a
+  flight recorder dumps the last UI events and backend log lines into
+  any step that fails.
+
 - **A slow or dead source can no longer pass an empty panel off as an
   empty folder.** Every navigation into data that has not arrived yet
   now shows the truth: an in-flight state — spinner, "Loading…" and
