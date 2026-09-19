@@ -175,8 +175,9 @@ func (a *App) RemoteStat(idOrName, path string) (listing.Entry, error) {
 	return fs.Stat(ctx, path)
 }
 
-// RemoteMkdir creates a directory (and missing parents) on a non-S3 source.
-func (a *App) RemoteMkdir(idOrName, dir string) error {
+// RemoteMkdir creates a directory (and missing parents) on a non-S3
+// source. Tracked as a task (Running tasks window) like its S3 twin.
+func (a *App) RemoteMkdir(idOrName, dir string) (err error) {
 	src, fs, err := a.remoteSource(idOrName)
 	if err != nil {
 		return err
@@ -184,8 +185,9 @@ func (a *App) RemoteMkdir(idOrName, dir string) error {
 	if remotefs.CleanPath(dir) == "/" {
 		return fmt.Errorf("invalid folder name")
 	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
+	task := a.tasks.add("mkdir", fmt.Sprintf("%s:%s", idOrName, dir))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
 	unlock := a.lockSrcs(src.ID)
 	defer unlock()
 	err = fs.MkdirAll(ctx, dir)
