@@ -257,20 +257,23 @@ func (a *App) PreviewBucketDelete(bucket string) (BucketDeletePreview, error) {
 // DeleteBucket removes a bucket; non-empty buckets require force=true after
 // the GUI showed the typed-confirmation dialog (L2). Versioned
 // buckets are emptied of ALL versions first (L3 — the preview dialog shows
-// the version/delete-marker counts).
-func (a *App) DeleteBucket(bucket string, force bool) (transfer.DeleteResult, error) {
+// the version/delete-marker counts). Tracked as a task with no fixed time
+// limit: emptying a big versioned bucket takes minutes, and the
+// Running-tasks window is where the user watches and kills such a run.
+func (a *App) DeleteBucket(bucket string, force bool) (res transfer.DeleteResult, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
 	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
+	task := a.tasks.add("delete", fmt.Sprintf("s3://%s — bucket + all contents", bucket))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
 	status, _ := versioning.Status(ctx, c.S3, bucket)
 	if status == "Enabled" {
 		if !force {
 			return transfer.DeleteResult{}, fmt.Errorf("refusing to empty versioned bucket without force confirmation")
 		}
-		res, err := versioning.EmptyBucketVersions(ctx, c.S3, bucket)
+		res, err = versioning.EmptyBucketVersions(ctx, c.S3, bucket)
 		if err != nil {
 			a.emitLogSrc(LogError, "delete", bucket, fmt.Sprintf("emptying versioned bucket failed: %v", err))
 			return res, err
@@ -284,7 +287,7 @@ func (a *App) DeleteBucket(bucket string, force bool) (transfer.DeleteResult, er
 		}
 		return res, derr
 	}
-	res, err := bucketops.DeleteBucket(ctx, c.S3, bucket, force)
+	res, err = bucketops.DeleteBucket(ctx, c.S3, bucket, force)
 	if err != nil {
 		a.emitLogSrc(LogError, "delete", bucket, fmt.Sprintf("deleting bucket failed: %v", err))
 	} else {
@@ -397,25 +400,33 @@ func (a *App) createFileC(ctx context.Context, c *s3client.Client, bucket, prefi
 }
 
 // RunDoctor runs the deep diagnosis for a bucket and returns the report.
-func (a *App) RunDoctor(bucket string) (*doctor.Report, error) {
+// Tracked as a task: a full diagnosis dials the bucket a dozen times and
+// can crawl on a slow endpoint — the Running-tasks row watches and kills it.
+func (a *App) RunDoctor(bucket string) (rep *doctor.Report, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return nil, err
 	}
 	a.emitLogSrc(LogInfo, "doctor", bucket, "running all checks")
-	report := doctor.Run(a.ctx, c, bucket, c.Profile.Insecure)
+	task := a.tasks.add("doctor", fmt.Sprintf("s3://%s — all checks", bucket))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	rep = doctor.Run(ctx, c, bucket, c.Profile.Insecure)
+	if ctx.Err() != nil {
+		err = ctx.Err() // canceled mid-run: stamp the task row, not just its checks
+	}
 	failed := 0
-	for _, r := range report.Checks {
+	for _, r := range rep.Checks {
 		if r.Status == doctor.StatusFail {
 			failed++
 		}
 	}
 	if failed > 0 {
-		a.emitLogSrc(LogWarn, "doctor", bucket, fmt.Sprintf("doctor finished: %d of %d check(s) failed", failed, len(report.Checks)))
+		a.emitLogSrc(LogWarn, "doctor", bucket, fmt.Sprintf("doctor finished: %d of %d check(s) failed", failed, len(rep.Checks)))
 	} else {
-		a.emitLogSrc(LogInfo, "doctor", bucket, fmt.Sprintf("doctor finished: all %d check(s) passed", len(report.Checks)))
+		a.emitLogSrc(LogInfo, "doctor", bucket, fmt.Sprintf("doctor finished: all %d check(s) passed", len(rep.Checks)))
 	}
-	return report, nil
+	return rep, err
 }
 
 // DoctorChecks returns the available doctor check names in execution order,
@@ -425,17 +436,22 @@ func (a *App) DoctorChecks() []string {
 }
 
 // RunDoctorCheck runs a single doctor check by name for a bucket and returns
-// the result (same shape as each entry of a full Report).
-func (a *App) RunDoctorCheck(bucket, name string) (*doctor.CheckResult, error) {
+// the result (same shape as each entry of a full Report). Tracked like the
+// full run — single checks dial out too.
+func (a *App) RunDoctorCheck(bucket, name string) (res *doctor.CheckResult, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return nil, err
 	}
-	res, err := doctor.RunCheck(a.ctx, c, bucket, name, c.Profile.Insecure)
+	task := a.tasks.add("doctor", fmt.Sprintf("s3://%s — check %s", bucket, name))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	r, err := doctor.RunCheck(ctx, c, bucket, name, c.Profile.Insecure)
 	if err != nil {
 		a.emitLogSrc(LogError, "doctor", bucket, fmt.Sprintf("check %s failed to run: %v", name, err))
 		return nil, err
 	}
+	res = &r
 	switch res.Status {
 	case doctor.StatusPass:
 		a.emitLogSrc(LogInfo, "doctor", bucket, fmt.Sprintf("check %s passed", name))
@@ -444,7 +460,7 @@ func (a *App) RunDoctorCheck(bucket, name string) (*doctor.CheckResult, error) {
 	default:
 		a.emitLogSrc(LogError, "doctor", bucket, fmt.Sprintf("check %s failed: %s", name, res.Detail))
 	}
-	return &res, nil
+	return res, nil
 }
 
 // BucketGuard is the cheap per-view guard state of a bucket: versioning

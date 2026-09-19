@@ -479,6 +479,22 @@ async function main() {
   srv = await startServer();
   console.log(`s3b v3 server at http://127.0.0.1:${PORT} (config: ${CFG})`);
 
+  // Hermetic bucket root: earlier suites and manual runs leave random-named
+  // debris prefixes (x-vm*) and stray files in the walk bucket. The grid
+  // virtualizes — with dozens of stale folders the walk's own rows (zz-*
+  // sort last, files sort after every folder) land below the fold where
+  // the row helpers can no longer see them, and every later step cascades.
+  // Purge everything except the seed/ baseline (all versions, no markers).
+  {
+    const shq = (c) => execFileSync('docker', ['exec', 's3b-e2e-minio', 'sh', '-c', c], { stdio: 'pipe' }).toString();
+    shq('mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 || true');
+    for (const line of shq(`mc ls local/${BUCKET}/`).split('\n')) {
+      const name = line.trim().split(/\s+/).pop(); // last token (root debris has no spaces)
+      if (!name || name === `${SEED}/`) continue;
+      shq(`mc rm --recursive --force --versions "local/${BUCKET}/${name}" >/dev/null 2>&1 || true`);
+    }
+  }
+
   await launch();
   page = context.pages()[0] || await context.newPage();
   page.on('console', (m) => { consoleTail.push(`[${m.type()}] ${m.text()}`); consoleTail = consoleTail.slice(-60); });
@@ -700,6 +716,10 @@ async function walk() {
     await waitFor(async () => /pass/i.test(await evalPage(() => document.querySelector('#popout-root .doc-summary')?.textContent || '')), 60000, 'doctor summary');
     const summary = await evalPage(() => document.querySelector('#popout-root .doc-summary')?.textContent || '');
     await ok(`doctor summary: "${summary.trim()}"`, /pass/i.test(summary));
+    // the run itself registered as a tracked task: Running tasks carries
+    // the finished doctor row (the everything-monitor sees doctor runs)
+    const doc = (await call('RunningTasks')).find((t) => t.kind === 'doctor');
+    await ok('doctor run registered as a Running-tasks row', !!doc && doc.status === 'done' && /all checks/.test(doc.label));
     await shot('10-doctor-run');
     await dismissUI();
   });

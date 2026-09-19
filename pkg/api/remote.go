@@ -326,19 +326,28 @@ type RemoteDeleteResult struct {
 // from a non-S3 source. The safety ladder is enforced by the caller: the
 // GUI previews with RemoteDeletePreview and asks for a typed confirm
 // first; S3's L2/L3 layers have no remote equivalent (no trash, no
-// versions — deletion is permanent, like `rm -rf`).
-func (a *App) RemoteRemove(idOrName string, paths []string) (*RemoteDeleteResult, error) {
+// versions — deletion is permanent, like `rm -rf`). Tracked as a task:
+// tree deletes over SFTP/FTP are serial and can run long — the row shows
+// per-path progress and a working Cancel.
+func (a *App) RemoteRemove(idOrName string, paths []string) (out *RemoteDeleteResult, err error) {
 	src, fs, err := a.remoteSource(idOrName)
 	if err != nil {
 		return nil, err
 	}
-	out := &RemoteDeleteResult{}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
+	out = &RemoteDeleteResult{}
+	task := a.tasks.add("delete", fmt.Sprintf("%s — %d selected item(s)", idOrName, len(paths)))
+	ctx := task.ctx
+	task.setTotal(len(paths), "")
+	defer func() { task.finish(err, false) }()
 	unlock := a.lockSrcs(src.ID)
 	defer unlock()
+	done := 0
 	for _, p := range paths {
+		if ctx.Err() != nil {
+			return out, ctx.Err() // killed from Running tasks: stop between paths
+		}
 		cleaned := remotefs.CleanPath(p)
+		task.setCurrent(cleaned)
 		if cleaned == "/" {
 			out.Errors = append(out.Errors, "refusing to delete the source root")
 			continue
@@ -349,6 +358,8 @@ func (a *App) RemoteRemove(idOrName string, paths []string) (*RemoteDeleteResult
 			continue
 		}
 		out.Deleted++
+		done++
+		task.progress(done)
 	}
 	if out.Deleted > 0 {
 		a.emitLogSrc(LogInfo, "delete", idOrName, fmt.Sprintf("deleted %d item(s)", out.Deleted))
