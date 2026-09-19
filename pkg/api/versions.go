@@ -102,7 +102,7 @@ func (a *App) PurgeVersions(bucket, prefix, mode string, force bool) (res transf
 	if err != nil {
 		return transfer.DeleteResult{}, err
 	}
-	task := a.tasks.add("purge", fmt.Sprintf("s3://%s/%s — purge %s versions", bucket, dirPrefix(prefix), mode))
+	task := a.tasks.add("purge", fmt.Sprintf("s3://%s/%s — %s versions", bucket, dirPrefix(prefix), mode))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 	task.setPhase(TaskPhaseCount)
@@ -261,7 +261,7 @@ func (a *App) SourceDeleteSelectionPermanent(idOrName, bucket string, keys []str
 func (a *App) deleteSelectionPermanentC(c *s3client.Client, bucket string, keys []string, force bool) (out transfer.DeleteResult, err error) {
 	// Tracked task (Running tasks window): the count phase can walk a
 	// whole subtree — canceling there destroys nothing.
-	task := a.tasks.add("purge", fmt.Sprintf("s3://%s — destroy versions of %d item(s)", bucket, len(keys)))
+	task := a.tasks.add("purge", fmt.Sprintf("s3://%s — versions of %d item(s)", bucket, len(keys)))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 
@@ -326,7 +326,7 @@ func (a *App) SourceDeleteSelectionKeepCurrent(idOrName, bucket string, keys []s
 func (a *App) deleteSelectionKeepCurrentC(c *s3client.Client, bucket string, keys []string, force bool) (out transfer.DeleteResult, err error) {
 	// Tracked task (Running tasks window) — same two-phase shape as the
 	// permanent path: cancel during counting erases nothing.
-	task := a.tasks.add("purge", fmt.Sprintf("s3://%s — clear history of %d item(s)", bucket, len(keys)))
+	task := a.tasks.add("purge", fmt.Sprintf("s3://%s — history of %d item(s)", bucket, len(keys)))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 
@@ -421,7 +421,7 @@ func (a *App) EmptyBucketAllVersions(bucket string) (res transfer.DeleteResult, 
 	if err != nil {
 		return transfer.DeleteResult{}, err
 	}
-	task := a.tasks.add("empty", fmt.Sprintf("s3://%s — empty bucket (all versions)", bucket))
+	task := a.tasks.add("empty", fmt.Sprintf("s3://%s (all versions)", bucket))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 	task.setPhase(TaskPhaseCount)

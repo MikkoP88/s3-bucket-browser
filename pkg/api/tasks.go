@@ -35,7 +35,7 @@ const (
 // TaskInfo is the Running-tasks view model (event payload and list row).
 type TaskInfo struct {
 	ID         string  `json:"id"`
-	Kind       string  `json:"kind"` // transfer|search|list|delete|purge|empty|convert|copy
+	Kind       string  `json:"kind"` // transfer|move|copy|search|list|delete|purge|empty|convert
 	Label      string  `json:"label"`
 	Status     string  `json:"status"`
 	DoneUnits  int     `json:"doneUnits"`
@@ -50,6 +50,7 @@ type TaskInfo struct {
 	Error      string  `json:"error,omitempty"`
 	ErrorKind  string  `json:"errorKind,omitempty"` // "timeout" | ""
 	Stalled    bool    `json:"stalled"`             // merged transfer rows only
+	Move       bool    `json:"move,omitempty"`      // merged transfer rows: copy-then-delete
 }
 
 // taskHandle is one registered task.
@@ -374,6 +375,9 @@ func (h *taskHandle) finish(err error, transient bool) {
 func (a *App) RunningTasks() []TaskInfo {
 	out := []TaskInfo{}
 	for _, j := range a.jobs.snapshot() {
+		if j.Hidden { // internal staging (drag-out scratch download) — invisible to every UI
+			continue
+		}
 		label := j.Name
 		if label == "" {
 			label = j.CurrentFile
@@ -393,7 +397,7 @@ func (a *App) RunningTasks() []TaskInfo {
 			// transfer window
 			Phase: j.Phase, Current: j.CurrentFile, Speed: j.SpeedBps,
 			EtaMs: j.EtaMs, ElapsedMs: j.ElapsedMs, ErrorKind: j.ErrorKind,
-			Stalled: j.Stalled,
+			Stalled: j.Stalled, Move: j.Move,
 		})
 	}
 	out = append(out, a.tasks.snapshot()...)

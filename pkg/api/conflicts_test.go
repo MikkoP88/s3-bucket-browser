@@ -72,7 +72,7 @@ func TestCheckConflictsAndDecisions(t *testing.T) {
 		t.Fatalf("skip policy overwrote the destination: %q", got)
 	}
 	skip := map[string]string{"/readme.md": PolicySkip}
-	id, err := a.TransferCross(items, nil, vault, PolicyOverwrite, 0, false, skip)
+	id, err := a.TransferCross(items, nil, vault, PolicyOverwrite, 0, false, skip, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestCheckConflictsAndDecisions(t *testing.T) {
 
 	// Per-file overwrite: the destination is replaced.
 	over := map[string]string{"/readme.md": PolicyOverwrite}
-	id, err = a.TransferCross(items, nil, vault, PolicySkip, 0, false, over)
+	id, err = a.TransferCross(items, nil, vault, PolicySkip, 0, false, over, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestCheckConflictsAndDecisions(t *testing.T) {
 
 	// Per-file rename finds a free slot even under policy overwrite.
 	ren := map[string]string{"/readme.md": PolicyRename}
-	id, err = a.TransferCross(items, nil, vault, PolicyOverwrite, 0, false, ren)
+	id, err = a.TransferCross(items, nil, vault, PolicyOverwrite, 0, false, ren, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestCheckConflictsLocalDest(t *testing.T) {
 
 	// Skip decision keeps the local file.
 	id, err := a.TransferCross([]XferItem{{Source: "lab", Key: "/readme.md", Size: 1}}, nil,
-		XferDest{Kind: "local", Dir: dl}, PolicyOverwrite, 0, false, map[string]string{dstPath: PolicySkip})
+		XferDest{Kind: "local", Dir: dl}, PolicyOverwrite, 0, false, map[string]string{dstPath: PolicySkip}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

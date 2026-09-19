@@ -68,6 +68,31 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Copy is now a true two-part action: nothing happens until Paste.**
+  Ctrl+C on remote/S3 rows used to start a real staging download into a
+  temp clipboard directory before anything was pasted; it now stages
+  references only — no transfer-engine call, no temp download, nothing
+  touches the OS clipboard — and the actual transfer or server-side copy
+  runs at Ctrl+V in the destination. Copying real local files in the
+  dual-pane local view still hands them to the OS clipboard (so Ctrl+V
+  in Explorer keeps working), and the Explorer → app direction is
+  unchanged: Ctrl+C in File Explorer, Ctrl+V in the app uploads the
+  files. The two-part sweep also covers the internal staging the drag-out
+  download needs: those scratch transfers are now flagged hidden and are
+  invisible everywhere — never a row in File transfers, never in Running
+  tasks, never on the status-bar badges, never an auto-opened window.
+  Only real transfers show: data source ↔ data source, and local
+  machine ↔ app (drag, copy & paste).
+- **File transfers rows stack their route vertically.** The From and To
+  locations now render one above the other (each leg truncating its own
+  path) instead of sharing a line behind a "→" arrow — long paths no
+  longer squeeze each other out of view, and the arrow is gone.
+- **Running tasks rows always name their action type.** Every task row —
+  and the status-bar tasks badge — now leads with a localized verb
+  (Deleting, Purging, Emptying, Converting, Searching, Listing, and the
+  transfer verbs Uploading/Downloading/Copying/Moving); the raw kind in
+  brackets survives only as an unknown-kind fallback. The six new task
+  verbs are localized in all 15 languages.
 - **Windows no longer change size with their content.** Every standard
   dialog and popout now sits on one of three fixed width tiers — 560 px
   for base dialogs, 720 px for the wide views (deep search, versions,

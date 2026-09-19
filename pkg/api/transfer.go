@@ -80,6 +80,7 @@ type JobInfo struct {
 	ElapsedMs    int64  `json:"elapsedMs,omitempty"` // stamped at finish
 	Stalled      bool   `json:"stalled"`             // no byte movement within the stall threshold
 	ErrorKind    string `json:"errorKind,omitempty"` // "timeout" | ""
+	Hidden       bool   `json:"hidden,omitempty"`    // internal staging (drag-out scratch download) — never shown in any list or badge
 }
 
 // DownloadItem pairs an object key with its size (sizes come from the grid,

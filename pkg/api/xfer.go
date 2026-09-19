@@ -125,8 +125,11 @@ type xferPlan struct {
 // files/directories. policy is overwrite | skip | rename; maxBPS 0 =
 // unlimited; move copies first and deletes the source items that
 // transferred cleanly. decisions optionally overrides the policy per
-// planned destination path (the conflict dialog's decisionKeys).
-func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest, policy string, maxBPS int64, move bool, decisions map[string]string) (string, error) {
+// planned destination path (the conflict dialog's decisionKeys). hidden
+// registers the job as internal staging — it runs through the engine but
+// never appears in the transfers/tasks UI (the drag-out scratch download
+// uses it).
+func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest, policy string, maxBPS int64, move bool, decisions map[string]string, hidden bool) (string, error) {
 	switch policy {
 	case "", PolicyOverwrite, PolicySkip, PolicyRename:
 	default:
@@ -151,6 +154,11 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 	j := a.jobs.add("transfer", len(plan.files), plan.total)
 	j.src = xferDestSource(dest)
 	j.setMeta(xferTitle(items, localPaths), xferFromLabel(items, localPaths), xferDestLabel(dest), len(items)+len(localPaths), move)
+	if hidden {
+		j.mu.Lock()
+		j.info.Hidden = true
+		j.mu.Unlock()
+	}
 	id := j.info.ID
 	verb := "copying"
 	if move {

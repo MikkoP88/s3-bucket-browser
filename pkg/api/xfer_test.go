@@ -35,7 +35,7 @@ func waitXferJob(t *testing.T, a *App, id string) JobInfo {
 
 func mustXfer(t *testing.T, a *App, items []XferItem, localPaths []string, dest XferDest, policy string, move bool) JobInfo {
 	t.Helper()
-	id, err := a.TransferCross(items, localPaths, dest, policy, 0, move, nil)
+	id, err := a.TransferCross(items, localPaths, dest, policy, 0, move, nil, false)
 	if err != nil {
 		t.Fatalf("TransferCross: %v", err)
 	}
@@ -265,35 +265,35 @@ func TestTransferCrossGuards(t *testing.T) {
 	}
 
 	if _, err := a.TransferCross([]XferItem{{Source: "nope", Key: "/x"}}, nil,
-		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil); err == nil {
+		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil, false); err == nil {
 		t.Error("unknown item source must error")
 	}
 	if _, err := a.TransferCross([]XferItem{{Source: "lab", Key: "/x"}}, nil,
-		XferDest{Kind: "remote", Source: "nope", Dir: "/"}, "", 0, false, nil); err == nil {
+		XferDest{Kind: "remote", Source: "nope", Dir: "/"}, "", 0, false, nil, false); err == nil {
 		t.Error("unknown dest source must error")
 	}
-	if _, err := a.TransferCross(nil, nil, XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil); err == nil {
+	if _, err := a.TransferCross(nil, nil, XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil, false); err == nil {
 		t.Error("nothing to transfer must error")
 	}
 	if _, err := a.TransferCross([]XferItem{{Source: "lab", Key: "/x", Size: 1}}, nil,
-		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "bogus", 0, false, nil); err == nil {
+		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "bogus", 0, false, nil, false); err == nil {
 		t.Error("unknown policy must error")
 	}
 	if _, err := a.TransferCross([]XferItem{{Source: "lab", Key: "/x", Size: 1}}, nil,
-		XferDest{Kind: "wat"}, "", 0, false, nil); err == nil {
+		XferDest{Kind: "wat"}, "", 0, false, nil, false); err == nil {
 		t.Error("unknown dest kind must error")
 	}
 	if _, err := a.TransferCross(nil, []string{t.TempDir()},
-		XferDest{Kind: "local", Dir: filepath.Join(t.TempDir(), "missing")}, "", 0, false, nil); err == nil {
+		XferDest{Kind: "local", Dir: filepath.Join(t.TempDir(), "missing")}, "", 0, false, nil, false); err == nil {
 		t.Error("missing local dest must error")
 	}
 	if _, err := a.TransferCross([]XferItem{{Source: "", Bucket: "b", Key: "k", Size: 1}}, nil,
-		XferDest{Kind: "s3", Bucket: ""}, "", 0, false, nil); err == nil {
+		XferDest{Kind: "s3", Bucket: ""}, "", 0, false, nil, false); err == nil {
 		t.Error("s3 dest without bucket must error")
 	}
 	// The source root is never transferable as one item.
 	if _, err := a.TransferCross([]XferItem{{Source: "lab", Key: "/", IsDir: true}}, nil,
-		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil); err == nil {
+		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil, false); err == nil {
 		t.Error("source root must error")
 	}
 }

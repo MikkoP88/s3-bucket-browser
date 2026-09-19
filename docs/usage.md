@@ -207,12 +207,13 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   cross-source drags spool through an encrypted temp workspace when
   Secure Storage is on.
 - **Shared with File Explorer** — Ctrl+C in Explorer, Ctrl+V here: the
-  copied files upload into the open folder. In the other direction a
-  copy inside the app is mirrored onto the OS clipboard through a
-  staging download (small selections only), so Ctrl+V in Explorer works
-  too. **Last copy wins** on both sides. Machines that must not touch
-  the OS clipboard can turn the whole bridge off: Settings → File transfers
-  → *Explorer copy & paste* (on by default).
+  copied files upload into the open folder. Copies made inside the app
+  stage references only — nothing downloads until you paste, and pasting
+  runs the transfer then. Copying real local files in the dual-pane
+  local view still hands them to the OS clipboard, so Ctrl+V in Explorer
+  works for those. **Last copy wins** on both sides. Machines that must
+  not touch the OS clipboard can turn the whole bridge off: Settings →
+  File transfers → *Explorer copy & paste* (on by default).
 - **Text instead of files** — the context menu (or Edit → Copy as)
   copies names, full paths or `s3://` URIs to the OS clipboard.
 - **Conflicts & speed** — every transfer states a conflict policy
@@ -394,7 +395,7 @@ you'll use daily:
 | Ctrl+F | focus quick filter |
 | Ctrl+Shift+F | deep search |
 | Ctrl+U / Ctrl+D | upload files / download selection |
-| Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste (two-way Explorer clipboard sharing) |
+| Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste (paste runs the real transfer; Explorer paste-in supported) |
 | Ctrl+A / Ctrl+I | select all / invert selection |
 | Del / Shift+Del | delete window / permanent path |
 | F9 | dual pane |

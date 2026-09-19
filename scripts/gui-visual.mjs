@@ -2998,15 +2998,21 @@ await step('transfers', async () => {
   await ok('running job leads the list', evalPage((s) => document.querySelector(`${s} .tr-job`)?.classList.contains('running') === true, trSel));
   await ok('running job offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), trSel));
   // the full-picture row: action-verb title from the source name, the
-  // From → To route, and the now-transferring line with its own share
+  // From/To route stacked one per line, and the now-transferring line
   await ok('row titled action + source name (+N more)', evalPage((s) => {
     const n = document.querySelector(`${s} .tr-job.running .tr-name`);
     return !!n && /^\u2191 Uploading video-final\.mp4/.test(n.textContent) && /\+2 more/.test(n.textContent);
   }, trSel));
-  await ok('From/To route rendered', evalPage((s) => {
+  await ok('From/To route stacked on two legs, no arrow', evalPage((s) => {
     const r = document.querySelector(`${s} .tr-job.running .tr-route`);
-    return !!r && r.textContent.includes('From:') && r.textContent.includes('D:\\shoot')
-      && r.textContent.includes(' \u2192 ') && r.textContent.includes('s3://team-files/shoot');
+    if (!r) return false;
+    const legs = r.querySelectorAll('.tr-leg');
+    return legs.length === 2
+      && legs[0].querySelector('.tr-leg-k')?.textContent === 'From:'
+      && (legs[0].querySelector('.tr-loc')?.textContent || '').includes('D:\\shoot')
+      && legs[1].querySelector('.tr-leg-k')?.textContent === 'To:'
+      && (legs[1].querySelector('.tr-loc')?.textContent || '').includes('s3://team-files/shoot')
+      && !r.textContent.includes('\u2192');
   }, trSel));
   await ok('current-file line shows ordinal + per-file share', evalPage((s) => {
     const c = document.querySelector(`${s} .tr-job.running .tr-cur`);
@@ -3145,6 +3151,21 @@ await step('transfers', async () => {
     const names = Array.from(document.querySelectorAll(`${s} .tr-job .tr-name`)).map((n) => n.textContent);
     return names.some((x) => /^\u2191 Uploading video-final\.mp4 \(2\)$/.test(x));
   }, trSel));
+  // internal staging (the drag-out scratch download) is invisible: a
+  // hidden running job renders nowhere — not a row, not a trace
+  await evalPage(() => {
+    window.__shim.world.transfers = [
+      ...window.__shim.world.transfers,
+      { id: 't9', op: 'download', status: 'running', hidden: true, currentFile: 'scratch/clip.dat', totalFiles: 1, doneFiles: 0,
+        totalBytes: 1048576, sentBytes: 524288, speedBps: 1048576, name: 'clip.dat', items: 1,
+        from: 's3://team-files', to: 'C:\\Temp\\s3b-clip-1' },
+    ];
+    window.__shim.emit('transfer:update', {});
+  });
+  await sleep(300);
+  await ok('hidden staging job renders nowhere', evalPage((s) =>
+    !document.querySelector(`${s} .tr-job[data-id="t9"]`)
+    && !/clip\.dat/.test(document.querySelector(s).textContent), trSel));
   await shotOf('transfers-critical', trSel);
   // restore the default seeds for the steps that follow
   await evalPage(() => {
@@ -3165,15 +3186,15 @@ await step('running-tasks', async () => {
   await evalPage(() => {
     window.__shim.world.tasks = [
       { id: 'task-7', kind: 'search', label: '"backup*" — s3://team-files/', status: 'running', doneUnits: 2, totalUnits: 0, speed: 4.2, startedAt: 1 },
-      { id: 'task-8', kind: 'purge', label: 's3://team-files/old/ — purging 60 noncurrent version(s)', status: 'done', doneUnits: 60, totalUnits: 60, elapsedMs: 25000, startedAt: 1, endedAt: 2 },
+      { id: 'task-8', kind: 'purge', label: 's3://team-files/old/ — noncurrent versions', status: 'done', doneUnits: 60, totalUnits: 60, elapsedMs: 25000, startedAt: 1, endedAt: 2 },
       // done with unknown totals (bulk delete after its count phase was
       // skipped): the bar must read 100%, never 0%
-      { id: 'task-11', kind: 'delete', label: 'bulk delete — s3://team-files/tmp/', status: 'done', doneUnits: 0, totalUnits: 0, startedAt: 1, endedAt: 2 },
+      { id: 'task-11', kind: 'delete', label: 's3://team-files/tmp/ — 12 selected item(s)', status: 'done', doneUnits: 0, totalUnits: 0, startedAt: 1, endedAt: 2 },
       // count phase: a folder copy walks its objects before any total
       // exists — the row must say Counting and shimmer, not sit at 0%
-      { id: 'task-12', kind: 'copy', label: 'copying 1 item(s): s3://team-files → s3://lab/mirror', status: 'running', doneUnits: 0, totalUnits: 0, phase: 'count', current: 'shoot/raw/', startedAt: 2 },
+      { id: 'task-12', kind: 'copy', label: '1 item(s): s3://team-files → s3://lab/mirror', status: 'running', doneUnits: 0, totalUnits: 0, phase: 'count', current: 'shoot/raw/', startedAt: 2 },
       // a timed-out delete is critical information: crit chip + duration
-      { id: 'task-13', kind: 'delete', label: 's3://lab — deleting 3 object(s)', status: 'error', doneUnits: 2, totalUnits: 3, error: 'delete tcp: i/o timeout', errorKind: 'timeout', elapsedMs: 9500, startedAt: 1, endedAt: 2 },
+      { id: 'task-13', kind: 'delete', label: 's3://lab — 3 selected item(s)', status: 'error', doneUnits: 2, totalUnits: 3, error: 'delete tcp: i/o timeout', errorKind: 'timeout', elapsedMs: 9500, startedAt: 1, endedAt: 2 },
     ];
   });
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
@@ -3194,6 +3215,17 @@ await step('running-tasks', async () => {
     return rows.length === 3 && /4 hidden/.test(head?.textContent || '');
   }, popSel), 4000, 'history hidden'));
   await ok('running task offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), popSel));
+  // the action type always leads the row: verb + label for every kind,
+  // never the bare raw kind in brackets
+  await ok('every running row leads with its action verb', evalPage((s) => {
+    const want = {
+      t1: /^\u2191 Uploading video-final\.mp4 /,
+      'task-7': /^\uD83D\uDD0D Searching "backup\*"/,
+      'task-12': /^\u21C4 Copying 1 item\(s\): s3:\/\/team-files/,
+    };
+    return Object.entries(want).every(([id, re]) =>
+      re.test(document.querySelector(`${s} .tr-job[data-id="${id}"] .tr-name`)?.textContent || ''));
+  }, popSel));
   await shotOf('running-tasks', popSel);
   // Show history: the finished rows reappear, the totals-less done task
   // reads 100%
@@ -3205,6 +3237,17 @@ await step('running-tasks', async () => {
   await ok('done task with unknown totals reads 100%', evalPage((s) => {
     const row = document.querySelector(`${s} .tr-job[data-id="task-11"]`);
     return !!row && /^100%$/.test(row.querySelector('.tr-pct').textContent.trim());
+  }, popSel));
+  // finished rows carry their action type just the same — the delete and
+  // purge verbs lead, the label follows verbatim
+  await ok('every finished row leads with its action verb too', evalPage((s) => {
+    const want = {
+      'task-8': /^\u2715 Purging s3:\/\/team-files\/old\//,
+      'task-11': /^\u2715 Deleting s3:\/\/team-files\/tmp\//,
+      'task-13': /^\u2715 Deleting s3:\/\/lab /,
+    };
+    return Object.entries(want).every(([id, re]) =>
+      re.test(document.querySelector(`${s} .tr-job[data-id="${id}"] .tr-name`)?.textContent || ''));
   }, popSel));
   // the full picture: count chip + shimmer, crit timeout chip + error,
   // duration on finished rows, live pace on running ones
@@ -3248,7 +3291,7 @@ await step('running-tasks', async () => {
   await waitFor(async () => (await findCall('ClearFinishedTasks')) !== null, 4000, 'ClearFinishedTasks call');
   const cl = await findCall('ClearFinishedTasks');
   await ok('Clear with history shown sends null (clear all)', cl && cl.args[0] === null);
-  await ok('clear prunes done rows', waitFor(async () => !(await evalPage((s) => document.querySelector(s).textContent.includes('purging 60'), popSel)), 4000, 'pruned'));
+  await ok('clear prunes done rows', waitFor(async () => !(await evalPage((s) => !!document.querySelector(`${s} .tr-job[data-id="task-8"]`), popSel)), 4000, 'pruned'));
   // empty state once nothing runs — then restore the default seeds for
   // the steps that follow
   await evalPage(() => {
@@ -3282,7 +3325,7 @@ await step('status-badges', async () => {
   });
   await evalPage(() => window.__shim.emit('tasks:update', {}));
   await ok('tasks badge appears while a task runs', waitFor(async () => evalPage(() => !document.getElementById('status-tasks').classList.contains('hidden')), 4000, 'badge shown'));
-  await ok('badge names the running kind', waitFor(async () => evalPage(() => /search/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge text'));
+  await ok('badge names the running kind', waitFor(async () => evalPage(() => /Searching/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge text'));
   await ok('badge always counts active tasks (one)', waitFor(async () => evalPage(() => /1 task\b/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge count 1'));
   await page.click('#status-tasks');
   await waitFor(() => popoutVisible('tasks'), 4000, 'tasks popout');
@@ -3298,7 +3341,7 @@ await step('status-badges', async () => {
   await evalPage(() => {
     window.__shim.world.tasks = [
       { id: 'task-9', kind: 'search', label: '"log*" — s3://team-files/', status: 'running', doneUnits: 3, totalUnits: 0, startedAt: 1 },
-      { id: 'task-10', kind: 'purge', label: 'purge s3://b', status: 'running', doneUnits: 0, totalUnits: 40, startedAt: 2 },
+      { id: 'task-10', kind: 'purge', label: 's3://b — 40 version(s)', status: 'running', doneUnits: 0, totalUnits: 40, startedAt: 2 },
     ];
   });
   await evalPage(() => window.__shim.emit('tasks:update', {}));
@@ -3306,12 +3349,12 @@ await step('status-badges', async () => {
   // the badge carries the first running task's live progress and %
   await evalPage(() => {
     window.__shim.world.tasks = [
-      { id: 'task-10', kind: 'purge', label: 'purge s3://b', status: 'running', doneUnits: 10, totalUnits: 40, startedAt: 2 },
+      { id: 'task-10', kind: 'purge', label: 's3://b — 40 version(s)', status: 'running', doneUnits: 10, totalUnits: 40, startedAt: 2 },
     ];
   });
   await evalPage(() => window.__shim.emit('tasks:update', {}));
   await ok('badge carries live progress and percent', waitFor(async () => evalPage(() =>
-    /purge 10\/40 \(25%\)/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge %'));
+    /Purging 10\/40 \(25%\)/.test(document.getElementById('status-tasks').textContent)), 4000, 'badge %'));
   // transfers never light the tasks badge (they own the ⇅ one) and the
   // badge hides again when nothing runs
   await evalPage(() => { window.__shim.world.tasks = []; });
@@ -4375,33 +4418,34 @@ await step('sidebar-resize', async () => {
   await ok('double-click resets the width', evalPage(() => localStorage.getItem('s3b-sidebar-w') === null) && Math.abs(w2 - w0) < 2);
 });
 
-await step('os-copy-mirror', async () => {
-  // Ctrl+C on remote rows also mirrors to the OS clipboard: files are
-  // staged into a temp dir, then handed to Explorer as file paths
+await step('copy-stages-references', async () => {
+  // Ctrl+C on remote rows stages REFERENCES only: no transfer-engine
+  // call, no temp download, nothing touches the OS clipboard — the real
+  // action runs at paste time (the two-part Copy → Paste contract)
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'remote listing');
   await resetCalls();
-  // paste-parity's Ctrl+C left a staging poll parked on the busy seed
-  // queue. Idling the queue here would wake BOTH polls and whichever
-  // SetFiles lands first bumps the seq — the other's clobber guard then
-  // aborts it (a 50/50 on OUR mirror dying). Kill every EARLIER pending
-  // mirror deterministically: bump the seq (their guards see the change
-  // and abort), then idle the queue so OUR 700ms poll fires into an
-  // empty engine with a stable seq.
-  await evalPage(() => {
-    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
-    window.__shim.world.transfers = [];
-  });
   await clickRow('backup.sh');
   await page.keyboard.press('Control+c');
-  await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'staging transfer');
+  await sleep(600); // any (wrong) staging path would have fired by now
+  await ok('copy triggers no transfer-engine call', evalPage(() =>
+    !window.__shim.calls.some((x) => x.m === 'TransferCross' || x.m === 'Upload')));
+  // the seq-baseline READ is fine (paste precedence depends on it) — the
+  // WRITE is not: no files ever land on the OS clipboard at copy time
+  await ok('copy never writes the OS clipboard', evalPage(() =>
+    !window.__shim.calls.some((x) => x.m === 'OsClipboardSetFiles')));
+  await ok('no transfers window auto-opened', evalPage(() =>
+    !document.querySelector('#popout-root .popout[data-pop="transfers"]')));
+  // the paste then runs the real action — the cross-source transfer
+  // fires exactly once, at Paste
+  await clickTree('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects view');
+  await resetCalls();
+  await page.keyboard.press('Control+v');
+  await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'paste runs the transfer');
   const c = await findCall('TransferCross');
-  await ok('copy stages through TransferCross', c && c.args[0][0].source === 'backup-box' && c.args[0][0].key === '/backup.sh');
-  await ok('staging lands in the clipboard dir', c && c.args[2].kind === 'local' && /s3b-clip/.test(c.args[2].dir || ''));
-  await ok('staging uses the overwrite policy', c && c.args[3] === 'overwrite');
-  await waitFor(async () => (await calls()).some((x) => x.m === 'OsClipboardSetFiles'
-    && (x.args[0] || []).some((p) => /backup\.sh$/.test(p))), 8000, 'backup.sh handed to the OS clipboard');
-  await ok('staged file handed to the OS clipboard', true);
+  await ok('paste dispatches the real transfer once', c && c.args[0][0].source === 'backup-box'
+    && c.args[0][0].key === '/backup.sh' && c.args[2].bucket === 'team-files');
 });
 
 await step('os-clipboard-paste', async () => {
@@ -4442,9 +4486,8 @@ await step('os-clipboard-precedence', async () => {
   await p4.addInitScript(shim);
   await p4.goto(BASE);
   await p4.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
-  // fresh world seeds running jobs for the transfer-manager UI — idle the
-  // queue so the copies' 700ms mirror polls settle immediately (see the
-  // os-copy-mirror step for the same dance)
+  // fresh world seeds running jobs for the transfer-manager UI — clear
+  // them so nothing floats a window over the keyboard work below
   await p4.evaluate(() => { window.__shim.world.transfers = []; });
   const openBucket = async (name, key) => {
     await p4.evaluate((b) => Array.from(document.querySelectorAll('#tree .tnode'))
@@ -4467,12 +4510,12 @@ await step('os-clipboard-precedence', async () => {
     window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
   }, file);
 
-  // (a) in-app copy (mirror settles) → Explorer copies something else →
-  // the Explorer files MUST win over the stale app payload
+  // (a) in-app copy (references staged, nothing downloads) → Explorer
+  // copies something else → the Explorer files MUST win
   await openBucket('team-files', 'readme.md');
   await selectRow('readme.md');
   await p4.keyboard.press('Control+c');
-  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'OsClipboardSetFiles'), null, { timeout: 8000 });
+  await sleep(400); // the app clipboard lands synchronously — no staging
   await explorerCopy('C:\\Users\\demo\\Downloads\\notes.txt');
   await p4.evaluate(() => { window.__shim.calls.length = 0; });
   await p4.keyboard.press('Control+v');
@@ -4484,10 +4527,7 @@ await step('os-clipboard-precedence', async () => {
   // (server-side CopySelection, no Upload of staged files)
   await selectRow('readme.md');
   await p4.keyboard.press('Control+c');
-  // (a) wiped the call log, so this counts from zero: wait for THIS copy's
-  // own mirror — the staged readme.md landing on the OS clipboard
-  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'OsClipboardSetFiles'
-    && (x.args[0] || []).some((p) => /readme\.md$/.test(p))), null, { timeout: 8000 });
+  await sleep(400); // references only — the OS clipboard never moves
   await openBucket('logs-2026', 'app/');
   await p4.evaluate(() => { window.__shim.calls.length = 0; });
   await p4.keyboard.press('Control+v');
@@ -4496,44 +4536,6 @@ await step('os-clipboard-precedence', async () => {
   const noUp = await p4.evaluate(() => !window.__shim.calls.some((x) => x.m === 'Upload'));
   await ok('unchanged OS clipboard keeps app payload precedence', cp && cp.args[0] === 'team-files' && cp.args[2] === 'logs-2026' && noUp);
   await p4.close();
-});
-
-await step('os-copy-mirror-abort', async () => {
-  // clobber guard: the user copies elsewhere while a copy's staging download
-  // is in flight → the late OS mirror must abort, not replace their clipboard
-  const p5 = await context.newPage();
-  p5.on('pageerror', (e) => { pageErrors.push(String(e)); });
-  await p5.addInitScript(shim);
-  await p5.goto(BASE);
-  await p5.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
-  await p5.evaluate(() => Array.from(document.querySelectorAll('#tree .tnode'))
-    .find((n) => n.querySelector('.tlabel')?.textContent === 'backup-box')?.click());
-  await p5.waitForFunction(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
-    .some((r) => r._model && r._model.key === '/backup.sh'), null, { timeout: 8000 });
-  await p5.evaluate(() => { window.__shim.calls.length = 0; });
-  // trusted click (see the precedence step) — a synthetic click would leave
-  // the selection empty and make the copy a no-op, turning this into a
-  // vacuous pass
-  {
-    const h = await p5.evaluateHandle(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
-      .find((r) => r._model && r._model.key === '/backup.sh') || null);
-    const el = h.asElement();
-    if (!el) throw new Error('no /backup.sh row');
-    await el.click();
-  }
-  await p5.keyboard.press('Control+c');
-  // staging transfer queued; the "user copy" must land BEFORE the 700ms
-  // idle poll — bump the seq and idle the engine immediately
-  await p5.evaluate(() => {
-    window.__shim.world.osClip = ['C:\\Users\\demo\\Downloads\\other.txt'];
-    window.__shim.world.osClipSeq = (window.__shim.world.osClipSeq || 0) + 1;
-    window.__shim.world.transfers = [];
-  });
-  await sleep(1800); // well past the idle poll
-  const mirror = await p5.evaluate(() => (window.__shim.calls || []).filter((x) => x.m === 'OsClipboardSetFiles'));
-  const kept = await p5.evaluate(() => (window.__shim.world.osClip || [])[0]);
-  await ok('late mirror aborted, user clipboard kept', mirror.length === 0 && /other\.txt$/.test(kept || ''));
-  await p5.close();
 });
 
 await step('os-clipboard-setting', async () => {
