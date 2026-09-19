@@ -24,8 +24,9 @@ const listPageSize = 1000
 // object walk can run for minutes, page after page); a dead one — a
 // blackholed connection that accepts and never responds — is cut off and
 // REPORTED as a timeout instead of leaving the view's loading state up
-// forever. Var so tests can shorten it.
-var listWatchdog = quickOpTimeout
+// forever. The budget is the Settings → Network listing timeout (default
+// 30s), captured once per stream; tests shorten it by writing the tuning
+// file into an isolated S3B_CONFIG dir.
 
 // ListPage is one streamed chunk of a directory view.
 type ListPage struct {
@@ -76,6 +77,7 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 	// nothing for listWatchdog is a dead endpoint, not a big folder —
 	// cut it off (the timeout is reported on the final page).
 	var timedOut atomic.Bool
+	listWatchdog := a.quickBudget() // Settings → Network listing timeout
 	wd := time.AfterFunc(listWatchdog, func() { timedOut.Store(true); cancel() })
 	// Transient task: visible while it runs (a stuck listing is killable
 	// from the Running tasks window), gone when it ends — navigation

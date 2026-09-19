@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
@@ -28,16 +27,16 @@ type CompareRef struct {
 	Prefix string `json:"prefix"` // s3
 }
 
-// compareTimeout bounds one deep pane-to-pane walk (recursive on both
-// sides — longer than quickOpTimeout, shorter than unbounded).
-const compareTimeout = 5 * time.Minute
+// The deep-compare budget is the Settings → Network deep-compare timeout
+// (default 5 min) — longer than the quick-op budget, shorter than
+// unbounded (a pane-to-pane walk is recursive on both sides).
 
 // CompareAny recursively compares any two sides (local directory, remote
 // source directory, S3 bucket prefix) and returns the merged rows, sorted by
 // relative path. Files only — folder markers and empty directories are
 // ignored (same semantics as the original CompareDir).
 func (a *App) CompareAny(x, y CompareRef) ([]CompareRow, error) {
-	ctx, cancel := context.WithTimeout(a.ctx, compareTimeout)
+	ctx, cancel := context.WithTimeout(a.ctx, a.tuning().CompareTimeout())
 	defer cancel()
 	xm, err := a.walkCompareSide(ctx, x)
 	if err != nil {

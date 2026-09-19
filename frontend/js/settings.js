@@ -22,6 +22,19 @@ const RATE_STEPS = [
   [10485760, '10 MB/s'],
 ];
 
+// Engine-tuning steps (Settings → Network / Transfers; persisted Go-side
+// in appsettings.json). 0 = Default/Auto — the backend resolves it to the
+// documented default and clamps anything else into range, so the exact
+// numbers only need to cover the useful shelf.
+const TUNE_STEPS = {
+  listing: [[0, null], [10000, '10 s'], [30000, '30 s'], [60000, '1 min'], [120000, '2 min'], [300000, '5 min']],
+  compare: [[0, null], [60000, '1 min'], [300000, '5 min'], [900000, '15 min'], [1800000, '30 min']],
+  retries: [[0, null], [1, '1'], [2, '2'], [3, '3'], [5, '5'], [8, '8']],
+  partMiB: [[0, null], [5, '5 MiB'], [8, '8 MiB'], [16, '16 MiB'], [32, '32 MiB'], [64, '64 MiB']],
+  conc: [[0, null], [1, '1'], [2, '2'], [4, '4'], [5, '5'], [8, '8'], [16, '16']],
+  stall: [[0, null], [5000, '5 s'], [10000, '10 s'], [30000, '30 s'], [60000, '1 min']],
+};
+
 // row helpers -----------------------------------------------------------
 
 function row(labelText, control, hint) {
@@ -168,6 +181,56 @@ function securityRows(ctx) {
   ];
 }
 
+// msLabel renders an off-step millisecond value ('45 s', '90 min') — the
+// rare hand-edited appsettings.json can land between the curated steps, and
+// the select must still show the real stored value.
+function msLabel(ms) {
+  return ms % 60000 === 0 ? `${ms / 60000} min` : `${Math.round(ms / 1000)} s`;
+}
+
+// tuningRows builds the six engine-tuning selects: the Settings → Network
+// page (timeouts + retries) and the Transfer-engine group under Settings →
+// File transfers (multipart shape + stall flag). ctx.engine = { get, set }
+// is injected by main.js and talks to the backend preference
+// (appsettings.json), so the choices survive restarts. 0 = Default/Auto —
+// SetTuning resolves it to the documented default and clamps everything
+// else; every select re-syncs from the stored value the call returns, so
+// the controls always show the on-disk truth. One live snapshot is shared
+// by both pages, exactly like logFileRows' cur.
+function tuningRows(ctx) {
+  let tun = ctx.engine?.get() || {};
+  const sels = {};
+  const sync = () => {
+    for (const [f, s] of Object.entries(sels)) s.value = String(tun[f] || 0);
+  };
+  const mk = (field, steps, autoKey, fmt) => {
+    const val = tun[field] || 0;
+    const opts = steps.map(([v, label]) => [v, label ?? t(autoKey)]);
+    if (val && !steps.some(([v]) => v === val)) opts.push([val, fmt(val)]);
+    const s = select(opts, val, (v) => {
+      tun = { ...tun, [field]: parseInt(v, 10) };
+      Promise.resolve(ctx.engine?.set(tun))
+        .then((stored) => { if (stored) tun = stored; })
+        .catch(() => { /* toast shown by ctx; revert below */ })
+        .finally(sync);
+    });
+    sels[field] = s;
+    return s;
+  };
+  return {
+    networkRows: () => [
+      row(t('settings.listTimeout'), mk('listingTimeoutMs', TUNE_STEPS.listing, 'settings.defOpt', msLabel), t('settings.listTimeoutHint')),
+      row(t('settings.compareTimeout'), mk('compareTimeoutMs', TUNE_STEPS.compare, 'settings.defOpt', msLabel), t('settings.compareTimeoutHint')),
+      row(t('settings.retryAttempts'), mk('retryAttempts', TUNE_STEPS.retries, 'settings.defOpt', String), t('settings.retryAttemptsHint')),
+    ],
+    engineRows: () => [
+      row(t('settings.partSize'), mk('partSizeMiB', TUNE_STEPS.partMiB, 'settings.auto', (v) => `${v} MiB`), t('settings.partSizeHint')),
+      row(t('settings.partsInFlight'), mk('partConcurrency', TUNE_STEPS.conc, 'settings.auto', String), t('settings.partsInFlightHint')),
+      row(t('settings.stallAfter'), mk('stallAfterMs', TUNE_STEPS.stall, 'settings.defOpt', msLabel), t('settings.stallAfterHint')),
+    ],
+  };
+}
+
 // settingsDialog ---------------------------------------------------------
 //
 // ctx = {
@@ -184,6 +247,9 @@ function securityRows(ctx) {
 export function settingsDialog(ctx) {
   const s = ctx.state;
   const a = ctx.apply;
+  // one live tuning snapshot shared by the Network page and the
+  // Transfer-engine group (settings.js owns only presentation)
+  const tuning = tuningRows(ctx);
 
   const langSel = select(
     [['auto', t('settings.langAuto')], ...languages().map((c) => [c, LANG_NAMES[c] || c])],
@@ -232,6 +298,10 @@ export function settingsDialog(ctx) {
       )),
       row(t('settings.focus'), checkbox(s.refreshOnFocus(), (v) => a.refreshOnFocus(v))),
     ] },
+    // Network: the engine's time and retry budgets — every row is honored
+    // Go-side (listing watchdog, quick-op contexts, compare walk, SDK
+    // retryer) and persisted in appsettings.json, not localStorage.
+    { id: 'network', label: t('settings.network'), build: () => tuning.networkRows() },
     { id: 'editing', label: t('settings.editing'), build: () => [
       row(t('settings.editChooseApp'), checkbox(s.editChooseApp?.() ?? true, (v) => a.editChooseApp?.(v)), t('settings.editChooseAppHint')),
     ] },
@@ -260,6 +330,11 @@ export function settingsDialog(ctx) {
         s.throttle(),
         (v) => a.throttle(parseInt(v, 10)),
       ), t('settings.throttleHint')),
+      // Transfer engine: multipart shape and the Stalled flag threshold —
+      // honored by every transfer construction site (S3 up/down, editor,
+      // cross-engine) and captured per job at start.
+      el('div', { class: 'set-section', text: t('settings.engineSection') }),
+      ...tuning.engineRows(),
     ] },
   ];
 

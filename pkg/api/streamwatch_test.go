@@ -1,9 +1,12 @@
 // streamwatch_test.go pins the listing-stream watchdog contract: a dead
-// endpoint (accepts connections, never answers) is cut off after
-// listWatchdog and REPORTED as a timeout on the final page — never a
+// endpoint (accepts connections, never answers) is cut off after the
+// watchdog budget and REPORTED as a timeout on the final page — never a
 // silent done with a partial listing — while a slow-but-alive endpoint
 // whose pages keep arriving resets the watchdog and completes however
-// long the full walk takes.
+// long the full walk takes. The budget is the Settings → Network listing
+// timeout, so the tests shorten it through the tuning file in the
+// isolated S3B_CONFIG dir newTestApp sets up — the same path a user's
+// Settings change takes.
 package api
 
 import (
@@ -16,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/appsettings"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 )
@@ -65,6 +69,16 @@ func waitForDone(t *testing.T, mu *sync.Mutex, pages *[]ListPage) ListPage {
 	return ListPage{}
 }
 
+// shortWatchdog shrinks the listing watchdog to ms milliseconds by
+// writing the tuning file into newTestApp's isolated S3B_CONFIG dir —
+// the exact path a Settings → Network change takes in the real app.
+func shortWatchdog(t *testing.T, ms int) {
+	t.Helper()
+	if err := appsettings.Save(appsettings.Tuning{ListingTimeoutMS: ms}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func blackholeClient(t *testing.T, url string) *s3client.Client {
 	t.Helper()
 	c, err := s3client.New(context.Background(), profile.Profile{
@@ -86,9 +100,7 @@ func TestStreamWatchdogCutsDeadEndpoint(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	old := listWatchdog
-	listWatchdog = 150 * time.Millisecond
-	t.Cleanup(func() { listWatchdog = old })
+	shortWatchdog(t, 150)
 
 	mu, pages := captureListPages(t)
 
@@ -157,9 +169,7 @@ func TestStreamWatchdogResetsOnPages(t *testing.T) {
 	// page resets it.
 	srv := pagedXMLServer(t, 120*time.Millisecond)
 
-	old := listWatchdog
-	listWatchdog = 200 * time.Millisecond
-	t.Cleanup(func() { listWatchdog = old })
+	shortWatchdog(t, 200)
 
 	mu, pages := captureListPages(t)
 

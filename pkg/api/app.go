@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
@@ -23,10 +22,6 @@ const (
 	EventS3Changed      = "s3:changed"      // payload: {bucket, prefix} — refresh views
 	EventLogLine        = "log:line"        // payload: LogLine — in-app log drawer
 )
-
-// quickOpTimeout bounds listing/stat/presign calls so a dead endpoint can
-// never freeze the UI (long transfers use cancellable job contexts instead).
-const quickOpTimeout = 30 * time.Second
 
 // App is the Wails-bound service. A single instance lives for the whole
 // application lifetime; all frontend calls arrive on its exported methods.
@@ -89,6 +84,7 @@ func New(version string) *App {
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
 	a.jobs.setContext(ctx)
+	a.jobs.setStallAfter(a.tuning().StallAfter()) // Settings → Transfers stall threshold
 	a.tasks.setContext(ctx)
 	a.wipeWorkspaces() // secure.go: crash leftovers never survive a launch
 	a.emitLog(LogInfo, "app", "started "+a.version)
@@ -119,9 +115,12 @@ func (a *App) GetVersion() string {
 	return a.version
 }
 
-// quickCtx returns a context for fast operations (list/stat/presign/test).
+// quickCtx returns a context for fast operations (list/stat/presign/test),
+// bounded by the Settings → Network listing timeout (default 30s) so a
+// dead endpoint can never freeze the UI (long transfers use cancellable
+// job contexts instead).
 func (a *App) quickCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(a.ctx, quickOpTimeout)
+	return context.WithTimeout(a.ctx, a.quickBudget())
 }
 
 // client resolves (and caches) an S3 client. An empty name selects the
@@ -156,10 +155,12 @@ func (a *App) client(name string) (*s3client.Client, error) {
 		return c, nil
 	}
 	// Timeout -1: no whole-request HTTP deadline. Quick ops (list/stat/
-	// presign/test) are bounded by quickCtx's 30s context; transfers are
-	// bounded by per-job cancellation — so a slow link never gets a file
-	// killed mid-stream, while nothing can hang forever.
-	c, err := s3client.New(a.ctx, *cSrc.S3, s3client.Options{Timeout: -1})
+	// presign/test) are bounded by quickCtx's context (the listing-timeout
+	// setting); transfers are bounded by per-job cancellation — so a slow
+	// link never gets a file killed mid-stream, while nothing can hang
+	// forever. RetryAttempts comes from the tuning setting (cache is
+	// dropped by SetTuning so changes apply without a restart).
+	c, err := s3client.New(a.ctx, *cSrc.S3, a.s3Opts())
 	if err != nil {
 		return nil, err
 	}

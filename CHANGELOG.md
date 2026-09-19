@@ -6,6 +6,36 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Engine tuning is now in Settings — the six budgets the engine ran on
+  hardcoded defaults for are first-class, honored-live settings.** A new
+  **Settings → Network** page carries **Listing timeout** (how long a
+  listing, stat, presign or source test may wait on a silent source
+  before it is cut off — every page of data resets the clock; default
+  30 s), **Compare timeout** (the budget for one deep pane-to-pane
+  compare walk, default 5 min) and **S3 retry attempts** (SDK retries per
+  request, default 3). Under **Settings → File transfers** a new
+  **Transfer engine** group carries **Multipart part size** and **Parts
+  in flight** (both Auto = SDK defaults, 5 MiB / 5) and the **Stall
+  threshold** (how long a transfer may sit without byte progress before
+  the row flags Stalled, default 10 s). Everything persists Go-side in
+  `appsettings.json` (config folder, 0600, torn file → defaults), is
+  read per call so changes apply without a restart (the S3 client cache
+  is dropped on change), clamps into documented ranges, round-trips
+  through new GetTuning/SetTuning bindings, logs a `settings` line on
+  every change, resets through *Reset to defaults*, and is honored at
+  every consumer: the listing-stream watchdog, the quick-op contexts
+  (listings, stat, presign, source tests), the compare walk, the SDK
+  retryer, every transfer construction site (uploads, downloads, editor
+  open/save, cross-engine transfers) and the per-job stall capture
+  (running jobs keep the threshold they started with; new jobs pick up
+  the change). Verified live: the walk sets the listing timeout to 10 s
+  through the real Settings UI, watches it survive a server restart, and
+  the fault-lab blackhole step then times out at exactly that 10 s
+  watchdog — duration spelled out in the error — before defaults are
+  restored.
+
 ### Changed
 
 - **Running tasks rows now carry the whole picture: phase, current item,

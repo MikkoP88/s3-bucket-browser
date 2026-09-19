@@ -164,6 +164,17 @@ directory compare) with S3 and the local pane.
   is no second title bar or close icon.
 - **Light/dark theme** and 15 built-in languages (English default,
   auto-detect optional) — switchable in Settings.
+- **Engine tuning in Settings** — Settings → Network sets the *Listing
+  timeout* (cuts off listings, object stats, share-link generation and
+  source tests on a silent endpoint; every page of data resets the clock
+  — default 30 s), the *Compare timeout* for one deep pane-to-pane
+  compare walk (default 5 min) and *S3 retry attempts* per request
+  (default 3). Settings → File transfers → *Transfer engine* sets the
+  multipart *Part size* and *Parts in flight* (Auto = SDK defaults) and
+  the *Stall threshold* that flags a transfer row Stalled when no bytes
+  move (default 10 s). Values persist in the config folder
+  (`appsettings.json`), apply without a restart and clamp to safe
+  ranges.
 
 ![Dark theme](screenshots/dark-theme.png)
 

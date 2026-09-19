@@ -991,6 +991,18 @@ async function walk() {
       await sleep(150);
       await ok('light theme applied', await evalPage(() => (document.documentElement.dataset.theme || 'light') === 'light'));
     }
+    // engine tuning: Network page → listing timeout 10 s; File transfers →
+    // Transfer-engine group → part size 8 MiB. Both ride SetTuning and the
+    // stored truth comes back — and the blackhole step later proves the
+    // 10 s watchdog this sets is honored live.
+    await page.locator('#modal-root .set-nav-item').filter({ hasText: 'Network' }).click();
+    await page.locator('#modal-root .set-row').filter({ hasText: 'Listing timeout' }).locator('select').selectOption('10000');
+    await waitFor(async () => (await call('GetTuning')).listingTimeoutMs === 10000, 5000, 'GetTuning 10 s');
+    await ok('listing timeout set to 10 s (round-trips the binding)', true);
+    await page.locator('#modal-root .set-nav-item').filter({ hasText: 'File transfers' }).click();
+    await page.locator('#modal-root .set-row').filter({ hasText: 'Multipart part size' }).locator('select').selectOption('8');
+    await waitFor(async () => (await call('GetTuning')).partSizeMiB === 8, 5000, 'GetTuning 8 MiB');
+    await ok('multipart part size set to 8 MiB (engine group round-trips)', true);
     await shot('28-settings');
     await closeModal();
   });
@@ -1000,6 +1012,9 @@ async function walk() {
     await waitFor(() => evalPage(() => !document.getElementById('logarea').classList.contains('hidden')), 5000, 'logarea');
     const lines = await evalPage(() => Array.from(document.querySelectorAll('#logarea .log-line, #logarea .line, #logarea div')).slice(-30).map((l) => l.textContent));
     await ok(`log shows ${lines.length} line(s)`, lines.length > 0);
+    // the SetTuning calls from the settings step each wrote a
+    // scope="settings" line
+    await ok('engine tuning change logged', lines.some((l) => /engine tuning/i.test(l)));
     await shot('29-log');
     await page.keyboard.press('Control+L');
   });
@@ -1043,6 +1058,11 @@ async function walk() {
     await page.goto(`http://127.0.0.1:${PORT}/`);
     await waitFor(() => evalPage(() => Array.from(document.querySelectorAll('#empty-actions .btn')).length > 0), 15000, 'onboarding after restart');
     await ok('fresh backend → no sources (strict session model)', true);
+    // appsettings.json survives the process restart — the tuning set in
+    // the settings step is still the stored truth
+    const tun = await call('GetTuning');
+    await ok(`engine tuning survived the restart (listing ${tun.listingTimeoutMs} ms, parts ${tun.partSizeMiB} MiB)`,
+      tun.listingTimeoutMs === 10000 && tun.partSizeMiB === 8);
     await shot('33-after-restart');
   });
 
@@ -1212,14 +1232,22 @@ async function walk() {
         await dblClickRow(`${SLOW}/`);
         await waitFor(inFlight, 6000, 'skeleton while the source is silent');
         await ok('skeleton holds while the endpoint never answers', true);
-        // the backend watchdog fires at 30s; budget generously for it
+        // the watchdog fires at the 10 s listing timeout set through the
+        // Settings UI (the whole point: the setting is honored live, not
+        // just stored); budget generously for CI jitter
         const st = await waitFor(errState, 50000, 'watchdog timeout state');
-        await ok(`watchdog → "${st.title}" (${st.sub.slice(0, 60)}…)`, /took too long/i.test(st.title));
+        await ok(`watchdog → "${st.title}" (${st.sub.slice(0, 60)}…)`, /took too long/i.test(st.title)
+          && /10s/.test(st.sub));
         await shot('41-fault-blackhole-timeout');
         await setMode({ mode: 'direct' });
         await clickRetry();
         await waitFor(async () => (await totalItems()) >= SLOWN - 5, 30000, 'rows after retry');
         await ok('Retry after blackhole recovered the listing', true);
+        // restore the documented defaults (0 = default per field)
+        await call('SetTuning', 0, 0, 0, 0, 0, 0);
+        const tun = await call('GetTuning');
+        await ok(`tuning restored to defaults (listing ${tun.listingTimeoutMs} ms, parts ${tun.partSizeMiB} MiB)`,
+          tun.listingTimeoutMs === 30000 && tun.partSizeMiB === 0);
       });
 
       await step('fault lab teardown: fault source + seeded prefix removed', async () => {
