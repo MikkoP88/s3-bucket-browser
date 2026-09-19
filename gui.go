@@ -281,6 +281,14 @@ func installShell(app3 *application.App, a *api.App) {
 			if geo.MaxH > 0 {
 				opts.MaxHeight = geo.MaxH
 			}
+			// The auto-height windows (MinH > 0 marks them) are
+			// app-driven: the content fit owns the height
+			// (ResizePopout) and the width is the fixed profile
+			// footprint — the user never resizes them, so the OS border
+			// is disabled outright (programmatic SetSize still works).
+			if geo.MinH > 0 {
+				opts.DisableResize = true
+			}
 			if geo.W > 0 {
 				opts.Width = geo.W
 			}
@@ -289,22 +297,22 @@ func installShell(app3 *application.App, a *api.App) {
 			}
 			// A rect remembered this session outranks everything: the
 			// window reopens exactly where the user left it, at the size
-			// they left it (session memory — see popoutGeoms) — except
-			// the HEIGHT of an auto-height window (MinH > 0 marks it):
-			// its height tracks the content again on every reopen, so a
-			// remembered height would just flash before the content
-			// re-fit overrides it.
+			// they left it (session memory — see popoutGeoms) — except an
+			// auto-height window (MinH > 0 marks it), which reopens at its
+			// profile footprint: the height tracks the content again and
+			// the width is fixed, so no remembered size may bleed in —
+			// only the placement is honored.
 			autoH := geo.MinH > 0
 			popoutMu.Lock()
 			last, hadLast := popoutGeoms[id]
 			popoutMu.Unlock()
 			if hadLast {
-				opts.Width = last.w
-				if !autoH {
-					opts.Height = last.h
-				}
 				opts.X, opts.Y = last.x, last.y
 				opts.InitialPosition = application.WindowXY
+				if !autoH {
+					opts.Width = last.w
+					opts.Height = last.h
+				}
 			}
 			// Placement — never the OS cascade. The default ("display")
 			// centers the popout on the display carrying the app's main
@@ -364,8 +372,15 @@ func installShell(app3 *application.App, a *api.App) {
 		},
 		// The auto-height windows' content fit: the in-window controller
 		// measures its content and drives this as jobs come and go.
+		// w <= 0 means "keep the current width" — the auto-height windows
+		// never touch their width, and re-reporting it from the webview
+		// (window.outerWidth) would drift it through the DIP<->physical
+		// rounding on every fit.
 		ResizePopout: func(id string, w, h int) {
 			if win, ok := app3.Window.GetByName(popoutPrefix + id); ok {
+				if w <= 0 {
+					w, _ = win.Size()
+				}
 				win.SetSize(w, h)
 			}
 		},

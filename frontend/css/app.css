@@ -497,16 +497,22 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
   backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
   display: flex; align-items: center; justify-content: center;
 }
+/* Every standard window carries ONE width per tier — content never sizes
+   a window. Switching views (Settings categories, guide tabs), rows
+   streaming in, or an error line appearing must never reflow or resize a
+   dialog mid-use; content scrolls instead. Tiers: base 560, wide 720,
+   admin/settings/conflict 880. The viewport clamp keeps each tier inside
+   small app windows and server-mode browsers. */
 .modal {
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; box-shadow: var(--shadow);
-  min-width: min(420px, 92vw); max-width: min(720px, 92vw);
+  width: 560px; max-width: calc(100vw - 48px);
   max-height: 86vh; display: flex; flex-direction: column;
   animation: modal-in .14s ease-out;
 }
-.modal.wide { min-width: min(640px, 92vw); }
+.modal.wide { width: 720px; }
 /* Admin panel: wide enough that the full tab strip fits on one row */
-.modal.admin-modal { min-width: min(820px, 94vw); max-width: min(1000px, 95vw); }
+.modal.admin-modal { width: 880px; }
 .modal-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 16px; border-bottom: 1px solid var(--border-soft);
@@ -536,22 +542,26 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
   position: absolute; pointer-events: auto;
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; box-shadow: var(--shadow);
-  min-width: min(420px, 92vw); max-width: min(720px, 92vw);
+  width: 560px; max-width: calc(100vw - 48px);
   max-height: 82vh; display: flex; flex-direction: column;
   animation: modal-in .14s ease-out;
 }
-.popout.wide { min-width: min(640px, 92vw); }
+.popout.wide { width: 720px; }
 /* Auto-height monitoring windows (File transfers, Running tasks): the
-   Windows file-transfer footprint — 490px wide default AND minimum, the
-   height tracking the content between 300 and 740px. Beyond the cap the
-   window stays put and the body scrolls (overflow:auto above). A grip
-   resize sets inline width/height that outrank the tracking for the
-   window's life; a reopen starts it fresh (no height is remembered). */
+   Windows file-transfer footprint — a FIXED 490px width (the grip is
+   height-only, and neither tier ever remembers or restores a width) and
+   the height tracking the content between 300 and 740px. Beyond the cap
+   the window stays put and the body scrolls (overflow:auto above). A
+   manual grip height outranks the tracking for the window's life; a
+   reopen starts it fresh (only placement is remembered). The native
+   windows are DisableResize — the app itself drives the height. */
 .popout.autoh {
-  width: min(490px, 94vw); min-width: min(490px, 94vw); max-width: none;
+  width: min(490px, calc(100vw - 48px)); min-width: min(490px, calc(100vw - 48px)); max-width: none;
   min-height: min(300px, 90vh); max-height: min(740px, 94vh);
 }
-.popout.admin-modal { min-width: min(820px, 94vw); max-width: min(1000px, 95vw); }
+/* the auto-height windows resize vertically only — the grip says so */
+.popout.autoh .pop-grip { cursor: ns-resize; }
+.popout.admin-modal { width: 880px; }
 /* the header is the drag handle — no text selection mid-drag */
 .popout .modal-head { cursor: grab; user-select: none; touch-action: none; }
 .popout.dragging { cursor: grabbing; }
@@ -628,7 +638,7 @@ body.popout-win .pop-grip { display: none; }
 .tm-hist-n { font-size: 12px; color: var(--text-dim); }
 
 /* Conflict dialog: per-file source-vs-destination decisions */
-.modal.cf-modal { min-width: min(780px, 94vw); max-width: min(1000px, 96vw); }
+.modal.cf-modal { width: 880px; }
 .cf-head, .cf-row {
   display: grid; grid-template-columns: 24px minmax(140px, 1fr) 170px 170px 108px;
   gap: 8px; align-items: center;
@@ -790,7 +800,9 @@ kbd {
 }
 
 /* ================= Versions dialog ================= */
-.ver-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+/* Fixed height: versions/marker/content-version rows stream in async —
+   the window must not grow or shrink under the user while they load. */
+.ver-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; height: min(360px, 52vh); min-height: 160px; overflow-y: auto; }
 .ver-row {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 10px;
@@ -815,13 +827,10 @@ kbd {
    Marker window); per-child rows render via the shared .ver-list rules. */
 
 /* ================= Delete Window ================= */
-/* Fixed width: the layout must not reflow when the delete-type radio
-   (and its per-mode warning text) changes. */
-.modal.delw-modal { width: 560px; min-width: min(560px, 92vw); max-width: 94vw; }
-/* Source editor (Add/Edit data source): fixed width for the same reason —
-   the form layout must not reflow when the Test result or an error line
-   appears. */
-.modal.srcw-modal { width: 560px; min-width: min(560px, 92vw); max-width: 94vw; }
+/* delw-modal/srcw-modal keep their class hooks (targeted styling, tests)
+   but no width rule of their own: the base tier's fixed 560px is exactly
+   the width these two always pinned for themselves — mode switches, a
+   Test result or a raw backend error can no longer stretch the dialog. */
 .delw-sum {
   padding-bottom: 10px; margin-bottom: 10px;
   border-bottom: 1px solid var(--border-soft);
@@ -886,7 +895,8 @@ kbd {
 .diff-row.gap { justify-content: center; color: var(--text-dim); padding: 2px 0; user-select: none; letter-spacing: 2px; }
 
 /* Batch runner + multi presign (M10.3) */
-.batch-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; max-height: 40vh; overflow: auto; }
+/* fixed height: rows stream in — the window must not grow under the user */
+.batch-list { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; height: min(320px, 46vh); min-height: 120px; overflow: auto; }
 .batch-row {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 8px; border-radius: 4px;
@@ -919,6 +929,9 @@ kbd {
 
 /* Usage guide / supported-sources dialogs */
 .guide { max-width: 640px; }
+/* ...but not inside the 880px admin/settings tier (guide tabs), where a
+   640px block would float lost on the right — there the prose spans */
+.admin-modal .guide { max-width: none; }
 .guide-item { margin: 0 0 12px; }
 .guide-item:last-child { margin-bottom: 0; }
 .guide-h { font-weight: 600; font-size: 13px; margin: 0 0 2px; }
@@ -980,7 +993,7 @@ kbd {
 /* Settings dialog — VS 2026-style two-pane shell: category nav + search on
    the left, the active category page (or the flattened search results) on
    the right. Rows/controls keep the .set-row/.set-ctl family below. */
-.modal.settings-modal { min-width: min(760px, 94vw); max-width: min(980px, 95vw); }
+.modal.settings-modal { width: 880px; }
 .modal.settings-modal .modal-body { padding: 0; display: flex; overflow: hidden; }
 .set-shell { display: flex; width: 100%; height: min(540px, 62vh); min-height: 280px; }
 .set-side {
@@ -1089,7 +1102,9 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .bd-list {
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--panel-alt);
-  max-height: 46vh; overflow: auto; margin-top: 6px;
+  /* fixed height: navigating folders swaps the rows — the window stays */
+  height: min(340px, 48vh); min-height: 140px;
+  overflow: auto; margin-top: 6px;
 }
 .bd-row {
   padding: 4px 10px; font-size: 12.5px; cursor: pointer;
@@ -1102,7 +1117,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 /* Import credentials dialog */
 .cred-list {
   display: flex; flex-direction: column; gap: 6px;
-  margin-top: 8px; max-height: 46vh; overflow: auto;
+  /* fixed height: scan results stream in — the window must not grow */
+  margin-top: 8px; height: min(320px, 46vh); min-height: 120px; overflow: auto;
 }
 .cred-empty {
   padding: 18px 12px; text-align: center; color: var(--text-dim);

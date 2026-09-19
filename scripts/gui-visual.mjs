@@ -1975,6 +1975,96 @@ await step('settings-dialog', async () => {
   await ok('modal closed', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
 });
 
+await step('window-size-tiers', async () => {
+  // One width per tier — content NEVER sizes a standard window. The
+  // Settings shell is the flagship: switching categories (or flattening
+  // into search results) must not change the window's width or height a
+  // single pixel. Tiers: base dialogs 560, wide 720, admin/settings/
+  // conflict 880; the auto-height popouts keep their fixed 490 footprint
+  // (pinned in popout-auto-height below).
+  const openSettings = async () => {
+    await page.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
+    await sleep(80);
+    const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')) || null);
+    if (item) await item.asElement().click();
+    await waitFor(modalVisible, 4000, 'settings modal');
+    return !!item;
+  };
+  await ok('settings opens', await openSettings());
+  await sleep(220); // past the modal-in animation before measuring
+  const r0 = await evalPage(() => {
+    const r = document.querySelector('#modal-root .modal').getBoundingClientRect();
+    return { w: r.width, h: r.height };
+  });
+  await ok('settings window sits at the 880 tier', Math.abs(r0.w - 880) <= 1);
+  // sweep EVERY category: width AND height stay frozen through all of them
+  const sweep = await evalPage(() => {
+    const m = document.querySelector('#modal-root .modal');
+    const base = m.getBoundingClientRect();
+    const bad = [];
+    const items = Array.from(document.querySelectorAll('#modal-root .set-nav-item'));
+    for (const n of items) {
+      n.click();
+      const r = m.getBoundingClientRect();
+      if (Math.abs(r.width - base.width) > 0.5 || Math.abs(r.height - base.height) > 0.5) {
+        bad.push((n.querySelector('.set-nav-label')?.textContent || n.textContent).trim());
+      }
+    }
+    return { n: items.length, bad };
+  });
+  await ok(`category switches (${sweep.n}) never resize the settings window`, sweep.n >= 6 && sweep.bad.length === 0);
+  // search flattening: same window, rows from everywhere
+  const flat = await evalPage(() => {
+    const m = document.querySelector('#modal-root .modal');
+    const base = m.getBoundingClientRect();
+    const s = document.querySelector('#modal-root .set-search');
+    s.value = 'delete';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+    const r = m.getBoundingClientRect();
+    s.value = '';
+    s.dispatchEvent(new Event('input', { bubbles: true }));
+    return Math.abs(r.width - base.width) <= 0.5 && Math.abs(r.height - base.height) <= 0.5;
+  });
+  await ok('search flattening never resizes the settings window', flat);
+  await shot('settings-tier');
+  await closeModal();
+
+  // base tier 560: the About box and the Doctor source picker
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  const about = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /about/i.test(i.textContent)) || null);
+  if (about) {
+    await about.asElement().click();
+    await waitFor(modalVisible, 4000, 'about modal');
+    await sleep(200);
+    await ok('about box sits at the 560 base tier', evalPage(() =>
+      Math.abs(document.querySelector('#modal-root .modal').getBoundingClientRect().width - 560) <= 1));
+    await closeModal();
+  }
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  const docItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /doctor/i.test(i.textContent)) || null);
+  if (docItem) {
+    await docItem.asElement().click();
+    await waitFor(() => evalPage(() => !!document.querySelector('#modal-root .picker-row')), 4000, 'doctor picker');
+    await sleep(200);
+    await ok('doctor picker sits at the 560 base tier', evalPage(() =>
+      Math.abs(document.querySelector('#modal-root .modal').getBoundingClientRect().width - 560) <= 1));
+    await closeModal();
+  }
+
+  // wide tier 720: the keysheet popout
+  await page.keyboard.press('F1');
+  await waitFor(() => popoutVisible('keys'), 4000, 'keysheet');
+  await sleep(220);
+  await ok('wide popouts sit at the 720 tier', evalPage(() =>
+    Math.abs(document.querySelector('#popout-root .popout.wide').getBoundingClientRect().width - 720) <= 1));
+  await closePopout('keys');
+});
+
 await step('upload', async () => {
   // the toolbar Upload button opens a flat two-leaf picker menu — Files…
   // (Ctrl+U) and Folder… — the v1.0.0 pair of native pickers feeding the
@@ -2052,6 +2142,8 @@ await step('conflict-view', async () => {
   await page.locator('#ctxmenu .item', { hasText: 'Files' }).click();
   await waitFor(modalVisible, 4000, 'conflict modal');
   await ok('per-file conflict dialog opens', evalPage(() => !!document.querySelector('#modal-root .modal.cf-modal')));
+  await ok('conflict dialog sits at the 880 tier', evalPage(() =>
+    Math.abs(document.querySelector('#modal-root .modal.cf-modal').offsetWidth - 880) <= 1));
   await ok('title counts the collisions', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('2 file(s)'));
   await ok('one row per conflicting file', evalPage(() => document.querySelectorAll('#modal-root .cf-list .cf-row').length === 2));
   await ok('rows show source vs destination', evalPage(() => {
@@ -2214,6 +2306,8 @@ await step('admin-panel', async () => {
   await ok('title names the bucket', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).startsWith('Admin panel — team-files'));
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('.tabstrip .tab').length)) === 11, 4000, 'admin tabs');
   await ok('admin modal uses the wide size class', evalPage(() => document.querySelector('#modal-root .modal.admin-modal') !== null));
+  await ok('admin modal sits at the 880 tier', evalPage(() =>
+    Math.abs(document.querySelector('#modal-root .modal.admin-modal').offsetWidth - 880) <= 1));
   await ok('full tab strip fits without clipping', evalPage(() => {
     const s = document.querySelector('.tabstrip');
     if (!s) return false;
@@ -2262,6 +2356,8 @@ await step('deep-search', async () => {
     await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('readme.md'), 4000, 'results');
     await ok('search results rendered', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('docs/notes.md'));
   }
+  await ok('deep-search sits at the 720 wide tier', evalPage(() =>
+    Math.abs(document.querySelector('#modal-root .modal.wide').getBoundingClientRect().width - 720) <= 1));
   await shotOf('deep-search', '#modal-root .modal');
   await closeModal();
 });
@@ -2289,6 +2385,16 @@ await step('versions-diff', async () => {
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) >= 4, 4000, 'versions with markers');
   await ok('4 versions listed', evalPage(() => document.querySelectorAll('#modal-root .ver-row').length === 4));
   await ok('delete marker shown', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('Delete marker'));
+  // offsetWidth/offsetHeight, not rects: the .14s modal-in entrance runs a
+  // scale(.99) transform and a rect taken mid-flight reads ~1% under the
+  // layout width — layout geometry is transform-immune.
+  await ok('versions window sits at the 720 wide tier', evalPage(() =>
+    Math.abs(document.querySelector('#modal-root .modal.wide').offsetWidth - 720) <= 1));
+  await ok('version rows scroll inside a fixed-height list', evalPage(() => {
+    const list = document.querySelector('#modal-root .ver-list');
+    if (!list) return false;
+    return Math.abs(list.offsetHeight - Math.min(360, 0.52 * window.innerHeight)) <= 1;
+  }));
   await shotOf('versions', '#modal-root .modal');
   // pick A on row 2, B on row 3, then Compare
   const picks = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .ver-row')).map((r) => !!r.querySelector('.ver-pick')));
@@ -3248,7 +3354,10 @@ await step('popouts', async () => {
     return { x: r.x, y: r.y, saved: JSON.parse(localStorage.getItem('s3b-popout-transfers') || 'null') };
   });
   await ok('header drag moves the window', g1.x <= g0.x - 100 && g1.y >= g0.y + 50);
-  await ok('geometry persisted per id', !!(g1.saved && Number.isFinite(g1.saved.x) && g1.saved.w > 300));
+  // an auto-height window persists PLACEMENT only (width is the fixed
+  // 490px footprint, height tracks content) — the keys popout below
+  // proves full-geometry persistence for the resizable windows
+  await ok('placement persisted per id', !!(g1.saved && Number.isFinite(g1.saved.x) && !('w' in g1.saved)));
   // a second window floats on top; pressing either one raises it
   await page.keyboard.press('F1');
   await waitFor(() => popoutVisible('keys'), 4000, 'keys popout');
@@ -3373,10 +3482,16 @@ await step('popout-auto-height', async () => {
   await popDrag('transfers', 0, -400, 'grip');
   await ok('minimum height is 300', Math.abs((await geo()).h - 300) <= 1);
 
-  // persisted geometry keeps placement+width only — a reopen must track
-  // the content afresh
+  // the grip is HEIGHT-ONLY: a diagonal drag must not move the width
+  // off the fixed 490px footprint
+  await popDrag('transfers', 140, 60, 'grip');
+  const dGrip = await geo();
+  await ok('width is pinned — a diagonal grip drag cannot widen the window', Math.abs(dGrip.w - 490) <= 1 && dGrip.h > 300);
+
+  // persisted geometry keeps placement ONLY — a reopen must track the
+  // content afresh at the profile width
   const saved = await evalPage(() => JSON.parse(localStorage.getItem('s3b-popout-transfers') || 'null'));
-  await ok('no height persisted for an auto-height window', !!saved && saved.w >= 489 && !('h' in saved));
+  await ok('only placement persisted for an auto-height window', !!saved && Number.isFinite(saved.x) && !('w' in saved) && !('h' in saved));
   await closePopout('transfers');
   await ok('window closed', !(await popoutVisible('transfers')));
   await seed(6);
@@ -3389,6 +3504,7 @@ await step('popout-auto-height', async () => {
   await sleep(250); // fresh box replays modal-in — measure past the animation
   const d5 = await geo();
   await ok('reopen re-enables content tracking', Math.abs(d5.h - d2.h) <= 4 && d5.over === 0);
+  await ok('reopen lands back at the fixed 490 width', Math.abs(d5.w - 490) <= 1);
   await shotOf('popout-autoh-reopened', trSel);
   // leave no running jobs behind for later steps
   await evalPage(() => {
