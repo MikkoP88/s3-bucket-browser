@@ -256,16 +256,16 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 	if err != nil {
 		return CopyResult{}, err
 	}
-	verb0 := "copying"
+	kind := "copy"
 	if move {
-		verb0 = "moving"
+		kind = "move"
 	}
 	// A task, not a quick op: folder selections are walked into their full
 	// object list first (count phase), then copied one by one — live
 	// progress and current item all the way, cancellable from the
 	// Running tasks window.
-	task := a.tasks.add("copy", fmt.Sprintf("%s %d item(s): s3://%s → s3://%s/%s",
-		verb0, len(keys), bucket, dstBucket, dirPrefix(dstPrefix)))
+	task := a.tasks.add(kind, fmt.Sprintf("%d item(s): s3://%s → s3://%s/%s",
+		len(keys), bucket, dstBucket, dirPrefix(dstPrefix)))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 	res, err = a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move, task)

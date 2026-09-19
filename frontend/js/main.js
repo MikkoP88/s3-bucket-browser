@@ -10,7 +10,7 @@ import {
   versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   renderPopoutView,
-  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog,
+  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb,
 } from './dialogs.js';
 import { LICENSE, licenseLine } from './license.js';
 import { LocalPane, aggregateCompare } from './local.js';
@@ -1857,7 +1857,7 @@ async function startTransfer({ items = [], localPaths = [], dest, move = false, 
     () => api.CheckConflicts(items, localPaths, dest));
   if (!res) return false;
   try {
-    await api.TransferCross(items, localPaths, dest, res.policy, res.maxBps, move, res.decisions || null);
+    await api.TransferCross(items, localPaths, dest, res.policy, res.maxBps, move, res.decisions || null, false);
     toast(`${move ? 'Moving' : 'Copying'} ${items.length + localPaths.length} item(s)\u2026`);
     showTransfersBadge();
     return true;
@@ -3635,13 +3635,9 @@ function setClip(mode) {
       keys: rows.map((x) => x.key),
       paths: [],
     });
-    // Mirror the copy onto the OS clipboard so Ctrl+V works in Explorer
-    // too (cut never mirrors — an Explorer paste would move/delete).
-    if (mode === 'copy' && explorerClipOn()) {
-      osCopyRemote(rows.map((r) => (loc.kind === 'remote'
-        ? { source: src, key: r.key, size: r.size || 0, isDir: !!r.isDir }
-        : { source: src, bucket: loc.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
-    }
+    // A copy stages references only — nothing downloads until a paste
+    // runs the transfer. Only real local files (local pane) are mirrored
+    // to the OS clipboard; remote/S3 rows stay app-internal here.
     osClipAdopt(); // in-app copy is now the newest clipboard (last copy wins)
     toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${rows.length} item(s)`);
     updateCommandState();
@@ -3662,7 +3658,6 @@ function setClip(mode) {
         keys: lrows.map((x) => x.key),
         paths: [],
       });
-      if (mode === 'copy') osCopyRemote(lrows.map((r) => ({ source: localPane.binding.source, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
     } else if (localPane.binding.kind === 's3') {
       if (!localPane.bucket) return; // bucket rows are navigation only
       Object.assign(clipboard, {
@@ -3674,7 +3669,6 @@ function setClip(mode) {
         keys: lrows.filter((x) => !x.isBucket).map((x) => x.key),
         paths: [],
       });
-      if (mode === 'copy') osCopyRemote(lrows.filter((x) => !x.isBucket).map((r) => ({ source: localPane.binding.source, bucket: localPane.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
     } else {
       Object.assign(clipboard, {
         mode,
@@ -3696,67 +3690,10 @@ function setClip(mode) {
   }
 }
 
-// osCopyRemote mirrors a remote/S3 copy onto the OS clipboard: the selection
-// is staged (downloaded) into a scratch dir via the transfer engine and the
-// staged paths are pushed to CF_HDROP once the engine goes idle. Explorer
-// paste then works like any local copy. Large selections skip the mirror
-// silently — the app-internal clipboard still works everywhere.
-async function osCopyRemote(items) {
-  const MAX_BYTES = 256 * 1024 * 1024;
-  const MAX_ITEMS = 500;
-  if (!explorerClipOn() || !items.length) return;
-  const total = items.reduce((s, it) => s + (it.size || 0), 0);
-  if (items.length > MAX_ITEMS || (total > 0 && total > MAX_BYTES)) return;
-  let dir;
-  try {
-    dir = await api.StageClipboardDir();
-  } catch {
-    return;
-  }
-  // Baseline for the clobber guard: if anything writes the clipboard while
-  // the staging download runs, the user copied elsewhere — the late mirror
-  // must abort instead of replacing their clipboard (bug: Explorer copies
-  // silently overwritten by a finished staging).
-  let startSeq = null;
-  try { startSeq = (await api.OsClipboardState())?.seq ?? null; } catch { /* proceed */ }
-  toast('Preparing OS clipboard — staging download\u2026');
-  try {
-    await api.TransferCross(items, [], { kind: 'local', dir }, 'overwrite', 0, false, null);
-    showTransfersBadge();
-  } catch (err) {
-    toast(`OS clipboard staging failed: ${err}`, 'error');
-    return;
-  }
-  // Wait for the transfer engine to finish, then push the staged paths.
-  // The staged layout mirrors the transfer planner: dest/<leaf-of-key>.
-  const staged = items.map((it) => `${dir}\\${(it.key || '').replace(/\/+$/, '').split('/').pop()}`);
-  const t0 = Date.now();
-  setTimeout(async function poll() {
-    let busy = true;
-    try {
-      busy = (await api.ActiveTransfers()).some((j) => j.status === 'running');
-    } catch {
-      busy = false;
-    }
-    if (busy && Date.now() - t0 < 120000) { setTimeout(poll, 500); return; }
-    try {
-      if (startSeq != null) {
-        const st = await api.OsClipboardState();
-        if (st?.seq !== startSeq) return; // copied elsewhere meanwhile — theirs wins
-      }
-      await api.OsClipboardSetFiles(staged);
-      osClipAdopt(); // our own write — re-adopt so it does not look external
-      toast('Ready to paste in Explorer', 'ok');
-    } catch {
-      // best-effort only
-    }
-  }, 700);
-}
-
 // copyAsText puts rows on the OS clipboard as plain text (api.ClipboardSetText)
 // — the Explorer-style "copy name / copy path / copy S3 URI" actions. Ctrl+C
-// keeps mirroring the selection as real OS files for Explorer/Finder interop;
-// these copy text for editors, tickets and terminals. what: 'name' | 'path'
+// on S3/remote rows stays app-internal (a copy stages references only); these
+// explicit actions copy text for editors, tickets and terminals. what: 'name' | 'path'
 // | 'uri'. ctx: {kind, bucket} — 'objects' rows format bucket/key and
 // s3://bucket/key, 'buckets' rows the bare bucket name (and s3://bucket),
 // 'remote' rows the source path, 'local' rows the absolute path. Non-S3
@@ -3911,7 +3848,7 @@ function wireEvents() {
 
 function showTransfersBadge() {
   api.ActiveTransfers().then((jobs) => {
-    const running = jobs.filter((j) => j.status === 'running');
+    const running = jobs.filter((j) => j.status === 'running' && !j.hidden);
     const sb = $('status-jobs');
     if (running.length) {
       sb.classList.remove('hidden');
@@ -3943,7 +3880,7 @@ function showTransfersBadge() {
 // the active-task count is always shown.
 function showTasksBadge() {
   api.RunningTasks().then((tasks) => {
-    const live = tasks.filter((x) => (x.status === 'running' || x.status === 'queued')
+    const live = tasks.filter((x) => (x.status === 'running' || x.status === 'queued') && !x.hidden
       && !['upload', 'download', 'transfer', 'list'].includes(x.kind));
     const sb = $('status-tasks');
     if (live.length) {
@@ -3956,7 +3893,7 @@ function showTasksBadge() {
         const pct = Math.min(100, (x.doneUnits / x.totalUnits) * 100);
         counts = ` ${x.doneUnits}/${x.totalUnits} (${Math.floor(pct)}%)`;
       }
-      sb.textContent = `\u2699 ${live.length} ${live.length === 1 ? 'task' : 'tasks'} — ${x.kind}${counts}`;
+      sb.textContent = `\u2699 ${live.length} ${live.length === 1 ? 'task' : 'tasks'} — ${(taskKindVerb(x)?.label) || x.kind}${counts}`;
     } else {
       sb.classList.add('hidden');
     }

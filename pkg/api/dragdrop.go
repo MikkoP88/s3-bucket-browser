@@ -111,7 +111,7 @@ func (a *App) startDragStage(items []DragItem) *dragStage {
 		for i, it := range items {
 			xis[i] = XferItem{Source: it.Source, Bucket: it.Bucket, Key: it.Key, Size: it.Size}
 		}
-		id, err := a.TransferCross(xis, nil, XferDest{Kind: "local", Dir: dir}, PolicyOverwrite, 0, false, nil)
+		id, err := a.TransferCross(xis, nil, XferDest{Kind: "local", Dir: dir}, PolicyOverwrite, 0, false, nil, true)
 		if err != nil {
 			st.failed = err
 			return

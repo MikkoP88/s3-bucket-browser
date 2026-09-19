@@ -625,8 +625,12 @@ body.popout-win .pop-grip { display: none; }
 .tr-chip.st-phase { font-style: italic; }
 .tr-job .tr-meta { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--text-dim); }
 .tr-job .tr-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tr-job .tr-route { font-size: 11px; color: var(--text-dim); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tr-job .tr-route .tr-loc { color: var(--text); }
+/* Route stacks vertically: From above, To below — each leg truncates its
+   own location so one long path can't squeeze the other off the line. */
+.tr-job .tr-route { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+.tr-job .tr-route .tr-leg { display: flex; gap: 6px; min-width: 0; }
+.tr-job .tr-route .tr-leg-k { flex: none; }
+.tr-job .tr-route .tr-loc { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-job .tr-cur { font-size: 12px; margin-top: 2px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-job.stalled .tr-bar > div { background: var(--warn); }
 .tr-job .tr-sub { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

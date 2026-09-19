@@ -28,7 +28,7 @@ func (a *App) ConvertStorageClass(bucket string, keys []string, class string, fo
 	if !transfer.ValidStorageClass(class) {
 		return 0, fmt.Errorf("unknown storage class %q", class)
 	}
-	task := a.tasks.add("convert", fmt.Sprintf("s3://%s — convert to %s", bucket, class))
+	task := a.tasks.add("convert", fmt.Sprintf("s3://%s — storage class %s", bucket, class))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
 	// expand folder selections into their object keys

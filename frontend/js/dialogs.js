@@ -1258,7 +1258,9 @@ function openTransferManagerDom(onClose) {
   }
 
   async function draw() {
-    const jobs = await api.ActiveTransfers();
+    // Internal staging (hidden) never shows here — the window lists only
+    // real transfers the user started.
+    const jobs = (await api.ActiveTransfers()).filter((j) => !j.hidden);
     // Running jobs stay on top; the rest keep their order.
     const rank = { running: 0, queued: 1, done: 2, canceled: 3, error: 4, failed: 4 };
     jobs.sort((x, y) => (rank[x.status] ?? 9) - (rank[y.status] ?? 9));
@@ -1353,14 +1355,17 @@ function openTransferManagerDom(onClose) {
     if (running && j.etaMs > 0) bytes += ` · ${fmtEta(j.etaMs / 1000)}`;
     if (!running && j.elapsedMs > 0) bytes += ` · ${t('transfer.doneIn', { t: fmtEta(j.elapsedMs / 1000).replace('~', '') })}`;
 
-    // The route line: where the bytes come from and where they go.
+    // The route block: where the bytes come from and where they go —
+    // From above, To below, nothing between: the route reads vertically
+    // so long paths never fight for one line.
     const route = (j.from || j.to)
       ? el('div', { class: 'tr-route mono' },
-        el('span', { text: `${t('transfer.from')} ` }),
-        el('span', { class: 'tr-loc', text: j.from || '—' }),
-        el('span', { class: 'tr-arrow', text: ' \u2192 ' }),
-        el('span', { text: `${t('transfer.to')} ` }),
-        el('span', { class: 'tr-loc', text: j.to || '—' }))
+        el('div', { class: 'tr-leg' },
+          el('span', { class: 'tr-leg-k', text: t('transfer.from') }),
+          el('span', { class: 'tr-loc', text: j.from || '—' })),
+        el('div', { class: 'tr-leg' },
+          el('span', { class: 'tr-leg-k', text: t('transfer.to') }),
+          el('span', { class: 'tr-loc', text: j.to || '—' })))
       : null;
 
     // The now-transferring line: which file of how many is moving and
@@ -1434,15 +1439,17 @@ function xferAutoClose() {
 
 // xferAutoUpdate rides every transfer:update: it opens the window on the
 // rising edge (no running job → some running job) and evaluates the
-// close guards on every update after that.
+// close guards on every update after that. Hidden staging jobs are
+// invisible to all of it — they must neither open the window nor trip
+// the failed-close guard.
 async function xferAutoUpdate(j) {
   // A native popout window floats exactly one view; its own instance of
   // this module must never fight the main window's auto-manager.
   if (document.body.classList.contains('popout-win')) return;
-  if (j && (j.status === 'error' || j.status === 'canceled'
+  if (j && !j.hidden && (j.status === 'error' || j.status === 'canceled'
     || (j.status !== 'running' && j.failedFiles))) xferAuto.failed = true;
   let running = false;
-  try { running = (await api.ActiveTransfers()).some((x) => x.status === 'running'); }
+  try { running = (await api.ActiveTransfers()).some((x) => x.status === 'running' && !x.hidden); }
   catch { return; }
   if (running && !xferHadRunning && xferWinSetting() && !xferWindowOpen()) {
     const h = openTransferManager();
@@ -1464,14 +1471,24 @@ function fmtEta(secs) {
 }
 
 // ---------- running tasks ----------
-// taskKindIcon prefixes a task row: transfers reuse the manager's
-// arrows; every other kind shows its name in brackets (language-neutral
-// and self-describing — no icon set needed).
-function taskKindIcon(kind) {
-  if (kind === 'upload') return '\u2191';
-  if (kind === 'download') return '\u2193';
-  if (kind === 'transfer') return '\u21C4';
-  return `[${kind}]`;
+// taskKindVerb names every task row's action type: byte flows reuse the
+// transfer manager's arrows and verbs, the task-only kinds get sibling
+// verbs — the raw kind in brackets survives only as the unknown-kind
+// fallback (also used by the status-bar tasks badge in main.js).
+export function taskKindVerb(j) {
+  if (!j) return null;
+  if (j.kind === 'upload') return { icon: '\u2191', label: t('transfer.verbUploading') };
+  if (j.kind === 'download') return { icon: '\u2193', label: t('transfer.verbDownloading') };
+  if (j.kind === 'transfer' || j.kind === 'copy' || j.kind === 'move') {
+    return { icon: '\u21C4', label: t(j.move || j.kind === 'move' ? 'transfer.verbMoving' : 'transfer.verbCopying') };
+  }
+  if (j.kind === 'delete') return { icon: '\u2715', label: t('tasks.verbDelete') };
+  if (j.kind === 'purge') return { icon: '\u2715', label: t('tasks.verbPurge') };
+  if (j.kind === 'empty') return { icon: '\u2205', label: t('tasks.verbEmpty') };
+  if (j.kind === 'convert') return { icon: '\u21BB', label: t('tasks.verbConvert') };
+  if (j.kind === 'search') return { icon: '\uD83D\uDD0D', label: t('tasks.verbSearch') };
+  if (j.kind === 'list') return { icon: '\u2261', label: t('tasks.verbListing') };
+  return null;
 }
 
 // runningTasks is the everything-monitor: transfer jobs, deep searches,
@@ -1539,6 +1556,12 @@ function runningTasksDom() {
   function renderTask(j) {
     const pct = taskPct(j);
     const running = j.status === 'running' || j.status === 'queued';
+    // Every row leads with its action type: "✕ Deleting s3://b — 3
+    // item(s)". Unknown kinds fall back to the bracketed raw kind.
+    const verb = taskKindVerb(j);
+    const title = verb
+      ? `${verb.icon} ${verb.label} ${j.label || j.id}`
+      : `[${j.kind}] ${j.label || j.id}`;
     // The bar: indeterminate shimmer while a task runs without a total
     // (count phases, searches, streamed listings) — visible activity
     // instead of a frozen 0%.
@@ -1573,7 +1596,7 @@ function runningTasksDom() {
 
     const task = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
-        el('span', { class: 'tr-name', title: j.label || j.id, text: `${taskKindIcon(j.kind)} ${j.label || j.id}` }),
+        el('span', { class: 'tr-name', title: title, text: title }),
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
         running ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { await api.CancelTask(j.id); } }) : null,
@@ -2002,7 +2025,7 @@ const GUIDE_SECTIONS = [
     ['Upload', 'Toolbar ▲ and the context menus open one Upload menu: Files… (Ctrl+U) picks files, Folder… a whole directory tree — or just drag files/folders from the OS anywhere onto the window.'],
     ['Download', 'Toolbar ▼, Ctrl+D, Enter, or the context menu. Multistep downloads/uploads are multipart and resumable per file. Dragging rows out of the window onto Explorer, Finder or the desktop downloads them as real files.'],
     ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move. Need the text instead? The context menu (or Edit → Copy as) copies names, full paths or s3:// URIs to the OS clipboard.'],
-    ['Two-way Explorer clipboard', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. A copy made inside the app mirrors small selections onto the OS clipboard, so Ctrl+V works in Explorer too. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
+    ['Paste from Explorer', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. Copies made inside the app stage references only — nothing downloads until you paste, and pasting into the app runs the transfer then. Copying real local files in the dual-pane local view still hands them to the OS clipboard. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
     ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 10 MB/s).'],
     ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle.'],
     ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, deep searches, bulk deletes, version purges — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
