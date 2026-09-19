@@ -3348,6 +3348,12 @@ await step('running-tasks', async () => {
       // file creation (CreateFile/RemoteCreateFile): same Creating verb
       // under the document icon
       { id: 'task-15', kind: 'mkfile', label: 's3://team-files/notes.txt', status: 'running', doneUnits: 0, totalUnits: 0, startedAt: 2 },
+      // pane-to-pane compares (CompareAny/CompareDir): a recursive walk on
+      // BOTH sides — its own verb under the two-arrows icon
+      { id: 'task-16', kind: 'compare', label: 'C:\\Users\\demo\\Downloads \u2194 s3://team-files/seed/', status: 'running', doneUnits: 0, totalUnits: 0, startedAt: 2 },
+      // doctor runs (RunDoctor/RunDoctorCheck): a dozen dials per bucket —
+      // the scales icon leads its row
+      { id: 'task-17', kind: 'doctor', label: 's3://team-files — all checks', status: 'running', doneUnits: 0, totalUnits: 0, startedAt: 2 },
     ];
   });
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
@@ -3365,7 +3371,7 @@ await step('running-tasks', async () => {
   await ok('pre-open finished rows are history', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
     const head = document.querySelector(`${s} .modal-foot .left`);
-    return rows.length === 5 && /4 hidden/.test(head?.textContent || '');
+    return rows.length === 7 && /4 hidden/.test(head?.textContent || '');
   }, popSel), 4000, 'history hidden'));
   await ok('running task offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), popSel));
   // the action type always leads the row: verb + label for every kind,
@@ -3377,10 +3383,15 @@ await step('running-tasks', async () => {
       'task-12': /^\u21C4 Copying 1 item\(s\): s3:\/\/team-files/,
       'task-14': /^\u2795 Creating s3:\/\/team-files\/plans\//,
       'task-15': /^\uD83D\uDCC4 Creating s3:\/\/team-files\/notes\.txt/,
+      'task-16': /^\u2194 Comparing C:\\Users\\demo\\Downloads/,
+      'task-17': /^\u2696 Diagnosing s3:\/\/team-files /,
     };
     return Object.entries(want).every(([id, re]) =>
       re.test(document.querySelector(`${s} .tr-job[data-id="${id}"] .tr-name`)?.textContent || ''));
   }, popSel));
+  // the two new tracked kinds (compare, doctor) grew the window past its
+  // default placement — lift it fully into view for the artifact shot
+  await evalPage((s) => { const p = document.querySelector(s); if (p) p.style.top = '72px'; }, popSel);
   await shotOf('running-tasks', popSel);
   // Show history: the finished rows reappear, the totals-less done task
   // reads 100%

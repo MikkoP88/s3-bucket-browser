@@ -34,10 +34,15 @@ type CompareRef struct {
 // CompareAny recursively compares any two sides (local directory, remote
 // source directory, S3 bucket prefix) and returns the merged rows, sorted by
 // relative path. Files only — folder markers and empty directories are
-// ignored (same semantics as the original CompareDir).
-func (a *App) CompareAny(x, y CompareRef) ([]CompareRow, error) {
-	ctx, cancel := context.WithTimeout(a.ctx, a.tuning().CompareTimeout())
+// ignored (same semantics as the original CompareDir). Tracked as a task:
+// a pane-to-pane walk is recursive on BOTH sides (its budget is the
+// deep-compare timeout) — big trees make this a long action worth watching
+// and killing from Running tasks.
+func (a *App) CompareAny(x, y CompareRef) (rows []CompareRow, err error) {
+	task := a.tasks.add("compare", fmt.Sprintf("%s \u2194 %s", compareRefLabel(x), compareRefLabel(y)))
+	ctx, cancel := context.WithTimeout(task.ctx, a.tuning().CompareTimeout())
 	defer cancel()
+	defer func() { task.finish(err, false) }()
 	xm, err := a.walkCompareSide(ctx, x)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", compareRefLabel(x), err)
@@ -46,7 +51,9 @@ func (a *App) CompareAny(x, y CompareRef) ([]CompareRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", compareRefLabel(y), err)
 	}
-	return compareFileMaps(xm, ym), nil
+	rows = compareFileMaps(xm, ym)
+	task.progress(len(rows))
+	return rows, nil
 }
 
 // compareRefLabel names a side in error messages.

@@ -8,6 +8,16 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Running tasks now really monitors everything.** Four long operations
+  that ran silently are registered tasks with progress and a **Cancel**
+  button: deleting a bucket (with all its contents — no fixed time
+  limit), batch deletes on remote sources (SFTP/FTP/WebDAV — checked
+  between paths), pane-to-pane compares (the ↔ walk over both sides,
+  reporting the row count), and doctor runs (a full diagnosis dials the
+  bucket a dozen times; single-check reruns are tracked too). Canceled
+  mid-flight, the doctor stamps the run instead of only its checks, and
+  a compare dies with the walk. New verbs — ↔ *Comparing*, ⚖
+  *Diagnosing* — are localized in all 15 languages.
 - **New file — the WinSCP flow for objects.** Shift+F4, the 📄+ toolbar
   button or *New file…* in the context menu opens a name + type dialog
   (a dozen common extensions, or none) with a live preview of the exact
