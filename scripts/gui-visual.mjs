@@ -801,7 +801,16 @@ function shim() {
       return JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || []));
     },
     SourceRenameObject: () => ({}),
-    SourceCreateFolder: () => ({}),
+    // folder creation mutates the key space like the backend's marker
+    // PutObject does: the UI refresh after creating lists the folder back
+    SourceCreateFolder: (_src, bucket, prefix, name) => {
+      (world.objects[bucket] = world.objects[bucket] || []).push({ key: `${prefix || ''}${name}/`, size: 0 });
+      return {};
+    },
+    CreateFolder: (bucket, prefix, name) => {
+      (world.objects[bucket] = world.objects[bucket] || []).push({ key: `${prefix || ''}${name}/`, size: 0 });
+      return {};
+    },
     // ---- OS interop ----
     PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
     // local delete (side pane): count-then-act preview + permanent remove
@@ -2577,6 +2586,33 @@ await step('prompts-and-delete-gates', async () => {
   await closeModal();
 });
 
+await step('new-folder-tree-sync', async () => {
+  // the reported regression: a folder created from the grid must appear
+  // in the sidebar tree too — the view's completed listing feeds the
+  // tree node (updateObjectsDir), no manual re-expand needed
+  await navObjects('team-files');
+  await page.keyboard.press('Control+Shift+N');
+  await waitFor(modalVisible, 4000, 'newfolder prompt');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await findCall('CreateFolder')) !== null, 4000, 'CreateFolder call');
+  const cf = await findCall('CreateFolder');
+  await ok('CreateFolder got bucket/prefix/name', Array.isArray(cf.args)
+    && cf.args[0] === 'team-files' && cf.args[1] === '' && cf.args[2] === 'new-folder');
+  // grid: the refresh after creating lists the marker back
+  await waitFor(async () => (await rowKeys()).includes('new-folder/'), 4000, 'grid row');
+  await ok('new folder shows in the grid', (await rowKeys()).includes('new-folder/'));
+  // tree: the SAME completed listing feeds the sidebar node — this was
+  // the missing half (the remote side always had it)
+  await waitFor(async () => !!(await treeRow('new-folder')), 4000, 'tree row');
+  await ok('new folder shows in the sidebar tree', !!(await treeRow('new-folder')));
+  // restore the fixture: later steps list team-files with exact expectations
+  await evalPage((n) => {
+    const o = window.__shim.world.objects['team-files'];
+    const i = o.findIndex((e) => e.key === `${n}/`);
+    if (i >= 0) o.splice(i, 1);
+  }, 'new-folder');
+});
+
 await step('delete-window-marker', async () => {
   // versioned bucket: the window lists all three delete types with the
   // marker ('') default. The typed partition is OFF by default (a Settings
@@ -3195,6 +3231,9 @@ await step('running-tasks', async () => {
       { id: 'task-12', kind: 'copy', label: '1 item(s): s3://team-files → s3://lab/mirror', status: 'running', doneUnits: 0, totalUnits: 0, phase: 'count', current: 'shoot/raw/', startedAt: 2 },
       // a timed-out delete is critical information: crit chip + duration
       { id: 'task-13', kind: 'delete', label: 's3://lab — 3 selected item(s)', status: 'error', doneUnits: 2, totalUnits: 3, error: 'delete tcp: i/o timeout', errorKind: 'timeout', elapsedMs: 9500, startedAt: 1, endedAt: 2 },
+      // folder creation is a tracked kind too (CreateFolder/RemoteMkdir):
+      // the + Creating verb leads its row like every other action type
+      { id: 'task-14', kind: 'mkdir', label: 's3://team-files/plans/', status: 'running', doneUnits: 0, totalUnits: 0, startedAt: 2 },
     ];
   });
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
@@ -3212,7 +3251,7 @@ await step('running-tasks', async () => {
   await ok('pre-open finished rows are history', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
     const head = document.querySelector(`${s} .modal-foot .left`);
-    return rows.length === 3 && /4 hidden/.test(head?.textContent || '');
+    return rows.length === 4 && /4 hidden/.test(head?.textContent || '');
   }, popSel), 4000, 'history hidden'));
   await ok('running task offers Cancel', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .btn`), popSel));
   // the action type always leads the row: verb + label for every kind,
@@ -3222,6 +3261,7 @@ await step('running-tasks', async () => {
       t1: /^\u2191 Uploading video-final\.mp4 /,
       'task-7': /^\uD83D\uDD0D Searching "backup\*"/,
       'task-12': /^\u21C4 Copying 1 item\(s\): s3:\/\/team-files/,
+      'task-14': /^\u2795 Creating s3:\/\/team-files\/plans\//,
     };
     return Object.entries(want).every(([id, re]) =>
       re.test(document.querySelector(`${s} .tr-job[data-id="${id}"] .tr-name`)?.textContent || ''));

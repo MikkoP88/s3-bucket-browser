@@ -637,6 +637,15 @@ async function loadObjectsStream(loc, silent = false) {
         }
         grid.apply(); // canonical folders-first ordering + active sort/filter
         decorateVersionMarkers(loc, seq);
+        // Keep the sidebar tree in step with what the grid now shows —
+        // the S3 twin of the remote path's updateRemoteDir call: folders
+        // created, deleted or renamed anywhere appear in the tree without
+        // a manual re-expand. currentEntries is complete only at done
+        // (pages before it are partial). loc.source is unset on the
+        // local-pane sync-up path; the listing went through the pinned
+        // viewSource there, which is also the tree node's source.
+        tree.updateObjectsDir(loc.source || viewSource, loc.bucket, loc.prefix || '',
+          currentEntries.filter((e) => e.isDir));
         if (!currentEntries.length && !view.filter) {
           showEmpty(t('emptyFolder'), t('dropToUpload'), [
             el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: (ev) => openMenu(ev.currentTarget, uploadChoices(uploadFiles, uploadFolder)) }),

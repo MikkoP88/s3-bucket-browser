@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"path"
@@ -296,31 +297,36 @@ func (a *App) DeleteBucket(bucket string, force bool) (transfer.DeleteResult, er
 }
 
 // CreateFolder makes a folder marker object under prefix. Addresses the
-// source the main view is browsing (SetViewSource).
-func (a *App) CreateFolder(bucket, prefix, name string) error {
+// source the main view is browsing (SetViewSource). Tracked as a task so
+// the Running-tasks window shows folder creation like every other op.
+func (a *App) CreateFolder(bucket, prefix, name string) (err error) {
 	c, err := a.client("")
 	if err != nil {
 		return err
 	}
-	return a.createFolderC(c, bucket, prefix, name)
+	task := a.tasks.add("mkdir", fmt.Sprintf("s3://%s/%s", bucket, transfer.JoinKey(prefix, name)))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	return a.createFolderC(ctx, c, bucket, prefix, name)
 }
 
 // SourceCreateFolder is CreateFolder pinned to one named S3 source.
-func (a *App) SourceCreateFolder(idOrName, bucket, prefix, name string) error {
+func (a *App) SourceCreateFolder(idOrName, bucket, prefix, name string) (err error) {
 	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return err
 	}
-	return a.createFolderC(c, bucket, prefix, name)
+	task := a.tasks.add("mkdir", fmt.Sprintf("s3://%s/%s", bucket, transfer.JoinKey(prefix, name)))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	return a.createFolderC(ctx, c, bucket, prefix, name)
 }
 
-func (a *App) createFolderC(c *s3client.Client, bucket, prefix, name string) error {
+func (a *App) createFolderC(ctx context.Context, c *s3client.Client, bucket, prefix, name string) error {
 	name = strings.Trim(name, "/ ")
 	if name == "" || strings.Contains(name, "/") {
 		return errors.New("invalid folder name")
 	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
 	key := transfer.JoinKey(prefix, name) // trailing-slash marker form
 	_, err := c.S3.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),

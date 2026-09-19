@@ -164,6 +164,37 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Version-preserving paste of a folder no longer flattens it.** The
+  versioned copy path (the default whenever the destination bucket has
+  versioning enabled) mapped every source key of a pasted folder straight
+  under the destination prefix — pasting `docs/` into `target/` produced
+  `target/a.txt` instead of `target/docs/a.txt`, silently re-rooting the
+  whole subtree. The destination mapping (`vcopyDstKey`) now mirrors the
+  plain copy path exactly: exact objects land under their base name,
+  folder selections re-root their subtree under the folder's own name
+  (nested picks keep their leaf), and the folder's own marker timeline is
+  recreated in trailing-slash form so recreated versions don't surface as
+  a plain file beside the folder. Pinned by a six-case unit table
+  covering the folder, bucket-root, nested, marker, exact and
+  same-place cases.
+- **A newly created folder now appears in the sidebar tree.** The S3
+  side of the Data sources tree never re-listed after the initial lazy
+  load, so a folder made with New folder (or deleted/renamed anywhere)
+  only ever showed up in the grid until the node was collapsed and
+  re-expanded — the remote side had this fix all along. Every completed
+  bucket listing now feeds the view's tree node (`updateObjectsDir`,
+  the S3 twin of the remote path's `updateRemoteDir`), with
+  bucket-scoped sources resolving the source node itself as the bucket
+  root, exactly like reveal() does. Pinned by a live-walk step that
+  creates a folder and asserts it in the grid AND the tree.
+- **Folder creation is a tracked task.** New folder (S3 and remote
+  alike) registered no Running-tasks row, so the operation was
+  invisible in the everything-monitor and uncancellable. CreateFolder,
+  SourceCreateFolder and RemoteMkdir now register a `mkdir` task —
+  labeled `s3://bucket/prefix/name/` or `source:/dir` — with the same
+  finish semantics as every other kind, and the monitor leads the row
+  with a proper "+ Creating" verb (localized in all 15 languages)
+  instead of the raw-kind fallback.
 - **File transfers and Running tasks hold their width.** The two
   auto-height windows drifted sideways: the height-fit loop re-reported
   the window's own width on every resize (each pass picked up a

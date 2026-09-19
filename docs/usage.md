@@ -250,8 +250,8 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   a live count of active tasks (e.g. "⚙ 2 tasks — search 3/10") and
   clicking it opens the Running tasks window. The list covers transfer
   jobs, deep searches, bulk deletes, version purges, bucket emptying,
-  storage-class conversions — every action the app is taking, each
-  with progress and a **Cancel** button. Kill a task that hangs or
+  storage-class conversions, folder creation — every action the app is
+  taking, each with progress and a **Cancel** button. Kill a task that hangs or
   runs too long; destructive tasks count before they act, so canceling
   during the counting phase destroys nothing. Bulk operations run as
   tracked tasks with no fixed time limit — they finish, or you stop

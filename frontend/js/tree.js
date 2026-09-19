@@ -146,22 +146,29 @@ export class Tree {
   // the source-pinned streaming listing (memory stays at one page, §13).
   buildS3Children(n) {
     return this.listDirs(n.source, n.bucket, n.prefix).then((dirs) => {
-      n.children = [];
-      for (const d of dirs) {
-        const cid = this.nodeKey(n.source, n.bucket, d.key);
-        const prev = this.nodes.get(cid);
-        const node = prev || {
-          id: cid, bucket: n.bucket, prefix: d.key, source: n.source, label: d.name,
-          expanded: false, loaded: false, children: [], level: n.level + 1, el: null, twistEl: null,
-        };
-        node.level = n.level + 1;
-        node.loaded = false; // reload children on demand
-        this.nodes.set(cid, node);
-        n.children.push(node);
-        if (node.expanded) this.expand(cid);
-      }
-      n.loaded = true;
+      this.setS3Children(n, dirs);
     });
+  }
+
+  // setS3Children (re)builds the folder rows of an S3 node from a dir
+  // listing, preserving surviving child nodes (and their expansion
+  // state) by id so a refresh never collapses what the user opened.
+  setS3Children(n, dirs) {
+    n.children = [];
+    for (const d of dirs) {
+      const cid = this.nodeKey(n.source, n.bucket, d.key);
+      const prev = this.nodes.get(cid);
+      const node = prev || {
+        id: cid, bucket: n.bucket, prefix: d.key, source: n.source, label: d.name,
+        expanded: false, loaded: false, children: [], level: n.level + 1, el: null, twistEl: null,
+      };
+      node.level = n.level + 1;
+      node.loaded = false; // reload children on demand
+      this.nodes.set(cid, node);
+      n.children.push(node);
+      if (node.expanded) this.expand(cid);
+    }
+    n.loaded = true;
   }
 
   // buildRemoteChildren keeps the folders of one remotefs listing. Entry
@@ -194,6 +201,32 @@ export class Tree {
     const n = this.nodes.get(id);
     if (!n) return;
     this.buildRemoteChildren(n, entries);
+    n.expanded = true;
+    this.render();
+  }
+
+  // updateObjectsDir is the S3 twin of updateRemoteDir: it feeds a
+  // freshly listed bucket folder view into its tree node, so the tree
+  // tracks S3 mutations (new folder, delete, rename) with the grid.
+  // Bucket-scoped sources use the source node itself as the bucket
+  // root (reveal()'s rule); folders resolve through the namespaced
+  // bucket/prefix node id.
+  updateObjectsDir(source, bucket, prefix, dirs) {
+    let id = this.nodeKey(source, bucket, prefix);
+    if (!prefix) {
+      const s = this.nodes.get(this.srcKey(source));
+      if (s && s.stype === 's3' && s.bucket === bucket) id = s.id;
+    }
+    const n = this.nodes.get(id);
+    if (!n) return;
+    // Skip the rebuild when the folder set is unchanged: silent
+    // auto-refresh ticks land here constantly, and re-rendering the
+    // whole tree on every one would churn the sidebar DOM (and detach
+    // anything mid-click) for zero visible difference.
+    const want = dirs.map((d) => this.nodeKey(n.source, n.bucket, d.key));
+    const have = n.loaded ? n.children.map((c) => c.id) : null;
+    if (have && want.length === have.length && want.every((k, i) => k === have[i])) return;
+    this.setS3Children(n, dirs);
     n.expanded = true;
     this.render();
   }

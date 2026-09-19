@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -97,6 +98,26 @@ func (a *App) CopySelectionVersions(srcSource, srcBucket string, keys []string, 
 	return id, nil
 }
 
+// vcopyDstKey maps one source key to its destination key for a
+// version-preserving copy: exact objects land under their base name,
+// folder prefixes re-root their subtree under the folder's own name —
+// mirroring the plain copy path (copyMove in ops.go), so pasting a
+// folder creates <dstPrefix>/<folder>/... and never flattens the
+// contents straight into the destination. The folder's own marker
+// timeline keeps the trailing-slash marker form, like putMarker in the
+// plain path — without it the recreated versions would show up as a
+// plain file next to the folder they belong to.
+func vcopyDstKey(dstPrefix, sel string, exact bool, srcKey string) string {
+	base := path.Base(strings.TrimSuffix(sel, "/"))
+	if exact {
+		return joinKeyNoSlash(dstPrefix, path.Base(srcKey))
+	}
+	if rel := strings.TrimPrefix(srcKey, sel); rel != "" {
+		return joinKeyNoSlash(dstPrefix, base, rel)
+	}
+	return transfer.JoinKey(dstPrefix, base) // the marker itself: folder form
+}
+
 // runVersionsCopy executes a planned versioned copy job: every source
 // version re-written oldest→newest, delete markers recreated last, then —
 // for a move with zero failures — the source timelines destroyed.
@@ -106,18 +127,9 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 	failed := 0
 	n := 0 // 1-based ordinal across versions and markers
 
-	// Destination key mapping mirrors the plain copy path: exact objects
-	// land under their base name, folder prefixes re-root their subtree.
-	dstKey := func(it vcopyItem, srcKey string) string {
-		if it.exact {
-			return joinKeyNoSlash(dstPrefix, path.Base(srcKey))
-		}
-		return joinKeyNoSlash(dstPrefix, strings.TrimPrefix(srcKey, it.prefix))
-	}
-
 	for _, it := range items {
 		for _, t := range it.timelines {
-			dk := dstKey(it, t.Key)
+			dk := vcopyDstKey(dstPrefix, it.prefix, it.exact, t.Key)
 			if dk == "" || (srcBucket == dstBucket && dk == t.Key) {
 				n++
 				j.startFile(n, t.Key, 0)
