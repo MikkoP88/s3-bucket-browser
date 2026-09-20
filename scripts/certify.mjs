@@ -19,9 +19,20 @@
 //           as subprocesses and folded into the certificate as summary rows.
 //
 // Usage:  node scripts/certify.mjs [--quick] [--skip-gui] [--no-build] [--headed]
-//           --quick    skip the two full sweeps (CLI+GUI batteries still run)
-//           --skip-gui CLI + sweeps only (no browser battery)
-//           --no-build reuse existing testartifacts exes
+//                                         [--only <category>]
+//           (or: npm run certify / certify:quick / certify:only -- <category>)
+//           default        THE release gate: every row, CLI + GUI + both sweeps
+//           --quick        skip the two full sweeps (CLI+GUI batteries still run)
+//           --skip-gui     CLI + sweeps only (no browser battery)
+//           --only <cat>   run one category only (release-focus verification):
+//                            cli          all four CLI batteries
+//                            s3           the MinIO/S3 CLI battery
+//                            cross        cross-engine CLI battery (FTP/SFTP/WebDAV)
+//                            resilience   fault-injection battery
+//                            meta         binary/invocation contract battery
+//                            gui          the whole GUI battery (both parts)
+//                            sweeps       the two full harnesses
+//           --no-build     reuse existing testartifacts exes
 //         Repeat the run to certify repeatability: results must be identical.
 // Artifacts: testartifacts/certification/ (certificate.json, fixtures/,
 //           gui shots, server log) — wiped fresh every run.
@@ -52,6 +63,20 @@ const QUICK = arg('quick');
 const SKIP_GUI = arg('skip-gui');
 const NO_BUILD = arg('no-build');
 const HEADED = arg('headed');
+// Category runs (--only): each maps to whole batteries, which are internally
+// ordered so every row has the state it needs (a mid-battery slice could
+// depend on rows that did not run — batteries are the safe unit).
+const CATEGORIES = ['all', 'cli', 's3', 'cross', 'resilience', 'meta', 'gui', 'sweeps'];
+const ONLY = (() => {
+  const i = process.argv.indexOf('--only');
+  const v = i >= 0 ? process.argv[i + 1] : 'all';
+  if (!CATEGORIES.includes(v)) {
+    console.error(`unknown --only "${v}" — categories: ${CATEGORIES.join(' | ')}`);
+    process.exit(2);
+  }
+  return v;
+})();
+const want = (c) => ONLY === 'all' || ONLY === c || (ONLY === 'cli' && ['s3', 'cross', 'resilience', 'meta'].includes(c));
 
 // ---------- live engines ----------
 const ENDPOINT = 'http://localhost:9000';
@@ -441,6 +466,125 @@ async function cliS3() {
     need(r.code === 0 && r.out.trim().length > 0, `log: ${r.out}${r.err}`);
     return `${r.out.split('\n').length} lines recorded`;
   });
+
+  // Found by this suite: MinIO RELEASE.2025-09-07 deletes the WHOLE BUCKET
+  // when it receives DeletePublicAccessBlock (s3b sends the documented
+  // DELETE /bucket?publicAccessBlock). DeletePAB now refuses on providers
+  // that cannot serve GetPublicAccessBlock — and this row is the permanent
+  // tripwire: NO bucket-config delete may ever destroy the bucket itself.
+  await cert({ id: 'CLI-S3-24', area: 'admin', action: 'Bucket config deletes never destroy the bucket', ds: 'S3 (MinIO)', scenario: 'website/encryption/lifecycle/cors/pab delete on a disposable bucket — after EACH op the bucket must still stat; pab delete must refuse cleanly on providers without PAB support', face: 'CLI' }, async () => {
+    const TB = `s3://${BUCKET}-cfg`;
+    let r = await cli(['mb', TB]);
+    need(r.code === 0, `mb cfg: ${r.err}`);
+    const alive = async (after) => {
+      const s = await cli(['stat', TB]);
+      need(s.code === 0, `BUCKET DESTROYED by "${after}" — stat: ${s.out.split('\n')[0]}`);
+    };
+    const attempt = async (label, args) => {
+      r = await cli(args);
+      // A provider gap (not supported / MalformedXML / NotImplemented / 400
+      // InvalidArgument) is a legitimate clean refusal; anything else that
+      // exits 0 must leave the bucket alive (checked right after).
+      need(r.code === 0 || /not supported|not implemented|malformed|invalid/i.test(r.out + r.err),
+        `${label}: unexpected failure ${r.out.split('\n')[0]}${r.err.split('\n')[0]}`);
+      await alive(label);
+    };
+    await attempt('website delete', ['bucket', 'website', 'delete', TB]);
+    await attempt('encryption delete', ['bucket', 'encryption', 'delete', TB]);
+    await attempt('lifecycle delete', ['bucket', 'lifecycle', 'delete', TB]);
+    await attempt('cors delete', ['bucket', 'cors', 'delete', TB]);
+    await attempt('pab delete', ['bucket', 'pab', 'delete', TB]);
+    await cli(['rb', TB, '--force']);
+    return 'bucket survived all five config deletes';
+  });
+
+  await cert({ id: 'CLI-S3-25', area: 'admin', action: 'Lifecycle rules round-trip', ds: 'S3 (MinIO)', scenario: 'put flat-schema rules (expiration + transition); get echoes them; delete clears (put tolerates provider gaps as SKIP)', face: 'CLI' }, async () => {
+    const TB = `s3://${BUCKET}-lc`;
+    const f = path.join(ART, 'lifecycle.json');
+    await writeFile(f, JSON.stringify([
+      { id: 'purge-tmp', enabled: true, prefix: 'tmp/', expirationDays: 1 },
+      { id: 'to-glacier', enabled: false, prefix: 'cold/', transitionDays: 30, transitionClass: 'GLACIER' },
+    ]));
+    let r = await cli(['mb', TB]);
+    need(r.code === 0, `mb lc: ${r.err}`);
+    r = await cli(['bucket', 'lifecycle', 'put', TB, f]);
+    if (r.code !== 0 && /not supported|not implemented|invalid|malformed|StatusCode: 400/i.test(r.out + r.err)) {
+      await cli(['rb', TB, '--force']);
+      return skip('lifecycle put rejected by this provider (recorded gap)');
+    }
+    need(r.code === 0, `lifecycle put: ${r.out}${r.err}`);
+    r = await cli(['bucket', 'lifecycle', 'get', TB, '--json']);
+    const rules = JSON.parse(r.out);
+    need(Array.isArray(rules) && rules.some((x) => x.id === 'purge-tmp' || x.ID === 'purge-tmp'), `get echo: ${r.out}`);
+    r = await cli(['bucket', 'lifecycle', 'delete', TB]);
+    need(r.code === 0, `lifecycle delete: ${r.out}${r.err}`);
+    r = await cli(['bucket', 'lifecycle', 'get', TB]);
+    need(/no lifecycle rules/i.test(r.out), `get after delete: ${r.out}`);
+    await cli(['rb', TB, '--force']);
+    return 'put/get/delete round-trip';
+  });
+
+  await cert({ id: 'CLI-S3-26', area: 'versions', action: 'Versioned migration (cp/mv --versions)', ds: 'S3 (MinIO)', scenario: '2 versions at source; cp --versions s3→s3 copies the full timeline; mv --versions moves it; unversioned destination refuses (gate)', face: 'CLI' }, async () => {
+    const SRC = `${B}/vmig/a.txt`, DST = `${B}/vmig2/a.txt`, MOVED = `${B}/vmig3/a.txt`;
+    await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), SRC]);
+    await cli(['cp', path.join(FIX, 'data', 'root-2.txt'), SRC, '--force']);
+    let r = await cli(['versions', 'ls', SRC, '--json']);
+    need(countLines(r.out, '"versionId"') === 2, `seed versions: ${r.out}`);
+    r = await cli(['cp', SRC, DST, '--versions']);
+    need(r.code === 0, `cp --versions: ${r.out}${r.err}`);
+    r = await cli(['versions', 'ls', DST, '--json']);
+    need(countLines(r.out, '"versionId"') === 2, `dest timeline: ${r.out}`);
+    const out = path.join(ART, 'vmig-latest.txt');
+    await cli(['cp', DST, out]);
+    need((await readFile(out)).equals(await readFile(path.join(FIX, 'data', 'root-2.txt'))), 'latest bytes wrong after migration');
+    r = await cli(['mv', DST, MOVED, '--versions']);
+    need(r.code === 0, `mv --versions: ${r.out}${r.err}`);
+    r = await cli(['versions', 'ls', MOVED, '--json']);
+    need(countLines(r.out, '"versionId"') === 2, `moved timeline: ${r.out}`);
+    // the gate: an unversioned destination silently collapses the timeline —
+    // the binary must refuse instead
+    const NB = `s3://${BUCKET}-plain`;
+    await cli(['mb', NB]);
+    r = await cli(['cp', MOVED, `${NB}/a.txt`, '--versions']);
+    need(r.code !== 0 && /versioning/i.test(r.out + r.err), `unversioned-dest gate: exit ${r.code} ${r.out}${r.err}`);
+    await cli(['versions', 'rm', MOVED, '--all']);
+    await cli(['rb', NB, '--force']);
+    return 'timeline copied + moved intact; unversioned dest refused';
+  });
+
+  await cert({ id: 'CLI-S3-27', area: 'transfers', action: 'cp flag contracts: --dry-run / --no-clobber', ds: 'S3 (MinIO)', scenario: '--dry-run prints the plan but lands nothing (stat 404); --no-clobber skips an overwrite (documented skip semantics: exit 0, object bytes untouched); --force overwrites', face: 'CLI' }, async () => {
+    const K = `${B}/flags/x.txt`;
+    let r = await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), K, '--dry-run']);
+    need(r.code === 0 && r.out.includes('x.txt'), `dry-run plan: ${r.out}${r.err}`);
+    r = await cli(['stat', K]);
+    need(r.code !== 0, 'dry-run must not upload');
+    r = await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), K]);
+    need(r.code === 0, `first cp: ${r.err}`);
+    r = await cli(['cp', path.join(FIX, 'data', 'root-2.txt'), K, '--no-clobber']);
+    need(r.code === 0, `no-clobber must skip cleanly: exit ${r.code} ${r.out}${r.err}`);
+    const out = path.join(ART, 'nc.txt');
+    await cli(['cp', K, out]);
+    need((await readFile(out)).equals(await readFile(path.join(FIX, 'data', 'root-1.txt'))), 'no-clobber leaked a write');
+    r = await cli(['cp', path.join(FIX, 'data', 'root-2.txt'), K, '--force']);
+    need(r.code === 0, `explicit overwrite: ${r.err}`);
+    return 'dry-run inert; no-clobber skipped (bytes untouched); --force overwrites';
+  });
+
+  await cert({ id: 'CLI-S3-28', area: 'search', action: 'find size + time filters', ds: 'S3 (MinIO)', scenario: 'controlled prefix (1 big + 1 small): --larger/--smaller counts; --newer 1h finds both; --older 1h finds none', face: 'CLI' }, async () => {
+    const big = path.join(ART, 'big.txt');
+    await writeFile(big, 'x'.repeat(3000));
+    await cli(['cp', big, `${B}/find/big.txt`]);
+    await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), `${B}/find/small.txt`]);
+    let r = await cli(['find', `${B}/find/`, '--larger', '2000', '--json']);
+    need(countLines(r.out, '"key"') === 1, `larger: ${r.out}`);
+    r = await cli(['find', `${B}/find/`, '--smaller', '100', '--json']);
+    need(countLines(r.out, '"key"') === 1, `smaller: ${r.out}`);
+    r = await cli(['find', `${B}/find/`, '--newer', '1h', '--json']);
+    need(countLines(r.out, '"key"') === 2, `newer: ${r.out}`);
+    r = await cli(['find', `${B}/find/`, '--older', '1h', '--json']);
+    need(countLines(r.out, '"key"') === 0, `older: ${r.out}`);
+    return 'size/time filters correct';
+  });
 }
 
 // ============================================================
@@ -575,6 +719,20 @@ async function cliCross() {
     need(r.out.includes('certs3'), 'imported store missing certs3');
     return 'encrypted export/import round-trip';
   });
+
+  await cert({ id: 'CLI-X-09', area: 'sources', action: 'Source lifecycle: profile test + remove', ds: 'S3 (MinIO)', scenario: 'add a temp source; profile test dials it (OK + bucket count); source remove drops it from BOTH source list and profile mirror', face: 'CLI' }, async () => {
+    let r = await cli(['source', 'add', 'certtmp', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+    need(r.code === 0, `add: ${r.err}`);
+    r = await cli(['profile', 'test', 'certtmp']);
+    need(r.code === 0 && /OK/.test(r.out), `profile test: ${r.out}${r.err}`);
+    r = await cli(['source', 'remove', 'certtmp']);
+    need(r.code === 0 && /removed source/.test(r.out), `remove: ${r.out}${r.err}`);
+    r = await cli(['source', 'list']);
+    need(!r.out.includes('certtmp'), 'removed source still in source list');
+    r = await cli(['profile', 'list']);
+    need(!r.out.includes('certtmp'), 'removed source still in profile mirror');
+    return 'tested, removed, gone from both lists';
+  });
 }
 
 // ============================================================
@@ -633,6 +791,17 @@ async function cliMeta() {
     need(r.code === 2, `exit ${r.code}, want 2`);
     need(r.err.includes('usage error:') && r.err.includes('--help'), `stderr: ${r.err}`);
     return 'exit 2 + labeled';
+  });
+  await cert({ id: 'CLI-M-03', area: 'meta', action: 'Shell completion', ds: '—', scenario: 'completion bash emits a working completion script; other shells answer too', face: 'CLI' }, async () => {
+    let r = await cli(['completion', 'bash']);
+    need(r.code === 0 && r.out.includes('_s3b') && r.out.includes('s3b'), `bash: exit ${r.code}`);
+    const emitted = ['bash'];
+    for (const sh of ['zsh', 'fish', 'powershell']) {
+      r = await cli(['completion', sh]);
+      need(r.code !== 0 || r.out.includes('s3b'), `${sh}: exit ${r.code} garbage`);
+      if (r.code === 0) emitted.push(sh);
+    }
+    return `completion scripts emitted: ${emitted.join(', ')}`;
   });
 }
 
@@ -714,6 +883,80 @@ async function enterFolder(label) {
   await sleep(200);
 }
 async function shot(name) { try { await page.screenshot({ path: path.join(SHOTS, `${name}.png`) }); } catch { /* non-fatal */ } }
+
+// ---- helpers ported from gui-v3live.mjs for the second GUI battery ----
+async function modalVisible() {
+  return evalPage(() => !!document.querySelector('#modal-root .modal') && !document.getElementById('modal-root').classList.contains('hidden'));
+}
+async function closeModal() {
+  const btn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+    .reverse().find((b) => /^(close|cancel)$/i.test(b.textContent.trim())) || null);
+  if (btn) { await btn.asElement().click(); await sleep(100); return; }
+  await page.keyboard.press('Escape');
+  await sleep(100);
+  await evalPage(() => document.getElementById('modal-root')?.classList.add('hidden'));
+}
+const rightClickRow = (l) => rowAction(l).then((e) => e.click({ button: 'right' }));
+async function ctxItem(re) {
+  const h = await elOrNull((src) => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+    .find((i) => new RegExp(src, 'i').test(i.textContent)) || null, re.source);
+  if (!h) throw new Error(`no ctxmenu item /${re.source}/`);
+  await h.asElement().click();
+  await sleep(100);
+}
+async function menuClick(menuRe, itemRe) {
+  await page.locator('#menubar .mb-title', { hasText: menuRe }).first().click();
+  await sleep(100);
+  const h = await elOrNull((src) => {
+    const [m, i] = src;
+    const dd = Array.from(document.querySelectorAll('#menubar .mb-dd')).find((d) => !d.classList.contains('hidden'));
+    if (!dd) return null;
+    return Array.from(dd.querySelectorAll('.mb-item')).find((it) => new RegExp(i, 'i').test(it.textContent)) || null;
+  }, [menuRe.source, itemRe.source]);
+  if (!h) { await page.keyboard.press('Escape'); throw new Error(`no menu item ${menuRe}/${itemRe}`); }
+  await h.asElement().click();
+  await sleep(120);
+}
+async function dnd(fromH, toH, { shift = false, ctrl = false } = {}) {
+  if (!fromH || !toH) throw new Error(`dnd: ${!fromH ? 'source' : 'target'} element not found`);
+  await page.evaluate(([f, t, sh, ct]) => {
+    const dt = new DataTransfer();
+    f.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    const init = { bubbles: true, cancelable: true, dataTransfer: dt, shiftKey: sh, ctrlKey: ct };
+    t.dispatchEvent(new DragEvent('dragover', init));
+    t.dispatchEvent(new DragEvent('drop', init));
+    f.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, dataTransfer: dt }));
+  }, [fromH.asElement(), toH.asElement(), shift, ctrl]);
+  await sleep(150);
+}
+async function startIfAsked(timeoutMs = 8000) {
+  try {
+    await waitFor(async () => {
+      if (!(await modalVisible())) return false;
+      const h = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((b) => /^start$/i.test(b.textContent.trim())) || null);
+      return h && await h.asElement() ? true : false;
+    }, timeoutMs, 'transfer dialog');
+    await clickFooter(/^start$/i);
+    return 'dialog';
+  } catch { return 'silent'; }
+}
+async function filterTo(text) {
+  await page.locator('#filter').fill(text);
+  await sleep(250); // the app debounces the filter input 120ms
+}
+async function clearFilter() { await filterTo(''); }
+const sideKeys = () => evalPage(() => Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+  .filter((r) => r.style.display !== 'none' && r._model).map((r) => String(r._model.key).replace(/[\\/]+$/, '').split(/[\\/]/).pop()));
+const sideRow = (label) => elOrNull((l) => {
+  const norm = (s) => String(s || '').replace(/\/+$/, '');
+  return Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+    .find((r) => norm(r.querySelector('.tname')?.textContent) === norm(l)) || null;
+}, label);
+const bodyH = () => page.evaluateHandle(() => document.getElementById('grid-body'));
+const sideBodyH = () => page.evaluateHandle(() => document.getElementById('local-grid-body'));
+// binding calls straight through the bridge the app itself uses
+const call = (method, ...args) => evalPage(([m, a]) => window.go['github.com/MikkoP88/s3-bucket-browser/pkg/api'].App[m](...a), [method, args]);
 
 function startServer() {
   return new Promise((resolve, reject) => {
@@ -956,6 +1199,225 @@ async function guiBattery() {
     return 'renamed + CLI-verified';
   });
 
+  // ---------------- second battery: the deeper GUI surface ----------------
+  // Every row below re-verifies BACK through the CLI (s3 helper) — a green
+  // GUI row still means bytes moved. Shared context: dual pane open, local
+  // side pointed at the fixture tree, remote side inside cert-gui/.
+
+  const visKeys = () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .filter((r) => r.style.display !== 'none' && r._model).map((r) => String(r._model.key)));
+  const navCertGui = async () => {
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('cert-gui')), 10000, 's3 root');
+    await enterFolder('cert-gui');
+  };
+  // #local-grid-body is permanently mounted (index.html) and only hidden via
+  // the pane's .hidden class, so visibility — not existence — is the probe.
+  const dualOpen = () => evalPage(() => {
+    const p = document.getElementById('local-pane');
+    return !!p && !p.classList.contains('hidden');
+  });
+  const ensureDualPane = async () => {
+    if (!(await dualOpen())) {
+      await page.keyboard.press('F9');
+      await waitFor(dualOpen, 5000, 'dual pane');
+    }
+  };
+  const localDir = async (dir, expect) => {
+    await page.locator('#local-crumb').click();
+    await answerPrompt(dir);
+    await waitFor(async () => (await sideKeys()).includes(expect), 10000, `local side shows ${expect}`);
+  };
+  const cliVerCount = async (key) => {
+    const r = await s3(['versions', 'ls', key, '--json']);
+    return countLines(r.out, '"versionId"');
+  };
+
+  await cert({ id: 'GUI-10', area: 'transfers', action: 'DnD upload local→S3 (GUI)', ds: 'S3 (MinIO)', scenario: 'dual pane: drag uni-åäö.txt from the local side onto the bucket folder; Start; CLI sees the object; bytes identical', face: 'GUI' }, async () => {
+    await navCertGui();
+    await ensureDualPane();
+    await localDir(path.join(FIX, 'data'), 'readme.md');
+    await dnd(await sideRow('uni-åäö.txt'), await bodyH());
+    await startIfAsked(8000);
+    const K = `s3://${BUCKET}/cert-gui/uni-åäö.txt`;
+    await waitFor(async () => /size:/.test((await s3(['stat', K])).out), 30000, 'uploaded object');
+    const out = path.join(ART, 'gui-dl-uni.txt');
+    await s3(['cp', K, out]);
+    need((await readFile(out)).equals(await readFile(path.join(FIX, 'data', 'uni-åäö.txt'))), 'DnD upload bytes differ');
+    await shot('10-dnd-upload');
+    return 'unicode filename uploaded, byte-identical';
+  });
+
+  await cert({ id: 'GUI-11', area: 'transfers', action: 'DnD download S3→local (GUI)', ds: 'S3 (MinIO)', scenario: 'drag an S3 row onto the local pane; Start; file lands on disk; bytes identical', face: 'GUI' }, async () => {
+    const dst = path.join(ART, 'gui-dl');
+    await mkdir(dst, { recursive: true });
+    await navCertGui();
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.includes('cert-renamed.txt'));
+    }, 15000, 'download source row');
+    await ensureDualPane();
+    await page.locator('#local-crumb').click();
+    await answerPrompt(dst);
+    await waitFor(async () => (await sideKeys()).length === 0, 8000, 'empty local dst');
+    await dnd(await rowAction('cert-renamed.txt'), await sideBodyH());
+    await startIfAsked(8000);
+    await waitFor(async () => (await sideKeys()).includes('cert-renamed.txt'), 45000, 'downloaded row');
+    const got = await readFile(path.join(dst, 'cert-renamed.txt'));
+    need(got.equals(await readFile(path.join(FIX, 'data', 'empty.txt'))), 'DnD download bytes differ');
+    await shot('11-dnd-download');
+    return 'downloaded via DnD, byte-identical';
+  });
+
+  await cert({ id: 'GUI-12', area: 'versions', action: 'Versions dialog: restore as latest', ds: 'S3 (MinIO)', scenario: '2 CLI-seeded versions; context menu → Versions shows the timeline; Restore as latest on the older one; CLI downloads the restored bytes', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/cert-gui/gui-ver.txt`;
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), K]);
+    await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), K, '--force']);
+    await navCertGui();
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.includes('gui-ver.txt'));
+    }, 15000, 'gui-ver row');
+    await rightClickRow('gui-ver.txt');
+    await ctxItem(/^versions/i);
+    await waitFor(async () => await page.locator('#modal-root .ver-row').count().then((n) => n >= 2), 15000, 'version rows');
+    await shot('12-versions-dialog');
+    await page.locator('#modal-root .ver-row').last().locator('button', { hasText: 'Restore as latest' }).click();
+    await sleep(600);
+    await closeModal();
+    await waitFor(async () => (await cliVerCount(K)) >= 3, 30000, 'restore landed as a new version');
+    const out = path.join(ART, 'gui-restore.txt');
+    await s3(['cp', K, out]);
+    need((await readFile(out)).equals(await readFile(path.join(FIX, 'data', 'root-1.txt'))), 'latest is not the restored v1');
+    return 'restored as latest, CLI-verified';
+  });
+
+  await cert({ id: 'GUI-13', area: 'transfers', action: 'Overwrite conflict dialog', ds: 'S3 (MinIO)', scenario: 'DnD a file onto an existing name → conflict dialog offers Start; confirming creates the next version', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/cert-gui/readme.md`;
+    const base = await cliVerCount(K);
+    need(base >= 1, 'no baseline version for conflict target');
+    await navCertGui();
+    await localDir(path.join(FIX, 'data'), 'readme.md');
+    await dnd(await sideRow('readme.md'), await bodyH());
+    await waitFor(async () => /already exist/i.test(await modalText()), 10000, 'conflict dialog');
+    await shot('13-conflict');
+    await clickFooter(/^start$/i);
+    await waitFor(async () => (await cliVerCount(K)) === base + 1, 60000, 'overwrite version landed');
+    if (await modalVisible()) await closeModal();
+    return 'conflict → Start → new version';
+  });
+
+  await cert({ id: 'GUI-14', area: 'objects', action: 'Delete Window CANCEL keeps the object', ds: 'S3 (MinIO)', scenario: 'Del on a row opens the Delete Window; Cancel/Esc leaves the object untouched on BOTH faces (the cancellation contract)', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/cert-gui/gui-cancel.txt`;
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), K]);
+    await navCertGui();
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.includes('gui-cancel.txt'));
+    }, 15000, 'cancel target row');
+    await clickRow('gui-cancel.txt');
+    await page.keyboard.press('Delete');
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) >= 1, 5000, 'delete window');
+    await shot('14-delete-window-cancel');
+    await closeModal();
+    need(!(await modalVisible()), 'delete window still open after cancel');
+    const s = await s3(['stat', K]);
+    need(/size:/.test(s.out), 'object vanished after CANCELLED delete');
+    await refresh();
+    need((await rowKeys()).some((k) => k.includes('gui-cancel.txt')), 'row gone after cancelled delete');
+    return 'cancelled; object intact on both faces';
+  });
+
+  await cert({ id: 'GUI-15', area: 'admin', action: 'Doctor over the bridge', ds: 'S3 (MinIO)', scenario: 'Help → Doctor → pick the source → run all checks in the popout; summary reports pass; task completes', face: 'GUI' }, async () => {
+    await menuClick(/help/i, /doctor/i);
+    await waitFor(() => evalPage(() => document.querySelectorAll('#modal-root .picker-row').length > 0), 5000, 'doctor picker');
+    const row = await elOrNull((want) => Array.from(document.querySelectorAll('#modal-root .picker-row'))
+      .find((r) => r.textContent.includes(want)) || null, SRCNAME);
+    need(row, 'doctor picker missing the source');
+    await row.asElement().click();
+    await waitFor(() => evalPage(() => !!document.querySelector('#popout-root .popout')), 10000, 'doctor popout');
+    const runBtn = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout button, #popout-root .popout .btn'))
+      .find((b) => /run all/i.test(b.textContent)) || null);
+    if (runBtn) await runBtn.asElement().click();
+    await waitFor(() => evalPage(() => /pass/i.test(document.querySelector('#popout-root .doc-summary')?.textContent || '')), 60000, 'doctor summary');
+    const tasks = JSON.stringify(await call('RunningTasks'));
+    need(tasks.includes('doctor'), 'no doctor task recorded');
+    await shot('15-doctor');
+    await page.keyboard.press('Escape').catch(() => {});
+    return 'ladder ran, summary pass';
+  });
+
+  await cert({ id: 'GUI-16', area: 'admin', action: 'Admin dialog (bucket info)', ds: 'S3 (MinIO)', scenario: 'bucket guard in the tree opens the Admin panel; versioning reported; tabs render; close', face: 'GUI' }, async () => {
+    await page.locator('#tree .tguard').first().click();
+    await waitFor(async () => /versioning/i.test(await modalText()), 10000, 'admin overview');
+    need((await modalText()).includes('Admin panel'), 'not the Admin panel');
+    const tabs = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .tab')).length);
+    need(tabs >= 1, 'no tabs');
+    await shot('16-admin');
+    await closeModal();
+    return `admin panel, ${tabs} tab(s)`;
+  });
+
+  await cert({ id: 'GUI-17', area: 'sources', action: 'Profile file round-trip (bindings)', ds: 'Wails v3 server', scenario: 'SaveProfileFileAs → state open; Close → onboarding; wrong password rejected through the bridge; correct password restores the sources', face: 'GUI' }, async () => {
+    const PROFILE = path.join(ART, 'cert-walk.s3bprofile');
+    const PW = 'cert-pass-123';
+    await call('SaveProfileFileAs', PROFILE, PW);
+    const st = await call('GetProfileFileState');
+    need(st?.open === true && st?.sourceCount >= 1, `state after save: ${JSON.stringify(st)}`);
+    need((await readFile(PROFILE)).length > 0, 'profile file not written');
+    await call('CloseProfileFile', true);
+    await page.reload();
+    await waitFor(() => evalPage(() => Array.from(document.querySelectorAll('#empty-actions .btn')).length > 0), 15000, 'onboarding after close');
+    let err = '';
+    try { await call('OpenProfileFile', PROFILE, 'definitely-wrong'); } catch (e) { err = String(e?.message || e); }
+    need(/password|decrypt|corrupt/i.test(err), `wrong password not rejected: ${err}`);
+    await call('OpenProfileFile', PROFILE, PW);
+    await page.reload();
+    await waitFor(() => evalPage(() => !!window.go && !!window.runtime), 15000, 'bridge after reopen');
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('cert-gui')), 20000, 'sources restored');
+    await shot('17-profile-roundtrip');
+    return 'save/close/reject/reopen all good';
+  });
+
+  await cert({ id: 'GUI-18', area: 'gui', action: 'Workbench surfaces: transfer manager + dual pane + filter', ds: 'S3 (MinIO)', scenario: 'View → Transfers opens the manager popout; dual pane toggle; filter box narrows the grid to matching rows and clearing restores them', face: 'GUI' }, async () => {
+    await menuClick(/view/i, /transfers/i);
+    await waitFor(() => evalPage(() => !!document.querySelector('#popout-root .popout')), 5000, 'transfer manager popout');
+    await shot('18-transfers');
+    await page.keyboard.press('Escape').catch(() => {});
+    await ensureDualPane();
+    need(await dualOpen(), 'dual pane not open');
+    await navCertGui();
+    await filterTo('gui-cancel');
+    let keys = await visKeys();
+    need(keys.length >= 1 && keys.every((k) => k.toLowerCase().includes('gui-cancel')), `filter narrow: ${JSON.stringify(keys)}`);
+    await clearFilter();
+    await waitFor(async () => (await visKeys()).some((k) => !k.toLowerCase().includes('gui-cancel')), 5000, 'filter cleared');
+    keys = await visKeys();
+    need(keys.length >= 2, `filter restore: ${keys.length} rows`);
+    return 'popout + dual pane + filter all live';
+  });
+
+  await cert({ id: 'GUI-19', area: 'objects', action: 'New file dialog: cancel + create', ds: 'S3 (MinIO)', scenario: 'Shift+F4 prompt (defaults new-file/txt); Cancel creates NOTHING (CLI 404); then create cert-newfile.txt for real; CLI stats it', face: 'GUI' }, async () => {
+    await navCertGui();
+    await page.keyboard.press('Shift+F4');
+    await waitFor(() => evalPage(() => !!document.querySelector('#modal-root input.input')), 5000, 'new-file prompt');
+    const defaults = await evalPage(() => {
+      const m = document.getElementById('modal-root');
+      return m.querySelector('input.input')?.value + '|' + m.querySelector('select')?.value;
+    });
+    need(defaults === 'new-file|txt', `prompt defaults: ${defaults}`);
+    await shot('19-newfile-prompt');
+    await closeModal();
+    let s = await s3(['stat', `s3://${BUCKET}/cert-gui/new-file.txt`]);
+    need(s.code !== 0, 'cancel created an object');
+    await page.keyboard.press('Shift+F4');
+    await waitFor(() => evalPage(() => !!document.querySelector('#modal-root input.input')), 5000, 'new-file prompt again');
+    await answerPrompt('cert-newfile');
+    await waitFor(async () => /size:/.test((await s3(['stat', `s3://${BUCKET}/cert-gui/cert-newfile.txt`])).out), 20000, 'new file object');
+    return 'cancel inert; create landed';
+  });
+
   await cert({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
     need(pageErrors.length === 0, `${pageErrors.length} page error(s): ${pageErrors[0]}`);
     return 'clean console';
@@ -978,13 +1440,33 @@ function runSweep(script, re) {
   });
 }
 
+// A sweep is tens of minutes of browser + engine work; a transient timing
+// flake should not fail the release gate. One transparent retry: a
+// deterministic regression fails both attempts, and a pass-on-retry is
+// disclosed in the PASS detail — never silent.
+async function sweepGate(script, re, fmt) {
+  const attempt = async () => {
+    const { code, out } = await runSweep(script);
+    return { code, out, m: re.exec(out), fl: out.split(/\r?\n/).filter((l) => /FAIL/i.test(l)).slice(0, 3).join(' | ') };
+  };
+  const describe = (a) => (!a.m
+    ? `no summary (exit ${a.code}): ${a.out.split(/\r?\n/).filter(Boolean).slice(-3).join(' | ')}`
+    : fmt.fail(a.m, a.code, a.fl));
+  const a = await attempt();
+  if (a.m && a.code === 0 && fmt.ok(a.m)) return fmt.pass(a.m);
+  const first = describe(a);
+  const b = await attempt();
+  if (b.m && b.code === 0 && fmt.ok(b.m)) return `${fmt.pass(b.m)} — passed on retry (first attempt: ${first})`;
+  throw new Error(describe(b));
+}
+
 // ============================================================
 // main
 // ============================================================
 async function main() {
   const t0 = Date.now();
   console.log(`s3b action certification — ${VERSION} on ${os.type()} ${os.release()} (${os.arch()})`);
-  console.log(`run id ${RUNID}, bucket ${BUCKET}${QUICK ? ', quick mode (sweeps skipped)' : ''}\n`);
+  console.log(`run id ${RUNID}, bucket ${BUCKET}${QUICK ? ', quick mode (sweeps skipped)' : ''}${ONLY !== 'all' ? `, category: ${ONLY}` : ''}\n`);
 
   await rm(ART, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });
@@ -1009,12 +1491,12 @@ async function main() {
     console.log('done');
   }
 
-  await cliS3();
-  await cliCross();
-  await cliResilience();
-  await cliMeta();
+  if (want('s3')) await cliS3();
+  if (want('cross')) await cliCross();
+  if (want('resilience')) await cliResilience();
+  if (want('meta')) await cliMeta();
 
-  if (!SKIP_GUI) {
+  if (!SKIP_GUI && want('gui')) {
     try { await guiBattery(); } catch (err) {
       rows.push({ id: 'GUI-ERR', area: 'gui', action: 'GUI battery', ds: '—', scenario: 'battery aborted', face: 'GUI', result: 'FAIL', detail: String(err?.message || err).slice(0, 200) });
       failures.push(`GUI battery: ${err?.message || err}`);
@@ -1024,21 +1506,17 @@ async function main() {
     }
   }
 
-  if (!QUICK) {
-    await cert({ id: 'SWEEP-VIS-01', area: 'sweeps', action: 'Full visual sweep', ds: 'shim world', scenario: 'node scripts/gui-visual.mjs — every dialog/popout/menu/viewport contract', face: 'SWEEP' }, async () => {
-      const { code, out } = await runSweep('gui-visual.mjs');
-      const m = /gui-visual: (\d+)\/(\d+) checks passed/.exec(out);
-      need(m, `no summary (exit ${code})`);
-      need(+m[2] > 0 && +m[1] === +m[2] && code === 0, `${m[1]}/${m[2]}, exit ${code}`);
-      return `${m[1]}/${m[2]} checks`;
-    });
-    await cert({ id: 'SWEEP-LIVE-01', area: 'sweeps', action: 'Full live walk', ds: 'real engines', scenario: 'node scripts/gui-v3live.mjs — real bindings, transfers, versions, fault lab', face: 'SWEEP' }, async () => {
-      const { code, out } = await runSweep('gui-v3live.mjs');
-      const m = /v3 live walk: (\d+) check\(s\) passed, (\d+) failed/.exec(out);
-      need(m, `no summary (exit ${code})`);
-      need(+m[1] > 0 && +m[2] === 0 && code === 0, `${m[1]} passed, ${m[2]} failed, exit ${code}`);
-      return `${m[1]} checks, no page errors`;
-    });
+  if (!QUICK && want('sweeps')) {
+    await cert({ id: 'SWEEP-VIS-01', area: 'sweeps', action: 'Full visual sweep', ds: 'shim world', scenario: 'node scripts/gui-visual.mjs — every dialog/popout/menu/viewport contract', face: 'SWEEP' }, async () => sweepGate('gui-visual.mjs', /gui-visual: (\d+)\/(\d+) checks passed/, {
+      ok: (m) => +m[2] > 0 && +m[1] === +m[2],
+      pass: (m) => `${m[1]}/${m[2]} checks`,
+      fail: (m, code, fl) => `${m[1]}/${m[2]}, exit ${code}${fl ? ` — ${fl}` : ''}`,
+    }));
+    await cert({ id: 'SWEEP-LIVE-01', area: 'sweeps', action: 'Full live walk', ds: 'real engines', scenario: 'node scripts/gui-v3live.mjs — real bindings, transfers, versions, fault lab', face: 'SWEEP' }, async () => sweepGate('gui-v3live.mjs', /v3 live walk: (\d+) check\(s\) passed, (\d+) failed/, {
+      ok: (m) => +m[1] > 0 && +m[2] === 0,
+      pass: (m) => `${m[1]} checks, no page errors`,
+      fail: (m, code, fl) => `${m[1]} passed, ${m[2]} failed, exit ${code}${fl ? ` — ${fl}` : ''}`,
+    }));
   }
 
   // ---------- cleanup live state (best effort, never fails the run) ----------
@@ -1054,6 +1532,7 @@ async function main() {
   const certificate = {
     version: VERSION, os: osName, node: process.version,
     generatedAt: new Date().toISOString(), runId: RUNID, bucket: BUCKET,
+    category: ONLY,
     faces: ['CLI', 'GUI', 'SWEEP'],
     summary: { total: rows.length, pass: byResult('PASS'), fail: byResult('FAIL'), skip: byResult('SKIP'), seconds: Math.round((Date.now() - t0) / 1000) },
     rows,

@@ -8,23 +8,35 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Action certification: a runnable contract for every critical job.**
-  New `scripts/certify.mjs` executes the whole certification matrix —
-  47 rows across three faces — against the live engine containers
-  (MinIO S3, SFTP, FTP, WebDAV): a CLI battery (sources, versioned
-  buckets, transfers, gated deletion, the version-safety ladder,
-  bucket admin, object lock, presign, sync, doctor, storage class,
-  find, activity log), a cross-engine battery (multi-file copy
-  local→FTP and FTP→S3, SFTP/WebDAV round-trips, cross-engine mv,
-  encrypted source export/import), fault-injected resilience (latency,
-  RST, blackhole through the fault proxy), and a GUI battery that
-  drives the real Wails v3 server stack in a real browser and then
-  verifies the results *back through the CLI* — a GUI green means
-  bytes actually moved. A full run folds the two complete harnesses in
-  as sweep rows (gui-visual 609 checks, gui-v3live 142 checks). Rows
-  whose engines are down are recorded SKIP, never passed; exit 0 =
-  certified. `docs/CERTIFICATION.md` is the human-readable matrix:
-  action × data source × tested scenario × CLI/GUI face × OS.
+- **Release verification: one command proves every critical job.**
+  `scripts/certify.mjs` (or `npm run certify`) is the pre-release gate:
+  a 64-row verification matrix across three faces, run against the live
+  engine containers (MinIO S3, SFTP, FTP, WebDAV) before any version
+  ships. The CLI battery asserts exit codes and output — sources and
+  their lifecycle, versioned buckets, transfers (including the
+  `--dry-run`/`--no-clobber`/`--force` contracts and versioned
+  migration `cp/mv --versions`), gated deletion, the version-safety
+  ladder, bucket admin (config deletes that must never harm the bucket,
+  lifecycle round-trip), object lock, presign, sync, doctor, storage
+  class, find with size/time filters, completion). The cross-engine
+  battery covers FTP/SFTP/WebDAV round-trips, cross-engine moves and
+  encrypted source export/import; fault injection verifies latency, RST
+  and blackhole behavior through the fault proxy. The GUI battery
+  drives the real Wails v3 server stack in a real browser — DnD
+  uploads/downloads, the versions dialog, overwrite-conflict and
+  Delete-Window cancellation contracts, doctor, the admin dialog,
+  profile-file round-trip, the transfer manager, dual pane and filter —
+  and verifies every result *back through the CLI*, so a GUI green
+  means bytes actually moved. A full run folds both complete harnesses
+  in as sweep rows (gui-visual 609 checks, gui-v3live 142 checks).
+  Category runs (`--only cli|s3|cross|resilience|meta|gui|sweeps`,
+  or `npm run certify:cli` / `certify:gui`) verify one focus area;
+  rows whose engines are down — or that hit a recorded provider API
+  gap — are SKIPped with the reason, never passed. Exit 0 = verified;
+  the machine-readable certificate lands in
+  `testartifacts/certification/certificate.json`. `docs/CERTIFICATION.md`
+  is the human-readable matrix: action × data source × tested scenario
+  × CLI/GUI face × OS.
 - **Context menus can no longer overflow the window.** Menu placement now
   clamps by the menu's *real* rendered width instead of a hardcoded 220px
   guess: wide menus (long localized labels + keyboard hints) opened near
@@ -227,6 +239,18 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`bucket pab delete` can no longer destroy the bucket.** Found by the
+  certification probes and confirmed at the wire level: some S3-compatible
+  servers (observed on MinIO RELEASE.2025-09-07) mis-handle
+  `DELETE /bucket?publicAccessBlock` and delete the entire bucket — with
+  all its objects — while reporting success. s3b sent the documented
+  request; the server is broken. DeletePAB now pre-checks the PAB
+  capability with a GetPublicAccessBlock call and refuses with the
+  standard "public access block is not supported by this
+  provider/endpoint" classification when the server cannot serve it, so a
+  broken server code path is never handed the bucket. Certificate row
+  CLI-S3-24 pins this defense: after every bucket-config delete the
+  bucket must still stat.
 - **No more theme flash on launch.** The palettes live on the
   `data-theme` attribute, which the app set only after `main.js` booted —
   every start painted one frame with unset colors (white flash for dark

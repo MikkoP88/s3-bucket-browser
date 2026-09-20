@@ -360,7 +360,17 @@ func PutPAB(ctx context.Context, client *s3.Client, bucket string, p PABInfo) er
 }
 
 // DeletePAB removes public access block settings.
+//
+// The capability pre-check is a safety net: some S3-compatible servers
+// (observed on MinIO RELEASE.2025-09-07) mis-handle DeletePublicAccessBlock
+// and destroy the whole bucket instead of its PAB settings. A server that
+// cannot even serve GetPublicAccessBlock has no PAB configuration to
+// remove, so the delete is refused with the same "not supported"
+// classification instead of handing the bucket to a broken code path.
 func DeletePAB(ctx context.Context, client *s3.Client, bucket string) error {
+	if _, err := GetPAB(ctx, client, bucket); err != nil {
+		return err
+	}
 	_, err := client.DeletePublicAccessBlock(ctx, &s3.DeletePublicAccessBlockInput{Bucket: aws.String(bucket)})
 	return mapUnsupported(err, "public access block")
 }
