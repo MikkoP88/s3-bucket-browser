@@ -8,6 +8,24 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Context menus can no longer overflow the window.** Menu placement now
+  clamps by the menu's *real* rendered width instead of a hardcoded 220px
+  guess: wide menus (long localized labels + keyboard hints) opened near
+  the right edge used to spill past it; both axes now clamp with a 0px
+  floor, so a menu fired from the bottom-right corner of a small window
+  stays fully on-screen.
+- **Regression probes for the flash-free and clamp contracts.** The
+  visual harness now asserts: the saved theme resolves *pre-paint* (a
+  `setAttribute` hook flags any theme decision that lands after the body
+  parses — the FOUC regression signal); a popout parked at the right edge
+  is re-clamped when the app window shrinks under it (≥60px reachable,
+  title bar always grabbable); a context menu opened in the extreme
+  corner stays inside the viewport; and the modal × close button is a
+  padded hit target, not a 1-character sliver. The CLI side gained
+  usage-error cases (missing flag argument, invalid flag value) and a
+  stderr label test: invocation mistakes must read `usage error:` and
+  point at `--help` — never `unexpected:`.
+
 - **Small windows are a first-class scenario.** A new visual-harness sweep
   resizes the app window to 1024×640 and 820×560 and reopens every flagship
   surface — Settings, the keyboard shortcuts, File transfers — proving

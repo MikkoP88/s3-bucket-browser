@@ -5383,13 +5383,32 @@ await step('small-viewport-sweep', async () => {
     await ok(`settings clamped and whole at ${w}x${h}`, (await layoutAudit()).ok && await evalPage(() =>
       document.querySelector('#modal-root .modal').getBoundingClientRect().width <= window.innerWidth - 40));
     await shot(`ux-small-settings-${w}`);
+    if (w === 1024) await ok('close × is a padded hit target', await evalPage(() => {
+      const x = document.querySelector('#modal-root .modal .modal-head .x');
+      return !!x && parseFloat(getComputedStyle(x).paddingLeft) > 0 && parseFloat(getComputedStyle(x).paddingTop) > 0;
+    }));
     await closeModal();
     // the wide keysheet popout (720 tier) still fits
     await page.keyboard.press('F1');
     await waitFor(() => popoutVisible('keys'), 4000, 'keysheet');
     await sleep(220);
     await ok(`keysheet fits ${w}x${h}`, (await layoutAudit()).ok);
+    // dragged toward the right edge, then the app window shrinks under
+    // it: the app must re-clamp its own floating window (the contract:
+    // never less than ~60px reachable, title bar always grabbable)
+    await popDrag('keys', 600, 0);
+    await page.setViewportSize({ width: w - 220, height: h });
+    await sleep(150);
+    await ok(`shrink re-clamps a parked popout (${w}→${w - 220})`, await evalPage((s) => {
+      const r = document.querySelector(s).getBoundingClientRect();
+      const vw = window.innerWidth, vh = window.innerHeight;
+      return r.right >= 59.5 && r.left <= vw - 59.5 && r.top >= -0.5 && r.top <= vh - 29.5;
+    }, popSel('keys')));
+    await page.setViewportSize({ width: w, height: h });
+    await sleep(150);
+    // forget the parked placement — the next tier must start centered
     await closePopout('keys');
+    await evalPage(() => localStorage.removeItem('s3b-popout-keys'));
     // the fixed-490 auto-height transfers window still fits
     await evalPage(() => window.__shim.emit('transfer:update', { id: 'sv1', op: 'upload', status: 'running', name: 'small-view.bin', totalFiles: 2, doneFiles: 1 }));
     await ok(`transfers open at ${w}x${h}`, await openMenu(/view/i, 'transfers'));
@@ -5404,6 +5423,28 @@ await step('small-viewport-sweep', async () => {
       b?.click();
     }, popSel('transfers'));
     await closePopout('transfers');
+    // right-click at the very bottom-right corner on the smallest tier:
+    // the menu must open fully inside the window (clamped by its REAL
+    // width, not a guessed one)
+    if (w === 820) {
+      await clickTree('hetzner');
+      await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+      await navObjects('team-files');
+      await evalPage(() => {
+        const row = document.querySelector('#grid-body .grid-row');
+        if (!row) throw new Error('no row for the corner context menu');
+        row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: window.innerWidth - 6, clientY: window.innerHeight - 6 }));
+      });
+      await sleep(80);
+      await ok('corner context menu stays inside the window', await evalPage(() => {
+        const m = document.getElementById('ctxmenu');
+        if (!m || m.classList.contains('hidden')) return false;
+        const r = m.getBoundingClientRect();
+        return r.left >= -0.5 && r.top >= -0.5 && r.right <= window.innerWidth + 0.5 && r.bottom <= window.innerHeight + 0.5;
+      }));
+      await page.keyboard.press('Escape');
+      await sleep(60);
+    }
   }
   await page.setViewportSize({ width: vp0.width, height: vp0.height });
   await sleep(150);
@@ -5457,6 +5498,41 @@ await step('layout-audit', async () => {
 await step('toasts-cleanup', async () => {
   await ok('toasts appeared during the matrix', evalPage(() => document.getElementById('toasts').children.length > 0 || true));
   await shot('final');
+});
+
+await step('theme-prepaint', async () => {
+  // The theme must resolve BEFORE the first paint: the palettes live on
+  // [data-theme], set by a head script while the body is still unparsed
+  // (main.js's initTheme only runs after DOM parse — that ordering was
+  // the flash). The probe hooks setAttribute to record whether the
+  // attribute landed pre-paint (document.body === null) or late, which
+  // is exactly the FOUC regression signal.
+  // The boot shim force-resets s3b-theme to light on EVERY load (line ~263),
+  // so a plain localStorage write dies at reload. Carry the probe's choice
+  // through sessionStorage (the shim never touches it) and re-apply it from
+  // this init script — registered after the shim, it still runs before the
+  // page's head script.
+  await evalPage(() => sessionStorage.setItem('s3b-test-theme', 'dark'));
+  await page.addInitScript(() => {
+    if (window.__themeProbe) return;
+    window.__themeProbe = true;
+    const t = sessionStorage.getItem('s3b-test-theme');
+    if (t) localStorage.setItem('s3b-theme', t);
+    const orig = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function (n, v) {
+      if (n === 'data-theme' && this === document.documentElement && !window.__themePhase)
+        window.__themePhase = document.body ? 'late' : 'pre-paint';
+      return orig.call(this, n, v);
+    };
+  });
+  await page.reload({ waitUntil: 'load' });
+  await ok('saved dark theme applied after reload', evalPage(() => document.documentElement.dataset.theme === 'dark'));
+  await ok('theme resolved pre-paint (no FOUC)', evalPage(() => window.__themePhase === 'pre-paint'));
+  // back to light so the session ends as it ran — drop the probe flag so
+  // the init script stops overriding the shim's light reset
+  await evalPage(() => { sessionStorage.removeItem('s3b-test-theme'); localStorage.setItem('s3b-theme', 'light'); });
+  await page.reload({ waitUntil: 'load' });
+  await ok('theme restored to light', evalPage(() => document.documentElement.dataset.theme === 'light'));
 });
 
 // ---------- report ----------
