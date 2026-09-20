@@ -1,0 +1,667 @@
+{
+  "version": "1.1.0-beta.15",
+  "tag": "v1.1.0-beta.15",
+  "commit": "cdc9fc5",
+  "commitSubject": "Rename certification -> verification across the release gate",
+  "os": "Windows_NT 10.0.26100 (x64)",
+  "osId": "windows-x64",
+  "node": "v24.12.0",
+  "generatedAt": "2026-09-20T13:28:13.575Z",
+  "runId": "vermu9ufiv2",
+  "bucket": "verify-mu9ufiv2",
+  "category": "all",
+  "faces": [
+    "CLI",
+    "GUI",
+    "SWEEP"
+  ],
+  "summary": {
+    "total": 64,
+    "pass": 63,
+    "fail": 0,
+    "skip": 1,
+    "seconds": 505
+  },
+  "rows": [
+    {
+      "result": "PASS",
+      "detail": "added, tested, listed, mirrored",
+      "id": "CLI-S3-01",
+      "area": "sources",
+      "action": "Add + test S3 source",
+      "ds": "S3 (MinIO)",
+      "scenario": "source add with endpoint/keys; source test dials; list shows it; mirrors as profile",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "verify-mu9ufiv2 created, versioning on",
+      "id": "CLI-S3-02",
+      "area": "buckets",
+      "action": "Create versioned bucket",
+      "ds": "S3 (MinIO)",
+      "scenario": "mb + bucket versioning on (the delete-marker scenarios need it)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "docs/ marker created and listed",
+      "id": "CLI-S3-03",
+      "area": "objects",
+      "action": "Create folder marker",
+      "ds": "S3 (MinIO)",
+      "scenario": "mkdir docs/ → zero-byte marker lists as a folder",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "uploaded + stat ok",
+      "id": "CLI-S3-04",
+      "area": "transfers",
+      "action": "Single upload",
+      "ds": "S3 (MinIO)",
+      "scenario": "cp one file → stat reports size",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "10 files uploaded, 11 listed",
+      "id": "CLI-S3-05",
+      "area": "transfers",
+      "action": "Multi upload (recursive)",
+      "ds": "S3 (MinIO)",
+      "scenario": "cp -r fixture tree (10 files incl. unicode + empty) → recursive ls count matches",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "ls/tree/du/stat consistent",
+      "id": "CLI-S3-06",
+      "area": "objects",
+      "action": "List / tree / du / stat",
+      "ds": "S3 (MinIO)",
+      "scenario": "dir-view ls, tree shows folders, du counts objects+bytes, stat bucket shows region",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "byte-identical",
+      "id": "CLI-S3-07",
+      "area": "transfers",
+      "action": "Single download",
+      "ds": "S3 (MinIO)",
+      "scenario": "cp object → local; bytes identical",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "10 files byte-identical",
+      "id": "CLI-S3-08",
+      "area": "transfers",
+      "action": "Multi download (recursive)",
+      "ds": "S3 (MinIO)",
+      "scenario": "cp -r prefix → local dir; full tree diff byte-identical",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "server-side copy listed",
+      "id": "CLI-S3-09",
+      "area": "transfers",
+      "action": "Server-side copy S3→S3",
+      "ds": "S3 (MinIO)",
+      "scenario": "cp s3://→s3:// lands a copyable object",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "removed + marker recorded",
+      "id": "CLI-S3-10",
+      "area": "objects",
+      "action": "Single object deletion",
+      "ds": "S3 (MinIO)",
+      "scenario": "rm one object → gone from ls; versioned → delete marker in timeline",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "gate held; dry-run 56, force-deleted 55",
+      "id": "CLI-S3-11",
+      "area": "objects",
+      "action": "Recursive deletion + safety gates",
+      "ds": "S3 (MinIO)",
+      "scenario": "55-object prefix: rm -r without --force rejected (>50 gate); --dry-run counts (marker included); --force deletes them all",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "rejected as designed",
+      "id": "CLI-S3-12",
+      "area": "buckets",
+      "action": "rb safety gate",
+      "ds": "S3 (MinIO)",
+      "scenario": "rb on a non-empty bucket rejected without --force",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "moved + stat ok",
+      "id": "CLI-S3-13",
+      "area": "objects",
+      "action": "Rename (mv)",
+      "ds": "S3 (MinIO)",
+      "scenario": "mv object → new key; old gone, new stats",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "repair/no-op/add/delete all correct",
+      "id": "CLI-S3-14",
+      "area": "transfers",
+      "action": "sync (repair / no-op / new / --delete)",
+      "ds": "S3 (MinIO)",
+      "scenario": "sync repairs the CLI-S3-10 deletion, reports 0 when in sync, 1 after a local add, deletes the extra remote with --delete",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "URL fetched, bytes identical",
+      "id": "CLI-S3-15",
+      "area": "objects",
+      "action": "Presign + fetch",
+      "ds": "S3 (MinIO)",
+      "scenario": "presign → plain HTTP GET returns identical bytes",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "restore/undo byte-correct",
+      "id": "CLI-S3-16",
+      "area": "versions",
+      "action": "Version timeline: restore + undo",
+      "ds": "S3 (MinIO)",
+      "scenario": "overwrite → 2 versions; restore v1 as latest; rm → marker; undo revives v1",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "purged and destroyed",
+      "id": "CLI-S3-17",
+      "area": "versions",
+      "action": "Purge + permanent destroy",
+      "ds": "S3 (MinIO)",
+      "scenario": "versions stat; purge noncurrent (>50 gate demands --force, then --force purges); versions rm --all empties the timeline (L3)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "single + recursive conversion verified",
+      "id": "CLI-S3-18",
+      "area": "objects",
+      "action": "Storage-class conversion",
+      "ds": "S3 (MinIO)",
+      "scenario": "sc single → REDUCED_REDUNDANCY visible + find --class; recursive dry-run gate",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "filters + limits correct",
+      "id": "CLI-S3-19",
+      "area": "search",
+      "action": "Deep find",
+      "ds": "S3 (MinIO)",
+      "scenario": "--name glob/substring, --smaller, --limit, summary line",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "check ladder ran",
+      "id": "CLI-S3-20",
+      "area": "admin",
+      "action": "Doctor diagnosis",
+      "ds": "S3 (MinIO)",
+      "scenario": "doctor s3://bucket runs the check ladder",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "info/tags/policy verified",
+      "id": "CLI-S3-21",
+      "area": "admin",
+      "action": "Bucket admin: info / tags / policy",
+      "ds": "S3 (MinIO)",
+      "scenario": "info shows versioning; tags put/get; policy put/get round-trip (cors/encryption tolerate provider gaps)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "retention/hold round-tripped, cleaned up",
+      "id": "CLI-S3-22",
+      "area": "admin",
+      "action": "Object lock: retention + legal hold",
+      "ds": "S3 (MinIO)",
+      "scenario": "mb --object-lock; retention set/show/clear; legalhold on/off (GOVERNANCE only — cleanup stays possible)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "2 lines recorded",
+      "id": "CLI-S3-23",
+      "area": "admin",
+      "action": "Activity log",
+      "ds": "S3 (MinIO)",
+      "scenario": "log shows the operations this run performed",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "bucket survived all five config deletes",
+      "id": "CLI-S3-24",
+      "area": "admin",
+      "action": "Bucket config deletes never destroy the bucket",
+      "ds": "S3 (MinIO)",
+      "scenario": "website/encryption/lifecycle/cors/pab delete on a disposable bucket — after EACH op the bucket must still stat; pab delete must refuse cleanly on providers without PAB support",
+      "face": "CLI"
+    },
+    {
+      "result": "SKIP",
+      "detail": "lifecycle put rejected by this provider (recorded gap)",
+      "id": "CLI-S3-25",
+      "area": "admin",
+      "action": "Lifecycle rules round-trip",
+      "ds": "S3 (MinIO)",
+      "scenario": "put flat-schema rules (expiration + transition); get echoes them; delete clears (put tolerates provider gaps as SKIP)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "timeline copied + moved intact; unversioned dest refused",
+      "id": "CLI-S3-26",
+      "area": "versions",
+      "action": "Versioned migration (cp/mv --versions)",
+      "ds": "S3 (MinIO)",
+      "scenario": "2 versions at source; cp --versions s3→s3 copies the full timeline; mv --versions moves it; unversioned destination refuses (gate)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "dry-run inert; no-clobber skipped (bytes untouched); --force overwrites",
+      "id": "CLI-S3-27",
+      "area": "transfers",
+      "action": "cp flag contracts: --dry-run / --no-clobber",
+      "ds": "S3 (MinIO)",
+      "scenario": "--dry-run prints the plan but lands nothing (stat 404); --no-clobber skips an overwrite (documented skip semantics: exit 0, object bytes untouched); --force overwrites",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "size/time filters correct",
+      "id": "CLI-S3-28",
+      "area": "search",
+      "action": "find size + time filters",
+      "ds": "S3 (MinIO)",
+      "scenario": "controlled prefix (1 big + 1 small): --larger/--smaller counts; --newer 1h finds both; --older 1h finds none",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "sftp+ftp+webdav tested",
+      "id": "CLI-X-01",
+      "area": "sources",
+      "action": "Add + test remote sources",
+      "ds": "SFTP/FTP/WebDAV",
+      "scenario": "sftp:// and webdav:// URL shorthand + ftp flags; source test dials each",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "10 files on the FTP source",
+      "id": "CLI-X-02",
+      "area": "transfers",
+      "action": "Multi-file copy local→FTP",
+      "ds": "FTP",
+      "scenario": "cp -r fixture tree (10 files: unicode, empty file, nested dirs) → xf://vermu9ufiv2/tree",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "10 files cross-engine, byte-identical",
+      "id": "CLI-X-03",
+      "area": "transfers",
+      "action": "Multi-file copy FTP→S3 (cross-engine)",
+      "ds": "FTP → S3",
+      "scenario": "cp -r the FTP tree into the bucket; count + full byte round-trip back to disk",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "browse + gated delete verified",
+      "id": "CLI-X-04",
+      "area": "objects",
+      "action": "Remote browse + delete gates",
+      "ds": "FTP",
+      "scenario": "ls/du/stat/tree on the remote; rm -r dry-run counts; --force deletes; prefix gone",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "round-trip byte-identical",
+      "id": "CLI-X-05",
+      "area": "transfers",
+      "action": "SFTP round-trip",
+      "ds": "SFTP",
+      "scenario": "upload tree → download tree → byte-identical diff",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "round-trip byte-identical",
+      "id": "CLI-X-06",
+      "area": "transfers",
+      "action": "WebDAV round-trip",
+      "ds": "WebDAV",
+      "scenario": "upload tree → download tree → byte-identical diff",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "moved + verified",
+      "id": "CLI-X-07",
+      "area": "transfers",
+      "action": "Cross-engine move (mv)",
+      "ds": "SFTP → FTP",
+      "scenario": "mv -r sftp tree → ftp; source gone; destination byte-identical",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "encrypted export/import round-trip",
+      "id": "CLI-X-08",
+      "area": "sources",
+      "action": "Export + import sources",
+      "ds": "all",
+      "scenario": "encrypted export (--password); import into a FRESH config lists the same sources",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "tested, removed, gone from both lists",
+      "id": "CLI-X-09",
+      "area": "sources",
+      "action": "Source lifecycle: profile test + remove",
+      "ds": "S3 (MinIO)",
+      "scenario": "add a temp source; profile test dials it (OK + bucket count); source remove drops it from BOTH source list and profile mirror",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "correct listing in 2.1s under latency",
+      "id": "CLI-RES-01",
+      "area": "resilience",
+      "action": "Slow link: latency +600ms/chunk",
+      "ds": "S3 via faultproxy",
+      "scenario": "listing through a delayed proxy completes with correct output, measurably slower",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "clean classified failure",
+      "id": "CLI-RES-02",
+      "area": "resilience",
+      "action": "Dead link: RST mid-session",
+      "ds": "S3 via faultproxy",
+      "scenario": "connection reset → non-zero exit, error classified, no partial success",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "failed cleanly in 8.6s",
+      "id": "CLI-RES-03",
+      "area": "resilience",
+      "action": "Blackhole: endpoint never answers",
+      "ds": "S3 via faultproxy",
+      "scenario": "watchdog timeout within the --timeout budget (no default 5-minute hang)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "1.1.0-beta.15",
+      "id": "CLI-M-01",
+      "area": "meta",
+      "action": "Version identity",
+      "ds": "—",
+      "scenario": "version prints the build version, exit 0",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "exit 2 + labeled",
+      "id": "CLI-M-02",
+      "area": "meta",
+      "action": "Usage-error contract",
+      "ds": "—",
+      "scenario": "unknown command → exit 2, stderr reads \"usage error:\" and points at --help",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "completion scripts emitted: bash, zsh, fish, powershell",
+      "id": "CLI-M-03",
+      "area": "meta",
+      "action": "Shell completion",
+      "ds": "—",
+      "scenario": "completion bash emits a working completion script; other shells answer too",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "v3 stack up, 1.1.0-beta.15",
+      "id": "GUI-01",
+      "area": "gui",
+      "action": "Live stack boots",
+      "ds": "Wails v3 server",
+      "scenario": "server /health ok; page loads; GetVersion binding round-trips the build version",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "tested ✅ and listed",
+      "id": "GUI-02",
+      "area": "sources",
+      "action": "Add S3 source (GUI)",
+      "ds": "S3 (MinIO)",
+      "scenario": "onboarding → editor → Test ✅ → Save → bucket root lists",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "tested ✅ and listed",
+      "id": "GUI-03",
+      "area": "sources",
+      "action": "Add FTP source (GUI)",
+      "ds": "FTP",
+      "scenario": "sidebar + → FTP fields → Test ✅ → Save → root lists",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "2 files FTP→S3 through the GUI",
+      "id": "GUI-04",
+      "area": "transfers",
+      "action": "Multi-file copy FTP→S3 (GUI)",
+      "ds": "FTP → S3",
+      "scenario": "browse FTP seed dir; ctrl-click 2 files; Ctrl+C; open S3 verify-gui/; Ctrl+V; both rows land",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "both files byte-identical",
+      "id": "GUI-05",
+      "area": "transfers",
+      "action": "GUI transfer byte verification",
+      "ds": "FTP → S3",
+      "scenario": "download the GUI-pasted objects via the CLI; bytes match the FTP originals",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "marker deletion verified both faces",
+      "id": "GUI-06",
+      "area": "objects",
+      "action": "Single object deletion (GUI)",
+      "ds": "S3 (MinIO)",
+      "scenario": "CLI-seeded object; row selected; Del → Delete Window (marker default) → confirm; row gone; CLI timeline shows the marker",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "folder created + CLI-verified",
+      "id": "GUI-07",
+      "area": "objects",
+      "action": "New folder (GUI)",
+      "ds": "S3 (MinIO)",
+      "scenario": "empty-area context menu → New folder → prompt; CLI ls shows the marker",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "renamed + CLI-verified",
+      "id": "GUI-08",
+      "area": "objects",
+      "action": "Rename (F2, GUI)",
+      "ds": "S3 (MinIO)",
+      "scenario": "CLI-seeded object; F2 → new name; CLI stat sees the new key",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "unicode filename uploaded, byte-identical",
+      "id": "GUI-10",
+      "area": "transfers",
+      "action": "DnD upload local→S3 (GUI)",
+      "ds": "S3 (MinIO)",
+      "scenario": "dual pane: drag uni-åäö.txt from the local side onto the bucket folder; Start; CLI sees the object; bytes identical",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "downloaded via DnD, byte-identical",
+      "id": "GUI-11",
+      "area": "transfers",
+      "action": "DnD download S3→local (GUI)",
+      "ds": "S3 (MinIO)",
+      "scenario": "drag an S3 row onto the local pane; Start; file lands on disk; bytes identical",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "restored as latest, CLI-verified",
+      "id": "GUI-12",
+      "area": "versions",
+      "action": "Versions dialog: restore as latest",
+      "ds": "S3 (MinIO)",
+      "scenario": "2 CLI-seeded versions; context menu → Versions shows the timeline; Restore as latest on the older one; CLI downloads the restored bytes",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "conflict → Start → new version",
+      "id": "GUI-13",
+      "area": "transfers",
+      "action": "Overwrite conflict dialog",
+      "ds": "S3 (MinIO)",
+      "scenario": "DnD a file onto an existing name → conflict dialog offers Start; confirming creates the next version",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "cancelled; object intact on both faces",
+      "id": "GUI-14",
+      "area": "objects",
+      "action": "Delete Window CANCEL keeps the object",
+      "ds": "S3 (MinIO)",
+      "scenario": "Del on a row opens the Delete Window; Cancel/Esc leaves the object untouched on BOTH faces (the cancellation contract)",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "ladder ran, summary pass",
+      "id": "GUI-15",
+      "area": "admin",
+      "action": "Doctor over the bridge",
+      "ds": "S3 (MinIO)",
+      "scenario": "Help → Doctor → pick the source → run all checks in the popout; summary reports pass; task completes",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "admin panel, 11 tab(s)",
+      "id": "GUI-16",
+      "area": "admin",
+      "action": "Admin dialog (bucket info)",
+      "ds": "S3 (MinIO)",
+      "scenario": "bucket guard in the tree opens the Admin panel; versioning reported; tabs render; close",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "save/close/reject/reopen all good",
+      "id": "GUI-17",
+      "area": "sources",
+      "action": "Profile file round-trip (bindings)",
+      "ds": "Wails v3 server",
+      "scenario": "SaveProfileFileAs → state open; Close → onboarding; wrong password rejected through the bridge; correct password restores the sources",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "popout + dual pane + filter all live",
+      "id": "GUI-18",
+      "area": "gui",
+      "action": "Workbench surfaces: transfer manager + dual pane + filter",
+      "ds": "S3 (MinIO)",
+      "scenario": "View → Transfers opens the manager popout; dual pane toggle; filter box narrows the grid to matching rows and clearing restores them",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "cancel inert; create landed",
+      "id": "GUI-19",
+      "area": "objects",
+      "action": "New file dialog: cancel + create",
+      "ds": "S3 (MinIO)",
+      "scenario": "Shift+F4 prompt (defaults new-file/txt); Cancel creates NOTHING (CLI 404); then create verify-newfile.txt for real; CLI stats it",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "clean console",
+      "id": "GUI-09",
+      "area": "gui",
+      "action": "Page-error gate",
+      "ds": "Wails v3 server",
+      "scenario": "zero uncaught page errors across the whole GUI battery",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "609/609 checks",
+      "id": "SWEEP-VIS-01",
+      "area": "sweeps",
+      "action": "Full visual sweep",
+      "ds": "shim world",
+      "scenario": "node scripts/gui-visual.mjs — every dialog/popout/menu/viewport contract",
+      "face": "SWEEP"
+    },
+    {
+      "result": "PASS",
+      "detail": "142 checks, no page errors",
+      "id": "SWEEP-LIVE-01",
+      "area": "sweeps",
+      "action": "Full live walk",
+      "ds": "real engines",
+      "scenario": "node scripts/gui-v3live.mjs — real bindings, transfers, versions, fault lab",
+      "face": "SWEEP"
+    }
+  ]
+}

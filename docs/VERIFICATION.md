@@ -10,7 +10,9 @@ is recorded **SKIP** — never silently passed.
 
 **Terminology.** *Verification* is the process this page describes; the
 *verification report* (`testartifacts/verification/verification.json`) is
-the machine-readable artifact each run produces. Before every release the
+the machine-readable artifact each run produces — and, in `--release` mode,
+committed release evidence under
+[`docs/verification/`](verification/). Before every release the
 whole matrix is re-verified and the report regenerated — one command, exit
 0 means every critical job still works on the exact binary being shipped.
 
@@ -24,6 +26,8 @@ The release gate — one command verifies everything
   node scripts/verify.mjs --quick     CLI + GUI batteries, sweeps skipped (~3 min)
   node scripts/verify.mjs --skip-gui  CLI + sweeps only (no browser battery)
   node scripts/verify.mjs --no-build  reuse the exes in testartifacts/
+  node scripts/verify.mjs --release <tag>  release evidence: tag-stamped full
+                                      run → docs/verification/<tag>/<os>-<arch>/
 
 Category runs — verify one focus area only
   node scripts/verify.mjs --only <category>    (or npm run verify:only -- <category>)
@@ -187,12 +191,45 @@ reason is written into the verification report:
   the row passes fully — the SKIP is proof of a recorded provider gap,
   not a waived check.
 
+## The release pipeline — no report, no release
+
+Verification needs the live engine containers and a browser, so it runs on
+the release machine, not in CI. The two halves meet in the middle:
+
+1. **Pre-tag (release machine):** `node scripts/verify.mjs --release <tag>`
+   stamps the tag into the binaries exactly as the release workflow does
+   (`main.version=<tag without v>`), runs the full matrix from a fresh
+   build, and writes the committed report —
+   `docs/verification/<tag>/<os>-<arch>/` (`REPORT.md` with build + OS +
+   the certificate, `verification.json` as the machine copy) plus the index
+   at [`docs/verification/README.md`](verification/README.md). Commit the
+   report, then push the tag: the tag must contain its own report.
+2. **Publish (CI):** the release job in
+   [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+   checks out the tagged tree and refuses to publish unless
+   `docs/verification/<tag>/verification.json` exists, is a full-matrix
+   run, and has zero FAIL rows — then links the report at the top of the
+   release notes.
+
+`--release` refuses `--only`/`--quick`/`--no-build`/`--skip-gui` — release
+evidence is always the whole matrix from a fresh build, and its version
+stamp is binary-verified (CLI-M-01 requires the binary to print exactly the
+stamp). The step-by-step checklist lives in CONTRIBUTING.md, "Cutting a
+release".
+
 ## Latest verification report
 
 Replaced on every run — this snapshot is from the verification runs of
-**20 Sep 2026** against `v1.1.0-beta.14-9-wails3` on Windows 11 (x64):
+**20 Sep 2026** on Windows 11 (x64). The release-evidence run for
+`v1.1.0-beta.15` is committed at
+[`docs/verification/v1.1.0-beta.15/windows-x64/REPORT.md`](verification/v1.1.0-beta.15/windows-x64/REPORT.md):
 
 ```
+release evidence (--release v1.1.0-beta.15 — tag-stamped build; 64 rows):
+  63 PASS · 1 SKIP · 0 FAIL — 505 s
+  SWEEP-VIS-01  gui-visual   609/609 checks
+  SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
+dev-stamp runs against `v1.1.0-beta.14-9-wails3`:
 quick run ×3 (back-to-back, identical; the third under the final
   verify.mjs naming):
   61 PASS · 1 SKIP · 0 FAIL — 174 s / 177 s / 187 s

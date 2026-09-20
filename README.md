@@ -182,6 +182,7 @@ Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windo
 - **[Usage guide](docs/usage.md)** — the full walkthrough with screenshots (same content as the in-app guide)
 - **[CLI reference](docs/cli.md)** — every command, generated from the cobra tree
 - **[Security model](docs/security.md)** — keyring, Secure Storage, safety ladder, supply chain
+- **[Verification reports](docs/verification/)** — per-release evidence: the build, the OS, and the full action-verification matrix behind every tag
 - **[Competitive comparison](docs/comparison.md)** — the S3-browser landscape, fact-checked
 - **[CHANGELOG](CHANGELOG.md)** · **[CONTRIBUTING](CONTRIBUTING.md)** · **[Portable edition](README-portable.md)**
 
