@@ -8,6 +8,23 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Action certification: a runnable contract for every critical job.**
+  New `scripts/certify.mjs` executes the whole certification matrix —
+  47 rows across three faces — against the live engine containers
+  (MinIO S3, SFTP, FTP, WebDAV): a CLI battery (sources, versioned
+  buckets, transfers, gated deletion, the version-safety ladder,
+  bucket admin, object lock, presign, sync, doctor, storage class,
+  find, activity log), a cross-engine battery (multi-file copy
+  local→FTP and FTP→S3, SFTP/WebDAV round-trips, cross-engine mv,
+  encrypted source export/import), fault-injected resilience (latency,
+  RST, blackhole through the fault proxy), and a GUI battery that
+  drives the real Wails v3 server stack in a real browser and then
+  verifies the results *back through the CLI* — a GUI green means
+  bytes actually moved. A full run folds the two complete harnesses in
+  as sweep rows (gui-visual 609 checks, gui-v3live 142 checks). Rows
+  whose engines are down are recorded SKIP, never passed; exit 0 =
+  certified. `docs/CERTIFICATION.md` is the human-readable matrix:
+  action × data source × tested scenario × CLI/GUI face × OS.
 - **Context menus can no longer overflow the window.** Menu placement now
   clamps by the menu's *real* rendered width instead of a hardcoded 220px
   guess: wide menus (long localized labels + keyboard hints) opened near
