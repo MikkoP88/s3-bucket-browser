@@ -1804,8 +1804,15 @@ async function guiBattery() {
     let found = false;
     for (let i = 0; i < nTabs && !found; i++) {
       await page.locator('#modal-root .tab').nth(i).click();
-      await sleep(150);
       found = /empty bucket \(all versions\)/i.test(await modalText());
+      if (!found) {
+        // tab content can render a beat late under load — give each tab a
+        // short grace window before concluding the tool is not there
+        try {
+          await waitFor(async () => /empty bucket \(all versions\)/i.test(await modalText()), 1500, 'tab render');
+          found = true;
+        } catch { /* not this tab */ }
+      }
     }
     need(found, 'no Empty-bucket tool in any admin tab');
     await shot('22-l2-typed-window');
