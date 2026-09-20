@@ -238,7 +238,7 @@ Replaced on every run — this snapshot is from the verification runs of
 
 ```
 release evidence (--release v1.1.0-beta.15 — tag-stamped build; 76 rows):
-  74 PASS · 2 SKIP · 0 FAIL — 652 s
+  74 PASS · 2 SKIP · 0 FAIL — 667 s
   (the 2 SKIPs = lifecycle put + SSE-S3, the recorded MinIO provider gaps)
   SWEEP-VIS-01  gui-visual   609/609 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors

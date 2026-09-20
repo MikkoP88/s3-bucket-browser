@@ -1,14 +1,14 @@
 {
   "version": "1.1.0-beta.15",
   "tag": "v1.1.0-beta.15",
-  "commit": "cdc9fc5",
-  "commitSubject": "Rename certification -> verification across the release gate",
+  "commit": "4a91fe7",
+  "commitSubject": "Verification: de-flake GUI-22 admin-tab scan (per-tab render grace)",
   "os": "Windows_NT 10.0.26100 (x64)",
   "osId": "windows-x64",
   "node": "v24.12.0",
-  "generatedAt": "2026-09-20T13:28:13.575Z",
-  "runId": "vermu9ufiv2",
-  "bucket": "verify-mu9ufiv2",
+  "generatedAt": "2026-09-20T15:11:02.930Z",
+  "runId": "vermu9y0a82",
+  "bucket": "verify-mu9y0a82",
   "category": "all",
   "faces": [
     "CLI",
@@ -16,11 +16,11 @@
     "SWEEP"
   ],
   "summary": {
-    "total": 64,
-    "pass": 63,
+    "total": 76,
+    "pass": 74,
     "fail": 0,
-    "skip": 1,
-    "seconds": 505
+    "skip": 2,
+    "seconds": 667
   },
   "rows": [
     {
@@ -35,7 +35,7 @@
     },
     {
       "result": "PASS",
-      "detail": "verify-mu9ufiv2 created, versioning on",
+      "detail": "verify-mu9y0a82 created, versioning on",
       "id": "CLI-S3-02",
       "area": "buckets",
       "action": "Create versioned bucket",
@@ -305,6 +305,66 @@
     },
     {
       "result": "PASS",
+      "detail": "32 MiB multipart round-trip sha256-identical in 2.2s",
+      "id": "CLI-S3-29",
+      "area": "transfers",
+      "action": "Multipart large-object round-trip",
+      "ds": "S3 (MinIO)",
+      "scenario": "32 MiB random object (7+ multipart parts at the 5 MiB part size) uploads and downloads back sha256-identical — integrity is byte-level, not size-level",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "1006 objects listed exactly across the 1000-key boundary; mass delete clean",
+      "id": "CLI-S3-30",
+      "area": "objects",
+      "action": "Pagination across the 1000-key page boundary",
+      "ds": "S3 (MinIO)",
+      "scenario": "1006 objects (incl. one empty) — recursive ls must return every one across the S3 1000-key page boundary, then a gated mass delete clears them all",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "9 hostile keys exact-listed; legal set byte-identical; %2F presigned clean",
+      "id": "CLI-S3-31",
+      "area": "objects",
+      "action": "Hostile key names round-trip",
+      "ds": "S3 (MinIO)",
+      "scenario": "spaces, unicode, %2F-literal, + = &, leading dot, 150-char names, 12-deep nesting, quotes — exact-name listing, per-key stat, byte round-trip, and a presigned fetch of the %2F hazard",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "5 parallel ops byte-exact; race → 2 clean versions, latest intact",
+      "id": "CLI-S3-32",
+      "area": "transfers",
+      "action": "Concurrency: parallel workload + same-key race",
+      "ds": "S3 (MinIO)",
+      "scenario": "5 CLI processes at once (3 uploads, 1 download, 1 listing) all succeed byte-exact; two simultaneous writes to ONE key serialize into clean versions — never a torn object",
+      "face": "CLI"
+    },
+    {
+      "result": "SKIP",
+      "detail": "provider gap — SSE rejected: error: C:\\Projects\\s3-bucket-browser\\testartifacts\\verification\\fixtures\\data\\root-1.txt: operation error S3: PutObject, https response error StatusCode: 501, RequestID: 18D70FA1734549EA, HostID: dd9025bab4ad464b049177c95eb6ebf374d3b3fd1af9251148b658df7ac2e3e8, api error NotImplemented: Server side encryption specified but KMS is not configured (KMS not configured for a server side encrypted objects)",
+      "id": "CLI-S3-33",
+      "area": "transfers",
+      "action": "SSE-S3 server-side encryption (--sse AES256)",
+      "ds": "S3 (MinIO)",
+      "scenario": "cp --sse AES256 uploads with the SSE header; the object round-trips byte-identical (SKIP records a provider gap when the engine rejects SSE)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "2s grant: served, then refused (HTTP 403) after expiry",
+      "id": "CLI-S3-34",
+      "area": "security",
+      "action": "Presign expiry: granted TTL + fails closed",
+      "ds": "S3 (MinIO)",
+      "scenario": "a 2-second grant: the URL itself must carry exactly X-Amz-Expires=2 and serve while live; after expiry the SAME URL must be refused (providers with a clock-skew grace that keeps serving record the gap as SKIP)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
       "detail": "sftp+ftp+webdav tested",
       "id": "CLI-X-01",
       "area": "sources",
@@ -320,7 +380,7 @@
       "area": "transfers",
       "action": "Multi-file copy local→FTP",
       "ds": "FTP",
-      "scenario": "cp -r fixture tree (10 files: unicode, empty file, nested dirs) → xf://vermu9ufiv2/tree",
+      "scenario": "cp -r fixture tree (10 files: unicode, empty file, nested dirs) → xf://vermu9y0a82/tree",
       "face": "CLI"
     },
     {
@@ -415,12 +475,22 @@
     },
     {
       "result": "PASS",
-      "detail": "failed cleanly in 8.6s",
+      "detail": "failed cleanly in 8.8s",
       "id": "CLI-RES-03",
       "area": "resilience",
       "action": "Blackhole: endpoint never answers",
       "ds": "S3 via faultproxy",
       "scenario": "watchdog timeout within the --timeout budget (no default 5-minute hang)",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "kill left no visible object; retry sha-identical",
+      "id": "CLI-RES-04",
+      "area": "resilience",
+      "action": "Hard kill mid-upload: no partial object",
+      "ds": "S3 via faultproxy",
+      "scenario": "a 64 MiB upload killed mid-flight (process termination) must land NO object — no corrupt or half-written key ever becomes visible; the clean retry is byte-identical",
       "face": "CLI"
     },
     {
@@ -451,6 +521,16 @@
       "action": "Shell completion",
       "ds": "—",
       "scenario": "completion bash emits a working completion script; other shells answer too",
+      "face": "CLI"
+    },
+    {
+      "result": "PASS",
+      "detail": "secret absent from all 6 surfaces (6 produced output)",
+      "id": "CLI-M-04",
+      "area": "security",
+      "action": "Secrets never printed",
+      "ds": "S3 (MinIO)",
+      "scenario": "a source with a distinctive secret key: every output surface — source list (text + json), source test, the 403 transfer path, profile list, activity log — must run but never echo the secret, even on failure paths",
       "face": "CLI"
     },
     {
@@ -631,6 +711,46 @@
       "action": "New file dialog: cancel + create",
       "ds": "S3 (MinIO)",
       "scenario": "Shift+F4 prompt (defaults new-file/txt); Cancel creates NOTHING (CLI 404); then create verify-newfile.txt for real; CLI stats it",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "skip kept v1 untouched; rename landed \"b (1).txt\" with the new bytes",
+      "id": "GUI-20",
+      "area": "transfers",
+      "action": "Conflict matrix: per-file skip + rename",
+      "ds": "S3 (MinIO)",
+      "scenario": "both dragged files conflict; a.txt→skip keeps v1 untouched (still 1 version, original bytes); b.txt→rename keeps the original AND lands the new bytes beside it",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "canceled job left no object; retry sha-identical",
+      "id": "GUI-21",
+      "area": "transfers",
+      "action": "Cancel mid-transfer: no corrupt object; retry clean",
+      "ds": "S3 (MinIO)",
+      "scenario": "8 MiB upload throttled to 256 kB/s; Cancel while running → job canceled and the object ABSENT (no partial lands); the unthrottled retry is sha-identical",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "wrong word disabled; cancel preserved everything",
+      "id": "GUI-22",
+      "area": "gates",
+      "action": "L2 identity gate: Empty-bucket window",
+      "ds": "S3 (MinIO)",
+      "scenario": "the destructive Empty-bucket window demands the bucket's OWN name: a wrong word keeps the destructive button disabled; Cancel preserves every object",
+      "face": "GUI"
+    },
+    {
+      "result": "PASS",
+      "detail": "edit auto-uploaded and round-tripped (verify-gui/edit/verify-edit.cmd)",
+      "id": "GUI-23",
+      "area": "objects",
+      "action": "Editor auto-upload round-trip (bridge)",
+      "ds": "S3 (MinIO)",
+      "scenario": "EditObject stages the object, hands it to the OS (an inert .cmd probe file — the handoff is real but the \"editor\" is a no-op) and watches: bytes written to the staged file upload automatically; StopEdit ends the session",
       "face": "GUI"
     },
     {

@@ -12,4 +12,4 @@ report in the release notes.
 
 | Release | OS | Date (UTC) | Result | Checks | Report |
 |---|---|---|---|---|---|
-| [v1.1.0-beta.15](v1.1.0-beta.15/) | windows-x64 | 2026-09-20 | PASS | 63 PASS · 1 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.15/windows-x64/REPORT.md) |
+| [v1.1.0-beta.15](v1.1.0-beta.15/) | windows-x64 | 2026-09-20 | PASS | 74 PASS · 2 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.15/windows-x64/REPORT.md) |
