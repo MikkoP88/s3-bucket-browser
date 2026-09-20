@@ -9,24 +9,24 @@ is claimed. A row that cannot run (engine container down, provider API gap)
 is recorded **SKIP** — never silently passed.
 
 **Terminology.** *Verification* is the process this page describes; the
-*certificate* (`testartifacts/certification/certificate.json`) is the
-machine-readable artifact each run produces. Before every release the whole
-matrix is re-verified and the certificate regenerated — one command, exit
+*verification report* (`testartifacts/verification/verification.json`) is
+the machine-readable artifact each run produces. Before every release the
+whole matrix is re-verified and the report regenerated — one command, exit
 0 means every critical job still works on the exact binary being shipped.
 
 This page is the contract. Every row in the tables below is executed by
-[`scripts/certify.mjs`](../scripts/certify.mjs).
+[`scripts/verify.mjs`](../scripts/verify.mjs).
 
 ```
 The release gate — one command verifies everything
-  node scripts/certify.mjs             full run: CLI + GUI + both sweeps
-  npm run certify                      same, via npm
-  node scripts/certify.mjs --quick     CLI + GUI batteries, sweeps skipped (~3 min)
-  node scripts/certify.mjs --skip-gui  CLI + sweeps only (no browser battery)
-  node scripts/certify.mjs --no-build  reuse the exes in testartifacts/
+  node scripts/verify.mjs             full run: CLI + GUI + both sweeps
+  npm run verify                      same, via npm
+  node scripts/verify.mjs --quick     CLI + GUI batteries, sweeps skipped (~3 min)
+  node scripts/verify.mjs --skip-gui  CLI + sweeps only (no browser battery)
+  node scripts/verify.mjs --no-build  reuse the exes in testartifacts/
 
 Category runs — verify one focus area only
-  node scripts/certify.mjs --only <category>    (or npm run certify:only -- <category>)
+  node scripts/verify.mjs --only <category>    (or npm run verify:only -- <category>)
     cli          all four CLI batteries (s3 + cross + resilience + meta)
     s3           the MinIO/S3 CLI battery
     cross        cross-engine battery (FTP / SFTP / WebDAV)
@@ -34,11 +34,11 @@ Category runs — verify one focus area only
     meta         binary-level contracts (version, usage errors, completion)
     gui          the full GUI battery (real Wails v3 stack in a browser)
     sweeps       just the two harness sweeps
-  npm run certify:cli | certify:gui    shorthands for the two common foci
+  npm run verify:cli | verify:gui      shorthands for the two common foci
 
 Rules
   Repeat a run — results must be identical (repeatability is part of the
-  certificate). Exit 0 = verified, exit 1 = at least one FAIL, exit 2 =
+  report). Exit 0 = verified, exit 1 = at least one FAIL, exit 2 =
   bad invocation (e.g. unknown --only category). Categories map to whole
   batteries, never row slices: rows depend on state built by earlier rows
   in their battery, so a battery is the smallest safe unit. The two sweep
@@ -60,21 +60,21 @@ Faces
   SWEEP — the two full harnesses re-run as subprocesses:
           scripts/gui-visual.mjs (visual/dialog/viewport contracts)
           scripts/gui-v3live.mjs (live checks: transfers, versions,
-          fault lab) — folded into the certificate as summary rows.
+          fault lab) — folded into the verification report as summary rows.
 ```
 
 The matrix below was last verified on **Windows 11 (x64)** with Node 24.
 The runner is platform-portable: same containers, same rows, the OS column
-reflects where the certificate was produced.
+reflects where the report was produced.
 
 ---
 
 ## Verified actions
 
-Legend — the **CLI**/**GUI** columns name the certificate row that covers
+Legend — the **CLI**/**GUI** columns name the verification row that covers
 the action on that face (`✅` = passed in the latest run, `—` = that face
 does not expose the action as a one-step flow; where the live sweep covers
-it, the sweep row is named). **OS** is the platform the certificate ran on.
+it, the sweep row is named). **OS** is the platform the verification ran on.
 
 ### Sources
 
@@ -176,7 +176,7 @@ switching; the same S3 source stays connected through it).
 ## SKIP policy — honest gaps, never silent passes
 
 A row records **SKIP** only for conditions outside s3b's control, and the
-reason is written into the certificate:
+reason is written into the verification report:
 
 - **Engine down** — a container (SFTP/FTP/WebDAV) is not reachable; the
   cross-engine rows SKIP instead of failing.
@@ -187,24 +187,25 @@ reason is written into the certificate:
   the row passes fully — the SKIP is proof of a recorded provider gap,
   not a waived check.
 
-## Latest certificate
+## Latest verification report
 
 Replaced on every run — this snapshot is from the verification runs of
 **20 Sep 2026** against `v1.1.0-beta.14-9-wails3` on Windows 11 (x64):
 
 ```
-quick run ×2 (back-to-back, identical):
-  61 PASS · 1 SKIP · 0 FAIL — 174 s / 177 s
+quick run ×3 (back-to-back, identical; the third under the final
+  verify.mjs naming):
+  61 PASS · 1 SKIP · 0 FAIL — 174 s / 177 s / 187 s
   (the 1 SKIP = lifecycle put, the recorded MinIO provider gap above)
 full run (quick batteries + both sweeps), ×2 back-to-back:
   63 PASS · 1 SKIP · 0 FAIL — 494 s / 500 s   (64 rows)
   SWEEP-VIS-01  gui-visual   609/609 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
-category smoke: --only meta → 3 PASS · 0 FAIL in 3 s, certificate stamped
+category smoke: --only meta → 3 PASS · 0 FAIL in 3 s, report stamped
   category: meta; unknown --only category → exit 2 with the category list
 ```
 
-Run it yourself: `node scripts/certify.mjs` and read the table it prints,
-plus `testartifacts/certification/certificate.json` for the machine copy
+Run it yourself: `node scripts/verify.mjs` and read the table it prints,
+plus `testartifacts/verification/verification.json` for the machine copy
 (fields: version, os, node, runId, bucket, category, summary, rows — one
 entry per row with result and detail).
