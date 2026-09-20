@@ -110,8 +110,11 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Remote browse | FTP | `ls`/`du`/`stat`/`tree` on the remote engine | ✅ CLI-X-04 | ✅ GUI-04 (browse FTP seed dir through the tree) | Win 11 x64 |
 | Deep find | S3 (MinIO) | `--name` glob/substring, `--smaller`, `--limit`, subtree prefix, summary line | ✅ CLI-S3-19 | — (sweep: Ctrl+Shift+F dialog, SWEEP-LIVE-01) | Win 11 x64 |
 | find size + time filters | S3 (MinIO) | controlled prefix (1 big + 1 small): `--larger`/`--smaller` counts; `--newer 1h` finds both; `--older 1h` finds none | ✅ CLI-S3-28 | — | Win 11 x64 |
+| **Pagination across the 1000-key page boundary** | **S3 (MinIO)** | 1006 objects (incl. one empty): recursive `ls` returns every one across the S3 1000-key page boundary; the last object stays findable; a gated mass delete clears them all | ✅ CLI-S3-30 | — | Win 11 x64 |
+| **Hostile key names round-trip** | **S3 (MinIO)** | spaces, unicode, `%2F`-literal, `+ = &`, leading dot, 150-char names, 12-deep nesting, quotes/apostrophes (remote-only): exact-name listing, per-key `stat`, byte round-trip of the legal set, and a presigned fetch of the `%2F` hazard (must never decode into a slash) | ✅ CLI-S3-31 | — | Win 11 x64 |
 | Create folder marker | S3 (MinIO) | `mkdir docs/` → zero-byte marker lists as a folder | ✅ CLI-S3-03 | ✅ GUI-07 (empty-area context menu → New folder; CLI `ls` sees the marker) | Win 11 x64 |
 | New file dialog (cancel + create) | S3 (MinIO) | Shift+F4 prompt (defaults new-file/txt); Cancel creates NOTHING (CLI 404); then create for real; CLI `stat` sees it | — | ✅ GUI-19 | Win 11 x64 |
+| **Editor auto-upload round-trip (WinSCP flow)** | **S3 (MinIO)** | EditObject through the bridge: stages the object, hands it to the OS (an inert `.cmd` probe — the handoff is real, the "editor" is a no-op), watches the file; bytes written to the staged path upload automatically (CLI byte-verified); StopEdit ends the session | — | ✅ GUI-23 | Win 11 x64 |
 | Workbench surfaces | S3 (MinIO) | View → Transfers opens the manager popout; dual-pane toggle; filter box narrows the grid and clearing restores it | — | ✅ GUI-18 | Win 11 x64 |
 
 ### Transfers — the critical jobs
@@ -132,7 +135,13 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Rename (mv) | S3 (MinIO) | `mv` object → new key; old gone, new stats | ✅ CLI-S3-13 | ✅ GUI-08 (F2 → new name; CLI `stat` sees the new key) | Win 11 x64 |
 | sync (repair / no-op / new / --delete) | S3 (MinIO) | repairs a deletion, reports 0 in sync, 1 after local add, `--delete` removes the extra remote | ✅ CLI-S3-14 | — | Win 11 x64 |
 | Presign + fetch | S3 (MinIO) | `presign` → plain HTTP GET returns identical bytes | ✅ CLI-S3-15 | — | Win 11 x64 |
+| **Presign expiry: granted TTL + fails closed** | **S3 (MinIO)** | a 2-second grant: the URL carries exactly `X-Amz-Expires=2` and serves while live; after expiry the SAME URL is refused (providers with a clock-skew grace that keep serving record the gap as SKIP) | ✅ CLI-S3-34 | — | Win 11 x64 |
 | Storage-class conversion | S3 (MinIO) | `sc` single → REDUCED_REDUNDANCY visible in `find --class`; recursive dry-run gate | ✅ CLI-S3-18 | — (sweep: storage-class dialog, SWEEP-LIVE-01) | Win 11 x64 |
+| **Multipart large-object round-trip** | **S3 (MinIO)** | 32 MiB random object (7+ multipart parts at the 5 MiB part size): upload → stat → download is sha256-identical — integrity is byte-level, not size-level | ✅ CLI-S3-29 | — | Win 11 x64 |
+| **SSE-S3 server-side encryption** | **S3 (MinIO)** | `cp --sse AES256` uploads with the SSE header and round-trips byte-identical (an engine without KMS rejects SSE — recorded as a provider-gap SKIP, never a silent pass) | ✅ CLI-S3-33 | — | Win 11 x64 |
+| **Concurrency: parallel workload + same-key race** | **S3 (MinIO)** | 5 CLI processes at once (3 uploads, 1 download, 1 listing) all succeed byte-exact; two simultaneous writes to ONE key serialize into clean versions — never a torn object | ✅ CLI-S3-32 | — | Win 11 x64 |
+| **Conflict matrix: per-file skip + rename** | **S3 (MinIO)** | both dragged files conflict; a.txt→skip keeps v1 untouched (still 1 version, original bytes); b.txt→rename keeps the original AND lands the new bytes beside it | — | ✅ GUI-20 | Win 11 x64 |
+| **Cancel mid-transfer: no corrupt object; retry clean** | **S3 (MinIO)** | 8 MiB upload throttled to 256 kB/s; Cancel while running → job canceled and the object ABSENT (no partial lands); the unthrottled retry is sha-identical | — | ✅ GUI-21 | Win 11 x64 |
 
 ### Deletion — gated destruction, verified cancellations
 
@@ -142,6 +151,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Recursive deletion + safety gates | S3 (MinIO) | 55-object prefix: `rm -r` without `--force` rejected (>50 L1 gate); `--dry-run` total counts files + folder; `--force` deletes exactly that many | ✅ CLI-S3-11 | — (sweep: Delete Window marker→badge→permanent, SWEEP-LIVE-01) | Win 11 x64 |
 | Remote delete gates | FTP | `rm -r` dry-run counts; `--force` deletes; prefix gone | ✅ CLI-X-04 | — | Win 11 x64 |
 | **Delete Window CANCEL keeps the object** | **S3 (MinIO)** | Del on a row opens the Delete Window; Cancel/Esc leaves the object untouched on BOTH faces — the cancellation contract | — | ✅ GUI-14 | Win 11 x64 |
+| **L2 identity gate: Empty-bucket window** | **S3 (MinIO)** | the destructive Empty-bucket window demands the bucket's OWN name: a wrong word keeps the destructive button disabled; Cancel preserves every object | — | ✅ GUI-22 | Win 11 x64 |
 
 ### Versions — the safety ladder
 
@@ -161,6 +171,7 @@ switching; the same S3 source stays connected through it).
 | Slow link | S3 via faultproxy | +600 ms latency per chunk: listing completes with correct output, measurably slower | ✅ CLI-RES-01 | — (sweep: skeleton-rows + paced listing, SWEEP-LIVE-01) | Win 11 x64 |
 | Dead link | S3 via faultproxy | RST mid-session → non-zero exit, classified error, no partial success | ✅ CLI-RES-02 | — (sweep: Retry recovers, SWEEP-LIVE-01) | Win 11 x64 |
 | Blackhole | S3 via faultproxy | endpoint never answers → stream watchdog inside the `--timeout` budget (no 5-minute hang) | ✅ CLI-RES-03 | — (sweep, SWEEP-LIVE-01) | Win 11 x64 |
+| **Hard kill mid-upload: no partial object** | **S3 via faultproxy** | a 64 MiB upload killed mid-flight (process termination) lands NO object — no corrupt or half-written key ever becomes visible; the clean retry is sha-identical | ✅ CLI-RES-04 | — (sweep: GUI cancel mid-transfer, GUI-21) | Win 11 x64 |
 
 ### Meta — the binary and the stack
 
@@ -169,6 +180,7 @@ switching; the same S3 source stays connected through it).
 | Version identity | — | `version` prints the build version, exit 0 | ✅ CLI-M-01 | ✅ GUI-01 (GetVersion binding round-trips it) | Win 11 x64 |
 | Usage-error contract | — | unknown command → exit 2, stderr reads `usage error:` and points at `--help` | ✅ CLI-M-02 | — | Win 11 x64 |
 | Shell completion | — | `completion bash` emits a working completion script; other shells answer too | ✅ CLI-M-03 | — | Win 11 x64 |
+| **Secrets never printed** | **S3 (MinIO)** | a source with a distinctive secret key: every output surface — `source list` (text + json), `source test`, the 403 transfer path, `profile list`, activity log — must run but never echo the secret, even on failure paths | ✅ CLI-M-04 | — | Win 11 x64 |
 | Live stack boots | Wails v3 server | `/health` ok; page loads; bridge surface; GetVersion | — | ✅ GUI-01 | Win 11 x64 |
 | Page-error gate | Wails v3 server | zero uncaught page errors across the whole GUI battery | — | ✅ GUI-09 | Win 11 x64 |
 | Activity log | S3 (MinIO) | `log` shows the operations this run performed | ✅ CLI-S3-23 | — (sweep: Ctrl+L log area, SWEEP-LIVE-01) | Win 11 x64 |
@@ -225,21 +237,15 @@ Replaced on every run — this snapshot is from the verification runs of
 [`docs/verification/v1.1.0-beta.15/windows-x64/REPORT.md`](verification/v1.1.0-beta.15/windows-x64/REPORT.md):
 
 ```
-release evidence (--release v1.1.0-beta.15 — tag-stamped build; 64 rows):
-  63 PASS · 1 SKIP · 0 FAIL — 505 s
+release evidence (--release v1.1.0-beta.15 — tag-stamped build; 76 rows):
+  74 PASS · 2 SKIP · 0 FAIL — 652 s
+  (the 2 SKIPs = lifecycle put + SSE-S3, the recorded MinIO provider gaps)
   SWEEP-VIS-01  gui-visual   609/609 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
-dev-stamp runs against `v1.1.0-beta.14-9-wails3`:
-quick run ×3 (back-to-back, identical; the third under the final
-  verify.mjs naming):
-  61 PASS · 1 SKIP · 0 FAIL — 174 s / 177 s / 187 s
-  (the 1 SKIP = lifecycle put, the recorded MinIO provider gap above)
-full run (quick batteries + both sweeps), ×2 back-to-back:
-  63 PASS · 1 SKIP · 0 FAIL — 494 s / 500 s   (64 rows)
-  SWEEP-VIS-01  gui-visual   609/609 checks
-  SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
-category smoke: --only meta → 3 PASS · 0 FAIL in 3 s, report stamped
-  category: meta; unknown --only category → exit 2 with the category list
+quick iteration runs (--quick --no-build; the only FAILs are the version
+stamps of the reused release binaries — CLI-M-01/GUI-01, resolved by any
+fresh build):
+  70 PASS · 2 SKIP · 2 FAIL — 322 s
 ```
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,

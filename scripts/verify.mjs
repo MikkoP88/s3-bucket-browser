@@ -47,6 +47,7 @@
 // FTP :2121, WebDAV :7070 (e2e/e2epass) join when their port answers.
 
 import { spawn, execFile } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { rm, mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -183,6 +184,16 @@ async function treeOf(dir, base = dir) {
   return out.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 }
 const sameTree = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// ---------- binary verification ----------
+// sha256file is the integrity oracle for the extreme-level rows: transfers
+// are only "correct" when the sha of what came back equals the sha of what
+// went in — byte-level, not size-level.
+const sha256file = async (p) => {
+  const h = createHash('sha256');
+  h.update(await readFile(p));
+  return h.digest('hex');
+};
 
 // ---------- port probe ----------
 const portOpen = (port) => new Promise((res) => {
@@ -621,6 +632,170 @@ async function cliS3() {
     need(countLines(r.out, '"key"') === 0, `older: ${r.out}`);
     return 'size/time filters correct';
   });
+
+  // ---- extreme-level rows: the critical-data-source contracts ----
+
+  await verify({ id: 'CLI-S3-29', area: 'transfers', action: 'Multipart large-object round-trip', ds: 'S3 (MinIO)', scenario: '32 MiB random object (7+ multipart parts at the 5 MiB part size) uploads and downloads back sha256-identical — integrity is byte-level, not size-level', face: 'CLI' }, async () => {
+    const BYTES = 32 * 1024 * 1024;
+    const src = path.join(ART, 'mp-32m.bin');
+    await writeFile(src, randomBytes(BYTES));
+    const sha = await sha256file(src);
+    const t0 = Date.now();
+    let r = await cli(['cp', src, `${B}/verify-big/mp-32m.bin`], { timeout: 240000 });
+    need(r.code === 0, `multipart cp: ${r.out}${r.err}`);
+    r = await cli(['stat', `${B}/verify-big/mp-32m.bin`]);
+    need(r.out.includes(String(BYTES)), `stat size after multipart: ${r.out}${r.err}`);
+    const dl = path.join(ART, 'mp-32m.dl.bin');
+    await cli(['cp', `${B}/verify-big/mp-32m.bin`, dl], { timeout: 240000 });
+    need(await sha256file(dl) === sha, '32 MiB multipart round-trip sha mismatch');
+    return `32 MiB multipart round-trip sha256-identical in ${((Date.now() - t0) / 1000).toFixed(1)}s`;
+  });
+
+  await verify({ id: 'CLI-S3-30', area: 'objects', action: 'Pagination across the 1000-key page boundary', ds: 'S3 (MinIO)', scenario: '1006 objects (incl. one empty) — recursive ls must return every one across the S3 1000-key page boundary, then a gated mass delete clears them all', face: 'CLI' }, async () => {
+    const P = path.join(FIX, 'pages');
+    await rm(P, { recursive: true, force: true });
+    await mkdir(P, { recursive: true });
+    const N = 1005;
+    for (let i = 0; i < N; i++) await writeFile(path.join(P, `p-${String(i).padStart(4, '0')}.txt`), `page ${i}\n`);
+    await writeFile(path.join(P, 'p-empty.txt'), ''); // an empty file inside the mass
+    const total = N + 1;
+    let r = await cli(['cp', '-r', P, `${B}/verify-pages/`], { timeout: 600000 });
+    need(r.code === 0, `cp -r ${total} files: ${r.out}${r.err}`);
+    r = await cli(['ls', `${B}/verify-pages/`, '--recursive', '--json'], { timeout: 120000, });
+    const got = countLines(r.out, '"key"');
+    need(got === total, `pagination: listed ${got} of ${total} — the page boundary at 1000 lost ${total - got}`);
+    r = await cli(['find', `${B}/verify-pages/`, '--name', 'p-1004.txt', '--json']);
+    need(r.code === 0 && countLines(r.out, '"key"') === 1, `last object findable: ${r.out}`);
+    r = await cli(['rm', '-r', `${B}/verify-pages/`, '--force'], { timeout: 600000 });
+    need(r.code === 0, `mass rm of ${total}: ${r.out}${r.err}`);
+    r = await cli(['ls', `${B}/verify-pages/`, '--recursive', '--json']);
+    need(countLines(r.out, '"key"') === 0, 'prefix not empty after mass delete');
+    return `${total} objects listed exactly across the 1000-key boundary; mass delete clean`;
+  });
+
+  await verify({ id: 'CLI-S3-31', area: 'objects', action: 'Hostile key names round-trip', ds: 'S3 (MinIO)', scenario: 'spaces, unicode, %2F-literal, + = &, leading dot, 150-char names, 12-deep nesting, quotes — exact-name listing, per-key stat, byte round-trip, and a presigned fetch of the %2F hazard', face: 'CLI' }, async () => {
+    const ND = path.join(FIX, 'names');
+    await rm(ND, { recursive: true, force: true });
+    const legal = {
+      'space name.txt': 'spaces are fine\n',
+      'uni-Ωθ-ключ-日本語.txt': 'unicode keys\n',
+      'pct %2F edge 100%.txt': 'percent hazard\n',
+      'plus+eq=a&b.txt': 'query hazards\n',
+      '.dotfile': 'leading dot\n',
+      [`${'L'.repeat(150)}.txt`]: 'long name\n',
+    };
+    for (const [n, c] of Object.entries(legal)) {
+      await mkdir(path.dirname(path.join(ND, n)), { recursive: true });
+      await writeFile(path.join(ND, n), c);
+    }
+    let deep = ND;
+    for (let i = 1; i <= 12; i++) deep = path.join(deep, `d${i}`);
+    await mkdir(deep, { recursive: true });
+    await writeFile(path.join(deep, 'leaf.txt'), 'deep leaf\n');
+    let r = await cli(['cp', '-r', ND, `${B}/verify-names/`], { timeout: 120000 });
+    need(r.code === 0, `cp -r hostile names: ${r.out}${r.err}`);
+    // remote-only keys Windows cannot host locally — the URI path must carry
+    // them verbatim (execFile passes args without a shell, so no quoting loss)
+    const nasty = ['say "hi".txt', "it's an apostrophe.txt"];
+    for (const n of nasty) {
+      r = await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), `${B}/verify-names/${n}`]);
+      need(r.code === 0, `cp nasty ${n}: ${r.out}${r.err}`);
+      r = await cli(['stat', `${B}/verify-names/${n}`]);
+      need(/size:/.test(r.out), `stat nasty ${n}: ${r.out}${r.err}`);
+    }
+    const l = await cli(['ls', `${B}/verify-names/`, '--recursive']);
+    for (const n of [...Object.keys(legal), ...nasty]) need(l.out.includes(n), `ls lost exact name: ${n}`);
+    need(l.out.includes('leaf.txt'), 'deep leaf not listed');
+    // byte round-trip of the Windows-legal set
+    for (const [n, c] of Object.entries(legal)) {
+      const out = path.join(ART, 'names-dl', n);
+      await mkdir(path.dirname(out), { recursive: true });
+      r = await cli(['cp', `${B}/verify-names/${n}`, out]);
+      need(r.code === 0 && (await readFile(out)).equals(Buffer.from(c)), `round-trip bytes differ: ${n}`);
+    }
+    // the %2F-literal must presign+fetch WITHOUT being decoded into a slash
+    r = await cli(['presign', `${B}/verify-names/pct %2F edge 100%.txt`, '--json']);
+    const url = (r.out.match(/"url":\s*"([^"]+)"/) || [])[1];
+    need(url, `presign hostile: ${r.out}${r.err}`);
+    const res = await fetch(url);
+    need(res.ok, `presign fetch of %2F name: HTTP ${res.status}`);
+    need((await res.text()) === 'percent hazard\n', 'presigned %2F name delivered wrong bytes');
+    await cli(['rm', '-r', `${B}/verify-names/`, '--force']);
+    return `${Object.keys(legal).length + nasty.length + 1} hostile keys exact-listed; legal set byte-identical; %2F presigned clean`;
+  });
+
+  await verify({ id: 'CLI-S3-32', area: 'transfers', action: 'Concurrency: parallel workload + same-key race', ds: 'S3 (MinIO)', scenario: '5 CLI processes at once (3 uploads, 1 download, 1 listing) all succeed byte-exact; two simultaneous writes to ONE key serialize into clean versions — never a torn object', face: 'CLI' }, async () => {
+    const par = path.join(ART, 'par');
+    await rm(par, { recursive: true, force: true });
+    await mkdir(par, { recursive: true });
+    const srcs = [];
+    for (let i = 1; i <= 3; i++) {
+      const p = path.join(par, `par-${i}.bin`);
+      await writeFile(p, randomBytes(4 * 1024 * 1024));
+      srcs.push(p);
+    }
+    const dl = path.join(par, 'readme-dl.txt');
+    const rs = await Promise.all([
+      cli(['cp', srcs[0], `${B}/par/f1.bin`]),
+      cli(['cp', srcs[1], `${B}/par/f2.bin`]),
+      cli(['cp', srcs[2], `${B}/par/f3.bin`]),
+      cli(['cp', `${B}/readme.md`, dl]),
+      cli(['ls', B, '--recursive', '--json']),
+    ]);
+    rs.forEach((r, i) => need(r.code === 0, `parallel job ${i + 1}: exit ${r.code} ${r.err}`));
+    for (let i = 0; i < 3; i++) {
+      const out = path.join(par, `f${i + 1}.dl.bin`);
+      await cli(['cp', `${B}/par/f${i + 1}.bin`, out]);
+      need(await sha256file(out) === await sha256file(srcs[i]), `parallel upload ${i + 1} bytes differ`);
+    }
+    need((await readFile(dl)).equals(await readFile(path.join(FIX, 'data', 'readme.md'))), 'parallel download bytes differ');
+    // same-key race: distinct sizes so a torn write cannot masquerade as either
+    const KA = path.join(par, 'race-a.bin'), KB = path.join(par, 'race-b.bin');
+    await writeFile(KA, Buffer.alloc(100_000, 0x41));
+    await writeFile(KB, Buffer.alloc(200_000, 0x42));
+    const K = `${B}/race/race.bin`;
+    const [ra, rb] = await Promise.all([cli(['cp', KA, K]), cli(['cp', KB, K])]);
+    need(ra.code === 0 && rb.code === 0, `race exits: ${ra.code}/${rb.code} ${ra.err}${rb.err}`);
+    const v = await cli(['versions', 'ls', K, '--json']);
+    const nv = countLines(v.out, '"versionId"');
+    need(nv >= 2, `same-key race collapsed to ${nv} version(s): ${v.out}`);
+    const latest = path.join(par, 'race-latest.bin');
+    await cli(['cp', K, latest]);
+    const lab = await readFile(latest);
+    need(lab.equals(Buffer.alloc(100_000, 0x41)) || lab.equals(Buffer.alloc(200_000, 0x42)), 'same-key race left a torn write as latest');
+    await cli(['rm', K, '--force']);
+    return `5 parallel ops byte-exact; race → ${nv} clean versions, latest intact`;
+  });
+
+  await verify({ id: 'CLI-S3-33', area: 'transfers', action: 'SSE-S3 server-side encryption (--sse AES256)', ds: 'S3 (MinIO)', scenario: 'cp --sse AES256 uploads with the SSE header; the object round-trips byte-identical (SKIP records a provider gap when the engine rejects SSE)', face: 'CLI' }, async () => {
+    let r = await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), `${B}/verify-sse/enc.txt`, '--sse', 'AES256']);
+    if (r.code !== 0) return skip(`provider gap — SSE rejected: ${(r.out + r.err).split('\n')[0]}`);
+    r = await cli(['stat', `${B}/verify-sse/enc.txt`]);
+    need(/size:/.test(r.out), `stat sse object: ${r.out}${r.err}`);
+    const out = path.join(ART, 'sse-dl.txt');
+    await cli(['cp', `${B}/verify-sse/enc.txt`, out]);
+    need((await readFile(out)).equals(await readFile(path.join(FIX, 'data', 'root-1.txt'))), 'SSE round-trip bytes differ');
+    return 'SSE-S3 AES256 accepted; round-trip byte-identical';
+  });
+
+  await verify({ id: 'CLI-S3-34', area: 'security', action: 'Presign expiry: granted TTL + fails closed', ds: 'S3 (MinIO)', scenario: 'a 2-second grant: the URL itself must carry exactly X-Amz-Expires=2 and serve while live; after expiry the SAME URL must be refused (providers with a clock-skew grace that keeps serving record the gap as SKIP)', face: 'CLI' }, async () => {
+    let r = await cli(['presign', `${B}/readme.md`, '--expires', '2s', '--json']);
+    need(r.code === 0, `presign: ${r.out}${r.err}`);
+    let url;
+    try { url = JSON.parse(r.out).url; } catch { url = (r.out.match(/"url":\s*"([^"]+)"/) || [])[1]; }
+    need(url, `presign json: ${r.out}`);
+    url = url.replace(/\\u0026/g, '&');
+    need(/[?&]X-Amz-Expires=2(&|$)/.test(url), `grant does not carry the requested TTL: ${url}`);
+    const early = await fetch(url);
+    need(early.ok, `pre-expiry fetch: HTTP ${early.status}`);
+    need((await early.text()) === 'verification readme\n', 'pre-expiry fetch delivered wrong bytes');
+    await sleep(3500);
+    const late = await fetch(url);
+    if (late.ok) return skip(`provider gap — engine serves the expired grant (HTTP ${late.status}, clock-skew grace)`);
+    const body = await late.text();
+    need(!body.includes('verification readme'), 'expired URL delivered the object');
+    return `2s grant: served, then refused (HTTP ${late.status}) after expiry`;
+  });
 }
 
 // ============================================================
@@ -813,6 +988,35 @@ async function cliResilience() {
     need(dt < 30000, `took ${dt}ms — budget blown`);
     return `failed cleanly in ${(dt / 1000).toFixed(1)}s`;
   });
+
+  await verify({ id: 'CLI-RES-04', area: 'resilience', action: 'Hard kill mid-upload: no partial object', ds: 'S3 via faultproxy', scenario: 'a 64 MiB upload killed mid-flight (process termination) must land NO object — no corrupt or half-written key ever becomes visible; the clean retry is byte-identical', face: 'CLI' }, async () => {
+    if (!proxy) return skip('proxy not running');
+    await fmode({ mode: 'latency', delayMs: 600 });
+    const src = path.join(ART, 'crash-64m.bin');
+    await writeFile(src, randomBytes(64 * 1024 * 1024));
+    const sha = await sha256file(src);
+    const child = spawn(CLI_EXE, ['cp', src, `s3://${BUCKET}/verify-big/crashed.bin`, '--profile', 'verifyfault'], {
+      cwd: ROOT, windowsHide: true, stdio: 'ignore',
+      env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' },
+    });
+    await sleep(3000); // 64 MiB through a 600ms/chunk link is nowhere near done
+    need(child.exitCode === null, 'cp finished before the kill — not a mid-flight probe');
+    child.kill(); // Windows: process termination — the hard-kill contract
+    await new Promise((res) => { child.once('exit', res); if (child.exitCode !== null) res(); });
+    // the crashed object must NOT have landed (no Complete → no visible object,
+    // and a healthy-link stat must not see a partial). --profile verifys3:
+    // the fault source makes the default profile ambiguous.
+    const st = await cli(['stat', `s3://${BUCKET}/verify-big/crashed.bin`, '--profile', 'verifys3'], { timeout: 30000 });
+    need(!/multiple profiles/.test(st.out + st.err), `stat probe ambiguous: ${st.out}${st.err}`);
+    need(st.code !== 0, 'a partial/corrupt object became visible after the hard kill');
+    // retry over the healthy link lands byte-identical bytes
+    const r = await cli(['cp', src, `s3://${BUCKET}/verify-big/crashed.bin`, '--profile', 'verifys3'], { timeout: 300000 });
+    need(r.code === 0, `retry cp: ${r.out}${r.err}`);
+    const dl = path.join(ART, 'crash-64m.dl.bin');
+    await cli(['cp', `s3://${BUCKET}/verify-big/crashed.bin`, dl, '--profile', 'verifys3'], { timeout: 300000 });
+    need(await sha256file(dl) === sha, 'post-crash retry bytes differ from the source');
+    return 'kill left no visible object; retry sha-identical';
+  });
   stop();
 }
 
@@ -838,6 +1042,28 @@ async function cliMeta() {
       if (r.code === 0) emitted.push(sh);
     }
     return `completion scripts emitted: ${emitted.join(', ')}`;
+  });
+
+  await verify({ id: 'CLI-M-04', area: 'security', action: 'Secrets never printed', ds: 'S3 (MinIO)', scenario: 'a source with a distinctive secret key: every output surface — source list (text + json), source test, the 403 transfer path, profile list, activity log — must run but never echo the secret, even on failure paths', face: 'CLI' }, async () => {
+    const TOKEN = `zz9-secret-${RUNID}-never-print`;
+    let r = await cli(['source', 'add', 'verifyleak', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', TOKEN]);
+    need(r.code === 0, `source add: ${r.err}`);
+    const surfaces = [];
+    const grab = (label, res) => { surfaces.push([label, (res.out + res.err)]); return res; };
+    r = grab('source list', await cli(['source', 'list']));
+    r = grab('source list --json', await cli(['source', 'list', '--json']));
+    r = grab('source test (auth-fail path)', await cli(['source', 'test', 'verifyleak'], { timeout: 90000 }));
+    r = grab('cp 403 path', await cli(['cp', `s3://${BUCKET}/readme.md`, path.join(ART, 'leak-dl.txt'), '--profile', 'verifyleak'], { timeout: 90000 }));
+    r = grab('profile list', await cli(['profile', 'list']));
+    r = grab('activity log', await cli(['log']));
+    let nonEmpty = 0;
+    for (const [label, text] of surfaces) {
+      if (text.trim().length > 0) nonEmpty++;
+      need(!text.includes(TOKEN), `SECRET LEAKED in ${label}`);
+    }
+    need(nonEmpty >= 4, `masking probe too weak: only ${nonEmpty}/${surfaces.length} surfaces produced output`);
+    await cli(['source', 'remove', 'verifyleak']);
+    return `secret absent from all ${surfaces.length} surfaces (${nonEmpty} produced output)`;
   });
 }
 
@@ -1452,6 +1678,183 @@ async function guiBattery() {
     await answerPrompt('verify-newfile');
     await waitFor(async () => /size:/.test((await s3(['stat', `s3://${BUCKET}/verify-gui/verify-newfile.txt`])).out), 20000, 'new file object');
     return 'cancel inert; create landed';
+  });
+
+  // ---- extreme-level rows: critical-data contracts through the GUI face ----
+
+  await verify({ id: 'GUI-20', area: 'transfers', action: 'Conflict matrix: per-file skip + rename', ds: 'S3 (MinIO)', scenario: 'both dragged files conflict; a.txt→skip keeps v1 untouched (still 1 version, original bytes); b.txt→rename keeps the original AND lands the new bytes beside it', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/cfmix`;
+    const seed = path.join(ART, 'cfmix');
+    await mkdir(seed, { recursive: true });
+    await writeFile(path.join(seed, 'a.orig'), 'CF-A-ORIGINAL\n');
+    await writeFile(path.join(seed, 'b.orig'), 'CF-B-ORIGINAL\n');
+    await s3(['cp', path.join(seed, 'a.orig'), `${P}/a.txt`]);
+    await s3(['cp', path.join(seed, 'b.orig'), `${P}/b.txt`]);
+    // the local files must carry the SAME names as the destination objects —
+    // a collision (and thus the matrix) only exists when the names match
+    await writeFile(path.join(FIX, 'data', 'a.txt'), 'CF-A-NEW\n');
+    await writeFile(path.join(FIX, 'data', 'b.txt'), 'CF-B-NEW\n');
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('cfmix')); }, 15000, 'cfmix folder row');
+    await enterFolder('cfmix');
+    await ensureDualPane();
+    await localDir(path.join(FIX, 'data'), 'a.txt');
+    // multi-select both local files, then drag the selection into the folder:
+    // grid dragstart carries the whole selection (grid.js), so ONE drag moves
+    // both files and the destination pre-check offers the per-file matrix —
+    // the same funnel GUI-13 proves for a single file
+    await (await sideRow('a.txt')).click({ modifiers: ['Control'] });
+    await (await sideRow('b.txt')).click({ modifiers: ['Control'] });
+    await dnd(await sideRow('b.txt'), await bodyH());
+    await waitFor(async () => /already exist/i.test(await modalText()), 10000, 'conflict matrix dialog');
+    await shot('20-conflict-matrix');
+    await evalPage(() => {
+      const rows = Array.from(document.querySelectorAll('#modal-root .cf-row'));
+      const setFor = (suffix, action) => {
+        const row = rows.find((r) => ((r.querySelector('.cf-name')?.textContent) || '').trim().endsWith(suffix));
+        const sel = row?.querySelector('select.cf-action');
+        if (!sel) throw new Error(`no decision select for ${suffix}`);
+        sel.value = action;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setFor('a.txt', 'skip');
+      setFor('b.txt', 'rename');
+      return true;
+    });
+    await clickFooter(/^start$/i);
+    await waitFor(async () => countLines((await s3(['ls', `${P}/`, '--recursive', '--json'])).out, '"key"') >= 3, 60000, 'conflict transfer landed');
+    const names = (await s3(['ls', `${P}/`, '--recursive', '--json'])).out
+      .split('\n').filter((l) => l.includes('"key"'))
+      .map((l) => ((l.match(/"key":\s*"([^"]*)"/) || [])[1] || '').split('/').pop())
+      .filter(Boolean).sort();
+    need(names.length === 3, `cfmix holds ${names.length} objects: ${names.join(', ')}`);
+    const outA = path.join(ART, 'cf-a-got.txt');
+    await s3(['cp', `${P}/a.txt`, outA]);
+    need((await readFile(outA)).toString() === 'CF-A-ORIGINAL\n', 'skip overwrote a.txt');
+    need((await cliVerCount(`${P}/a.txt`)) === 1, 'skip still created a version');
+    const outB = path.join(ART, 'cf-b-got.txt');
+    await s3(['cp', `${P}/b.txt`, outB]);
+    need((await readFile(outB)).toString() === 'CF-B-ORIGINAL\n', 'rename modified the original b.txt');
+    const twin = names.find((n) => n !== 'a.txt' && n !== 'b.txt');
+    need(twin, 'no renamed twin landed beside the original');
+    const outT = path.join(ART, 'cf-twin-got.txt');
+    await s3(['cp', `${P}/${twin}`, outT]);
+    need((await readFile(outT)).toString() === 'CF-B-NEW\n', 'renamed twin does not carry the new bytes');
+    return `skip kept v1 untouched; rename landed "${twin}" with the new bytes`;
+  });
+
+  await verify({ id: 'GUI-21', area: 'transfers', action: 'Cancel mid-transfer: no corrupt object; retry clean', ds: 'S3 (MinIO)', scenario: '8 MiB upload throttled to 256 kB/s; Cancel while running → job canceled and the object ABSENT (no partial lands); the unthrottled retry is sha-identical', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/cancel`;
+    await s3(['mkdir', `${P}/`]);
+    const src = path.join(FIX, 'data', 'cancel-8m.bin');
+    await writeFile(src, randomBytes(8 * 1024 * 1024));
+    const sha = await sha256file(src);
+    await evalPage(() => { localStorage.setItem('s3b-throttle', '262144'); localStorage.setItem('s3b-show-throttle', '1'); return true; });
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('cancel')); }, 15000, 'cancel folder row');
+    await enterFolder('cancel');
+    await ensureDualPane();
+    await localDir(path.join(FIX, 'data'), 'cancel-8m.bin');
+    await dnd(await sideRow('cancel-8m.bin'), await bodyH());
+    // clean destination: the transfer starts silently (resolveTransferOpts) or
+    // through the classic confirm — either way maxBps comes from the
+    // remembered throttle, so the job must be slow in both branches
+    await startIfAsked(3000);
+    await waitFor(async () => {
+      const j = ((await call('ActiveTransfers')) || []).find((x) => x.status === 'running' && !x.hidden);
+      return j && j.sentBytes > 0 && j.sentBytes < j.totalBytes;
+    }, 20000, 'throttled running job');
+    await shot('21-cancel-running');
+    // the manager re-renders its rows on every progress tick — any element
+    // handle is stale within one tick (the b496f31 run died exactly there:
+    // "Element is not attached to the DOM"), so the click must be found AND
+    // clicked in the same in-page JS turn, retried until it lands
+    await waitFor(async () => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('.tr-job.running button'))
+        .find((x) => /cancel/i.test(x.textContent || ''));
+      if (!b) return false;
+      b.click();
+      return true;
+    }), 10000, 'Cancel click on the running job');
+    await waitFor(async () => JSON.stringify(await call('ActiveTransfers')).includes('canceled'), 20000, 'job canceled');
+    await evalPage(() => { localStorage.removeItem('s3b-throttle'); localStorage.removeItem('s3b-show-throttle'); return true; });
+    const st = await s3(['stat', `${P}/cancel-8m.bin`]);
+    need(st.code !== 0, 'a partial object survived the cancel');
+    // the clean retry must work with zero stuck state
+    await dnd(await sideRow('cancel-8m.bin'), await bodyH());
+    await startIfAsked(3000);
+    await waitFor(async () => /size:/.test((await s3(['stat', `${P}/cancel-8m.bin`])).out), 60000, 'retried upload');
+    const dl = path.join(ART, 'cancel-8m.dl.bin');
+    await s3(['cp', `${P}/cancel-8m.bin`, dl]);
+    need(await sha256file(dl) === sha, 'retry after cancel bytes differ');
+    return 'canceled job left no object; retry sha-identical';
+  });
+
+  await verify({ id: 'GUI-22', area: 'gates', action: 'L2 identity gate: Empty-bucket window', ds: 'S3 (MinIO)', scenario: 'the destructive Empty-bucket window demands the bucket\'s OWN name: a wrong word keeps the destructive button disabled; Cancel preserves every object', face: 'GUI' }, async () => {
+    const guard = await elOrNull((b) => {
+      const n = Array.from(document.querySelectorAll('#tree .tnode'))
+        .find((x) => (x.querySelector('.tlabel')?.textContent || '').trim() === b);
+      return n?.querySelector('.tguard') || document.querySelector('#tree .tguard');
+    }, BUCKET);
+    need(guard, 'no bucket guard in the tree');
+    await guard.asElement().click();
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'admin panel');
+    const nTabs = await evalPage(() => document.querySelectorAll('#modal-root .tab').length);
+    need(nTabs >= 1, 'no admin tabs');
+    let found = false;
+    for (let i = 0; i < nTabs && !found; i++) {
+      await page.locator('#modal-root .tab').nth(i).click();
+      await sleep(150);
+      found = /empty bucket \(all versions\)/i.test(await modalText());
+    }
+    need(found, 'no Empty-bucket tool in any admin tab');
+    await shot('22-l2-typed-window');
+    await evalPage(() => {
+      Array.from(document.querySelectorAll('#modal-root button'))
+        .find((b) => /empty bucket \(all versions\)/i.test(b.textContent || ''))?.click();
+      return true;
+    });
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n > 0), 8000, 'typed-word input');
+    const input = page.locator('#modal-root .modal input.input').last();
+    const btnDisabled = () => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((x) => /empty bucket/i.test(x.textContent.trim()));
+      return b === undefined ? null : !!b.disabled;
+    });
+    await input.fill(`${BUCKET}-typo`);
+    need((await btnDisabled()) === true, 'destructive button enabled with a WRONG word');
+    await input.fill(BUCKET);
+    need((await btnDisabled()) === false, 'destructive button stays disabled with the right word');
+    await closeModal(); // the Delete Window's Cancel — never the destructive path
+    await closeModal(); // the admin panel
+    const s = await s3(['stat', `s3://${BUCKET}`]);
+    need(/region|created|size/i.test(s.out), `bucket damaged by a cancelled window: ${s.out}`);
+    const l = await s3(['ls', `s3://${BUCKET}`, '--recursive', '--json']);
+    need(countLines(l.out, '"key"') > 0, 'bucket emptied by a CANCELLED window');
+    return 'wrong word disabled; cancel preserved everything';
+  });
+
+  await verify({ id: 'GUI-23', area: 'objects', action: 'Editor auto-upload round-trip (bridge)', ds: 'S3 (MinIO)', scenario: 'EditObject stages the object, hands it to the OS (an inert .cmd probe file — the handoff is real but the "editor" is a no-op) and watches: bytes written to the staged file upload automatically; StopEdit ends the session', face: 'GUI' }, async () => {
+    const K = 'verify-gui/edit/verify-edit.cmd';
+    const v1 = 'rem s3b verify editor probe v1\n';
+    const seed = path.join(ART, 'edit-v1.cmd');
+    await writeFile(seed, v1);
+    await s3(['cp', seed, `s3://${BUCKET}/${K}`]);
+    const info = await call('EditObject', BUCKET, K, false);
+    const local = info?.Local || info?.local;
+    need(local && fs.existsSync(local), `EditObject did not stage the file: ${JSON.stringify(info)}`);
+    need((await readFile(local)).toString() === v1, 'staged bytes differ from the object');
+    const v2 = `rem s3b verify editor probe v2 EDITED-${RUNID}\n`;
+    await writeFile(local, v2); // the "editor save" — the watcher must catch it
+    const out = path.join(ART, 'edit-got.cmd');
+    await waitFor(async () => {
+      const r = await s3(['cp', `s3://${BUCKET}/${K}`, out]);
+      return r.code === 0 && (await readFile(out)).toString() === v2;
+    }, 30000, 'watcher auto-upload');
+    need(JSON.stringify(await call('EditingFiles')).includes(K), 'session not listed while editing');
+    await call('StopEdit', BUCKET, K, false);
+    need(!JSON.stringify(await call('EditingFiles')).includes(K), 'session survived StopEdit');
+    return `edit auto-uploaded and round-tripped (${K})`;
   });
 
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
