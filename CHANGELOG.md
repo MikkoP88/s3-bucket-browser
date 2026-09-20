@@ -8,6 +8,23 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Round 2 of extreme-level rows: the gate grew from 76 to 85.** WORM
+  enforcement (GOVERNANCE retention and legal hold each defeat a
+  version-purge attempt while in force; clearing re-arms the delete),
+  secrets encrypted at rest (a raw byte-scan of the whole config dir —
+  the key may live only in the OS keyring), and a wrong-password source
+  import that must fail BEFORE any upsert (no partial import). A new
+  faultproxy `flap` mode injects canned `HTTP 503` storms: a small storm
+  is absorbed inside the SDK retry budget (put lands sha-identical), a
+  large one exhausts it honestly (non-zero exit, no half-landed object).
+  Hostile filenames — `# & % + ^ $ !`, apostrophes, brackets, semicolons,
+  CJK, 120-char names — round-trip through every live engine and S3 with
+  names and bytes intact. Through the GUI face: the presign dialog's
+  read-only URL verified by an out-of-app client, a pane compare covering
+  all six categories exactly, the hidden Ctrl+C staging download (bytes
+  staged for Explorer paste-out, bucket bit-for-bit unchanged until
+  Paste), and the download-side per-file conflict matrix (skip keeps the
+  local file, rename lands the twin).
 - **Extreme-level rows for critical data sources.** The verification gate
   grew from 64 to 76 rows, targeting the contracts that matter when the
   data source is critical. Byte-level integrity via sha256 (not size):
@@ -40,7 +57,7 @@ follow [Semantic Versioning](https://semver.org/).
   notes. Step-by-step: CONTRIBUTING.md, "Cutting a release".
 - **Release verification: one command proves every critical job.**
   `scripts/verify.mjs` (or `npm run verify`) is the pre-release gate:
-  a 76-row verification matrix across three faces, run against the live
+  an 85-row verification matrix across three faces, run against the live
   engine containers (MinIO S3, SFTP, FTP, WebDAV) before any version
   ships. The CLI battery asserts exit codes and output — sources and
   their lifecycle, versioned buckets, transfers (including the
