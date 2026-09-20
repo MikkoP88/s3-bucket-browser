@@ -1,6 +1,11 @@
 package cli
 
-import "testing"
+import (
+	"io"
+	"os"
+	"strings"
+	"testing"
+)
 
 // Cobra's own invocation failures (unknown command, wrong arg count) are
 // user typos: they must classify as usage errors (exit 2, "usage error:")
@@ -13,11 +18,34 @@ func TestExecuteUsageClassification(t *testing.T) {
 		{"unknown command", []string{"definitely-not-a-cmd"}},
 		{"missing required arg", []string{"rm"}},
 		{"unknown flag", []string{"ls", "--definitely-not-a-flag"}},
+		{"flag needs an argument", []string{"ls", "--profile"}},
+		{"invalid flag value", []string{"--timeout", "abc"}},
 	}
 	for _, c := range cases {
 		if code := Execute(c.args); code != exitUsage {
-			t.Errorf("Execute(%v) = exit %d, want exitUsage (%d)", c.args, code, exitUsage)
+			t.Errorf("%s: Execute(%v) = exit %d, want exitUsage (%d)", c.name, c.args, code, exitUsage)
 		}
+	}
+}
+
+// The label matters as much as the code: an invocation error must read
+// "usage error:" and point at --help — never "unexpected:".
+func TestExecuteUsageErrorLabel(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	code := Execute([]string{"definitely-not-a-cmd"})
+	w.Close()
+	os.Stderr = old
+	out, _ := io.ReadAll(r)
+	if code != exitUsage {
+		t.Errorf("exit = %d, want %d", code, exitUsage)
+	}
+	if s := string(out); !strings.Contains(s, "usage error:") || !strings.Contains(s, "--help") {
+		t.Errorf("stderr = %q, want usage error label with --help hint", s)
 	}
 }
 

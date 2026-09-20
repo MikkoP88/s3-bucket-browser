@@ -1228,8 +1228,10 @@ function openMenu(anchor, items) {
   const r = anchor?.getBoundingClientRect?.();
   const x = r ? r.left : anchor.clientX;
   const y = r ? r.bottom + 4 : anchor.clientY;
-  menu.style.left = `${Math.min(x, innerWidth - 220)}px`;
-  menu.style.top = `${Math.min(y, innerHeight - menu.offsetHeight - 10)}px`;
+  // clamp by the menu's REAL width — a guessed 220px let wide menus
+  // (long labels + kbd hints) overflow the right edge anyway
+  menu.style.left = `${Math.max(0, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(0, Math.min(y, innerHeight - menu.offsetHeight - 10))}px`;
 }
 
 // menuItems builds the item rows of one menu (or flyout) level; scope is
