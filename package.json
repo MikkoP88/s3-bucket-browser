@@ -4,6 +4,11 @@
   "description": "Dev-only Node tooling (GUI visual + live harnesses); the app itself is Go + Wails with no runtime npm dependencies.",
   "type": "module",
   "scripts": {
+    "certify": "node scripts/certify.mjs",
+    "certify:quick": "node scripts/certify.mjs --quick",
+    "certify:cli": "node scripts/certify.mjs --only cli",
+    "certify:gui": "node scripts/certify.mjs --only gui",
+    "certify:only": "node scripts/certify.mjs --only",
     "gui-visual": "node scripts/gui-visual.mjs",
     "gui": "node scripts/gui-visual.mjs --headed",
     "gui-live": "node scripts/gui-live.mjs"
