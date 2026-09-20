@@ -8,6 +8,25 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Extreme-level rows for critical data sources.** The verification gate
+  grew from 64 to 76 rows, targeting the contracts that matter when the
+  data source is critical. Byte-level integrity via sha256 (not size):
+  a 32 MiB multipart round-trip and every "identical" claim in the new
+  rows. Scale and hostile input: 1006-object pagination across list-API
+  page boundaries; keys with unicode, `%2F`, `+`/`=`/`&`, quotes and
+  150-char names pushed through without a shell. Concurrency: parallel
+  transfers plus a same-key race that must land clean versions with the
+  latest byte-intact. Security: SSE-S3 (recorded provider gap on MinIO
+  without KMS), presign TTL enforcement (a 2-second grant served before
+  expiry, refused after), and a secrets-leak probe asserting the auth
+  token never appears in any CLI surface. Crash safety: a hard process
+  kill mid-64 MiB upload must leave NO visible object, and the retry
+  must be sha-identical. Through the GUI face: the per-file conflict
+  matrix (skip keeps exactly 1 version with original bytes; rename lands
+  the new bytes beside the untouched original), cancel-mid-transfer on a
+  throttled job (no partial object lands; retry clean), the L2
+  typed-identity Empty-bucket gate, and the WinSCP-style editor
+  auto-upload round-trip verified byte-level back through the CLI.
 - **Verification is now a release-pipeline phase: no report, no release.**
   `node scripts/verify.mjs --release <tag>` stamps the tag into the
   binaries exactly as the release workflow does (`main.version=<tag>`),
@@ -21,7 +40,7 @@ follow [Semantic Versioning](https://semver.org/).
   notes. Step-by-step: CONTRIBUTING.md, "Cutting a release".
 - **Release verification: one command proves every critical job.**
   `scripts/verify.mjs` (or `npm run verify`) is the pre-release gate:
-  a 64-row verification matrix across three faces, run against the live
+  a 76-row verification matrix across three faces, run against the live
   engine containers (MinIO S3, SFTP, FTP, WebDAV) before any version
   ships. The CLI battery asserts exit codes and output — sources and
   their lifecycle, versioned buckets, transfers (including the
