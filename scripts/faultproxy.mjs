@@ -2,8 +2,8 @@
 // faultproxy.mjs — a TCP fault-injection proxy for the live GUI/CLI tests.
 //
 //   node scripts/faultproxy.mjs --listen 19000 --target 127.0.0.1:9000 \
-//       [--control 19001] [--mode direct|latency|throttle|blackhole|reset] \
-//       [--delay 250] [--bps 8192]
+//       [--control 19001] [--mode direct|latency|throttle|blackhole|reset|flap] \
+//       [--delay 250] [--bps 8192] [--fail-first 2]
 //
 // Data plane: a plain TCP proxy in front of the real MinIO. The fault mode
 // decides what happens to the bytes:
@@ -15,6 +15,10 @@
 //              established BEFORE the switch go dark: chunks are dropped)
 //   reset      connections are killed with unread data pending → the OS
 //              sends RST → the client surfaces ECONNRESET
+//   flap       the first --fail-first connections each get a canned
+//              `HTTP/1.1 503 Service Unavailable` and are closed; after
+//              that the proxy passes through — a transient 5xx storm the
+//              client must ride out with retries (or fail honestly on)
 //
 // Control plane: a tiny HTTP server so one long-lived proxy serves a whole
 // scenario sequence without restarts (the S3 SDK keep-alive pool would
@@ -23,8 +27,10 @@
 //   GET  /state                     → {"mode":...,"delayMs":...,"bps":...,
 //                                     "connections":N,"active":N,"resets":N}
 //   POST /mode {"mode":"latency",   → merged state (any subset of
-//        "delayMs":400}               mode/delayMs/bps; reset/blackhole
-//                                     additionally break live connections)
+//        "delayMs":400}               mode/delayMs/bps/failFirst;
+//                                     reset/blackhole additionally break
+//                                     live connections; setting mode/flap or
+//                                     failFirst re-arms the flap counter)
 //
 // Fault decisions are made per-chunk from the CURRENT state (not per
 // connection at accept time) so a keep-alive connection pooled under
@@ -46,6 +52,8 @@ const state = {
   mode: arg('mode', 'direct'),
   delayMs: num('delay', 250),
   bps: num('bps', 8192),
+  failFirst: num('fail-first', 0),
+  flapped: 0,
   connections: 0,
   active: 0,
   resets: 0,
@@ -89,6 +97,27 @@ const proxy = net.createServer((client) => {
       live.delete(client);
       client.destroy();
       log(`#${id} reset — killed with data pending (RST)`);
+    });
+    return;
+  }
+  // flap: a well-formed 503 for the first failFirst connections, then
+  // passthrough. Connection-scoped by design — a canned response is a
+  // complete HTTP reply, so the client must hang up and dial again, which
+  // is exactly the retry loop this mode exists to exercise. The counter
+  // resets whenever the control plane arms a new storm.
+  if (state.mode === 'flap' && state.flapped < state.failFirst) {
+    client.once('data', () => {
+      state.flapped++;
+      live.delete(client);
+      state.active--;
+      client.end(
+        'HTTP/1.1 503 Service Unavailable\r\n' +
+        'Content-Type: application/xml\r\n' +
+        'Content-Length: 0\r\n' +
+        'Connection: close\r\n' +
+        '\r\n',
+      );
+      log(`#${id} flap ${state.flapped}/${state.failFirst} — canned 503`);
     });
     return;
   }
@@ -150,9 +179,11 @@ const ctl = createServer((req, res) => {
     req.on('end', () => {
       try {
         const patch = JSON.parse(body || '{}');
-        for (const k of ['mode', 'delayMs', 'bps']) {
+        for (const k of ['mode', 'delayMs', 'bps', 'failFirst']) {
           if (patch[k] !== undefined) state[k] = patch[k];
         }
+        // arming (or re-arming) a flap storm starts its counter from zero
+        if (patch.mode === 'flap' || patch.failFirst !== undefined) state.flapped = 0;
         // reset/blackhole must also reach connections the SDK pooled while
         // the proxy was healthy — a kept-alive socket would otherwise stay
         // usable and the fault would never fire.
@@ -181,7 +212,8 @@ proxy.listen(LISTEN, '127.0.0.1', () => {
   ctl.listen(CONTROL, '127.0.0.1', () => {
     log(`data :${LISTEN} → ${THOST}:${TPORT}  control :${CONTROL}  mode=${state.mode}` +
       (state.mode === 'latency' ? ` delay=${state.delayMs}ms` : '') +
-      (state.mode === 'throttle' ? ` bps=${state.bps}` : ''));
+      (state.mode === 'throttle' ? ` bps=${state.bps}` : '') +
+      (state.mode === 'flap' ? ` fail-first=${state.failFirst}` : ''));
   });
 });
 

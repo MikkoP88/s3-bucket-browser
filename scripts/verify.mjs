@@ -796,6 +796,46 @@ async function cliS3() {
     need(!body.includes('verification readme'), 'expired URL delivered the object');
     return `2s grant: served, then refused (HTTP ${late.status}) after expiry`;
   });
+
+  await verify({ id: 'CLI-S3-35', area: 'security', action: 'Object lock (WORM): retention + legal hold enforced', ds: 'S3 (MinIO)', scenario: 'a lock-enabled bucket (mb --object-lock, irreversible): GOVERNANCE retention and legal hold each must defeat a version-purge attempt (rm --versions) while in force — the version survives and the refusal is reported; clearing each lock re-arms the delete; the emptied bucket is then removable', face: 'CLI' }, async () => {
+    const W = `${BUCKET}-worm`;
+    let r = await cli(['mb', `s3://${W}`, '--object-lock']);
+    need(r.code === 0, `mb --object-lock: ${r.out}${r.err}`);
+    const K = `s3://${W}/worm-${RUNID}.bin`;
+    const src = path.join(ART, 'worm.bin');
+    await writeFile(src, `worm payload ${RUNID}\n`);
+    r = await cli(['cp', src, K]);
+    need(r.code === 0, `cp: ${r.out}${r.err}`);
+    const verCount = async () => countLines((await cli(['versions', 'ls', K, '--json'])).out, '"versionId"');
+    need(await verCount() === 1, 'seed version missing');
+    // GOVERNANCE retention in force → the purge attempt must be refused
+    // server-side. NOTE: rm's exit code stays 0 (the batch API reports
+    // per-item refusals, the CLI prints them) — the CONTRACT is behavioral:
+    // the version survives the attempt and the refusal is on the record.
+    r = await cli(['lock', 'retention', K, '--mode', 'GOVERNANCE', '--until', '+1h']);
+    need(r.code === 0, `set retention: ${r.out}${r.err}`);
+    r = await cli(['lock', 'retention', K]);
+    need(/GOVERNANCE/.test(r.out), `retention show: ${r.out}${r.err}`);
+    r = await cli(['rm', '--versions', K]);
+    need(/error|denied|fail/i.test(r.out + r.err), `purge of a retained object was silent: ${r.out}${r.err}`);
+    need(await verCount() === 1, 'GOVERNANCE retention did not survive the purge attempt');
+    // legal hold: the same wall, independently
+    r = await cli(['lock', 'legalhold', K, '--on']);
+    need(r.code === 0, `legalhold on: ${r.out}${r.err}`);
+    r = await cli(['lock', 'retention', K, '--clear', '--bypass-governance']);
+    need(r.code === 0, `clear retention: ${r.out}${r.err}`);
+    r = await cli(['rm', '--versions', K]);
+    need(/error|denied|fail/i.test(r.out + r.err), `purge under legal hold was silent: ${r.out}${r.err}`);
+    need(await verCount() === 1, 'legal hold did not survive the purge attempt');
+    // hold off → the delete finally goes through, and the bucket follows
+    r = await cli(['lock', 'legalhold', K, '--off']);
+    need(r.code === 0, `legalhold off: ${r.out}${r.err}`);
+    r = await cli(['rm', '--versions', K]);
+    need(await verCount() === 0, `unlocked object survived the purge: ${r.out}${r.err}`);
+    r = await cli(['rb', `s3://${W}`, '--force']);
+    need(r.code === 0, `rb: ${r.out}${r.err}`);
+    return 'retention + hold each blocked the purge; unlock re-armed it; bucket removed';
+  });
 }
 
 // ============================================================
@@ -944,6 +984,68 @@ async function cliCross() {
     need(!r.out.includes('verifytmp'), 'removed source still in profile mirror');
     return 'tested, removed, gone from both lists';
   });
+
+  await verify({ id: 'CLI-X-10', area: 'sources', action: 'Wrong-password import fails closed', ds: 'all', scenario: 'an encrypted export imported with the WRONG password: decrypt must fail BEFORE any source is upserted (no partial import, no half-populated store); the correct password still imports cleanly afterwards', face: 'CLI' }, async () => {
+    const f = path.join(ART, 'sources-x10.json');
+    let r = await cli(['source', 'export', f, '--password', 'x10-correct-horse-battery']);
+    need(r.code === 0, `export: ${r.err}`);
+    const bad = path.join(ART, 'x10-config');
+    await rm(bad, { recursive: true, force: true });
+    await mkdir(bad, { recursive: true });
+    r = await cli(['source', 'import', f, '--password', 'x10-DEFINITELY-wrong'], { cfg: bad, timeout: 60000 });
+    need(r.code !== 0, 'import with a wrong password exited 0');
+    need(/decrypt|password|cipher|auth|gcm/i.test(r.out + r.err), `failure not labeled as a crypto fault: ${r.out}${r.err}`);
+    // nothing may have landed — no partial import, ever
+    r = await cli(['source', 'list'], { cfg: bad });
+    need(!r.out.includes('verifys3'), 'wrong password still imported sources (partial import)');
+    need(!r.out.includes('xf'), 'wrong password still imported the ftp source (partial import)');
+    // the same container with the right password imports cleanly afterwards
+    r = await cli(['source', 'import', f, '--password', 'x10-correct-horse-battery'], { cfg: bad, timeout: 60000 });
+    need(r.code === 0, `import retry: ${r.out}${r.err}`);
+    r = await cli(['source', 'list'], { cfg: bad });
+    need(r.out.includes('verifys3'), 'correct-password import did not land verifys3');
+    return 'rejected before any upsert; clean import after';
+  });
+
+  await verify({ id: 'CLI-X-11', area: 'transfers', action: 'Hostile filenames cross-engine', ds: 'SFTP/FTP/WebDAV/S3', scenario: 'names that stress protocol and shell escaping — spaces, # & % + ^ $ !, apostrophes, brackets, semicolons, CJK, a 120-char name — must round-trip through EVERY live engine and S3 with names and bytes intact', face: 'CLI' }, async () => {
+    const hostile = [
+      'spaced name #1 & amp plus + percent %25.txt',
+      "single'quote caret ^grave $dollar !bang.txt",
+      'brackets [a] (b) {c} semicolon ;.txt',
+      'uni-日本語-CJK name.txt',
+      `long-${'x'.repeat(110)}-name.txt`,
+      'dots...before ext.txt',
+    ];
+    const hdir = path.join(ART, 'hostile');
+    await rm(hdir, { recursive: true, force: true });
+    await mkdir(hdir, { recursive: true });
+    for (const [i, n] of hostile.entries()) await writeFile(path.join(hdir, n), `hostile payload ${i} ${RUNID}\n`);
+    const want = await treeOf(hdir);
+    const legs = [];
+    const leg = async (label, destUri) => {
+      let r = await cli(['cp', '-r', hdir, destUri]);
+      need(r.code === 0, `${label} up: ${r.out}${r.err}`);
+      r = await cli(['ls', destUri, '--recursive', '--json']);
+      // the CLI's JSON printer HTML-escapes & < > (Go encoding/json) — build
+      // the needle with exactly the escaping the listing actually contains
+      const jsonNeedle = (n) => JSON.stringify(n).slice(1, -1)
+        .replace(/&/g, '\\u0026').replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+      for (const n of hostile) {
+        need(r.out.includes(jsonNeedle(n)), `${label} listing lost "${n}"`);
+      }
+      const back = path.join(ART, `hostile-back-${label}`);
+      await rm(back, { recursive: true, force: true });
+      r = await cli(['cp', '-r', destUri, back]);
+      need(r.code === 0, `${label} down: ${r.out}${r.err}`);
+      need(sameTree(want, await treeOf(back)), `${label} round-trip altered names or bytes`);
+      legs.push(label);
+    };
+    await leg('s3', `s3://${BUCKET}/hostile-names/`);
+    if (haveSftp) await leg('sftp', `xt://${RUNID}/hostile`);
+    if (haveFtp) await leg('ftp', `xf://${RUNID}/hostile`);
+    if (haveDav) await leg('dav', `xw://${RUNID}/hostile`);
+    return `${hostile.length} hostile names intact through ${legs.join('+')}`;
+  });
 }
 
 // ============================================================
@@ -1017,6 +1119,35 @@ async function cliResilience() {
     need(await sha256file(dl) === sha, 'post-crash retry bytes differ from the source');
     return 'kill left no visible object; retry sha-identical';
   });
+
+  await verify({ id: 'CLI-RES-05', area: 'resilience', action: 'Transient 5xx storm: absorbed by retries / exhausted honestly', ds: 'S3 via faultproxy', scenario: 'a canned-503 flap: a 2-failure storm must be retried away INSIDE the SDK budget (the put lands byte-identical); a 50-failure storm must exhaust it — non-zero exit, a surfaced error, and NO object half-landed', face: 'CLI' }, async () => {
+    if (!proxy) return skip('proxy not running');
+    const src = path.join(ART, 'flap.txt');
+    await writeFile(src, `flap payload ${RUNID}\n`);
+    const sha = await sha256file(src);
+    const flapped = async () => (await (await fetch(`http://127.0.0.1:${FCTL}/state`)).json()).flapped;
+    // part 1 — absorb: two canned 503s die inside the retry budget
+    await fmode({ mode: 'flap', failFirst: 2 });
+    let r = await cli(['cp', src, `s3://${BUCKET}/verify-res/flap-ok.txt`, '--profile', 'verifyfault'], { timeout: 180000 });
+    need(r.code === 0, `cp under a 2×503 storm: ${r.out}${r.err}`);
+    const storm1 = await flapped();
+    need(storm1 >= 2, `storm never fired (flapped=${storm1}) — vacuous pass`);
+    const got = path.join(ART, 'flap-ok.dl.txt');
+    await cli(['cp', `s3://${BUCKET}/verify-res/flap-ok.txt`, got, '--profile', 'verifys3']);
+    need(await sha256file(got) === sha, 'storm-surviving upload bytes differ');
+    // part 2 — exhaustion: 503s outlive any retry budget
+    await fmode({ mode: 'flap', failFirst: 50 });
+    const dead = `s3://${BUCKET}/verify-res/flap-dead.txt`;
+    r = await cli(['cp', src, dead, '--profile', 'verifyfault'], { timeout: 180000 });
+    need(r.code !== 0, 'cp survived an unbounded 503 storm');
+    need((r.out + r.err).trim().length > 0, 'storm exhaustion produced no error output');
+    const storm2 = await flapped();
+    need(storm2 >= 3, `exhaustion storm never fired (flapped=${storm2})`);
+    const probe = await cli(['stat', dead, '--profile', 'verifys3']);
+    need(probe.code !== 0, 'an object landed despite a fully-failed upload');
+    await fmode({ mode: 'direct' });
+    return `absorbed ${storm1}×503 (bytes intact), then failed honestly after ${storm2}`;
+  });
   stop();
 }
 
@@ -1064,6 +1195,32 @@ async function cliMeta() {
     need(nonEmpty >= 4, `masking probe too weak: only ${nonEmpty}/${surfaces.length} surfaces produced output`);
     await cli(['source', 'remove', 'verifyleak']);
     return `secret absent from all ${surfaces.length} surfaces (${nonEmpty} produced output)`;
+  });
+
+  await verify({ id: 'CLI-M-05', area: 'security', action: 'Secrets encrypted at rest', ds: 'config store + OS keyring', scenario: 'a distinctive secret added to the store, then a RAW byte-scan of every file under the whole config directory (recursive): the secret may live only inside the OS keyring — never on disk in any file the app wrote this run', face: 'CLI' }, async () => {
+    if (process.env.S3B_NO_KEYRING) return skip('S3B_NO_KEYRING set — documented headless plaintext mode, at-rest scan N/A');
+    const TOKEN = `zz9-atrest-${RUNID}-secret`;
+    let r = await cli(['source', 'add', 'verifyrest', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', TOKEN]);
+    need(r.code === 0, `add: ${r.err}`);
+    await cli(['source', 'list']); // settle the store
+    const needle = Buffer.from(TOKEN, 'utf8');
+    const files = [];
+    const walk = async (d) => {
+      for (const e of await readdir(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) await walk(p);
+        else files.push(p);
+      }
+    };
+    await walk(CFG);
+    need(files.length > 0, 'config dir empty — the at-rest scan had nothing to scan');
+    const hits = [];
+    for (const f of files) {
+      if ((await readFile(f)).includes(needle)) hits.push(path.relative(CFG, f));
+    }
+    await cli(['source', 'remove', 'verifyrest']);
+    need(hits.length === 0, `SECRET WRITTEN IN PLAINTEXT: ${hits.join(', ')}`);
+    return `token absent from all ${files.length} file(s) under the config dir (keyring holds it)`;
   });
 }
 
@@ -1862,6 +2019,182 @@ async function guiBattery() {
     await call('StopEdit', BUCKET, K, false);
     need(!JSON.stringify(await call('EditingFiles')).includes(K), 'session survived StopEdit');
     return `edit auto-uploaded and round-tripped (${K})`;
+  });
+
+  await verify({ id: 'GUI-24', area: 'security', action: 'Pre-sign URL dialog (GUI)', ds: 'S3 (MinIO)', scenario: 'context menu → Pre-sign URL: the dialog exposes a READ-ONLY signed URL that a bare HTTP client outside the app can actually use to fetch the exact object bytes', face: 'GUI' }, async () => {
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('readme.md')); }, 15000, 'readme row');
+    await rightClickRow('readme.md');
+    await ctxItem(/^pre-sign url/i);
+    await waitFor(async () => /pre-signed url/i.test(await modalText()), 10000, 'presign dialog');
+    const url = await evalPage(() => document.querySelector('#modal-root input.input.mono')?.value || '');
+    need(/X-Amz-Signature=/.test(url), `URL is not signed: ${url.slice(0, 90)}`);
+    const ro = await evalPage(() => document.querySelector('#modal-root input.input.mono')?.readOnly);
+    need(ro === true, 'the URL field is editable — share dialogs must be read-only');
+    await shot('24-presign');
+    const res = await fetch(url);
+    need(res.ok, `presigned fetch: HTTP ${res.status}`);
+    const got = Buffer.from(await res.arrayBuffer());
+    const want = await readFile(path.join(FIX, 'data', 'readme.md'));
+    need(got.equals(want), 'presigned URL served wrong bytes');
+    await closeModal();
+    return 'read-only signed URL, verified by an out-of-app client';
+  });
+
+  await verify({ id: 'GUI-25', area: 'transfers', action: 'Pane compare: all six categories exact', ds: 'S3 (MinIO) + local', scenario: 'a hand-built pair of dirs covering EVERY compare class — identical, only-left, only-right, different-size, newer-left, newer-right — the Compare button must count each category exactly 1', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/cmp`;
+    await s3(['mkdir', `${P}/`]);
+    const ld = path.join(ART, 'gcmp');
+    await rm(ld, { recursive: true, force: true });
+    await mkdir(ld, { recursive: true });
+    const up = async (name, body, remote) => {
+      const tmp = path.join(ART, `cmp-${name}`);
+      await writeFile(tmp, body);
+      await s3(['cp', tmp, `${P}/${remote}`]);
+    };
+    // remote seeds first; same.txt LAST so its upload time is fresh when the
+    // local twin stamps the same instant (compare tolerance is 2 s)
+    await up('or', 'only right\n', 'only-right.txt');
+    await up('sd', 'REMOTE-MUCH-LONGER\n', 'size-diff.txt');   // vs local 4 B
+    await up('nl', 'NL\n', 'newer-left.txt');                  // local is +1 day
+    await up('nr', 'NR\n', 'newer-right.txt');                 // local is -1 day
+    await up('same', 'SAME-BYTES\n', 'same.txt');
+    const ut = (f, ms) => fs.utimesSync(path.join(ld, f), new Date(ms), new Date(ms));
+    await writeFile(path.join(ld, 'only-left.txt'), 'only left\n');
+    await writeFile(path.join(ld, 'size-diff.txt'), 'LOC\n');
+    await writeFile(path.join(ld, 'newer-left.txt'), 'NL\n');
+    ut('newer-left.txt', Date.now() + 86400000);   // beats any upload time
+    await writeFile(path.join(ld, 'newer-right.txt'), 'NR\n');
+    ut('newer-right.txt', Date.now() - 86400000);  // loses to any upload time
+    await writeFile(path.join(ld, 'same.txt'), 'SAME-BYTES\n');
+    ut('same.txt', Date.now());                    // ≈ the just-finished upload
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('cmp')); }, 15000, 'cmp folder row');
+    await enterFolder('cmp');
+    await ensureDualPane();
+    await localDir(ld, 'only-left.txt');
+    await page.locator('#local-compare').click();
+    await waitFor(async () => /compare —/i.test(await modalText()), 30000, 'compare summary');
+    await shot('25-compare');
+    const counts = await evalPage(() => {
+      const kids = Array.from(document.querySelectorAll('#modal-root .kv > *'));
+      const out = {};
+      for (let i = 0; i + 1 < kids.length; i += 2) out[kids[i].textContent.trim()] = kids[i + 1].textContent.trim();
+      return out;
+    });
+    const want = { Identical: '1', 'Only on left': '1', 'Only on right': '1', 'Different size': '1', 'Newer on left': '1', 'Newer on right': '1' };
+    for (const [label, val] of Object.entries(want)) {
+      const key = Object.keys(counts).find((k) => k.startsWith(label));
+      need(key && counts[key] === val, `${label}: want ${val}, got ${key ? counts[key] : 'missing'} (${JSON.stringify(counts)})`);
+    }
+    await closeModal();
+    return 'all six categories counted exactly';
+  });
+
+  await verify({ id: 'GUI-26', area: 'transfers', action: 'Ctrl+C stages HIDDEN — nothing lands until Paste', ds: 'S3 (MinIO)', scenario: 'the two-part copy contract: select remote rows, Ctrl+C → the Explorer mirror runs as a HIDDEN staging job (a scratch download for paste-out, invisible in every list) while the bucket itself stays bit-for-bit unchanged until a Paste happens', face: 'GUI' }, async () => {
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('readme.md')); }, 15000, 'readme row');
+    const cnt = async () => countLines((await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive', '--json'])).out, '"key"');
+    const c0 = await cnt();
+    // the clip workspace is minted FRESH per copy (os.MkdirTemp under the
+    // secure-storage clip root, else %TEMP%\s3b-clip) — snapshot the dirs,
+    // then discover the new one after the staging download finishes
+    const clipRoots = [path.join(GUICFG, 'clip'), path.join(os.tmpdir(), 's3b-clip')];
+    const clipDirs = async () => {
+      const out = [];
+      for (const root of clipRoots) {
+        try {
+          for (const e of await readdir(root, { withFileTypes: true })) if (e.isDirectory()) out.push(path.join(root, e.name));
+        } catch { /* root not present */ }
+      }
+      return out;
+    };
+    const beforeDirs = new Set(await clipDirs());
+    const before = new Set(((await call('ActiveTransfers')) || []).map((j) => String(j.id)));
+    await clickRow('readme.md');
+    await ctrlClickRow('uni-åäö.txt');
+    await page.keyboard.press('Control+c');
+    let fresh = [];
+    await waitFor(async () => {
+      const now = (await call('ActiveTransfers')) || [];
+      fresh = now.filter((j) => !before.has(String(j.id)));
+      return fresh.length > 0;
+    }, 10000, 'clipboard staging job');
+    await shot('26-hidden-staging');
+    // the staging download is REAL (Explorer paste-out needs the bytes) —
+    // the contract is that it is HIDDEN and that nothing lands anywhere
+    // except the internal scratch dir until a Paste happens
+    need(fresh.every((j) => j.hidden === true), `staging job visible in the manager: ${JSON.stringify(fresh).slice(0, 220)}`);
+    await waitFor(async () => {
+      const now = (await call('ActiveTransfers')) || [];
+      return now.filter((j) => !before.has(String(j.id))).every((j) => j.status === 'done');
+    }, 45000, 'hidden staging download to finish');
+    // the staged bytes must actually exist for Explorer to paste out
+    let staged = null;
+    await waitFor(async () => {
+      for (const d of await clipDirs()) {
+        if (beforeDirs.has(d)) continue;
+        try { await readFile(path.join(d, 'readme.md')); staged = path.join(d, 'readme.md'); return true; } catch { /* not yet */ }
+      }
+      return false;
+    }, 15000, 'staged readme.md in a fresh clip dir');
+    need((await readFile(staged)).equals(await readFile(path.join(FIX, 'data', 'readme.md'))), 'staged bytes differ from the object');
+    // and the two-part contract: a bare Ctrl+C must not change the source
+    need(await cnt() === c0, 'objects changed after a bare Ctrl+C — copy is not two-part');
+    return 'staging hidden + bytes staged for Explorer; bucket unchanged';
+  });
+
+  await verify({ id: 'GUI-27', area: 'transfers', action: 'Download-side conflict matrix', ds: 'S3 (MinIO) → local', scenario: 'drag three remote rows onto a local folder holding two of the SAME names: the per-file decision matrix (skip + rename) must keep the skipped local file untouched, land a renamed twin with the remote bytes, and download the clean third file with no prompt', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/dlcf`;
+    await s3(['mkdir', `${P}/`]);
+    const seed = path.join(ART, 'dlcf-seed');
+    await rm(seed, { recursive: true, force: true });
+    await mkdir(seed, { recursive: true });
+    await writeFile(path.join(seed, 'a.txt'), 'DLCF-A-REMOTE\n');
+    await writeFile(path.join(seed, 'b.txt'), 'DLCF-B-REMOTE\n');
+    await writeFile(path.join(seed, 'fresh.txt'), 'DLCF-FRESH-REMOTE\n');
+    for (const f of ['a.txt', 'b.txt', 'fresh.txt']) await s3(['cp', path.join(seed, f), `${P}/${f}`]);
+    const dst = path.join(ART, 'dlcf-dst');
+    await rm(dst, { recursive: true, force: true });
+    await mkdir(dst, { recursive: true });
+    await writeFile(path.join(dst, 'a.txt'), 'DLCF-A-LOCAL-KEEP\n');
+    await writeFile(path.join(dst, 'b.txt'), 'DLCF-B-LOCAL-KEEP\n');
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('dlcf')); }, 15000, 'dlcf folder row');
+    await enterFolder('dlcf');
+    await ensureDualPane();
+    await localDir(dst, 'a.txt');
+    // anchor + extend the selection, then drag the WHOLE selection onto the
+    // local pane (grid dragstart carries the selection — one drag, three files)
+    await clickRow('a.txt');
+    await ctrlClickRow('b.txt');
+    await ctrlClickRow('fresh.txt');
+    await dnd(await rowAction('fresh.txt'), await sideBodyH());
+    await waitFor(async () => /already exist/i.test(await modalText()), 10000, 'download conflict matrix');
+    await shot('27-dl-conflict');
+    await evalPage(() => {
+      const rows = Array.from(document.querySelectorAll('#modal-root .cf-row'));
+      const setFor = (suffix, action) => {
+        const row = rows.find((r) => ((r.querySelector('.cf-name')?.textContent) || '').trim().endsWith(suffix));
+        const sel = row?.querySelector('select.cf-action');
+        if (!sel) throw new Error(`no decision select for ${suffix}`);
+        sel.value = action;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      setFor('a.txt', 'skip');
+      setFor('b.txt', 'rename');
+      return true;
+    });
+    await clickFooter(/^start$/i);
+    await waitFor(async () => (await sideKeys()).includes('fresh.txt'), 45000, 'clean file downloaded');
+    need((await readFile(path.join(dst, 'a.txt'))).toString() === 'DLCF-A-LOCAL-KEEP\n', 'skip overwrote the local a.txt');
+    need((await readFile(path.join(dst, 'b.txt'))).toString() === 'DLCF-B-LOCAL-KEEP\n', 'rename modified the local b.txt');
+    const names = await sideKeys();
+    const twin = names.find((n) => n.startsWith('b') && n !== 'b.txt');
+    need(twin, `no renamed twin landed: ${names.join(', ')}`);
+    need((await readFile(path.join(dst, twin))).toString() === 'DLCF-B-REMOTE\n', 'the twin does not carry the remote bytes');
+    need((await readFile(path.join(dst, 'fresh.txt'))).toString() === 'DLCF-FRESH-REMOTE\n', 'clean file bytes differ');
+    return `skip kept local a.txt; rename landed "${twin}"`;
   });
 
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
