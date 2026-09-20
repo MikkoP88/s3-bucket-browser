@@ -5,6 +5,7 @@
 package profile
 
 import (
+	"crypto/rand"
 	"fmt"
 	"sort"
 	"strings"
@@ -138,6 +139,9 @@ func NormalizeSources(srcs []Source) ([]Source, error) {
 		seen[s.Name] = true
 		if s.ID == "" || usedIDs[s.ID] {
 			s.ID = newSourceID()
+			for usedIDs[s.ID] { // a fresh ID can itself collide on coarse clocks
+				s.ID = newSourceID()
+			}
 		}
 		usedIDs[s.ID] = true
 		out = append(out, s)
@@ -145,10 +149,18 @@ func NormalizeSources(srcs []Source) ([]Source, error) {
 	return out, nil
 }
 
-// newSourceID returns a short unique-enough identifier for a source (the
-// sources list is tiny; collisions are re-rolled by NormalizeSources).
+// newSourceID returns a short unique-enough identifier for a source. The
+// random suffix is load-bearing: two sources migrated in one pass
+// (legacy store → sources) can be IDed within the same nanosecond on
+// coarse clocks (observed on Windows), and colliding IDs share ONE
+// keyring slot (sources/<id>/secret|token) — the second source's
+// credentials silently overwrite the first's.
 func newSourceID() string {
-	return fmt.Sprintf("src_%d", time.Now().UnixNano())
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("src_%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("src_%d_%x", time.Now().UnixNano(), b)
 }
 
 // newUniqueSourceID re-rolls newSourceID until it is free in the list —
