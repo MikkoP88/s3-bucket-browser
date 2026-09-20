@@ -242,17 +242,17 @@ release".
 
 Replaced on every run — this snapshot is from the verification runs of
 **20 Sep 2026** on Windows 11 (x64). The release-evidence run for
-`v1.1.0-beta.15` is committed at
-[`docs/verification/v1.1.0-beta.15/windows-x64/REPORT.md`](verification/v1.1.0-beta.15/windows-x64/REPORT.md):
+`v1.1.0-beta.16` is committed at
+[`docs/verification/v1.1.0-beta.16/windows-x64/REPORT.md`](verification/v1.1.0-beta.16/windows-x64/REPORT.md):
 
 ```
-release evidence (--release v1.1.0-beta.15 — tag-stamped build; 76 rows):
-  74 PASS · 2 SKIP · 0 FAIL — 667 s
+release evidence (--release v1.1.0-beta.16 — tag-stamped build; 85 rows):
+  83 PASS · 2 SKIP · 0 FAIL — 726 s
   (the 2 SKIPs = lifecycle put + SSE-S3, the recorded MinIO provider gaps)
   SWEEP-VIS-01  gui-visual   609/609 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
-quick iteration runs on the 85-row round-2 matrix (--quick --no-build;
-the only FAILs are the version stamps of the reused release binaries —
+quick iteration runs on the same matrix (--quick --no-build; the only
+FAILs are the version stamps of the reused release binaries —
 CLI-M-01/GUI-01, resolved by any fresh build):
   79 PASS · 2 SKIP · 2 FAIL — 407 s
   (83 of 85 rows; the two sweep rows only run in full gates)
