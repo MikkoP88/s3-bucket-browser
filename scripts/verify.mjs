@@ -836,6 +836,61 @@ async function cliS3() {
     need(r.code === 0, `rb: ${r.out}${r.err}`);
     return 'retention + hold each blocked the purge; unlock re-armed it; bucket removed';
   });
+
+  await verify({ id: 'CLI-S3-36', area: 'admin', action: 'Data-protection toggles: versioning suspend/resume + public access block', ds: 'S3 (MinIO)', scenario: 'a scratch bucket: suspend versioning → info reads it back suspended and the suspended write lands as the null version while the existing timeline survives untouched; resume → new writes version again; PAB put --all arms all four blocks and a bare put disarms them — or the provider gap is recorded (this MinIO build rejects the whole PAB API; the aws CLI agrees)', face: 'CLI' }, async () => {
+    const PB = `${BUCKET}-prot`;
+    let r = await cli(['mb', `s3://${PB}`]);
+    need(r.code === 0, `mb: ${r.out}${r.err}`);
+    r = await cli(['bucket', 'versioning', `s3://${PB}`, 'on']);
+    need(/versioning enabled/.test(r.out), `versioning on: ${r.out}${r.err}`);
+    const K = `s3://${PB}/prot.txt`;
+    const A = path.join(ART, 'prot-a.txt');
+    const C = path.join(ART, 'prot-c.txt');
+    const D = path.join(ART, 'prot-d.txt');
+    await writeFile(A, 'prot-v1\n');
+    await writeFile(C, 'prot-null-replace\n');
+    await writeFile(D, 'prot-resumed\n');
+    await cli(['cp', A, K]);
+    await cli(['cp', C, K, '--force']); // a second versioned write → timeline of 2
+    const nVers = async () => countLines((await cli(['versions', 'ls', K, '--json'])).out, '"versionId"');
+    need(await nVers() === 2, 'seeded timeline is not 2 versions');
+    // suspend: the protection state flips server-side and reads back
+    r = await cli(['bucket', 'versioning', `s3://${PB}`, 'off']);
+    need(/versioning suspended/.test(r.out), `versioning off: ${r.out}${r.err}`);
+    r = await cli(['bucket', 'info', `s3://${PB}`]);
+    need(/suspended/i.test(r.out), `info after suspend: ${r.out}`);
+    // a suspended write becomes the null version — the old timeline must
+    // survive it untouched (suspend never destroys history)
+    await cli(['cp', C, K, '--force']);
+    need(await nVers() === 3, 'a suspended write disturbed the existing timeline');
+    const dl = path.join(ART, 'prot-dl.txt');
+    await cli(['cp', K, dl]);
+    need((await readFile(dl)).toString() === 'prot-null-replace\n', 'suspended write is not the current bytes');
+    // resume: new writes create versions again
+    r = await cli(['bucket', 'versioning', `s3://${PB}`, 'on']);
+    need(/versioning enabled/.test(r.out), `versioning resume: ${r.out}${r.err}`);
+    await cli(['cp', D, K, '--force']);
+    need(await nVers() === 4, 'a resumed write did not version');
+    const PABKEYS = ['blockPublicAcls', 'ignorePublicAcls', 'blockPublicPolicy', 'restrictPublicBuckets'];
+    r = await cli(['bucket', 'pab', 'put', `s3://${PB}`, '--all']);
+    // Provider gap (MinIO RELEASE.2025-09-07): PAB put answers MalformedXML
+    // and PAB get NotImplemented — the official aws CLI gets the same two
+    // refusals, so this is the server, not the client. Record it and keep
+    // the row green on the versioning semantics that did verify.
+    if (r.code !== 0 && /malformedxml|notimplemented|not supported/i.test(r.out + r.err)) {
+      await cli(['rb', `s3://${PB}`, '--force']);
+      return 'suspend kept history (null-version semantics); resume re-versions; PAB rejected by this MinIO build (recorded provider gap — aws CLI agrees)';
+    }
+    need(r.code === 0, `pab put --all: ${r.out}${r.err}`);
+    let p = JSON.parse((await cli(['bucket', 'pab', 'get', `s3://${PB}`, '--json'])).out || '{}');
+    need(PABKEYS.every((k) => p[k] === true), `pab get after --all: ${JSON.stringify(p)}`);
+    r = await cli(['bucket', 'pab', 'put', `s3://${PB}`]);
+    need(r.code === 0, `pab put (none): ${r.out}${r.err}`);
+    p = JSON.parse((await cli(['bucket', 'pab', 'get', `s3://${PB}`, '--json'])).out || '{}');
+    need(PABKEYS.every((k) => !p[k]), `pab get after none: ${JSON.stringify(p)}`);
+    await cli(['rb', `s3://${PB}`, '--force']);
+    return 'suspend kept history (null-version semantics); resume re-versions; PAB on/off read back';
+  });
 }
 
 // ============================================================
@@ -1221,6 +1276,50 @@ async function cliMeta() {
     await cli(['source', 'remove', 'verifyrest']);
     need(hits.length === 0, `SECRET WRITTEN IN PLAINTEXT: ${hits.join(', ')}`);
     return `token absent from all ${files.length} file(s) under the config dir (keyring holds it)`;
+  });
+
+  await verify({ id: 'CLI-M-06', area: 'sources', action: 'Legacy store migration: profiles seed as sources, plaintext secrets leave the file', ds: 'S3 (MinIO)', scenario: 'a hand-written LEGACY profiles.json (two profiles, inline secrets, one carrying a session token, no sources array): ONE CLI load seeds both as data sources (M8), the keyring takes every secret and the token (M5 — none remain in the file); the token-less migrated source still dials MinIO through the keyring-held secret, while the token profile must fail with an invalid-token refusal — the synthetic token being IN the signature is itself proof it was read back from the keyring; both profiles are then removed so no keyring residue survives the run', face: 'CLI' }, async () => {
+    if (process.env.S3B_NO_KEYRING) return skip('headless plaintext mode: S3B_NO_KEYRING');
+    const dir = path.join(ART, 'm06-config');
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    // names unique per run: the OS keyring is machine-global and keyed by
+    // profile name only, so a fixed name would resurrect a stale token from
+    // an earlier run (observed: run 1 of this row poisoned every later dial)
+    const N1 = `legacy-${RUNID}`;
+    const N2 = `legacytok-${RUNID}`;
+    const TOKEN = 'm06-zz9-legacy-session-token';
+    const now = '2026-01-01T00:00:00Z';
+    const prof = (name, token) => ({
+      name, endpoint: 'http://127.0.0.1:9000', region: 'us-east-1',
+      accessKeyId: KEY, secretKey: SECRET, sessionToken: token, pathStyle: true,
+      createdAt: now, updatedAt: now,
+    });
+    await writeFile(path.join(dir, 'profiles.json'), JSON.stringify({
+      profiles: [prof(N1, ''), prof(N2, TOKEN)],
+    }, null, 2));
+    let r = await cli(['source', 'list'], { cfg: dir });
+    need(r.code === 0 && r.out.includes(N1) && r.out.includes(N2), `M8 seed did not surface the profiles: ${r.out}${r.err}`);
+    r = await cli(['profile', 'list'], { cfg: dir });
+    need(r.out.includes(N1) && r.out.includes(N2), `legacy profiles no longer resolve: ${r.out}`);
+    const raw = (await readFile(path.join(dir, 'profiles.json'))).toString();
+    need(!raw.includes(TOKEN), 'the plaintext session token survived in profiles.json (M5 did not migrate it)');
+    need(!raw.includes('"secretKey": "minioadmin"') && !raw.includes('"secretKey":"minioadmin"'), 'the plaintext secret survived in profiles.json');
+    // each seeded profile is marked in BOTH the profiles array and its
+    // mirrored sources[].s3 entry — require at least one marker per profile
+    need((raw.match(/"secretInKeyring":\s*true/g) || []).length >= 2, `keyring markers missing from the migrated store: ${raw.slice(0, 160)}`);
+    // the token-less profile must dial: the secret came back from the keyring
+    r = await cli(['source', 'test', N1], { cfg: dir });
+    need(r.code === 0, `the migrated source does not dial: ${r.out}${r.err}`);
+    // the token profile must dial-and-be-refused: MinIO answers InvalidTokenId
+    // for a synthetic STS token, which proves the keyring-held token reached
+    // the SigV4 signature (a dropped token would have dialed fine)
+    r = await cli(['source', 'test', N2], { cfg: dir });
+    need(r.code !== 0 && /invalidtoken/i.test(r.out + r.err), `the synthetic token was not used in the signature: ${r.out}${r.err}`);
+    // leave the machine-global keyring exactly as we found it
+    await cli(['source', 'remove', N1], { cfg: dir });
+    await cli(['source', 'remove', N2], { cfg: dir });
+    return `${N1} dials through the keyring-held secret; ${N2}'s token reached the signature (refused as synthetic); no keyring residue`;
   });
 }
 
@@ -1629,6 +1728,33 @@ async function guiBattery() {
     await treeOpen(SRCNAME);
     await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
     await enterFolder('verify-gui');
+  };
+  // The verify-minio source is bucket-scoped, so sibling buckets the CLI
+  // creates (…-mig, …-adm, …-l2x) never appear while it is open. The
+  // breadcrumb's ROOT crumb opens the source's account-wide buckets view —
+  // the grid then lists every bucket of the endpoint (and the tree adopts
+  // the live bucket set).
+  const goBuckets = async () => {
+    await evalPage(() => { document.querySelector('#breadcrumb .crumb')?.click(); });
+    try {
+      // the buckets view's breadcrumb is exactly ONE crumb (the source
+      // root, current) — a virtualization-proof signature: this endpoint
+      // accumulates dozens of leftover buckets, far more than the grid's
+      // rendered viewport, so row-based probes are blind down the list
+      await waitFor(() => evalPage(() => document.querySelectorAll('#breadcrumb .crumb').length === 1), 10000, 'the buckets view (single-crumb breadcrumb)');
+    } catch (e) {
+      // one-line state dump + screenshot: FAIL details are truncated to
+      // their first line, so the whole view state must fit on one line
+      await shot('buckets-timeout');
+      const state = await evalPage(() => JSON.stringify({
+        crumbs: Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => c.textContent),
+        rows: Array.from(document.querySelectorAll('#grid-body .grid-row')).slice(0, 12)
+          .map((r) => r.dataset.key ?? (r.textContent || '').slice(0, 24)),
+        empty: document.getElementById('empty-state')?.className || 'none',
+        cur: document.querySelector('#breadcrumb .crumb.current')?.textContent || '',
+      }));
+      throw new Error(`${e.message}: ${state}`);
+    }
   };
   // #local-grid-body is permanently mounted (index.html) and only hidden via
   // the pane's .hidden class, so visibility — not existence — is the probe.
@@ -2195,6 +2321,412 @@ async function guiBattery() {
     need((await readFile(path.join(dst, twin))).toString() === 'DLCF-B-REMOTE\n', 'the twin does not carry the remote bytes');
     need((await readFile(path.join(dst, 'fresh.txt'))).toString() === 'DLCF-FRESH-REMOTE\n', 'clean file bytes differ');
     return `skip kept local a.txt; rename landed "${twin}"`;
+  });
+
+  // ---- round-3 rows: selection, multi-delete, versions deep, migrator,
+  // admin mutations, L2 execution, mid-batch cancel ----
+
+  await verify({ id: 'GUI-28', area: 'gui', action: 'Selection mechanics: plain anchor, shift-range, ctrl-toggle, invert, select-all', ds: 'S3 (MinIO)', scenario: 'a six-file folder: a plain click anchors row 1 (1 of 6 on the status bar); a shift-click on row 3 selects exactly the range (3 of 6); ctrl-click drops the middle member (2 of 6); Ctrl+I flips to the exact complement (4 of 6); Ctrl+A finally selects everything (6 of 6) — every count read from the visible selection bar. The plain click MUST come first: clicking a row that is already selected keeps the selection (drag-friendly semantics), so select-all has to end the ladder', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/selmech`;
+    await s3(['mkdir', `${P}/`]);
+    for (let i = 1; i <= 6; i++) await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/f${i}.txt`]);
+    await navCertGui();
+    await enterFolder('verify-gui');
+    await enterFolder('selmech');
+    const statusSel = () => evalPage(() => document.getElementById('status-selection')?.textContent || '');
+    await waitFor(async () => (await rowKeys()).filter((k) => k.includes('.txt')).length >= 6, 20000, 'six rows');
+    const selIs = async (n) => {
+      await waitFor(async () => new RegExp(`${n} of 6`).test(await statusSel()), 4000, `status bar to read "${n} of 6"`);
+    };
+    await clickRow('f1.txt');
+    await selIs(1);
+    await (await rowAction('f3.txt')).click({ modifiers: ['Shift'] });
+    await selIs(3);
+    await ctrlClickRow('f2.txt');
+    await selIs(2);
+    await page.keyboard.press('Control+i');
+    await selIs(4);
+    await page.keyboard.press('Control+a');
+    await selIs(6);
+    await shot('28-selection');
+    return 'plain anchor 1; shift-range 3; ctrl-toggle 2; invert 4; select-all 6/6 — counted on the status bar';
+  });
+
+  await verify({ id: 'GUI-29', area: 'gates', action: 'Multi-delete ladder: markers keep history; Shift+Del destroys permanently', ds: 'S3 (MinIO)', scenario: 'four objects selected at once: the Delete Window counts all four AND offers all three delete types; the plain marker delete hides every object while each full timeline survives — CLI re-reads the data version AND its delete marker per object; a second batch through Shift+Del (the permanent preset) destroys versions entirely — nothing left in any timeline', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/mdel`;
+    await s3(['mkdir', `${P}/`]);
+    for (const n of ['a', 'b', 'c', 'd']) await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/${n}.txt`]);
+    await navCertGui();
+    await enterFolder('verify-gui');
+    await enterFolder('mdel');
+    await waitFor(async () => (await rowKeys()).filter((k) => k.includes('.txt')).length >= 4, 20000, 'mdel rows');
+    await page.keyboard.press('Control+a');
+    await page.keyboard.press('Delete');
+    await waitFor(async () => /object/.test(await modalText())
+      && (await evalPage(() => document.querySelectorAll('#modal-root .delw-mode').length)) === 3, 8000, 'Delete Window with all three delete types');
+    need(/4 object/.test(await modalText()), `window did not count the four objects: ${await modalText()}`);
+    await shot('29-multi-delete-window');
+    await clickFooter(/^delete$/i);
+    await waitFor(async () => countLines((await s3(['ls', P, '--recursive', '--json'])).out, '"key"') === 0, 20000, 'objects hidden after the marker delete');
+    for (const n of ['a', 'b', 'c', 'd']) {
+      const v = await s3(['versions', 'ls', `${P}/${n}.txt`, '--json']);
+      // parse the JSON (indented output puts every field on its own line,
+      // so line-contains checks silently miss fields on neighboring lines)
+      let vers = [];
+      try { vers = JSON.parse(v.out || '[]') || []; } catch { /* asserted below */ }
+      // the surviving timeline is the data version PLUS its delete marker
+      need(vers.length === 2, `marker delete changed ${n}'s history: ${JSON.stringify(vers).slice(0, 160)}`);
+      need(vers.some((x) => x.isDeleteMarker === true), `no delete marker recorded for ${n}: ${JSON.stringify(vers).slice(0, 160)}`);
+    }
+    // second batch: Shift+Del = the permanent preset — versions must NOT survive
+    for (const n of ['e', 'f', 'g']) await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `${P}/${n}.txt`]);
+    await refresh();
+    await waitFor(async () => (await rowKeys()).filter((k) => k.includes('.txt')).length >= 3, 20000, 'second batch rows');
+    await page.keyboard.press('Control+a');
+    await page.keyboard.press('Shift+Delete');
+    await waitFor(async () => (await evalPage(() => {
+      const r = document.querySelector('#modal-root input[value="permanent"]');
+      return r ? r.checked : false;
+    })), 8000, 'permanent preset radio checked');
+    await clickFooter(/^delete$/i);
+    await waitFor(async () => countLines((await s3(['ls', P, '--recursive', '--json'])).out, '"key"') === 0, 20000, 'all gone after the permanent delete');
+    for (const n of ['e', 'f', 'g']) {
+      const v = await s3(['versions', 'ls', `${P}/${n}.txt`, '--json']);
+      need(countLines(v.out, '"versionId"') === 0, `permanent delete left history for ${n}: ${v.out}`);
+    }
+    return 'marker multi-delete kept every timeline; Shift+Del destroyed the second batch entirely';
+  });
+
+  await verify({ id: 'GUI-30', area: 'versions', action: 'Versions dialog: A/B compare diff + per-version Destroy', ds: 'S3 (MinIO)', scenario: 'three CLI-seeded text versions: the timeline lists all three; picking the OLDEST as A and the NEWEST as B and comparing shows BOTH sides\' changed lines in the diff; destroying the oldest through its confirmation window drops the timeline to exactly two — re-read by CLI', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/verify-gui/deepver.txt`;
+    await writeFile(path.join(ART, 'deepver-v1.txt'), 'deepver alpha one\n');
+    await writeFile(path.join(ART, 'deepver-v2.txt'), 'deepver beta two\n');
+    await writeFile(path.join(ART, 'deepver-v3.txt'), 'deepver gamma three\n');
+    await s3(['cp', path.join(ART, 'deepver-v1.txt'), K]);
+    await s3(['cp', path.join(ART, 'deepver-v2.txt'), K, '--force']);
+    await s3(['cp', path.join(ART, 'deepver-v3.txt'), K, '--force']);
+    const j = await s3(['versions', 'ls', K, '--json']);
+    const ids = [...j.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
+    need(ids.length === 3, `seeded timeline: ${j.out}`);
+    const oldest = ids[ids.length - 1]; // versions ls lists newest first
+    const newest = ids[0];
+    const clickVerBtn = (id, label) => evalPage(([vid, lbl]) => {
+      const row = Array.from(document.querySelectorAll('#modal-root .ver-row'))
+        .find((r) => (r.textContent || '').includes(vid.slice(-6)));
+      if (!row) return false;
+      const b = Array.from(row.querySelectorAll('button')).find((x) => (x.textContent || '').trim() === lbl);
+      if (!b) return false;
+      b.click();
+      return true;
+    }, [id, label]);
+    const openVersions = async (n = 3) => {
+      await rightClickRow('deepver.txt');
+      await ctxItem(/^versions/i);
+      await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) === n, 15000, `${n} version rows`);
+    };
+    await navCertGui();
+    await enterFolder('verify-gui');
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('deepver.txt')); }, 15000, 'deepver row');
+    await openVersions();
+    await shot('30-versions-ab');
+    await waitFor(() => clickVerBtn(oldest, 'A'), 5000, 'pick A (oldest)');
+    await sleep(200);
+    await waitFor(() => clickVerBtn(newest, 'B'), 5000, 'pick B (newest)');
+    await sleep(200);
+    await waitFor(() => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root button')).find((x) => /compare a/i.test(x.textContent || ''));
+      if (!b || b.disabled) return false;
+      b.click();
+      return true;
+    }), 5000, 'Compare A↔B armed');
+    await waitFor(async () => {
+      const t = await modalText();
+      return /deepver alpha one/.test(t) && /deepver gamma three/.test(t);
+    }, 8000, 'the diff to show both sides');
+    await closeModal();
+    // the diff modal may have replaced the timeline — reopen if needed
+    if (!(await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length))) await openVersions();
+    await waitFor(() => clickVerBtn(oldest, 'Destroy'), 5000, 'Destroy on the oldest');
+    await waitFor(async () => /permanently delete version/i.test(await modalText()), 8000, 'the destroy window');
+    if (await evalPage(() => !!document.querySelector('#modal-root .delw-confirm input.input'))) {
+      await page.locator('#modal-root .delw-confirm input.input').fill('delete');
+    }
+    await shot('30-destroy-oldest');
+    await clickFooter(/^destroy$/i);
+    // the delete window occupies the single modal slot, so the timeline it
+    // replaced is gone once the destroy confirms — reopen and count
+    await openVersions(2);
+    const v = await s3(['versions', 'ls', K, '--json']);
+    need(countLines(v.out, '"versionId"') === 2, `CLI disagrees after destroy: ${v.out}`);
+    need(!v.out.includes(oldest), 'the destroyed version id still lists');
+    await closeModal();
+    return 'A/B diff showed both sides; destroying the oldest left exactly two versions';
+  });
+
+  await verify({ id: 'GUI-31', area: 'transfers', action: 'Versioned copy: the full timeline S3→S3 (the migrator)', ds: 'S3 (MinIO)', scenario: 'an object with THREE versions pasted into a fresh versioned bucket: the version-choice dialog appears (the destination is versioned), the GUI carries the ENTIRE timeline across in a background job — the destination lists all three versions and the current bytes round-trip', face: 'GUI' }, async () => {
+    const MIG = `${BUCKET}-mig`;
+    let r = await s3(['mb', `s3://${MIG}`]);
+    need(r.code === 0, `mb mig: ${r.out}${r.err}`);
+    await s3(['bucket', 'versioning', `s3://${MIG}`, 'on']);
+    const K = `s3://${BUCKET}/verify-gui/mighist.txt`;
+    await writeFile(path.join(ART, 'mig-v1.txt'), 'mig one\n');
+    await writeFile(path.join(ART, 'mig-v2.txt'), 'mig two\n');
+    await writeFile(path.join(ART, 'mig-v3.txt'), 'mig three\n');
+    await s3(['cp', path.join(ART, 'mig-v1.txt'), K]);
+    await s3(['cp', path.join(ART, 'mig-v2.txt'), K, '--force']);
+    await s3(['cp', path.join(ART, 'mig-v3.txt'), K, '--force']);
+    const nv = async (uri) => countLines((await s3(['versions', 'ls', uri, '--json'])).out, '"versionId"');
+    need(await nv(K) === 3, 'seed timeline');
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('mighist.txt')); }, 15000, 'mighist row');
+    await clickRow('mighist.txt');
+    await page.keyboard.press('Control+c');
+    await sleep(600); // the hidden Explorer staging job also starts — irrelevant here
+    await goBuckets();
+    // dozens of leftover buckets out-scroll the virtualized grid — filter
+    // the list so the target row materializes, then open the bucket
+    await filterTo(MIG);
+    await waitFor(async () => (await visKeys()).some((k) => k === MIG), 8000, 'the mig bucket row');
+    await dblClickRow(MIG);
+    await clearFilter();
+    await waitFor(async () => (await txt('#breadcrumb')).includes(MIG), 10000, 'inside the mig bucket');
+    // Ctrl+V is swallowed while focus sits in the filter input (wireKeys
+    // ignores in-input keys) — hand focus back to the page body first
+    await evalPage(() => { document.getElementById('filter')?.blur(); });
+    await page.keyboard.press('Control+v');
+    await waitFor(async () => /copy s3/i.test(await modalText()), 8000, 'the version-choice dialog');
+    await evalPage(() => {
+      const c = document.querySelector('#modal-root .vcv-row input[type="checkbox"]');
+      if (c) c.checked = true;
+      return true;
+    });
+    await shot('31-versioned-copy-dialog');
+    await clickFooter(/^copy$/i);
+    const DK = `s3://${MIG}/mighist.txt`;
+    await waitFor(async () => await nv(DK) === 3, 60000, 'all three versions on the destination');
+    const dl = path.join(ART, 'mig-dl.txt');
+    await s3(['cp', DK, dl]);
+    need((await readFile(dl)).toString() === 'mig three\n', 'destination current bytes differ');
+    await s3(['rb', `s3://${MIG}`, '--force']);
+    return 'version-choice dialog + background job carried the whole 3-version timeline across buckets';
+  });
+
+  await verify({ id: 'GUI-32', area: 'admin', action: 'Admin panel mutations: versioning toggle + tags', ds: 'S3 (MinIO)', scenario: 'a scratch bucket driven ENTIRELY through the Admin panel: Overview suspends versioning (CLI reads it back suspended), re-enables it (CLI reads enabled); Tags saves a pair (CLI reads it back) then deletes all — every GUI mutation verified out-of-band', face: 'GUI' }, async () => {
+    const AB = `${BUCKET}-adm`;
+    let r = await s3(['mb', `s3://${AB}`]);
+    need(r.code === 0, `mb: ${r.out}${r.err}`);
+    await s3(['bucket', 'versioning', `s3://${AB}`, 'on']);
+    await navCertGui();
+    await goBuckets();
+    // the unfiltered grid virtualizes: the adm bucket sorts far down the
+    // leftover-bucket list and never renders — filter it into view
+    await filterTo(AB);
+    await waitFor(async () => (await visKeys()).some((k) => k === AB), 8000, 'the adm bucket row');
+    await rightClickRow(AB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    const clickBtn = (re) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root button'))
+        .find((x) => new RegExp(src, 'i').test((x.textContent || '').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    }, re);
+    await waitFor(() => clickBtn('^suspend versioning$'), 5000, 'Suspend versioning button');
+    await waitFor(async () => /suspended/i.test((await s3(['bucket', 'info', `s3://${AB}`])).out), 20000, 'CLI to read suspended');
+    await waitFor(() => clickBtn('^enable versioning$'), 5000, 'Enable versioning button');
+    await waitFor(async () => {
+      const t = (await s3(['bucket', 'info', `s3://${AB}`])).out;
+      return /enabled/i.test(t) && !/suspended/i.test(t);
+    }, 20000, 'CLI to read enabled');
+    await page.locator('#modal-root .tab[data-tab="Tags"]').click();
+    await sleep(400);
+    await waitFor(() => clickBtn('\\+ add tag'), 5000, 'Add tag');
+    await sleep(200);
+    await evalPage(() => {
+      const row = document.querySelector('#modal-root .tag-row');
+      if (!row) return false;
+      const [k, v] = row.querySelectorAll('input');
+      k.value = 'roundtrip';
+      k.dispatchEvent(new Event('change', { bubbles: true }));
+      v.value = 'gui';
+      v.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    });
+    await waitFor(() => clickBtn('^save$'), 5000, 'Tags Save');
+    await waitFor(async () => (await s3(['bucket', 'tags', 'get', `s3://${AB}`])).out.includes('roundtrip'), 20000, 'CLI to read the tag back');
+    await waitFor(() => clickBtn('delete all'), 5000, 'Tags Delete all');
+    await waitFor(async () => !(await s3(['bucket', 'tags', 'get', `s3://${AB}`])).out.includes('roundtrip'), 20000, 'the tag to be gone');
+    await closeModal();
+    await clearFilter();
+    await shot('32-admin-mutations');
+    await s3(['rb', `s3://${AB}`, '--force']);
+    return 'versioning suspend/enable + tags put/delete landed server-side, CLI-verified';
+  });
+
+  await verify({ id: 'GUI-33', area: 'gates', action: 'L2 execution: Empty bucket destroys EVERY version, keeps the bucket', ds: 'S3 (MinIO)', scenario: 'a scratch bucket seeded with nested objects, extra old versions and delete markers: typing the bucket\'s own name arms the Empty-bucket window and EXECUTES — afterwards nothing lists anywhere (recursive listing empty, version statistics all zero, sampled timelines empty), yet the bucket itself survives and still takes writes', face: 'GUI' }, async () => {
+    const EB = `${BUCKET}-l2x`;
+    let r = await s3(['mb', `s3://${EB}`]);
+    need(r.code === 0, `mb: ${r.out}${r.err}`);
+    await s3(['bucket', 'versioning', `s3://${EB}`, 'on']);
+    for (const d of ['x', 'y']) await s3(['mkdir', `s3://${EB}/${d}/`]);
+    for (let i = 1; i <= 12; i++) await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `s3://${EB}/${i < 7 ? 'x' : 'y'}/l${i}.txt`]);
+    for (let i = 1; i <= 6; i++) await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `s3://${EB}/x/l${i}.txt`, '--force']); // old versions
+    for (let i = 7; i <= 8; i++) await s3(['rm', `s3://${EB}/y/l${i}.txt`]); // delete markers
+    let st = JSON.parse((await s3(['versions', 'stat', `s3://${EB}`, '--json'])).out || '{}');
+    need((st.versions || 0) >= 20 && (st.deleteMarkers || 0) >= 2, `seed stats: ${JSON.stringify(st)}`);
+    await navCertGui();
+    await goBuckets();
+    // same virtualized-grid blindness as GUI-32 — filter the bucket into view
+    await filterTo(EB);
+    await waitFor(async () => (await visKeys()).some((k) => k === EB), 8000, 'the l2x bucket row');
+    await rightClickRow(EB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    await page.locator('#modal-root .tab[data-tab="Versions"]').click();
+    await waitFor(async () => /empty bucket \(all versions\)/i.test(await modalText()), 8000, 'the Empty-bucket tool');
+    await shot('33-l2-execute');
+    // click-and-verify in one poll: re-click until the Delete Window's typed
+    // partition is live (a silently-lost click left later steps probing the
+    // admin panel's own inputs), and fail with forensics if it never opens
+    try {
+      await waitFor(() => evalPage(() => {
+        if (document.querySelector('#modal-root .modal .delw-confirm')) return true;
+        const b = Array.from(document.querySelectorAll('#modal-root button'))
+          .find((x) => /empty bucket \(all versions\)/i.test(x.textContent || ''));
+        if (b) b.click();
+        return false;
+      }), 8000, 'the Empty-bucket Delete Window to open');
+    } catch (e) {
+      await shot('33-window-fail');
+      const dump = await evalPage(() => (document.querySelector('#modal-root .modal')?.textContent || '').replace(/\s+/g, ' ').slice(0, 300));
+      throw new Error(`${e.message} — modal: ${dump}`);
+    }
+    // the typed partition is the Delete Window's fingerprint; a bare
+    // input.input probe also matches admin-panel inputs in other tabs
+    const typedInput = page.locator('#modal-root .modal .delw-confirm input.input');
+    await typedInput.fill(EB);
+    try {
+      await waitFor(async () => (await evalPage(() => {
+        const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+          .find((x) => /empty bucket/i.test(x.textContent.trim()));
+        return b === undefined ? null : !b.disabled;
+      })) === true, 8000, 'the button armed with the bucket name');
+    } catch (e) {
+      await shot('33-arming-fail');
+      const dump = await evalPage(() => ({
+        typed: document.querySelector('#modal-root .modal .delw-confirm input')?.value ?? null,
+        foot: Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+          .map((b) => `${b.textContent.trim()}=${b.disabled ? 'disabled' : 'armed'}`),
+      }));
+      throw new Error(`${e.message} — ${JSON.stringify(dump)}`);
+    }
+    await evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((x) => /empty bucket/i.test(x.textContent.trim()));
+      if (b && !b.disabled) { b.click(); return true; }
+      return false;
+    });
+    await waitFor(async () => {
+      const j = JSON.parse((await s3(['versions', 'stat', `s3://${EB}`, '--json'])).out || '{"versions":1}');
+      return (j.versions || 0) === 0 && (j.deleteMarkers || 0) === 0 && (j.currentObjects || 0) === 0;
+    }, 90000, 'all version statistics to reach zero');
+    need(countLines((await s3(['ls', `s3://${EB}`, '--recursive', '--json'])).out, '"key"') === 0, 'objects survived the empty');
+    for (const k of ['x/l1.txt', 'y/l7.txt']) {
+      const v = await s3(['versions', 'ls', `s3://${EB}/${k}`, '--json']);
+      need(countLines(v.out, '"versionId"') === 0, `a timeline survived for ${k}: ${v.out}`);
+    }
+    r = await s3(['stat', `s3://${EB}`]);
+    need(/region|created|size/i.test(r.out), `the bucket itself was destroyed: ${r.out}`);
+    await writeFile(path.join(ART, 'l2x-after.txt'), 'still writable\n');
+    r = await s3(['cp', path.join(ART, 'l2x-after.txt'), `s3://${EB}/after.txt`]);
+    need(r.code === 0, `the emptied bucket no longer takes writes: ${r.out}${r.err}`);
+    await closeModal();
+    await clearFilter();
+    await s3(['rb', `s3://${EB}`, '--force']);
+    return 'executed: every version and marker destroyed; the bucket survives and takes writes';
+  });
+
+  await verify({ id: 'GUI-34', area: 'transfers', action: 'Cancel mid-batch: finished files stay, the canceled one never lands', ds: 'S3 (MinIO)', scenario: 'five 2 MiB files drag-dropped as ONE batch job under a 128 kB/s app throttle (files process sequentially): the job is canceled only once its first file has fully landed — exactly the finished file(s) exist remotely afterwards (byte-identical, CLI-verified), while the in-flight and still-queued ones are ABSENT with no partial left behind (S3 materializes nothing until an upload completes)', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/cancel2`;
+    await s3(['mkdir', `${P}/`]);
+    const src = path.join(ART, 'cancel2');
+    await rm(src, { recursive: true, force: true });
+    await mkdir(src, { recursive: true });
+    const names = [];
+    const shas = {};
+    for (let i = 1; i <= 5; i++) {
+      const n = `cb${i}.bin`;
+      const f = path.join(src, n);
+      await writeFile(f, randomBytes(2 * 1024 * 1024));
+      names.push(n);
+      shas[n] = await sha256file(f);
+    }
+    await evalPage(() => { localStorage.setItem('s3b-throttle', '131072'); localStorage.setItem('s3b-show-throttle', '1'); return true; });
+    // cascade insurance: a failed prior row can leave its modal open and the
+    // filter set — best-effort no-ops on a clean UI (Cancel never fires the
+    // destructive path)
+    try { await closeModal(); await clearFilter(); } catch { /* best effort */ }
+    await navCertGui();
+    await enterFolder('verify-gui');
+    await enterFolder('cancel2');
+    await ensureDualPane();
+    await localDir(src, 'cb1.bin');
+    await waitFor(async () => (await sideKeys()).filter((k) => k.startsWith('cb')).length === 5, 10000, 'five local rows');
+    await (await sideRow('cb1.bin')).click();
+    for (let i = 2; i <= 5; i++) await (await sideRow(`cb${i}.bin`)).click({ modifiers: ['Control'] });
+    await dnd(await sideRow('cb3.bin'), await bodyH());
+    await startIfAsked(5000);
+    await shot('34-batch-running');
+    // the manager popout is where job rows live — open it explicitly instead
+    // of relying on whatever earlier rows left behind
+    await menuClick(/view/i, /transfers/i);
+    await waitFor(() => evalPage(() => !!document.querySelector('#popout-root .popout')), 5000, 'transfer manager popout');
+    // one job must be visibly mid-flight AND past its first file before
+    // anything is canceled: the batch is ONE job that processes files
+    // sequentially, so canceling during file 1 lands NOTHING (run 2: 7%
+    // into cb1, 0/5 files done → zero objects). "Cancel mid-batch keeps
+    // finished files" is only observable between files.
+    let doneAtCancel = 0;
+    await waitFor(async () => {
+      const j = ((await call('ActiveTransfers')) || []).find((x) => x.status === 'running' && !x.hidden);
+      if (j && (j.doneFiles || 0) >= 1 && (j.doneFiles || 0) < (j.totalFiles || 5)) {
+        doneAtCancel = j.doneFiles;
+        return true;
+      }
+      return false;
+    }, 300000, 'a running job past its first file');
+    // the manager re-renders its rows on every progress tick, so find AND
+    // click the button in the same in-page turn, retried until it lands
+    await waitFor(async () => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('.tr-job.running button'))
+        .find((x) => /cancel/i.test(x.textContent || ''));
+      if (!b) return false;
+      b.click();
+      return true;
+    }), 15000, 'Cancel on the running job');
+    await waitFor(async () => JSON.stringify(await call('ActiveTransfers')).includes('canceled'), 30000, 'a canceled job');
+    await waitFor(async () => ((await call('ActiveTransfers')) || []).every((j) => j.status !== 'running'), 120000, 'all jobs to settle');
+    await evalPage(() => { localStorage.removeItem('s3b-throttle'); localStorage.removeItem('s3b-show-throttle'); return true; });
+    const l = await s3(['ls', P, '--recursive', '--json']);
+    const landed = names.filter((n) => l.out.includes(n));
+    // exactly the files that had FINISHED when the cancel landed stay; a
+    // 2 MiB file takes ~85 s under the throttle, so none can complete in
+    // the ~100 ms between reading doneFiles and the click landing
+    need(landed.length === doneAtCancel && landed.length >= 1,
+      `expected exactly ${doneAtCancel} finished file(s) to stay, got: ${landed.join(',') || 'none'}`);
+    const missing = names.filter((n) => !landed.includes(n));
+    need(missing.length === names.length - doneAtCancel, 'the canceled/queued files were counted wrong');
+    for (const n of landed) {
+      const f = path.join(ART, `cb-dl-${n}`);
+      await s3(['cp', `${P}/${n}`, f]);
+      need(await sha256file(f) === shas[n], `${n} bytes differ after the batch`);
+    }
+    for (const n of missing) {
+      const s = await s3(['stat', `${P}/${n}`]);
+      need(s.code !== 0, `the canceled/queued file ${n} landed (partial or whole)`);
+    }
+    return `canceled mid-batch: ${missing.length} file(s) never landed, the ${landed.length} finished one(s) are byte-identical`;
   });
 
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {

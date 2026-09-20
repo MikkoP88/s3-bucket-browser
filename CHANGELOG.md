@@ -4,6 +4,16 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.17] — 2026-09-21
+
+### Added
+
+- **Round 3 of extreme-level rows: the gate grew from 85 to 94.** Data-protection toggles — versioning suspend/resume (a suspended write lands as the null version while the timeline survives) plus public access block arm/disarm, with the MinIO PAB provider gap recorded (the aws CLI agrees) (CLI-S3-36); legacy store migration — hand-written `profiles.json` seeds both profiles as data sources, the keyring takes every secret and the session token (none remain in the file), and the token profile's invalid-token refusal carries the synthetic token in the signature, proving it came from the keyring (CLI-M-06). Through the GUI face: the selection-mechanics ladder — plain anchor, shift-range, ctrl-toggle, Ctrl+I complement, Ctrl+A, every count from the visible selection bar (GUI-28); the multi-delete ladder — marker delete hides all four selected objects while every full timeline survives, then Shift+Del destroys versions entirely (GUI-29); the versions dialog's A/B compare diff plus per-version Destroy re-read by the CLI (GUI-30); versioned copy carrying the ENTIRE timeline S3→S3 in a background job (GUI-31); Admin-panel versioning and tag mutations verified out-of-band (GUI-32); L2 execution — Empty bucket destroys EVERY version and keeps the bucket (GUI-33); and cancel mid-batch — finished files stay byte-identical, the canceled one never lands (GUI-34).
+
+### Fixed
+
+- **One-pass data-source migration can no longer collide on the same nanosecond ID.** Windows' coarse clock could mint two migrated sources with the same ID, and `sources/<id>/secret`/`token` share one keyring slot — the second silently overwrote the first's credentials. Source IDs now carry a crypto-random suffix, with collision re-rolls (`pkg/core/profile/source.go`).
+
 ## [Unreleased]
 
 ### Added
