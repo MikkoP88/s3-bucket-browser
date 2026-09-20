@@ -250,21 +250,20 @@ release".
 ## Latest verification report
 
 Replaced on every run — this snapshot is from the verification runs of
-**20 Sep 2026** on Windows 11 (x64). The release-evidence run for
-`v1.1.0-beta.16` is committed at
-[`docs/verification/v1.1.0-beta.16/windows-x64/REPORT.md`](verification/v1.1.0-beta.16/windows-x64/REPORT.md):
+**21 Sep 2026** on Windows 11 (x64). The release-evidence run for
+`v1.1.0-beta.17` is committed at
+[`docs/verification/v1.1.0-beta.17/windows-x64/REPORT.md`](verification/v1.1.0-beta.17/windows-x64/REPORT.md):
 
 ```
-release evidence (--release v1.1.0-beta.16 — tag-stamped build; 85 rows):
-  83 PASS · 2 SKIP · 0 FAIL — 726 s
+release evidence (--release v1.1.0-beta.17 — tag-stamped build; 94 rows):
+  92 PASS · 2 SKIP · 0 FAIL — 872 s
   (the 2 SKIPs = lifecycle put + SSE-S3, the recorded MinIO provider gaps)
   SWEEP-VIS-01  gui-visual   609/609 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
-quick iteration runs on the same matrix (--quick --no-build; the only
-FAILs are the version stamps of the reused release binaries —
-CLI-M-01/GUI-01, resolved by any fresh build):
-  79 PASS · 2 SKIP · 2 FAIL — 407 s
-  (83 of 85 rows; the two sweep rows only run in full gates)
+quick gate on the same matrix (--quick; fresh build, all nine
+round-3 rows green):
+  90 PASS · 2 SKIP · 0 FAIL — 553 s
+  (92 of 94 rows; the two sweep rows only run in full gates)
 ```
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
