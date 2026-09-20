@@ -50,7 +50,11 @@ const PROFILE = path.join(ART, 'walk.s3bprofile');
 const USERDIR = path.join(ART, 'browser-profile');
 const SRV_EXE = path.join(ROOT, 'testartifacts', 's3b-server.exe');
 const SRVLOG = path.join(ART, 'server.log');
-const VERSION = 'v1.1.0-beta.14-9-wails3';
+// The exe under test (testartifacts/s3b-server.exe) is built by whoever drives
+// this walk: verify.mjs stamps its own build and passes S3B_EXPECT_VERSION so
+// the GetVersion round-trip asserts the REAL stamp (release runs stamp the
+// tag). Standalone runs fall back to the dev-stamp default.
+const VERSION = process.env.S3B_EXPECT_VERSION || 'v1.1.0-beta.14-9-wails3';
 
 const arg = (k) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 ? process.argv[i + 1] : null; };
 const HEADED = process.argv.includes('--headed');

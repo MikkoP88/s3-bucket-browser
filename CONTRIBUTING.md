@@ -40,6 +40,40 @@ build matrix, an NSIS-compile check and a docs-freshness check. Optional,
 needs Docker: `./scripts/e2e-minio.sh` runs the full end-to-end suite
 against a local MinIO — it never touches your real profile store.
 
+## Cutting a release
+
+Releases are tag-driven: pushing a `v*` tag runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which
+builds the linux/windows/darwin artifacts and the SBOM from the tagged
+commit, signs the Windows binaries, and attaches everything to a GitHub
+release.
+
+The action-verification gate (the full matrix in
+[docs/VERIFICATION.md](docs/VERIFICATION.md)) needs the live engine
+containers and a browser, so it runs on the release machine as a **pre-tag
+phase** — and the workflow refuses to publish a tag without its committed
+report (**no report, no release**):
+
+```bash
+git checkout main && git pull              # the commit CI will build
+node scripts/verify.mjs --release v1.2.3   # full gate, tag-stamped build;
+                                           # writes docs/verification/v1.2.3/<os>-<arch>/
+git add docs/verification                  # commit the evidence…
+git commit -m "test: verification report for v1.2.3" && git push
+git tag v1.2.3 && git push origin v1.2.3   # …then tag (the tag must contain the report)
+```
+
+`--release` stamps `main.version` exactly as CI does (the tag without the
+leading `v`), runs every row from a fresh build — it refuses
+`--only`/`--quick`/`--no-build`/`--skip-gui` — and writes the evidence:
+`REPORT.md` (build + OS + the certificate) and `verification.json`, plus the
+index at [`docs/verification/`](docs/verification/). The release job then
+checks the report for the tag (full matrix, zero FAIL) and links it at the
+top of the release notes.
+
+Also bump `CHANGELOG.md` for the new version (and `docs/security.md` if the
+safety model moved).
+
 ## Ground rules
 
 1. **Hermetic tests.** Unit and protocol tests use `httptest` mock servers

@@ -33,6 +33,12 @@
 //                            gui          the whole GUI battery (both parts)
 //                            sweeps       the two full harnesses
 //           --no-build     reuse existing testartifacts exes
+//           --release <tag>  release evidence: stamp the tag into the binaries
+//                            exactly as the release workflow does, run the FULL
+//                            matrix from a fresh build, and write the committed
+//                            report docs/verification/<tag>/<os>-<arch>/
+//                            (REPORT.md + verification.json) + the index there.
+//                            Incompatible with --only/--quick/--no-build/--skip-gui.
 //         Repeat the run to verify repeatability: results must be identical.
 // Artifacts: testartifacts/verification/ (verification.json, fixtures/,
 //           gui shots, server log) — wiped fresh every run.
@@ -56,7 +62,6 @@ const GUICFG = path.join(ART, 'gui-config');   // S3B_CONFIG for the GUI face
 const SHOTS = path.join(ART, 'shots');
 const CLI_EXE = path.join(ROOT, 'testartifacts', 's3b-verify-cli.exe');
 const SRV_EXE = path.join(ROOT, 'testartifacts', 's3b-server.exe');
-const VERSION = 'v1.1.0-beta.14-9-wails3';
 
 const arg = (k) => process.argv.includes(`--${k}`);
 const QUICK = arg('quick');
@@ -78,6 +83,31 @@ const ONLY = (() => {
 })();
 const want = (c) => ONLY === 'all' || ONLY === c || (ONLY === 'cli' && ['s3', 'cross', 'resilience', 'meta'].includes(c));
 
+// Release-evidence mode: `--release v1.2.3` stamps the tag into the binaries
+// exactly as the release workflow does (main.version=<tag without v> — see
+// .github/workflows/release.yml), refuses anything but the full matrix from a
+// fresh build, and writes the committed report under docs/verification/.
+// CLI-M-01/GUI-01 then assert the binary prints the stamp, so the report's
+// version is binary-verified, not declared.
+const RELEASE = (() => {
+  const i = process.argv.indexOf('--release');
+  if (i < 0) return null;
+  const tag = process.argv[i + 1];
+  if (!tag || !/^v\d+\.\d+\.\d+(-[\w.]+)?$/.test(tag)) {
+    console.error(`--release expects a release tag like v1.2.3 or v1.1.0-beta.15 (got "${tag ?? ''}")`);
+    process.exit(2);
+  }
+  const clash = [QUICK && '--quick', SKIP_GUI && '--skip-gui', NO_BUILD && '--no-build', ONLY !== 'all' && '--only'].filter(Boolean);
+  if (clash.length) {
+    console.error(`--release is release evidence: the full matrix from a fresh build — incompatible with ${clash.join(', ')}`);
+    process.exit(2);
+  }
+  return tag;
+})();
+const VERSION = RELEASE ? RELEASE.replace(/^v/, '') : 'v1.1.0-beta.14-9-wails3';
+// Stable directory id for the report, e.g. windows-x64 / macos-arm64.
+const OSID = `${({ win32: 'windows', darwin: 'macos' })[os.platform()] || os.platform()}-${os.arch()}`;
+
 // ---------- live engines ----------
 const ENDPOINT = 'http://localhost:9000';
 const KEY = 'minioadmin';
@@ -96,6 +126,12 @@ const FTPNAME = 'verify-ftp';                             // GUI FTP source
 const GUI_PORT = 39874;                                 // v3live uses 39872; keep distinct
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// gitOut runs a git command in the repo; '' when git is absent or fails —
+// the commit fields are evidence, not load-bearing for the gate.
+const gitOut = (args) => new Promise((resolve) => {
+  execFile('git', args, { cwd: ROOT, windowsHide: true, timeout: 10000 }, (err, stdout) => resolve(err ? '' : String(stdout).trim()));
+});
 
 // ---------- verification rows ----------
 const rows = [];
@@ -1431,7 +1467,9 @@ function runSweep(script, re) {
   return new Promise((resolve) => {
     const p = spawn(process.execPath, [path.join(ROOT, 'scripts', script)], {
       cwd: ROOT, windowsHide: true,
-      env: { ...process.env, NO_COLOR: '1' },
+      // S3B_EXPECT_VERSION: the sweep reuses the exes this run stamped, so its
+      // GetVersion round-trip must assert THIS stamp, not a hardcoded one.
+      env: { ...process.env, NO_COLOR: '1', S3B_EXPECT_VERSION: VERSION },
     });
     let out = '';
     p.stdout.on('data', (d) => { out += d; });
@@ -1461,12 +1499,129 @@ async function sweepGate(script, re, fmt) {
 }
 
 // ============================================================
+// Release report — committed evidence under docs/verification/
+// ============================================================
+// `--release <tag>` writes the run's evidence into the repo:
+//   docs/verification/<tag>/<os>-<arch>/REPORT.md         human report
+//   docs/verification/<tag>/<os>-<arch>/verification.json machine copy
+//   docs/verification/README.md                           index (regenerated)
+// The release workflow gates publishing on this directory (full matrix,
+// zero FAIL) and links it from the release notes — no report, no release.
+const esc = (s) => String(s ?? '').replace(/\|/g, '\\|');
+
+async function writeReleaseReport(v) {
+  const dir = path.join(ROOT, 'docs', 'verification', RELEASE, OSID);
+  await rm(dir, { recursive: true, force: true });
+  await mkdir(dir, { recursive: true });
+  await writeFile(path.join(dir, 'verification.json'), JSON.stringify(v, null, 2) + '\n');
+
+  const s = v.summary;
+  const verdict = s.fail === 0
+    ? `**RELEASE GATE: PASS — ${s.pass} PASS · ${s.skip} SKIP · 0 FAIL**`
+    : `**RELEASE GATE: FAIL — ${s.pass} PASS · ${s.skip} SKIP · ${s.fail} FAIL**`;
+  const L = [];
+  L.push(`# Verification report — s3b ${RELEASE}`);
+  L.push('');
+  L.push(`${verdict} — full matrix in ${s.seconds}s.`);
+  L.push('');
+  L.push(`**Version stamp:** \`${v.version}\` — binary-verified by the run itself:`);
+  L.push('CLI-M-01 requires the binary to print exactly this stamp; GUI-01 round-trips');
+  L.push('it through the Wails bridge. The stamp matches what the release workflow');
+  L.push('builds (`.github/workflows/release.yml`).');
+  L.push('');
+  if (v.commit) L.push(`**Verified commit:** \`${v.commit}\`${v.commitSubject ? ` — ${esc(v.commitSubject)}` : ''}`);
+  L.push(`**OS:** ${v.os}`);
+  L.push(`**Node:** ${v.node}`);
+  L.push(`**Run:** id \`${v.runId}\`, bucket \`${v.bucket}\`, started ${v.generatedAt}`);
+  L.push(`**Command:** \`node scripts/verify.mjs --release ${RELEASE}\``);
+  L.push('');
+  L.push('Every row below ran end-to-end through binaries built by this run from the');
+  L.push('verified commit — CLI face and GUI face against live engines (MinIO S3, SFTP,');
+  L.push('FTP, WebDAV), with byte-level verification, safety-gate probes, cancellation');
+  L.push('probes and fault injection. The gate itself is documented in');
+  L.push('[docs/VERIFICATION.md](../../../VERIFICATION.md).');
+  L.push('');
+  L.push('## Certificate');
+  L.push('');
+  L.push('| ID | Face | Action | Source | Scenario | Result |');
+  L.push('|---|---|---|---|---|---|');
+  for (const r of v.rows) {
+    const res = r.result === 'PASS' ? 'PASS' : `**${r.result}**${r.detail ? ` — ${esc(r.detail)}` : ''}`;
+    L.push(`| ${r.id} | ${r.face} | ${esc(r.action)} | ${esc(r.ds)} | ${esc(r.scenario)} | ${res} |`);
+  }
+  const noted = v.rows.filter((r) => r.result === 'PASS' && r.detail);
+  if (v.rows.some((r) => r.result !== 'PASS') || noted.length) {
+    L.push('');
+    L.push('## Notes');
+    L.push('');
+    for (const r of v.rows.filter((x) => x.result !== 'PASS')) L.push(`- **${r.id} ${r.result}** — ${esc(r.detail)}`);
+    for (const r of noted) L.push(`- ${r.id} PASS — ${esc(r.detail)}`);
+  }
+  L.push('');
+  L.push('## Reproduce');
+  L.push('');
+  L.push('```bash');
+  L.push(`node scripts/verify.mjs --release ${RELEASE}`);
+  L.push('```');
+  L.push('');
+  L.push('Prerequisites (live engine containers) and the full row matrix:');
+  L.push('[docs/VERIFICATION.md](../../../VERIFICATION.md). `verification.json` next to');
+  L.push('this file is the machine-readable copy of the same run.');
+  await writeFile(path.join(dir, 'REPORT.md'), L.join('\n') + '\n');
+
+  // Index: regenerated from disk — one row per report found, newest release
+  // first, so the table stays true even if a report is added by hand.
+  const base = path.join(ROOT, 'docs', 'verification');
+  const found = [];
+  for (const d of await readdir(base, { withFileTypes: true })) {
+    if (!d.isDirectory()) continue;
+    for (const o of await readdir(path.join(base, d.name), { withFileTypes: true })) {
+      if (!o.isDirectory()) continue;
+      try {
+        const j = JSON.parse(await readFile(path.join(base, d.name, o.name, 'verification.json'), 'utf8'));
+        found.push({ tag: d.name, osid: o.name, j });
+      } catch { /* directory without a report — not listed */ }
+    }
+  }
+  const triple = (t) => t.replace(/^v/, '').split('-')[0].split('.').map(Number);
+  const suffix = (t) => t.replace(/^v/, '').split('-').slice(1).join('-');
+  found.sort((a, b) => {
+    const [x, y] = [triple(a.tag), triple(b.tag)];
+    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return y[i] - x[i];
+    return suffix(b.tag).localeCompare(suffix(a.tag), undefined, { numeric: true });
+  });
+  const I = [];
+  I.push('# Verification reports');
+  I.push('');
+  I.push('Release evidence for the action-verification gate');
+  I.push('([docs/VERIFICATION.md](../VERIFICATION.md)): one directory per release tag,');
+  I.push('one sub-directory per OS the gate ran on — `REPORT.md` (build + OS + the full');
+  I.push('certificate) and `verification.json` (machine copy). Produced by');
+  I.push('`node scripts/verify.mjs --release <tag>` on the tagged commit; the release');
+  I.push('workflow refuses to publish a tag without a green report here, and links the');
+  I.push('report in the release notes.');
+  I.push('');
+  I.push('<!-- Generated by scripts/verify.mjs --release — do not edit by hand. -->');
+  I.push('');
+  I.push('| Release | OS | Date (UTC) | Result | Checks | Report |');
+  I.push('|---|---|---|---|---|---|');
+  for (const { tag, osid, j } of found) {
+    const ok = j.summary?.fail === 0;
+    I.push(`| [${tag}](${tag}/) | ${osid} | ${(j.generatedAt || '').slice(0, 10)} | ${ok ? 'PASS' : '**FAIL**'} | ${j.summary?.pass ?? '?'} PASS · ${j.summary?.skip ?? '?'} SKIP · ${j.summary?.fail ?? '?'} FAIL | [REPORT.md](${tag}/${osid}/REPORT.md) |`);
+  }
+  await writeFile(path.join(base, 'README.md'), I.join('\n') + '\n');
+  return path.join('docs', 'verification', RELEASE, OSID);
+}
+
+// ============================================================
 // main
 // ============================================================
 async function main() {
   const t0 = Date.now();
+  const COMMIT = await gitOut(['log', '-1', '--pretty=%h']);
+  const COMMIT_SUBJ = await gitOut(['log', '-1', '--pretty=%s']);
   console.log(`s3b action verification — ${VERSION} on ${os.type()} ${os.release()} (${os.arch()})`);
-  console.log(`run id ${RUNID}, bucket ${BUCKET}${QUICK ? ', quick mode (sweeps skipped)' : ''}${ONLY !== 'all' ? `, category: ${ONLY}` : ''}\n`);
+  console.log(`run id ${RUNID}, bucket ${BUCKET}${QUICK ? ', quick mode (sweeps skipped)' : ''}${ONLY !== 'all' ? `, category: ${ONLY}` : ''}${RELEASE ? `, RELEASE EVIDENCE for ${RELEASE} @ ${COMMIT || 'unknown commit'}` : ''}\n`);
 
   await rm(ART, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });
@@ -1530,7 +1685,8 @@ async function main() {
   const osName = `${os.type()} ${os.release()} (${os.arch()})`;
   const byResult = (r) => rows.filter((x) => x.result === r).length;
   const verification = {
-    version: VERSION, os: osName, node: process.version,
+    version: VERSION, tag: RELEASE, commit: COMMIT, commitSubject: COMMIT_SUBJ,
+    os: osName, osId: OSID, node: process.version,
     generatedAt: new Date().toISOString(), runId: RUNID, bucket: BUCKET,
     category: ONLY,
     faces: ['CLI', 'GUI', 'SWEEP'],
@@ -1547,6 +1703,10 @@ async function main() {
     console.log([pad(r.id, w[0]), pad(r.face, w[1]), pad(r.action, w[2]), pad(r.ds, w[3]), pad(r.scenario, w[4]), pad(osName.replace(/ \(.*\)/, ''), 12), r.result].join(' '));
   }
   console.log(`\n${verification.summary.pass} PASS · ${verification.summary.skip} SKIP · ${verification.summary.fail} FAIL — ${verification.summary.seconds}s — ${path.join('testartifacts', 'verification', 'verification.json')}`);
+  if (RELEASE) {
+    const rel = await writeReleaseReport(verification);
+    console.log(`release report: ${path.join(rel, 'REPORT.md')}${verification.summary.fail ? ' — FAILING: fix before tagging (the workflow will refuse the release)' : ' — commit this with the tag (see CONTRIBUTING.md "Cutting a release")'}`);
+  }
   if (failures.length) {
     console.log('\nFAILURES:');
     for (const f of failures) console.log(`  ${f}`);

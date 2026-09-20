@@ -279,7 +279,9 @@ jobs:
     needs: [linux, windows, darwin, sbom]
     runs-on: ubuntu-latest
     steps:
-      # No checkout needed — gh only requires an explicit --repo without one.
+      # The verification report is committed under docs/verification/; the
+      # gate below reads it from the tagged tree.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -288,16 +290,47 @@ jobs:
       - name: Checksums
         run: (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
 
+      # No report, no release: the tag must carry a green, full-matrix
+      # verification report. It is produced on the release machine by
+      # `node scripts/verify.mjs --release <tag>` and committed before
+      # tagging (CONTRIBUTING.md, "Cutting a release"; docs/VERIFICATION.md).
+      - name: Verification gate
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          J="docs/verification/${TAG}/verification.json"
+          if [ ! -f "$J" ]; then
+            echo "::error::No verification report at docs/verification/${TAG}/ — run 'node scripts/verify.mjs --release ${TAG}' on the tagged commit and commit the report first (CONTRIBUTING.md, Cutting a release)."
+            exit 1
+          fi
+          if [ "$(jq -r '.category' "$J")" != "all" ]; then
+            echo "::error::Report for ${TAG} is not a full-matrix run (category=$(jq -r '.category' "$J"))."
+            exit 1
+          fi
+          FAILS=$(jq -r '.summary.fail' "$J")
+          if [ "$FAILS" != "0" ]; then
+            echo "::error::Verification report for ${TAG} has ${FAILS} FAIL row(s) — re-run the gate on a green tree."
+            exit 1
+          fi
+          PASS=$(jq -r '.summary.pass' "$J")
+          SKIP=$(jq -r '.summary.skip' "$J")
+          REPORT_OS=$(jq -r '.os' "$J")
+          {
+            echo "VERIFIED=${PASS} PASS / ${SKIP} SKIP / 0 FAIL on ${REPORT_OS}"
+            echo "REPORT_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${TAG}/docs/verification/${TAG}"
+          } >> "$GITHUB_ENV"
+          echo "verification report for ${TAG}: ${PASS} PASS / ${SKIP} SKIP / 0 FAIL (${REPORT_OS})"
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
+          NOTES=$(printf '## Verification\n\n[Verification report for %s](%s) — the full action-verification gate ran on the tagged commit: %s.' "$TAG" "$REPORT_URL" "$VERIFIED")
           # Idempotent: create the release, or — if it already exists
           # (re-pushed/moved tag) — refresh its assets in place.
           if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
             gh release upload "$TAG" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
           else
             gh release create "$TAG" dist/* --repo "${GITHUB_REPOSITORY}" \
-              --title "s3b $TAG" --generate-notes
+              --title "s3b $TAG" --generate-notes --notes "$NOTES"
           fi

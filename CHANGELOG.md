@@ -8,6 +8,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Verification is now a release-pipeline phase: no report, no release.**
+  `node scripts/verify.mjs --release <tag>` stamps the tag into the
+  binaries exactly as the release workflow does (`main.version=<tag>`),
+  runs the full matrix from a fresh build — refusing
+  `--only`/`--quick`/`--no-build`/`--skip-gui` — and commits the evidence
+  to `docs/verification/<tag>/<os>-<arch>/` (`REPORT.md` with the build,
+  OS and full certificate, plus the machine-readable `verification.json`)
+  behind a generated index, linked from the README. The release job then
+  checks out the tagged tree, refuses to publish unless the tag carries a
+  green full-matrix report, and links the report at the top of the release
+  notes. Step-by-step: CONTRIBUTING.md, "Cutting a release".
 - **Release verification: one command proves every critical job.**
   `scripts/verify.mjs` (or `npm run verify`) is the pre-release gate:
   a 64-row verification matrix across three faces, run against the live
