@@ -9,7 +9,7 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Release verification: one command proves every critical job.**
-  `scripts/certify.mjs` (or `npm run certify`) is the pre-release gate:
+  `scripts/verify.mjs` (or `npm run verify`) is the pre-release gate:
   a 64-row verification matrix across three faces, run against the live
   engine containers (MinIO S3, SFTP, FTP, WebDAV) before any version
   ships. The CLI battery asserts exit codes and output — sources and
@@ -30,11 +30,11 @@ follow [Semantic Versioning](https://semver.org/).
   means bytes actually moved. A full run folds both complete harnesses
   in as sweep rows (gui-visual 609 checks, gui-v3live 142 checks).
   Category runs (`--only cli|s3|cross|resilience|meta|gui|sweeps`,
-  or `npm run certify:cli` / `certify:gui`) verify one focus area;
+  or `npm run verify:cli` / `verify:gui`) verify one focus area;
   rows whose engines are down — or that hit a recorded provider API
   gap — are SKIPped with the reason, never passed. Exit 0 = verified;
-  the machine-readable certificate lands in
-  `testartifacts/certification/certificate.json`. `docs/CERTIFICATION.md`
+  the machine-readable verification report lands in
+  `testartifacts/verification/verification.json`. `docs/VERIFICATION.md`
   is the human-readable matrix: action × data source × tested scenario
   × CLI/GUI face × OS.
 - **Context menus can no longer overflow the window.** Menu placement now
@@ -240,7 +240,7 @@ follow [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **`bucket pab delete` can no longer destroy the bucket.** Found by the
-  certification probes and confirmed at the wire level: some S3-compatible
+  verification probes and confirmed at the wire level: some S3-compatible
   servers (observed on MinIO RELEASE.2025-09-07) mis-handle
   `DELETE /bucket?publicAccessBlock` and delete the entire bucket — with
   all its objects — while reporting success. s3b sent the documented
@@ -248,7 +248,7 @@ follow [Semantic Versioning](https://semver.org/).
   capability with a GetPublicAccessBlock call and refuses with the
   standard "public access block is not supported by this
   provider/endpoint" classification when the server cannot serve it, so a
-  broken server code path is never handed the bucket. Certificate row
+  broken server code path is never handed the bucket. Verification row
   CLI-S3-24 pins this defense: after every bucket-config delete the
   bucket must still stat.
 - **No more theme flash on launch.** The palettes live on the

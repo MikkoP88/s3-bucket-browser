@@ -1,26 +1,26 @@
 #!/usr/bin/env node
-// certify.mjs — the ACTION CERTIFICATION run: every row of docs/CERTIFICATION.md
+// verify.mjs — the ACTION VERIFICATION run: every row of docs/VERIFICATION.md
 // is executed here, for real, against real engines.
 //
-// "Certified" means: the action ran end-to-end through the shipped binary —
+// "Verified" means: the action ran end-to-end through the shipped binary —
 // CLI face and/or GUI face — against live data (MinIO S3, SFTP, FTP, WebDAV
 // containers per scripts/e2e-cross.sh) with byte-level verification where
 // bytes move, safety-gate probes where destruction is involved, and fault
 // injection where resilience is claimed. A row that cannot run (engine
 // container down, provider gap) is recorded SKIP — never silently passed.
 //
-// Three faces are certified:
-//   CLI   — s3b-cert-cli.exe (s3b_headless build) driven as a process; exit
+// Three faces are verified:
+//   CLI   — s3b-verify-cli.exe (s3b_headless build) driven as a process; exit
 //           codes and output are asserted, never eyeballed.
 //   GUI   — s3b-server.exe (the Wails `server` stack: real bindings, real
 //           backend, real browser) driven by Playwright; results verified
 //           BACK through the CLI so a GUI green means bytes on disk.
 //   SWEEP — the two full harnesses (gui-visual.mjs, gui-v3live.mjs) re-run
-//           as subprocesses and folded into the certificate as summary rows.
+//           as subprocesses and folded into the verification report as summary rows.
 //
-// Usage:  node scripts/certify.mjs [--quick] [--skip-gui] [--no-build] [--headed]
+// Usage:  node scripts/verify.mjs [--quick] [--skip-gui] [--no-build] [--headed]
 //                                         [--only <category>]
-//           (or: npm run certify / certify:quick / certify:only -- <category>)
+//           (or: npm run verify / verify:quick / verify:only -- <category>)
 //           default        THE release gate: every row, CLI + GUI + both sweeps
 //           --quick        skip the two full sweeps (CLI+GUI batteries still run)
 //           --skip-gui     CLI + sweeps only (no browser battery)
@@ -33,8 +33,8 @@
 //                            gui          the whole GUI battery (both parts)
 //                            sweeps       the two full harnesses
 //           --no-build     reuse existing testartifacts exes
-//         Repeat the run to certify repeatability: results must be identical.
-// Artifacts: testartifacts/certification/ (certificate.json, fixtures/,
+//         Repeat the run to verify repeatability: results must be identical.
+// Artifacts: testartifacts/verification/ (verification.json, fixtures/,
 //           gui shots, server log) — wiped fresh every run.
 //
 // Prerequisites: MinIO on :9000 (minioadmin/minioadmin). SFTP :2222,
@@ -49,12 +49,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const ART = path.join(ROOT, 'testartifacts', 'certification');
+const ART = path.join(ROOT, 'testartifacts', 'verification');
 const FIX = path.join(ART, 'fixtures');
 const CFG = path.join(ART, 'cli-config');      // S3B_CONFIG for the CLI face
 const GUICFG = path.join(ART, 'gui-config');   // S3B_CONFIG for the GUI face
 const SHOTS = path.join(ART, 'shots');
-const CLI_EXE = path.join(ROOT, 'testartifacts', 's3b-cert-cli.exe');
+const CLI_EXE = path.join(ROOT, 'testartifacts', 's3b-verify-cli.exe');
 const SRV_EXE = path.join(ROOT, 'testartifacts', 's3b-server.exe');
 const VERSION = 'v1.1.0-beta.14-9-wails3';
 
@@ -89,18 +89,18 @@ const SFTP_PORT = +(process.env.S3B_SFTP_PORT || 2222);
 const FTP_PORT = +(process.env.S3B_FTP_PORT || 2121);
 const WEBDAV_PORT = +(process.env.S3B_WEBDAV_PORT || 7070);
 
-const RUNID = `cert${Date.now().toString(36)}`;
-const BUCKET = `cert-${Date.now().toString(36)}`;      // lowercase — S3-safe
-const SRCNAME = 'cert-minio';                           // GUI S3 source (bucket-scoped)
-const FTPNAME = 'cert-ftp';                             // GUI FTP source
+const RUNID = `ver${Date.now().toString(36)}`;
+const BUCKET = `verify-${Date.now().toString(36)}`;      // lowercase — S3-safe
+const SRCNAME = 'verify-minio';                           // GUI S3 source (bucket-scoped)
+const FTPNAME = 'verify-ftp';                             // GUI FTP source
 const GUI_PORT = 39874;                                 // v3live uses 39872; keep distinct
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------- certificate rows ----------
+// ---------- verification rows ----------
 const rows = [];
 let cur = null;
-function cert(meta, fn) {
+function verify(meta, fn) {
   cur = { result: 'PASS', detail: '', ...meta };
   rows.push(cur);
   process.stdout.write(`[${cur.face}] ${cur.id} ${cur.action} (${cur.ds}) … `);
@@ -158,7 +158,7 @@ const portOpen = (port) => new Promise((res) => {
 
 // ---------- fixtures ----------
 const FIXTREE = {
-  'readme.md': 'certification readme\n',
+  'readme.md': 'verification readme\n',
   'root-1.txt': 'root file one\n',
   'root-2.txt': 'root file two\n',
   'docs/doc-01.txt': 'document one\n',
@@ -184,19 +184,19 @@ async function writeFixtures() {
 // ============================================================
 async function cliS3() {
   const B = `s3://${BUCKET}`;
-  await cert({ id: 'CLI-S3-01', area: 'sources', action: 'Add + test S3 source', ds: 'S3 (MinIO)', scenario: 'source add with endpoint/keys; source test dials; list shows it; mirrors as profile', face: 'CLI' }, async () => {
-    let r = await cli(['source', 'add', 'certs3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+  await verify({ id: 'CLI-S3-01', area: 'sources', action: 'Add + test S3 source', ds: 'S3 (MinIO)', scenario: 'source add with endpoint/keys; source test dials; list shows it; mirrors as profile', face: 'CLI' }, async () => {
+    let r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
     need(r.code === 0, `source add: ${r.err}`);
-    r = await cli(['source', 'test', 'certs3']);
+    r = await cli(['source', 'test', 'verifys3']);
     need(r.code === 0 && /✅|OK/.test(r.out + r.err), `source test: ${r.out}${r.err}`);
     r = await cli(['source', 'list']);
-    need(r.out.includes('certs3'), 'source list missing certs3');
+    need(r.out.includes('verifys3'), 'source list missing verifys3');
     r = await cli(['profile', 'list']);
-    need(r.out.includes('certs3'), 'profile mirror missing');
+    need(r.out.includes('verifys3'), 'profile mirror missing');
     return 'added, tested, listed, mirrored';
   });
 
-  await cert({ id: 'CLI-S3-02', area: 'buckets', action: 'Create versioned bucket', ds: 'S3 (MinIO)', scenario: 'mb + bucket versioning on (the delete-marker scenarios need it)', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-02', area: 'buckets', action: 'Create versioned bucket', ds: 'S3 (MinIO)', scenario: 'mb + bucket versioning on (the delete-marker scenarios need it)', face: 'CLI' }, async () => {
     let r = await cli(['mb', B]);
     need(r.code === 0 && /created bucket/.test(r.out), `mb: ${r.out}${r.err}`);
     r = await cli(['bucket', 'versioning', B, 'on']);
@@ -204,7 +204,7 @@ async function cliS3() {
     return `${BUCKET} created, versioning on`;
   });
 
-  await cert({ id: 'CLI-S3-03', area: 'objects', action: 'Create folder marker', ds: 'S3 (MinIO)', scenario: 'mkdir docs/ → zero-byte marker lists as a folder', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-03', area: 'objects', action: 'Create folder marker', ds: 'S3 (MinIO)', scenario: 'mkdir docs/ → zero-byte marker lists as a folder', face: 'CLI' }, async () => {
     const r = await cli(['mkdir', `${B}/docs/`]);
     need(r.code === 0 && /created folder/.test(r.out), `mkdir: ${r.out}${r.err}`);
     const l = await cli(['ls', B]);
@@ -212,7 +212,7 @@ async function cliS3() {
     return 'docs/ marker created and listed';
   });
 
-  await cert({ id: 'CLI-S3-04', area: 'transfers', action: 'Single upload', ds: 'S3 (MinIO)', scenario: 'cp one file → stat reports size', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-04', area: 'transfers', action: 'Single upload', ds: 'S3 (MinIO)', scenario: 'cp one file → stat reports size', face: 'CLI' }, async () => {
     let r = await cli(['cp', path.join(FIX, 'data', 'readme.md'), `${B}/readme.md`]);
     need(r.code === 0 && /copied 1 item/.test(r.out), `cp: ${r.out}${r.err}`);
     r = await cli(['stat', `${B}/readme.md`]);
@@ -220,7 +220,7 @@ async function cliS3() {
     return 'uploaded + stat ok';
   });
 
-  await cert({ id: 'CLI-S3-05', area: 'transfers', action: 'Multi upload (recursive)', ds: 'S3 (MinIO)', scenario: `cp -r fixture tree (${NFILES} files incl. unicode + empty) → recursive ls count matches`, face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-05', area: 'transfers', action: 'Multi upload (recursive)', ds: 'S3 (MinIO)', scenario: `cp -r fixture tree (${NFILES} files incl. unicode + empty) → recursive ls count matches`, face: 'CLI' }, async () => {
     let r = await cli(['cp', '-r', path.join(FIX, 'data'), `${B}/data/`, '--json']);
     need(r.code === 0 && r.out.includes(`"items": ${NFILES}`), `cp -r: ${r.out}${r.err}`);
     r = await cli(['ls', `${B}/`, '--recursive', '--json']);
@@ -229,7 +229,7 @@ async function cliS3() {
     return `${NFILES} files uploaded, ${n} listed`;
   });
 
-  await cert({ id: 'CLI-S3-06', area: 'objects', action: 'List / tree / du / stat', ds: 'S3 (MinIO)', scenario: 'dir-view ls, tree shows folders, du counts objects+bytes, stat bucket shows region', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-06', area: 'objects', action: 'List / tree / du / stat', ds: 'S3 (MinIO)', scenario: 'dir-view ls, tree shows folders, du counts objects+bytes, stat bucket shows region', face: 'CLI' }, async () => {
     let r = await cli(['ls', `${B}/data/docs/`]);
     need(/doc-01/.test(r.out), `ls docs: ${r.out}`);
     r = await cli(['tree', B]);
@@ -242,7 +242,7 @@ async function cliS3() {
     return 'ls/tree/du/stat consistent';
   });
 
-  await cert({ id: 'CLI-S3-07', area: 'transfers', action: 'Single download', ds: 'S3 (MinIO)', scenario: 'cp object → local; bytes identical', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-07', area: 'transfers', action: 'Single download', ds: 'S3 (MinIO)', scenario: 'cp object → local; bytes identical', face: 'CLI' }, async () => {
     const out = path.join(ART, 'down', 'readme.md');
     await mkdir(path.dirname(out), { recursive: true });
     const r = await cli(['cp', `${B}/readme.md`, out]);
@@ -253,7 +253,7 @@ async function cliS3() {
     return 'byte-identical';
   });
 
-  await cert({ id: 'CLI-S3-08', area: 'transfers', action: 'Multi download (recursive)', ds: 'S3 (MinIO)', scenario: 'cp -r prefix → local dir; full tree diff byte-identical', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-08', area: 'transfers', action: 'Multi download (recursive)', ds: 'S3 (MinIO)', scenario: 'cp -r prefix → local dir; full tree diff byte-identical', face: 'CLI' }, async () => {
     const out = path.join(ART, 'down-tree');
     await rm(out, { recursive: true, force: true });
     const r = await cli(['cp', '-r', `${B}/data/`, out]);
@@ -264,7 +264,7 @@ async function cliS3() {
     return `${got.length} files byte-identical`;
   });
 
-  await cert({ id: 'CLI-S3-09', area: 'transfers', action: 'Server-side copy S3→S3', ds: 'S3 (MinIO)', scenario: 'cp s3://→s3:// lands a copyable object', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-09', area: 'transfers', action: 'Server-side copy S3→S3', ds: 'S3 (MinIO)', scenario: 'cp s3://→s3:// lands a copyable object', face: 'CLI' }, async () => {
     let r = await cli(['cp', `${B}/readme.md`, `${B}/copy/readme-v2.md`]);
     need(r.code === 0, `s3s3: ${r.err}`);
     r = await cli(['ls', `${B}/copy/`, '--json']);
@@ -272,7 +272,7 @@ async function cliS3() {
     return 'server-side copy listed';
   });
 
-  await cert({ id: 'CLI-S3-10', area: 'objects', action: 'Single object deletion', ds: 'S3 (MinIO)', scenario: 'rm one object → gone from ls; versioned → delete marker in timeline', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-10', area: 'objects', action: 'Single object deletion', ds: 'S3 (MinIO)', scenario: 'rm one object → gone from ls; versioned → delete marker in timeline', face: 'CLI' }, async () => {
     let r = await cli(['rm', `${B}/data/logs/log-01.log`]);
     need(r.code === 0 && /deleted/.test(r.out), `rm: ${r.out}${r.err}`);
     r = await cli(['ls', `${B}/data/logs/`, '--json']);
@@ -282,7 +282,7 @@ async function cliS3() {
     return 'removed + marker recorded';
   });
 
-  await cert({ id: 'CLI-S3-11', area: 'objects', action: 'Recursive deletion + safety gates', ds: 'S3 (MinIO)', scenario: '55-object prefix: rm -r without --force rejected (>50 gate); --dry-run counts (marker included); --force deletes them all', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-11', area: 'objects', action: 'Recursive deletion + safety gates', ds: 'S3 (MinIO)', scenario: '55-object prefix: rm -r without --force rejected (>50 gate); --dry-run counts (marker included); --force deletes them all', face: 'CLI' }, async () => {
     // seed a 55-object prefix — the L1 gate demands --force above 50
     const gate = path.join(ART, 'gate');
     await rm(gate, { recursive: true, force: true });
@@ -305,13 +305,13 @@ async function cliS3() {
     return `gate held; dry-run ${total}, force-deleted 55`;
   });
 
-  await cert({ id: 'CLI-S3-12', area: 'buckets', action: 'rb safety gate', ds: 'S3 (MinIO)', scenario: 'rb on a non-empty bucket rejected without --force', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-12', area: 'buckets', action: 'rb safety gate', ds: 'S3 (MinIO)', scenario: 'rb on a non-empty bucket rejected without --force', face: 'CLI' }, async () => {
     const r = await cli(['rb', B]);
     need(r.code !== 0, 'rb non-empty must fail');
     return 'rejected as designed';
   });
 
-  await cert({ id: 'CLI-S3-13', area: 'objects', action: 'Rename (mv)', ds: 'S3 (MinIO)', scenario: 'mv object → new key; old gone, new stats', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-13', area: 'objects', action: 'Rename (mv)', ds: 'S3 (MinIO)', scenario: 'mv object → new key; old gone, new stats', face: 'CLI' }, async () => {
     let r = await cli(['mv', `${B}/copy/readme-v2.md`, `${B}/copy/readme-v3.md`]);
     need(r.code === 0 && /moved 1 item/.test(r.out), `mv: ${r.out}${r.err}`);
     r = await cli(['stat', `${B}/copy/readme-v3.md`]);
@@ -319,7 +319,7 @@ async function cliS3() {
     return 'moved + stat ok';
   });
 
-  await cert({ id: 'CLI-S3-14', area: 'transfers', action: 'sync (repair / no-op / new / --delete)', ds: 'S3 (MinIO)', scenario: 'sync repairs the CLI-S3-10 deletion, reports 0 when in sync, 1 after a local add, deletes the extra remote with --delete', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-14', area: 'transfers', action: 'sync (repair / no-op / new / --delete)', ds: 'S3 (MinIO)', scenario: 'sync repairs the CLI-S3-10 deletion, reports 0 when in sync, 1 after a local add, deletes the extra remote with --delete', face: 'CLI' }, async () => {
     const data = path.join(FIX, 'data');
     let r = await cli(['sync', data, `${B}/data/`, '--json']);
     need(r.out.includes('"transferred": 1'), `sync repair (log-01): ${r.out}`);
@@ -335,7 +335,7 @@ async function cliS3() {
     return 'repair/no-op/add/delete all correct';
   });
 
-  await cert({ id: 'CLI-S3-15', area: 'objects', action: 'Presign + fetch', ds: 'S3 (MinIO)', scenario: 'presign → plain HTTP GET returns identical bytes', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-15', area: 'objects', action: 'Presign + fetch', ds: 'S3 (MinIO)', scenario: 'presign → plain HTTP GET returns identical bytes', face: 'CLI' }, async () => {
     const r = await cli(['presign', `${B}/readme.md`, '--expires', '5m']);
     need(r.code === 0 && r.out.startsWith('http'), `presign: ${r.out}${r.err}`);
     const res = await fetch(r.out.trim());
@@ -346,7 +346,7 @@ async function cliS3() {
     return 'URL fetched, bytes identical';
   });
 
-  await cert({ id: 'CLI-S3-16', area: 'versions', action: 'Version timeline: restore + undo', ds: 'S3 (MinIO)', scenario: 'overwrite → 2 versions; restore v1 as latest; rm → marker; undo revives v1', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-16', area: 'versions', action: 'Version timeline: restore + undo', ds: 'S3 (MinIO)', scenario: 'overwrite → 2 versions; restore v1 as latest; rm → marker; undo revives v1', face: 'CLI' }, async () => {
     const K = `${B}/ver.txt`;
     await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), K]);
     await cli(['cp', path.join(FIX, 'data', 'root-2.txt'), K]);
@@ -369,7 +369,7 @@ async function cliS3() {
     return 'restore/undo byte-correct';
   });
 
-  await cert({ id: 'CLI-S3-17', area: 'versions', action: 'Purge + permanent destroy', ds: 'S3 (MinIO)', scenario: 'versions stat; purge noncurrent (>50 gate demands --force, then --force purges); versions rm --all empties the timeline (L3)', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-17', area: 'versions', action: 'Purge + permanent destroy', ds: 'S3 (MinIO)', scenario: 'versions stat; purge noncurrent (>50 gate demands --force, then --force purges); versions rm --all empties the timeline (L3)', face: 'CLI' }, async () => {
     let r = await cli(['versions', 'stat', B]);
     need(/total versions:/.test(r.out), `stat: ${r.out}`);
     r = await cli(['versions', 'purge', B, '--mode', 'noncurrent', '--dry-run']);
@@ -386,7 +386,7 @@ async function cliS3() {
     return 'purged and destroyed';
   });
 
-  await cert({ id: 'CLI-S3-18', area: 'objects', action: 'Storage-class conversion', ds: 'S3 (MinIO)', scenario: 'sc single → REDUCED_REDUNDANCY visible + find --class; recursive dry-run gate', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-18', area: 'objects', action: 'Storage-class conversion', ds: 'S3 (MinIO)', scenario: 'sc single → REDUCED_REDUNDANCY visible + find --class; recursive dry-run gate', face: 'CLI' }, async () => {
     let r = await cli(['sc', `${B}/copy/readme-v3.md`, 'REDUCED_REDUNDANCY']);
     if (/not supported|Invalid storage class/.test(r.out + r.err)) return skip('not supported by this MinIO');
     need(/converted/.test(r.out), `sc: ${r.out}${r.err}`);
@@ -401,7 +401,7 @@ async function cliS3() {
     return 'single + recursive conversion verified';
   });
 
-  await cert({ id: 'CLI-S3-19', area: 'search', action: 'Deep find', ds: 'S3 (MinIO)', scenario: '--name glob/substring, --smaller, --limit, summary line', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-19', area: 'search', action: 'Deep find', ds: 'S3 (MinIO)', scenario: '--name glob/substring, --smaller, --limit, summary line', face: 'CLI' }, async () => {
     let r = await cli(['find', B, '--name', 'readme*', '--json']);
     need(countLines(r.out, '"key"') === 3, `glob: ${r.out}`); // readme.md + copy/readme-v3.md + data/readme.md
     r = await cli(['find', B, '--name', 'doc-02', '--json']);
@@ -413,19 +413,19 @@ async function cliS3() {
     return 'filters + limits correct';
   });
 
-  await cert({ id: 'CLI-S3-20', area: 'admin', action: 'Doctor diagnosis', ds: 'S3 (MinIO)', scenario: 'doctor s3://bucket runs the check ladder', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-20', area: 'admin', action: 'Doctor diagnosis', ds: 'S3 (MinIO)', scenario: 'doctor s3://bucket runs the check ladder', face: 'CLI' }, async () => {
     const r = await cli(['doctor', B]);
     need(r.code === 0 && /DNS Resolution Check/.test(r.out), `doctor: ${r.out}${r.err}`);
     return 'check ladder ran';
   });
 
-  await cert({ id: 'CLI-S3-21', area: 'admin', action: 'Bucket admin: info / tags / policy', ds: 'S3 (MinIO)', scenario: 'info shows versioning; tags put/get; policy put/get round-trip (cors/encryption tolerate provider gaps)', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-21', area: 'admin', action: 'Bucket admin: info / tags / policy', ds: 'S3 (MinIO)', scenario: 'info shows versioning; tags put/get; policy put/get round-trip (cors/encryption tolerate provider gaps)', face: 'CLI' }, async () => {
     let r = await cli(['bucket', 'info', B]);
     need(/versioning:/.test(r.out), `info: ${r.out}`);
-    r = await cli(['bucket', 'tags', 'put', B, 'team=cert', 'env=ci']);
+    r = await cli(['bucket', 'tags', 'put', B, 'team=verify', 'env=ci']);
     need(/tag\(s\) saved/.test(r.out), `tags put: ${r.out}`);
     r = await cli(['bucket', 'tags', 'get', B]);
-    need(r.out.includes('team=cert'), 'tags get');
+    need(r.out.includes('team=verify'), 'tags get');
     const pol = path.join(ART, 'policy.json');
     await mkdir(ART, { recursive: true });
     await writeFile(pol, JSON.stringify({ Version: '2012-10-17', Statement: [{ Effect: 'Allow', Principal: { AWS: ['*'] }, Action: 's3:GetObject', Resource: `arn:aws:s3:::${BUCKET}/*` }] }));
@@ -438,7 +438,7 @@ async function cliS3() {
     return 'info/tags/policy verified';
   });
 
-  await cert({ id: 'CLI-S3-22', area: 'admin', action: 'Object lock: retention + legal hold', ds: 'S3 (MinIO)', scenario: 'mb --object-lock; retention set/show/clear; legalhold on/off (GOVERNANCE only — cleanup stays possible)', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-22', area: 'admin', action: 'Object lock: retention + legal hold', ds: 'S3 (MinIO)', scenario: 'mb --object-lock; retention set/show/clear; legalhold on/off (GOVERNANCE only — cleanup stays possible)', face: 'CLI' }, async () => {
     const LB = `s3://${BUCKET}-lock`;
     let r = await cli(['mb', LB, '--object-lock']);
     need(r.code === 0, `mb lock: ${r.err}`);
@@ -461,7 +461,7 @@ async function cliS3() {
     return 'retention/hold round-tripped, cleaned up';
   });
 
-  await cert({ id: 'CLI-S3-23', area: 'admin', action: 'Activity log', ds: 'S3 (MinIO)', scenario: 'log shows the operations this run performed', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-23', area: 'admin', action: 'Activity log', ds: 'S3 (MinIO)', scenario: 'log shows the operations this run performed', face: 'CLI' }, async () => {
     const r = await cli(['log']);
     need(r.code === 0 && r.out.trim().length > 0, `log: ${r.out}${r.err}`);
     return `${r.out.split('\n').length} lines recorded`;
@@ -472,7 +472,7 @@ async function cliS3() {
   // DELETE /bucket?publicAccessBlock). DeletePAB now refuses on providers
   // that cannot serve GetPublicAccessBlock — and this row is the permanent
   // tripwire: NO bucket-config delete may ever destroy the bucket itself.
-  await cert({ id: 'CLI-S3-24', area: 'admin', action: 'Bucket config deletes never destroy the bucket', ds: 'S3 (MinIO)', scenario: 'website/encryption/lifecycle/cors/pab delete on a disposable bucket — after EACH op the bucket must still stat; pab delete must refuse cleanly on providers without PAB support', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-24', area: 'admin', action: 'Bucket config deletes never destroy the bucket', ds: 'S3 (MinIO)', scenario: 'website/encryption/lifecycle/cors/pab delete on a disposable bucket — after EACH op the bucket must still stat; pab delete must refuse cleanly on providers without PAB support', face: 'CLI' }, async () => {
     const TB = `s3://${BUCKET}-cfg`;
     let r = await cli(['mb', TB]);
     need(r.code === 0, `mb cfg: ${r.err}`);
@@ -498,7 +498,7 @@ async function cliS3() {
     return 'bucket survived all five config deletes';
   });
 
-  await cert({ id: 'CLI-S3-25', area: 'admin', action: 'Lifecycle rules round-trip', ds: 'S3 (MinIO)', scenario: 'put flat-schema rules (expiration + transition); get echoes them; delete clears (put tolerates provider gaps as SKIP)', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-25', area: 'admin', action: 'Lifecycle rules round-trip', ds: 'S3 (MinIO)', scenario: 'put flat-schema rules (expiration + transition); get echoes them; delete clears (put tolerates provider gaps as SKIP)', face: 'CLI' }, async () => {
     const TB = `s3://${BUCKET}-lc`;
     const f = path.join(ART, 'lifecycle.json');
     await writeFile(f, JSON.stringify([
@@ -524,7 +524,7 @@ async function cliS3() {
     return 'put/get/delete round-trip';
   });
 
-  await cert({ id: 'CLI-S3-26', area: 'versions', action: 'Versioned migration (cp/mv --versions)', ds: 'S3 (MinIO)', scenario: '2 versions at source; cp --versions s3→s3 copies the full timeline; mv --versions moves it; unversioned destination refuses (gate)', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-26', area: 'versions', action: 'Versioned migration (cp/mv --versions)', ds: 'S3 (MinIO)', scenario: '2 versions at source; cp --versions s3→s3 copies the full timeline; mv --versions moves it; unversioned destination refuses (gate)', face: 'CLI' }, async () => {
     const SRC = `${B}/vmig/a.txt`, DST = `${B}/vmig2/a.txt`, MOVED = `${B}/vmig3/a.txt`;
     await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), SRC]);
     await cli(['cp', path.join(FIX, 'data', 'root-2.txt'), SRC, '--force']);
@@ -552,7 +552,7 @@ async function cliS3() {
     return 'timeline copied + moved intact; unversioned dest refused';
   });
 
-  await cert({ id: 'CLI-S3-27', area: 'transfers', action: 'cp flag contracts: --dry-run / --no-clobber', ds: 'S3 (MinIO)', scenario: '--dry-run prints the plan but lands nothing (stat 404); --no-clobber skips an overwrite (documented skip semantics: exit 0, object bytes untouched); --force overwrites', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-27', area: 'transfers', action: 'cp flag contracts: --dry-run / --no-clobber', ds: 'S3 (MinIO)', scenario: '--dry-run prints the plan but lands nothing (stat 404); --no-clobber skips an overwrite (documented skip semantics: exit 0, object bytes untouched); --force overwrites', face: 'CLI' }, async () => {
     const K = `${B}/flags/x.txt`;
     let r = await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), K, '--dry-run']);
     need(r.code === 0 && r.out.includes('x.txt'), `dry-run plan: ${r.out}${r.err}`);
@@ -570,7 +570,7 @@ async function cliS3() {
     return 'dry-run inert; no-clobber skipped (bytes untouched); --force overwrites';
   });
 
-  await cert({ id: 'CLI-S3-28', area: 'search', action: 'find size + time filters', ds: 'S3 (MinIO)', scenario: 'controlled prefix (1 big + 1 small): --larger/--smaller counts; --newer 1h finds both; --older 1h finds none', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-28', area: 'search', action: 'find size + time filters', ds: 'S3 (MinIO)', scenario: 'controlled prefix (1 big + 1 small): --larger/--smaller counts; --newer 1h finds both; --older 1h finds none', face: 'CLI' }, async () => {
     const big = path.join(ART, 'big.txt');
     await writeFile(big, 'x'.repeat(3000));
     await cli(['cp', big, `${B}/find/big.txt`]);
@@ -595,12 +595,12 @@ async function cliCross() {
   const haveFtp = await portOpen(FTP_PORT);
   const haveDav = await portOpen(WEBDAV_PORT);
   if (!haveSftp && !haveFtp && !haveDav) {
-    await cert({ id: 'CLI-X-00', area: 'sources', action: 'Remote engines', ds: 'SFTP/FTP/WebDAV', scenario: 'containers not running', face: 'CLI' },
+    await verify({ id: 'CLI-X-00', area: 'sources', action: 'Remote engines', ds: 'SFTP/FTP/WebDAV', scenario: 'containers not running', face: 'CLI' },
       () => skip('no engine containers reachable (2222/2121/7070)'));
     return;
   }
 
-  await cert({ id: 'CLI-X-01', area: 'sources', action: 'Add + test remote sources', ds: 'SFTP/FTP/WebDAV', scenario: 'sftp:// and webdav:// URL shorthand + ftp flags; source test dials each', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-X-01', area: 'sources', action: 'Add + test remote sources', ds: 'SFTP/FTP/WebDAV', scenario: 'sftp:// and webdav:// URL shorthand + ftp flags; source test dials each', face: 'CLI' }, async () => {
     if (haveSftp) {
       const r = await cli(['source', 'add', 'xt', `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]);
       need(r.code === 0, `sftp add: ${r.err}`);
@@ -624,7 +624,7 @@ async function cliCross() {
 
   // The user-facing flagship: MULTI-FILE COPY with an FTP data source.
   if (haveFtp) {
-    await cert({ id: 'CLI-X-02', area: 'transfers', action: 'Multi-file copy local→FTP', ds: 'FTP', scenario: `cp -r fixture tree (${NFILES} files: unicode, empty file, nested dirs) → xf://${RUNID}/tree`, face: 'CLI' }, async () => {
+    await verify({ id: 'CLI-X-02', area: 'transfers', action: 'Multi-file copy local→FTP', ds: 'FTP', scenario: `cp -r fixture tree (${NFILES} files: unicode, empty file, nested dirs) → xf://${RUNID}/tree`, face: 'CLI' }, async () => {
       const r = await cli(['cp', '-r', path.join(FIX, 'data'), `xf://${RUNID}/tree`, '--json']);
       need(r.code === 0 && r.out.includes(`"items": ${NFILES}`), `cp -r: ${r.out}${r.err}`);
       const l = await cli(['ls', `xf://${RUNID}/tree`, '--recursive', '--json']);
@@ -632,7 +632,7 @@ async function cliCross() {
       return `${NFILES} files on the FTP source`;
     });
 
-    await cert({ id: 'CLI-X-03', area: 'transfers', action: 'Multi-file copy FTP→S3 (cross-engine)', ds: 'FTP → S3', scenario: 'cp -r the FTP tree into the bucket; count + full byte round-trip back to disk', face: 'CLI' }, async () => {
+    await verify({ id: 'CLI-X-03', area: 'transfers', action: 'Multi-file copy FTP→S3 (cross-engine)', ds: 'FTP → S3', scenario: 'cp -r the FTP tree into the bucket; count + full byte round-trip back to disk', face: 'CLI' }, async () => {
       let r = await cli(['cp', '-r', `xf://${RUNID}/tree`, `s3://${BUCKET}/from-ftp/`, '--json']);
       need(r.code === 0 && r.out.includes(`"items": ${NFILES}`), `cp: ${r.out}${r.err}`);
       r = await cli(['ls', `s3://${BUCKET}/from-ftp/`, '--recursive', '--json']);
@@ -646,7 +646,7 @@ async function cliCross() {
       return `${NFILES} files cross-engine, byte-identical`;
     });
 
-    await cert({ id: 'CLI-X-04', area: 'objects', action: 'Remote browse + delete gates', ds: 'FTP', scenario: 'ls/du/stat/tree on the remote; rm -r dry-run counts; --force deletes; prefix gone', face: 'CLI' }, async () => {
+    await verify({ id: 'CLI-X-04', area: 'objects', action: 'Remote browse + delete gates', ds: 'FTP', scenario: 'ls/du/stat/tree on the remote; rm -r dry-run counts; --force deletes; prefix gone', face: 'CLI' }, async () => {
       let r = await cli(['ls', `xf://${RUNID}/tree/docs/`]);
       need(/doc-01/.test(r.out), `remote ls: ${r.out}`);
       r = await cli(['du', `xf://${RUNID}/tree`]);
@@ -666,7 +666,7 @@ async function cliCross() {
   }
 
   if (haveSftp) {
-    await cert({ id: 'CLI-X-05', area: 'transfers', action: 'SFTP round-trip', ds: 'SFTP', scenario: 'upload tree → download tree → byte-identical diff', face: 'CLI' }, async () => {
+    await verify({ id: 'CLI-X-05', area: 'transfers', action: 'SFTP round-trip', ds: 'SFTP', scenario: 'upload tree → download tree → byte-identical diff', face: 'CLI' }, async () => {
       let r = await cli(['cp', '-r', path.join(FIX, 'data'), `xt://${RUNID}/tree`]);
       need(r.code === 0, `sftp up: ${r.err}`);
       const out = path.join(ART, 'from-sftp');
@@ -679,7 +679,7 @@ async function cliCross() {
   }
 
   if (haveDav) {
-    await cert({ id: 'CLI-X-06', area: 'transfers', action: 'WebDAV round-trip', ds: 'WebDAV', scenario: 'upload tree → download tree → byte-identical diff', face: 'CLI' }, async () => {
+    await verify({ id: 'CLI-X-06', area: 'transfers', action: 'WebDAV round-trip', ds: 'WebDAV', scenario: 'upload tree → download tree → byte-identical diff', face: 'CLI' }, async () => {
       let r = await cli(['cp', '-r', path.join(FIX, 'data'), `xw://${RUNID}/tree`]);
       need(r.code === 0, `webdav up: ${r.err}`);
       const out = path.join(ART, 'from-dav');
@@ -692,7 +692,7 @@ async function cliCross() {
   }
 
   if (haveSftp && haveFtp) {
-    await cert({ id: 'CLI-X-07', area: 'transfers', action: 'Cross-engine move (mv)', ds: 'SFTP → FTP', scenario: 'mv -r sftp tree → ftp; source gone; destination byte-identical', face: 'CLI' }, async () => {
+    await verify({ id: 'CLI-X-07', area: 'transfers', action: 'Cross-engine move (mv)', ds: 'SFTP → FTP', scenario: 'mv -r sftp tree → ftp; source gone; destination byte-identical', face: 'CLI' }, async () => {
       let r = await cli(['mv', '-r', `xt://${RUNID}/tree`, `xf://${RUNID}/moved`]);
       need(r.code === 0, `mv: ${r.err}`);
       r = await cli(['ls', `xt://${RUNID}/`, '--json']);
@@ -705,32 +705,32 @@ async function cliCross() {
     });
   }
 
-  await cert({ id: 'CLI-X-08', area: 'sources', action: 'Export + import sources', ds: 'all', scenario: 'encrypted export (--password); import into a FRESH config lists the same sources', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-X-08', area: 'sources', action: 'Export + import sources', ds: 'all', scenario: 'encrypted export (--password); import into a FRESH config lists the same sources', face: 'CLI' }, async () => {
     const f = path.join(ART, 'sources.json');
-    let r = await cli(['source', 'export', f, '--password', 'cert-export-pw']);
+    let r = await cli(['source', 'export', f, '--password', 'verify-export-pw']);
     need(r.code === 0, `export: ${r.err}`);
     const blob = await readFile(f, 'utf8');
     need(!blob.includes('minioadmin'), 'export must be encrypted, not plaintext');
     const altCfg = path.join(ART, 'alt-config');
     await mkdir(altCfg, { recursive: true });
-    r = await cli(['source', 'import', f, '--password', 'cert-export-pw'], { cfg: altCfg });
+    r = await cli(['source', 'import', f, '--password', 'verify-export-pw'], { cfg: altCfg });
     need(r.code === 0, `import: ${r.err}`);
     r = await cli(['source', 'list'], { cfg: altCfg });
-    need(r.out.includes('certs3'), 'imported store missing certs3');
+    need(r.out.includes('verifys3'), 'imported store missing verifys3');
     return 'encrypted export/import round-trip';
   });
 
-  await cert({ id: 'CLI-X-09', area: 'sources', action: 'Source lifecycle: profile test + remove', ds: 'S3 (MinIO)', scenario: 'add a temp source; profile test dials it (OK + bucket count); source remove drops it from BOTH source list and profile mirror', face: 'CLI' }, async () => {
-    let r = await cli(['source', 'add', 'certtmp', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+  await verify({ id: 'CLI-X-09', area: 'sources', action: 'Source lifecycle: profile test + remove', ds: 'S3 (MinIO)', scenario: 'add a temp source; profile test dials it (OK + bucket count); source remove drops it from BOTH source list and profile mirror', face: 'CLI' }, async () => {
+    let r = await cli(['source', 'add', 'verifytmp', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
     need(r.code === 0, `add: ${r.err}`);
-    r = await cli(['profile', 'test', 'certtmp']);
+    r = await cli(['profile', 'test', 'verifytmp']);
     need(r.code === 0 && /OK/.test(r.out), `profile test: ${r.out}${r.err}`);
-    r = await cli(['source', 'remove', 'certtmp']);
+    r = await cli(['source', 'remove', 'verifytmp']);
     need(r.code === 0 && /removed source/.test(r.out), `remove: ${r.out}${r.err}`);
     r = await cli(['source', 'list']);
-    need(!r.out.includes('certtmp'), 'removed source still in source list');
+    need(!r.out.includes('verifytmp'), 'removed source still in source list');
     r = await cli(['profile', 'list']);
-    need(!r.out.includes('certtmp'), 'removed source still in profile mirror');
+    need(!r.out.includes('verifytmp'), 'removed source still in profile mirror');
     return 'tested, removed, gone from both lists';
   });
 }
@@ -745,33 +745,33 @@ async function cliResilience() {
   const fmode = async (body) => {
     await fetch(`http://127.0.0.1:${FCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   };
-  await cert({ id: 'CLI-RES-01', area: 'resilience', action: 'Slow link: latency +600ms/chunk', ds: 'S3 via faultproxy', scenario: 'listing through a delayed proxy completes with correct output, measurably slower', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-RES-01', area: 'resilience', action: 'Slow link: latency +600ms/chunk', ds: 'S3 via faultproxy', scenario: 'listing through a delayed proxy completes with correct output, measurably slower', face: 'CLI' }, async () => {
     proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(FPORT), '--control', String(FCTL), '--target', '127.0.0.1:9000'], { stdio: 'ignore', windowsHide: true });
     for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${FCTL}/state`, { signal: AbortSignal.timeout(500) }); break; } catch { await sleep(100); } }
-    await cli(['source', 'add', 'certfault', '--type', 's3', '--endpoint', `http://127.0.0.1:${FPORT}`, '--access-key', KEY, '--secret-key', SECRET]);
+    await cli(['source', 'add', 'verifyfault', '--type', 's3', '--endpoint', `http://127.0.0.1:${FPORT}`, '--access-key', KEY, '--secret-key', SECRET]);
     await fmode({ mode: 'latency', delayMs: 600 });
     const t0 = Date.now();
-    const r = await cli(['ls', `s3://${BUCKET}`, '--recursive', '--json', '--profile', 'certfault']);
+    const r = await cli(['ls', `s3://${BUCKET}`, '--recursive', '--json', '--profile', 'verifyfault']);
     const dt = Date.now() - t0;
     need(r.code === 0 && r.out.includes('readme'), `latency ls: ${r.out}${r.err}`);
     need(dt >= 1000, `finished in ${dt}ms — delay not applied`);
     return `correct listing in ${(dt / 1000).toFixed(1)}s under latency`;
   });
 
-  await cert({ id: 'CLI-RES-02', area: 'resilience', action: 'Dead link: RST mid-session', ds: 'S3 via faultproxy', scenario: 'connection reset → non-zero exit, error classified, no partial success', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-RES-02', area: 'resilience', action: 'Dead link: RST mid-session', ds: 'S3 via faultproxy', scenario: 'connection reset → non-zero exit, error classified, no partial success', face: 'CLI' }, async () => {
     if (!proxy) return skip('proxy not running');
     await fmode({ mode: 'reset' });
-    const r = await cli(['ls', `s3://${BUCKET}`, '--profile', 'certfault']);
+    const r = await cli(['ls', `s3://${BUCKET}`, '--profile', 'verifyfault']);
     need(r.code !== 0, 'ls survived a reset connection');
     need((r.out + r.err).length > 0, 'no error message');
     return 'clean classified failure';
   });
 
-  await cert({ id: 'CLI-RES-03', area: 'resilience', action: 'Blackhole: endpoint never answers', ds: 'S3 via faultproxy', scenario: 'watchdog timeout within the --timeout budget (no default 5-minute hang)', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-RES-03', area: 'resilience', action: 'Blackhole: endpoint never answers', ds: 'S3 via faultproxy', scenario: 'watchdog timeout within the --timeout budget (no default 5-minute hang)', face: 'CLI' }, async () => {
     if (!proxy) return skip('proxy not running');
     await fmode({ mode: 'blackhole' });
     const t0 = Date.now();
-    const r = await cli(['ls', `s3://${BUCKET}`, '--profile', 'certfault', '--timeout', '8s'], { timeout: 40000 });
+    const r = await cli(['ls', `s3://${BUCKET}`, '--profile', 'verifyfault', '--timeout', '8s'], { timeout: 40000 });
     const dt = Date.now() - t0;
     need(r.code !== 0, 'ls survived a blackhole');
     need(dt < 30000, `took ${dt}ms — budget blown`);
@@ -781,18 +781,18 @@ async function cliResilience() {
 }
 
 async function cliMeta() {
-  await cert({ id: 'CLI-M-01', area: 'meta', action: 'Version identity', ds: '—', scenario: 'version prints the build version, exit 0', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-M-01', area: 'meta', action: 'Version identity', ds: '—', scenario: 'version prints the build version, exit 0', face: 'CLI' }, async () => {
     const r = await cli(['version']);
     need(r.code === 0 && r.out.trim() === VERSION, `version: ${r.out}`);
     return VERSION;
   });
-  await cert({ id: 'CLI-M-02', area: 'meta', action: 'Usage-error contract', ds: '—', scenario: 'unknown command → exit 2, stderr reads "usage error:" and points at --help', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-M-02', area: 'meta', action: 'Usage-error contract', ds: '—', scenario: 'unknown command → exit 2, stderr reads "usage error:" and points at --help', face: 'CLI' }, async () => {
     const r = await cli(['definitely-not-a-cmd']);
     need(r.code === 2, `exit ${r.code}, want 2`);
     need(r.err.includes('usage error:') && r.err.includes('--help'), `stderr: ${r.err}`);
     return 'exit 2 + labeled';
   });
-  await cert({ id: 'CLI-M-03', area: 'meta', action: 'Shell completion', ds: '—', scenario: 'completion bash emits a working completion script; other shells answer too', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-M-03', area: 'meta', action: 'Shell completion', ds: '—', scenario: 'completion bash emits a working completion script; other shells answer too', face: 'CLI' }, async () => {
     let r = await cli(['completion', 'bash']);
     need(r.code === 0 && r.out.includes('_s3b') && r.out.includes('s3b'), `bash: exit ${r.code}`);
     const emitted = ['bash'];
@@ -993,7 +993,7 @@ async function stopServer() {
 async function guiBattery() {
   const { chromium } = await import('playwright-core');
 
-  await cert({ id: 'GUI-01', area: 'gui', action: 'Live stack boots', ds: 'Wails v3 server', scenario: 'server /health ok; page loads; GetVersion binding round-trips the build version', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-01', area: 'gui', action: 'Live stack boots', ds: 'Wails v3 server', scenario: 'server /health ok; page loads; GetVersion binding round-trips the build version', face: 'GUI' }, async () => {
     srv = await startServer();
     const channels = [...new Set([process.env.S3B_BROWSER_CHANNEL, 'msedge', 'chrome'].filter(Boolean))];
     let lastErr;
@@ -1014,7 +1014,7 @@ async function guiBattery() {
     return `v3 stack up, ${ver}`;
   });
 
-  await cert({ id: 'GUI-02', area: 'sources', action: 'Add S3 source (GUI)', ds: 'S3 (MinIO)', scenario: 'onboarding → editor → Test ✅ → Save → bucket root lists', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-02', area: 'sources', action: 'Add S3 source (GUI)', ds: 'S3 (MinIO)', scenario: 'onboarding → editor → Test ✅ → Save → bucket root lists', face: 'GUI' }, async () => {
     await page.locator('#empty-actions .btn.primary').first().click();
     await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n >= 6), 5000, 'source editor');
     const inputs = page.locator('#modal-root .modal input.input');
@@ -1037,15 +1037,15 @@ async function guiBattery() {
   });
 
   // Seed the FTP side for the GUI copy scenarios through the CLI face.
-  // --profile certs3: the resilience battery added a second s3 source, so
+  // --profile verifys3: the resilience battery added a second s3 source, so
   // bare s3:// URIs would be ambiguous in this store.
-  const s3 = (args) => cli(['--profile', 'certs3', ...args]);
+  const s3 = (args) => cli(['--profile', 'verifys3', ...args]);
   await cli(['cp', '-r', path.join(FIX, 'data'), `xf://${RUNID}/gui`, '--json']).catch(() => {});
-  await s3(['mkdir', `s3://${BUCKET}/cert-gui/`]).catch(() => {});
+  await s3(['mkdir', `s3://${BUCKET}/verify-gui/`]).catch(() => {});
 
   const haveFtp = await portOpen(FTP_PORT);
   if (haveFtp) {
-    await cert({ id: 'GUI-03', area: 'sources', action: 'Add FTP source (GUI)', ds: 'FTP', scenario: 'sidebar + → FTP fields → Test ✅ → Save → root lists', face: 'GUI' }, async () => {
+    await verify({ id: 'GUI-03', area: 'sources', action: 'Add FTP source (GUI)', ds: 'FTP', scenario: 'sidebar + → FTP fields → Test ✅ → Save → root lists', face: 'GUI' }, async () => {
       await page.locator('#sidebar-head .side-add').click();
       await waitFor(() => page.locator('#modal-root .modal select').count().then((n) => n > 0), 5000, 'source editor');
       await page.locator('#modal-root .modal select').selectOption('ftp');
@@ -1066,7 +1066,7 @@ async function guiBattery() {
       return 'tested ✅ and listed';
     });
 
-    await cert({ id: 'GUI-04', area: 'transfers', action: 'Multi-file copy FTP→S3 (GUI)', ds: 'FTP → S3', scenario: 'browse FTP seed dir; ctrl-click 2 files; Ctrl+C; open S3 cert-gui/; Ctrl+V; both rows land', face: 'GUI' }, async () => {
+    await verify({ id: 'GUI-04', area: 'transfers', action: 'Multi-file copy FTP→S3 (GUI)', ds: 'FTP → S3', scenario: 'browse FTP seed dir; ctrl-click 2 files; Ctrl+C; open S3 verify-gui/; Ctrl+V; both rows land', face: 'GUI' }, async () => {
       // browse into the seeded FTP dir
       await treeOpen(FTPNAME);
       await waitFor(async () => (await rowKeys()).some((k) => k.includes(RUNID)), 10000, 'ftp run dir');
@@ -1082,14 +1082,14 @@ async function guiBattery() {
       await sleep(300);
       // paste into the S3 side
       await treeOpen(SRCNAME);
-      await waitFor(async () => (await rowKeys()).some((k) => k.includes('cert-gui')), 10000, 's3 root');
-      await enterFolder('cert-gui');
+      await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+      await enterFolder('verify-gui');
       // an empty folder shows the empty-state OVERLAY while stale rows linger
       // in the DOM — prove emptiness by the overlay, not by row absence
       await waitFor(async () => evalPage(() => {
         const e = document.getElementById('empty-state');
         return !!e && !e.classList.contains('hidden') && !e.classList.contains('is-loading');
-      }), 8000, 'empty cert-gui');
+      }), 8000, 'empty verify-gui');
       await page.keyboard.press('Control+v');
       await waitFor(async () => {
         await refresh();
@@ -1100,10 +1100,10 @@ async function guiBattery() {
       return '2 files FTP→S3 through the GUI';
     });
 
-    await cert({ id: 'GUI-05', area: 'transfers', action: 'GUI transfer byte verification', ds: 'FTP → S3', scenario: 'download the GUI-pasted objects via the CLI; bytes match the FTP originals', face: 'GUI' }, async () => {
+    await verify({ id: 'GUI-05', area: 'transfers', action: 'GUI transfer byte verification', ds: 'FTP → S3', scenario: 'download the GUI-pasted objects via the CLI; bytes match the FTP originals', face: 'GUI' }, async () => {
       const out = path.join(ART, 'gui-verify');
       await rm(out, { recursive: true, force: true });
-      const r = await s3(['cp', '-r', `s3://${BUCKET}/cert-gui/`, out]);
+      const r = await s3(['cp', '-r', `s3://${BUCKET}/verify-gui/`, out]);
       need(r.code === 0, `download: ${r.err}`);
       for (const f of ['readme.md', 'root-1.txt']) {
         const a = await readFile(path.join(FIX, 'data', f));
@@ -1113,14 +1113,14 @@ async function guiBattery() {
       return 'both files byte-identical';
     });
   } else {
-    await cert({ id: 'GUI-03', area: 'sources', action: 'Add FTP source (GUI)', ds: 'FTP', scenario: 'FTP container not running', face: 'GUI' }, () => skip('FTP :2121 not reachable'));
+    await verify({ id: 'GUI-03', area: 'sources', action: 'Add FTP source (GUI)', ds: 'FTP', scenario: 'FTP container not running', face: 'GUI' }, () => skip('FTP :2121 not reachable'));
   }
 
-  await cert({ id: 'GUI-06', area: 'objects', action: 'Single object deletion (GUI)', ds: 'S3 (MinIO)', scenario: 'CLI-seeded object; row selected; Del → Delete Window (marker default) → confirm; row gone; CLI timeline shows the marker', face: 'GUI' }, async () => {
-    await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `s3://${BUCKET}/cert-gui/gui-del.txt`]);
+  await verify({ id: 'GUI-06', area: 'objects', action: 'Single object deletion (GUI)', ds: 'S3 (MinIO)', scenario: 'CLI-seeded object; row selected; Del → Delete Window (marker default) → confirm; row gone; CLI timeline shows the marker', face: 'GUI' }, async () => {
+    await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `s3://${BUCKET}/verify-gui/gui-del.txt`]);
     await treeOpen(SRCNAME);
-    await waitFor(async () => (await rowKeys()).some((k) => k.includes('cert-gui')), 10000, 's3 root');
-    await enterFolder('cert-gui');
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+    await enterFolder('verify-gui');
     await waitFor(async () => {
       await refresh();
       return (await rowKeys()).some((k) => k.includes('gui-del.txt'));
@@ -1148,16 +1148,16 @@ async function guiBattery() {
         return !!e && !e.classList.contains('hidden') && !e.classList.contains('is-loading');
       });
     }, 45000, 'row gone');
-    const v = await s3(['versions', 'ls', `s3://${BUCKET}/cert-gui/gui-del.txt`, '--json']);
+    const v = await s3(['versions', 'ls', `s3://${BUCKET}/verify-gui/gui-del.txt`, '--json']);
     need(v.out.includes('"isDeleteMarker": true'), 'no marker on the CLI side');
     await shot('08-after-delete');
     return 'marker deletion verified both faces';
   });
 
-  await cert({ id: 'GUI-07', area: 'objects', action: 'New folder (GUI)', ds: 'S3 (MinIO)', scenario: 'empty-area context menu → New folder → prompt; CLI ls shows the marker', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-07', area: 'objects', action: 'New folder (GUI)', ds: 'S3 (MinIO)', scenario: 'empty-area context menu → New folder → prompt; CLI ls shows the marker', face: 'GUI' }, async () => {
     await treeOpen(SRCNAME);
-    await waitFor(async () => (await rowKeys()).some((k) => k.includes('cert-gui')), 10000, 's3 root');
-    await enterFolder('cert-gui');
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+    await enterFolder('verify-gui');
     await evalPage(() => {
       const el = document.getElementById('grid-body');
       const r = el.getBoundingClientRect();
@@ -1168,33 +1168,33 @@ async function guiBattery() {
       .find((i) => new RegExp(src, 'i').test(i.textContent)) || null, 'new folder');
     need(item, 'no New folder ctx item');
     await item.asElement().click();
-    await answerPrompt('cert-folder');
+    await answerPrompt('verify-folder');
     await waitFor(async () => {
       await refresh();
-      return (await rowKeys()).some((k) => k.includes('cert-folder'));
+      return (await rowKeys()).some((k) => k.includes('verify-folder'));
     }, 15000, 'folder row');
-    const l = await s3(['ls', `s3://${BUCKET}/cert-gui/`, '--json']);
-    need(l.out.includes('cert-folder'), 'CLI cannot see the GUI-created folder');
+    const l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--json']);
+    need(l.out.includes('verify-folder'), 'CLI cannot see the GUI-created folder');
     return 'folder created + CLI-verified';
   });
 
-  await cert({ id: 'GUI-08', area: 'objects', action: 'Rename (F2, GUI)', ds: 'S3 (MinIO)', scenario: 'CLI-seeded object; F2 → new name; CLI stat sees the new key', face: 'GUI' }, async () => {
-    await s3(['cp', path.join(FIX, 'data', 'empty.txt'), `s3://${BUCKET}/cert-gui/cert-rename-me.txt`]);
+  await verify({ id: 'GUI-08', area: 'objects', action: 'Rename (F2, GUI)', ds: 'S3 (MinIO)', scenario: 'CLI-seeded object; F2 → new name; CLI stat sees the new key', face: 'GUI' }, async () => {
+    await s3(['cp', path.join(FIX, 'data', 'empty.txt'), `s3://${BUCKET}/verify-gui/verify-rename-me.txt`]);
     await treeOpen(SRCNAME);
-    await waitFor(async () => (await rowKeys()).some((k) => k.includes('cert-gui')), 10000, 's3 root');
-    await enterFolder('cert-gui');
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+    await enterFolder('verify-gui');
     await waitFor(async () => {
       await refresh();
-      return (await rowKeys()).some((k) => k.includes('cert-rename-me.txt'));
+      return (await rowKeys()).some((k) => k.includes('verify-rename-me.txt'));
     }, 15000, 'rename target row');
-    await clickRow('cert-rename-me.txt');
+    await clickRow('verify-rename-me.txt');
     await page.keyboard.press('F2');
-    await answerPrompt('cert-renamed.txt');
+    await answerPrompt('verify-renamed.txt');
     await waitFor(async () => {
       await refresh();
-      return (await rowKeys()).some((k) => k.includes('cert-renamed.txt'));
+      return (await rowKeys()).some((k) => k.includes('verify-renamed.txt'));
     }, 15000, 'renamed row');
-    const s = await s3(['stat', `s3://${BUCKET}/cert-gui/cert-renamed.txt`]);
+    const s = await s3(['stat', `s3://${BUCKET}/verify-gui/verify-renamed.txt`]);
     need(/size:/.test(s.out), `CLI stat of renamed key: ${s.out}${s.err}`);
     return 'renamed + CLI-verified';
   });
@@ -1202,14 +1202,14 @@ async function guiBattery() {
   // ---------------- second battery: the deeper GUI surface ----------------
   // Every row below re-verifies BACK through the CLI (s3 helper) — a green
   // GUI row still means bytes moved. Shared context: dual pane open, local
-  // side pointed at the fixture tree, remote side inside cert-gui/.
+  // side pointed at the fixture tree, remote side inside verify-gui/.
 
   const visKeys = () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
     .filter((r) => r.style.display !== 'none' && r._model).map((r) => String(r._model.key)));
   const navCertGui = async () => {
     await treeOpen(SRCNAME);
-    await waitFor(async () => (await rowKeys()).some((k) => k.includes('cert-gui')), 10000, 's3 root');
-    await enterFolder('cert-gui');
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+    await enterFolder('verify-gui');
   };
   // #local-grid-body is permanently mounted (index.html) and only hidden via
   // the pane's .hidden class, so visibility — not existence — is the probe.
@@ -1233,13 +1233,13 @@ async function guiBattery() {
     return countLines(r.out, '"versionId"');
   };
 
-  await cert({ id: 'GUI-10', area: 'transfers', action: 'DnD upload local→S3 (GUI)', ds: 'S3 (MinIO)', scenario: 'dual pane: drag uni-åäö.txt from the local side onto the bucket folder; Start; CLI sees the object; bytes identical', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-10', area: 'transfers', action: 'DnD upload local→S3 (GUI)', ds: 'S3 (MinIO)', scenario: 'dual pane: drag uni-åäö.txt from the local side onto the bucket folder; Start; CLI sees the object; bytes identical', face: 'GUI' }, async () => {
     await navCertGui();
     await ensureDualPane();
     await localDir(path.join(FIX, 'data'), 'readme.md');
     await dnd(await sideRow('uni-åäö.txt'), await bodyH());
     await startIfAsked(8000);
-    const K = `s3://${BUCKET}/cert-gui/uni-åäö.txt`;
+    const K = `s3://${BUCKET}/verify-gui/uni-åäö.txt`;
     await waitFor(async () => /size:/.test((await s3(['stat', K])).out), 30000, 'uploaded object');
     const out = path.join(ART, 'gui-dl-uni.txt');
     await s3(['cp', K, out]);
@@ -1248,29 +1248,29 @@ async function guiBattery() {
     return 'unicode filename uploaded, byte-identical';
   });
 
-  await cert({ id: 'GUI-11', area: 'transfers', action: 'DnD download S3→local (GUI)', ds: 'S3 (MinIO)', scenario: 'drag an S3 row onto the local pane; Start; file lands on disk; bytes identical', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-11', area: 'transfers', action: 'DnD download S3→local (GUI)', ds: 'S3 (MinIO)', scenario: 'drag an S3 row onto the local pane; Start; file lands on disk; bytes identical', face: 'GUI' }, async () => {
     const dst = path.join(ART, 'gui-dl');
     await mkdir(dst, { recursive: true });
     await navCertGui();
     await waitFor(async () => {
       await refresh();
-      return (await rowKeys()).some((k) => k.includes('cert-renamed.txt'));
+      return (await rowKeys()).some((k) => k.includes('verify-renamed.txt'));
     }, 15000, 'download source row');
     await ensureDualPane();
     await page.locator('#local-crumb').click();
     await answerPrompt(dst);
     await waitFor(async () => (await sideKeys()).length === 0, 8000, 'empty local dst');
-    await dnd(await rowAction('cert-renamed.txt'), await sideBodyH());
+    await dnd(await rowAction('verify-renamed.txt'), await sideBodyH());
     await startIfAsked(8000);
-    await waitFor(async () => (await sideKeys()).includes('cert-renamed.txt'), 45000, 'downloaded row');
-    const got = await readFile(path.join(dst, 'cert-renamed.txt'));
+    await waitFor(async () => (await sideKeys()).includes('verify-renamed.txt'), 45000, 'downloaded row');
+    const got = await readFile(path.join(dst, 'verify-renamed.txt'));
     need(got.equals(await readFile(path.join(FIX, 'data', 'empty.txt'))), 'DnD download bytes differ');
     await shot('11-dnd-download');
     return 'downloaded via DnD, byte-identical';
   });
 
-  await cert({ id: 'GUI-12', area: 'versions', action: 'Versions dialog: restore as latest', ds: 'S3 (MinIO)', scenario: '2 CLI-seeded versions; context menu → Versions shows the timeline; Restore as latest on the older one; CLI downloads the restored bytes', face: 'GUI' }, async () => {
-    const K = `s3://${BUCKET}/cert-gui/gui-ver.txt`;
+  await verify({ id: 'GUI-12', area: 'versions', action: 'Versions dialog: restore as latest', ds: 'S3 (MinIO)', scenario: '2 CLI-seeded versions; context menu → Versions shows the timeline; Restore as latest on the older one; CLI downloads the restored bytes', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/verify-gui/gui-ver.txt`;
     await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), K]);
     await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), K, '--force']);
     await navCertGui();
@@ -1292,8 +1292,8 @@ async function guiBattery() {
     return 'restored as latest, CLI-verified';
   });
 
-  await cert({ id: 'GUI-13', area: 'transfers', action: 'Overwrite conflict dialog', ds: 'S3 (MinIO)', scenario: 'DnD a file onto an existing name → conflict dialog offers Start; confirming creates the next version', face: 'GUI' }, async () => {
-    const K = `s3://${BUCKET}/cert-gui/readme.md`;
+  await verify({ id: 'GUI-13', area: 'transfers', action: 'Overwrite conflict dialog', ds: 'S3 (MinIO)', scenario: 'DnD a file onto an existing name → conflict dialog offers Start; confirming creates the next version', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/verify-gui/readme.md`;
     const base = await cliVerCount(K);
     need(base >= 1, 'no baseline version for conflict target');
     await navCertGui();
@@ -1307,8 +1307,8 @@ async function guiBattery() {
     return 'conflict → Start → new version';
   });
 
-  await cert({ id: 'GUI-14', area: 'objects', action: 'Delete Window CANCEL keeps the object', ds: 'S3 (MinIO)', scenario: 'Del on a row opens the Delete Window; Cancel/Esc leaves the object untouched on BOTH faces (the cancellation contract)', face: 'GUI' }, async () => {
-    const K = `s3://${BUCKET}/cert-gui/gui-cancel.txt`;
+  await verify({ id: 'GUI-14', area: 'objects', action: 'Delete Window CANCEL keeps the object', ds: 'S3 (MinIO)', scenario: 'Del on a row opens the Delete Window; Cancel/Esc leaves the object untouched on BOTH faces (the cancellation contract)', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/verify-gui/gui-cancel.txt`;
     await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), K]);
     await navCertGui();
     await waitFor(async () => {
@@ -1328,7 +1328,7 @@ async function guiBattery() {
     return 'cancelled; object intact on both faces';
   });
 
-  await cert({ id: 'GUI-15', area: 'admin', action: 'Doctor over the bridge', ds: 'S3 (MinIO)', scenario: 'Help → Doctor → pick the source → run all checks in the popout; summary reports pass; task completes', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-15', area: 'admin', action: 'Doctor over the bridge', ds: 'S3 (MinIO)', scenario: 'Help → Doctor → pick the source → run all checks in the popout; summary reports pass; task completes', face: 'GUI' }, async () => {
     await menuClick(/help/i, /doctor/i);
     await waitFor(() => evalPage(() => document.querySelectorAll('#modal-root .picker-row').length > 0), 5000, 'doctor picker');
     const row = await elOrNull((want) => Array.from(document.querySelectorAll('#modal-root .picker-row'))
@@ -1347,7 +1347,7 @@ async function guiBattery() {
     return 'ladder ran, summary pass';
   });
 
-  await cert({ id: 'GUI-16', area: 'admin', action: 'Admin dialog (bucket info)', ds: 'S3 (MinIO)', scenario: 'bucket guard in the tree opens the Admin panel; versioning reported; tabs render; close', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-16', area: 'admin', action: 'Admin dialog (bucket info)', ds: 'S3 (MinIO)', scenario: 'bucket guard in the tree opens the Admin panel; versioning reported; tabs render; close', face: 'GUI' }, async () => {
     await page.locator('#tree .tguard').first().click();
     await waitFor(async () => /versioning/i.test(await modalText()), 10000, 'admin overview');
     need((await modalText()).includes('Admin panel'), 'not the Admin panel');
@@ -1358,9 +1358,9 @@ async function guiBattery() {
     return `admin panel, ${tabs} tab(s)`;
   });
 
-  await cert({ id: 'GUI-17', area: 'sources', action: 'Profile file round-trip (bindings)', ds: 'Wails v3 server', scenario: 'SaveProfileFileAs → state open; Close → onboarding; wrong password rejected through the bridge; correct password restores the sources', face: 'GUI' }, async () => {
-    const PROFILE = path.join(ART, 'cert-walk.s3bprofile');
-    const PW = 'cert-pass-123';
+  await verify({ id: 'GUI-17', area: 'sources', action: 'Profile file round-trip (bindings)', ds: 'Wails v3 server', scenario: 'SaveProfileFileAs → state open; Close → onboarding; wrong password rejected through the bridge; correct password restores the sources', face: 'GUI' }, async () => {
+    const PROFILE = path.join(ART, 'verify-walk.s3bprofile');
+    const PW = 'verify-pass-123';
     await call('SaveProfileFileAs', PROFILE, PW);
     const st = await call('GetProfileFileState');
     need(st?.open === true && st?.sourceCount >= 1, `state after save: ${JSON.stringify(st)}`);
@@ -1375,12 +1375,12 @@ async function guiBattery() {
     await page.reload();
     await waitFor(() => evalPage(() => !!window.go && !!window.runtime), 15000, 'bridge after reopen');
     await treeOpen(SRCNAME);
-    await waitFor(async () => (await rowKeys()).some((k) => k.includes('cert-gui')), 20000, 'sources restored');
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 20000, 'sources restored');
     await shot('17-profile-roundtrip');
     return 'save/close/reject/reopen all good';
   });
 
-  await cert({ id: 'GUI-18', area: 'gui', action: 'Workbench surfaces: transfer manager + dual pane + filter', ds: 'S3 (MinIO)', scenario: 'View → Transfers opens the manager popout; dual pane toggle; filter box narrows the grid to matching rows and clearing restores them', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-18', area: 'gui', action: 'Workbench surfaces: transfer manager + dual pane + filter', ds: 'S3 (MinIO)', scenario: 'View → Transfers opens the manager popout; dual pane toggle; filter box narrows the grid to matching rows and clearing restores them', face: 'GUI' }, async () => {
     await menuClick(/view/i, /transfers/i);
     await waitFor(() => evalPage(() => !!document.querySelector('#popout-root .popout')), 5000, 'transfer manager popout');
     await shot('18-transfers');
@@ -1398,7 +1398,7 @@ async function guiBattery() {
     return 'popout + dual pane + filter all live';
   });
 
-  await cert({ id: 'GUI-19', area: 'objects', action: 'New file dialog: cancel + create', ds: 'S3 (MinIO)', scenario: 'Shift+F4 prompt (defaults new-file/txt); Cancel creates NOTHING (CLI 404); then create cert-newfile.txt for real; CLI stats it', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-19', area: 'objects', action: 'New file dialog: cancel + create', ds: 'S3 (MinIO)', scenario: 'Shift+F4 prompt (defaults new-file/txt); Cancel creates NOTHING (CLI 404); then create verify-newfile.txt for real; CLI stats it', face: 'GUI' }, async () => {
     await navCertGui();
     await page.keyboard.press('Shift+F4');
     await waitFor(() => evalPage(() => !!document.querySelector('#modal-root input.input')), 5000, 'new-file prompt');
@@ -1409,16 +1409,16 @@ async function guiBattery() {
     need(defaults === 'new-file|txt', `prompt defaults: ${defaults}`);
     await shot('19-newfile-prompt');
     await closeModal();
-    let s = await s3(['stat', `s3://${BUCKET}/cert-gui/new-file.txt`]);
+    let s = await s3(['stat', `s3://${BUCKET}/verify-gui/new-file.txt`]);
     need(s.code !== 0, 'cancel created an object');
     await page.keyboard.press('Shift+F4');
     await waitFor(() => evalPage(() => !!document.querySelector('#modal-root input.input')), 5000, 'new-file prompt again');
-    await answerPrompt('cert-newfile');
-    await waitFor(async () => /size:/.test((await s3(['stat', `s3://${BUCKET}/cert-gui/cert-newfile.txt`])).out), 20000, 'new file object');
+    await answerPrompt('verify-newfile');
+    await waitFor(async () => /size:/.test((await s3(['stat', `s3://${BUCKET}/verify-gui/verify-newfile.txt`])).out), 20000, 'new file object');
     return 'cancel inert; create landed';
   });
 
-  await cert({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
     need(pageErrors.length === 0, `${pageErrors.length} page error(s): ${pageErrors[0]}`);
     return 'clean console';
   });
@@ -1465,7 +1465,7 @@ async function sweepGate(script, re, fmt) {
 // ============================================================
 async function main() {
   const t0 = Date.now();
-  console.log(`s3b action certification — ${VERSION} on ${os.type()} ${os.release()} (${os.arch()})`);
+  console.log(`s3b action verification — ${VERSION} on ${os.type()} ${os.release()} (${os.arch()})`);
   console.log(`run id ${RUNID}, bucket ${BUCKET}${QUICK ? ', quick mode (sweeps skipped)' : ''}${ONLY !== 'all' ? `, category: ${ONLY}` : ''}\n`);
 
   await rm(ART, { recursive: true, force: true });
@@ -1507,12 +1507,12 @@ async function main() {
   }
 
   if (!QUICK && want('sweeps')) {
-    await cert({ id: 'SWEEP-VIS-01', area: 'sweeps', action: 'Full visual sweep', ds: 'shim world', scenario: 'node scripts/gui-visual.mjs — every dialog/popout/menu/viewport contract', face: 'SWEEP' }, async () => sweepGate('gui-visual.mjs', /gui-visual: (\d+)\/(\d+) checks passed/, {
+    await verify({ id: 'SWEEP-VIS-01', area: 'sweeps', action: 'Full visual sweep', ds: 'shim world', scenario: 'node scripts/gui-visual.mjs — every dialog/popout/menu/viewport contract', face: 'SWEEP' }, async () => sweepGate('gui-visual.mjs', /gui-visual: (\d+)\/(\d+) checks passed/, {
       ok: (m) => +m[2] > 0 && +m[1] === +m[2],
       pass: (m) => `${m[1]}/${m[2]} checks`,
       fail: (m, code, fl) => `${m[1]}/${m[2]}, exit ${code}${fl ? ` — ${fl}` : ''}`,
     }));
-    await cert({ id: 'SWEEP-LIVE-01', area: 'sweeps', action: 'Full live walk', ds: 'real engines', scenario: 'node scripts/gui-v3live.mjs — real bindings, transfers, versions, fault lab', face: 'SWEEP' }, async () => sweepGate('gui-v3live.mjs', /v3 live walk: (\d+) check\(s\) passed, (\d+) failed/, {
+    await verify({ id: 'SWEEP-LIVE-01', area: 'sweeps', action: 'Full live walk', ds: 'real engines', scenario: 'node scripts/gui-v3live.mjs — real bindings, transfers, versions, fault lab', face: 'SWEEP' }, async () => sweepGate('gui-v3live.mjs', /v3 live walk: (\d+) check\(s\) passed, (\d+) failed/, {
       ok: (m) => +m[1] > 0 && +m[2] === 0,
       pass: (m) => `${m[1]} checks, no page errors`,
       fail: (m, code, fl) => `${m[1]} passed, ${m[2]} failed, exit ${code}${fl ? ` — ${fl}` : ''}`,
@@ -1521,7 +1521,7 @@ async function main() {
 
   // ---------- cleanup live state (best effort, never fails the run) ----------
   console.log('\ncleanup …');
-  await cli(['rb', `s3://${BUCKET}`, '--force', '--profile', 'certs3']).then((r) => console.log(`  bucket: exit ${r.code}`)).catch(() => {});
+  await cli(['rb', `s3://${BUCKET}`, '--force', '--profile', 'verifys3']).then((r) => console.log(`  bucket: exit ${r.code}`)).catch(() => {});
   for (const s of ['xt', 'xf', 'xw']) {
     await cli(['rm', `${s}://${RUNID}`, '-r', '--force']).then((r) => console.log(`  ${s}: exit ${r.code}`)).catch(() => {});
   }
@@ -1529,7 +1529,7 @@ async function main() {
   // ---------- report ----------
   const osName = `${os.type()} ${os.release()} (${os.arch()})`;
   const byResult = (r) => rows.filter((x) => x.result === r).length;
-  const certificate = {
+  const verification = {
     version: VERSION, os: osName, node: process.version,
     generatedAt: new Date().toISOString(), runId: RUNID, bucket: BUCKET,
     category: ONLY,
@@ -1537,16 +1537,16 @@ async function main() {
     summary: { total: rows.length, pass: byResult('PASS'), fail: byResult('FAIL'), skip: byResult('SKIP'), seconds: Math.round((Date.now() - t0) / 1000) },
     rows,
   };
-  await writeFile(path.join(ART, 'certificate.json'), JSON.stringify(certificate, null, 2));
+  await writeFile(path.join(ART, 'verification.json'), JSON.stringify(verification, null, 2));
 
-  console.log(`\n=== CERTIFICATE ===`);
+  console.log(`\n=== VERIFICATION REPORT ===`);
   const w = [6, 13, 34, 16, 46, 6];
   const pad = (s, n) => String(s ?? '').slice(0, n - 1).padEnd(n);
   console.log([pad('ID', w[0]), pad('FACE', w[1]), pad('ACTION', w[2]), pad('SOURCE', w[3]), pad('SCENARIO', w[4]), pad('OS', 12), 'RESULT'].join(' '));
   for (const r of rows) {
     console.log([pad(r.id, w[0]), pad(r.face, w[1]), pad(r.action, w[2]), pad(r.ds, w[3]), pad(r.scenario, w[4]), pad(osName.replace(/ \(.*\)/, ''), 12), r.result].join(' '));
   }
-  console.log(`\n${certificate.summary.pass} PASS · ${certificate.summary.skip} SKIP · ${certificate.summary.fail} FAIL — ${certificate.summary.seconds}s — ${path.join('testartifacts', 'certification', 'certificate.json')}`);
+  console.log(`\n${verification.summary.pass} PASS · ${verification.summary.skip} SKIP · ${verification.summary.fail} FAIL — ${verification.summary.seconds}s — ${path.join('testartifacts', 'verification', 'verification.json')}`);
   if (failures.length) {
     console.log('\nFAILURES:');
     for (const f of failures) console.log(`  ${f}`);
@@ -1554,4 +1554,4 @@ async function main() {
   process.exitCode = failures.length ? 1 : 0;
 }
 
-main().catch((err) => { console.error('certify:', err); process.exit(1); });
+main().catch((err) => { console.error('verify:', err); process.exit(1); });
