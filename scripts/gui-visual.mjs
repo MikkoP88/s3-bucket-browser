@@ -441,8 +441,15 @@ function shim() {
     admin: {
       publicWarning: '', region: 'eu-central', versions: 'Enabled',
       pab: { blockPublicAcls: false, ignorePublicAcls: false, blockPublicPolicy: true, restrictPublicBuckets: true },
-      policy: { raw: '{\n  "Version": "2012-10-17",\n  "Statement": []\n}', summary: { statements: 0, public: false } },
-      acl: { owner: 'demo', summary: { grants: ['demo — FULL_CONTROL'] } },
+      // policy/acl summary shapes mirror policy.PolicySummary / ACLSummary —
+      // the dialog reads statementCount/hasPublicRead/hasPublicWrite and
+      // publicRead/authenticatedRead (an earlier mock used made-up keys and
+      // the Policy tab rendered "undefined" for the statement count)
+      policy: {
+        raw: '{\n  "Version": "2012-10-17",\n  "Statement": [{\n    "Effect": "Allow",\n    "Principal": { "AWS": "arn:aws:iam::123456789012:root" },\n    "Action": "s3:GetObject",\n    "Resource": "arn:aws:s3:::team-files/*"\n  }]\n}',
+        summary: { hasPolicy: true, statementCount: 1, hasPublicAllow: false, hasPublicRead: false, hasPublicWrite: false },
+      },
+      acl: { owner: 'demo', summary: { grants: ['demo — FULL_CONTROL'], publicRead: false, authenticatedRead: false } },
       cors: [{ allowedMethods: 'GET', allowedOrigins: 'https://demo.example', allowedHeaders: '*', maxAgeSeconds: 3000 }],
       lifecycle: [{ id: 'archive-old', status: 'Enabled', days: 90, storageClass: 'GLACIER' }],
       encryption: { algorithm: 'AES256', kmsKeyId: '' },
@@ -2374,11 +2381,22 @@ await step('admin-panel', async () => {
     }, 3000, `tab ${name} content`));
     await ok(`tab "${name}" layout clean`, (await layoutAudit()).ok);
   }
-  // shots of two denser tabs (policy JSON, lifecycle rules)
+  // shots of two denser tabs (policy JSON, lifecycle rules); the Policy stop
+  // also guards the summary contract — a mock/backend field rename would
+  // otherwise render a literal "undefined" statement count into the pixels
   for (const [name, shotName] of [['Policy', 'admin-policy'], ['Lifecycle', 'admin-lifecycle']]) {
     const tab = await elOrNull((want) => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab'))
       .find((t) => t.textContent.trim() === want) || null, name);
-    if (tab) { await tab.asElement().click(); await sleep(90); await shot(shotName); }
+    if (!tab) continue;
+    await tab.asElement().click();
+    await sleep(90);
+    if (shotName === 'admin-policy') {
+      await ok('policy summary statement count is a number', evalPage(() => {
+        const v = document.querySelector('#modal-root .tabbody .kv .v');
+        return v ? /^\d+$/.test(v.textContent.trim()) : false;
+      }));
+    }
+    await shot(shotName);
   }
   await closeModal();
 });
