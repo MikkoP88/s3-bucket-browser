@@ -2027,8 +2027,9 @@ await step('window-size-tiers', async () => {
   // Settings shell is the flagship: switching categories (or flattening
   // into search results) must not change the window's width or height a
   // single pixel. Tiers: base dialogs 560, wide 720, admin/settings/
-  // conflict 880; the auto-height popouts keep their fixed 490 footprint
-  // (pinned in popout-auto-height below).
+  // conflict 880; the auto-height popouts open at their 490x300
+  // footprint, which is also their resize floor (pinned in
+  // popout-auto-height below).
   const openSettings = async () => {
     await page.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
     await sleep(80);
@@ -3644,10 +3645,11 @@ await step('popout-auto-height', async () => {
   // The monitoring windows (File transfers / Running tasks) ride the
   // Windows file-transfer footprint: 490x300 default AND minimum, the
   // height tracking the content up to 740 and scrolling inside beyond
-  // that. A manual height resize takes over for the window's life —
-  // never past the space the content fills — and a reopen starts the
-  // tracking fresh. Pinned here on the DOM tier; the native window's
-  // own fit calls get their pin in popout-window-views below.
+  // that. The first manual resize takes the size over for the window's
+  // life — both axes, floored at the default footprint, with no content
+  // ceiling — and a reopen starts the tracking fresh. Pinned here on
+  // the DOM tier; the native window's own fit calls get their pin in
+  // popout-window-views below.
   const trSel = '#popout-root .popout[data-pop="transfers"]';
   const geo = () => evalPage((s) => {
     const b = document.querySelector(s);
@@ -3682,14 +3684,32 @@ await step('popout-auto-height', async () => {
   await ok('default footprint is 490x300', Math.abs(d0.w - 490) <= 1 && Math.abs(d0.h - 300) <= 1);
   await ok('auto-height class on the window', evalPage((s) => document.querySelector(s).classList.contains('autoh'), trSel));
 
+  // the column-header partition: Transfer | Progress | Action, pinned
+  // above the scrolling rows and styled like every other small label —
+  // Action alone light-bold (it names the column holding the Cancel)
+  await ok('column header partition reads Transfer|Progress|Action', evalPage((s) => {
+    const cells = Array.from(document.querySelectorAll(`${s} .tm-head > span`)).map((n) => n.textContent.trim());
+    return cells.length === 3 && cells.join('|') === 'Transfer|Progress|Action';
+  }, trSel));
+  await ok('Action header alone is light-bold', evalPage((s) => {
+    const fw = (sel) => { const n = document.querySelector(`${s} .tm-head ${sel}`); return n ? getComputedStyle(n).fontWeight : ''; };
+    return fw('.tm-h-act') === '600' && fw('.tm-h-first') === '400' && fw('.tm-h-prog') === '400';
+  }, trSel));
+  await ok('column header is pinned outside the scrolling body', evalPage((s) => {
+    const b = document.querySelector(s);
+    const strip = b.querySelector('.tm-head');
+    const body = b.querySelector('.modal-body');
+    return !!strip && !body.contains(strip) && strip.nextElementSibling === body;
+  }, trSel));
+
   await seed(14);
   await waitFor(() => trRows(14), 4000, 'fourteen rows');
   const d1 = await geo();
   await ok('height caps at 740, content scrolls inside', Math.abs(d1.h - 740) <= 1 && d1.over > 40 && Math.abs(d1.w - 490) <= 1);
   await shotOf('popout-autoh-capped', trSel);
 
-  await seed(6);
-  await waitFor(() => trRows(6), 4000, 'six rows');
+  await seed(5);
+  await waitFor(() => trRows(5), 4000, 'five rows');
   const d2 = await geo();
   await ok('height shrinks back to the content', d2.h > 320 && d2.h < 740 && d2.over === 0 && d2.h < d1.h);
 
@@ -3702,22 +3722,26 @@ await step('popout-auto-height', async () => {
   const d3 = await geo();
   await ok('manual height wins over content growth', Math.abs(d3.h - manual) <= 3 && d3.over > 0);
 
-  // ...and the resize never exceeds the space the content fills — two
-  // full-info rows are their own ceiling now (the +400 drag lands back
-  // at the content, well under the manual height it left behind)
+  // ...and once the window is the user's it may exceed the content: the
+  // +400 drag grows well past both the two-row content and the manual
+  // height it left behind (no scrollbar — the content simply fits)
   await seed(2);
   await waitFor(() => trRows(2), 4000, 'two rows');
   await popDrag('transfers', 0, 400, 'grip');
   const d4 = await geo();
-  await ok('resize cannot exceed the content space', d4.h > 300 && d4.h < 400 && d4.over === 0 && d4.h < manual);
-  await popDrag('transfers', 0, -400, 'grip');
+  await ok('a manual resize may exceed the content space', d4.h > manual + 100 && d4.over === 0);
+  await popDrag('transfers', 0, -800, 'grip');
   await ok('minimum height is 300', Math.abs((await geo()).h - 300) <= 1);
 
-  // the grip is HEIGHT-ONLY: a diagonal drag must not move the width
-  // off the fixed 490px footprint
+  // both axes are the user's now: a diagonal drag widens the window
+  // past the 490 footprint — and the floors hold: no drag shrinks it
+  // below the default 490x300
   await popDrag('transfers', 140, 60, 'grip');
   const dGrip = await geo();
-  await ok('width is pinned — a diagonal grip drag cannot widen the window', Math.abs(dGrip.w - 490) <= 1 && dGrip.h > 300);
+  await ok('a diagonal grip drag widens the window', dGrip.w >= 620 && dGrip.h > 300);
+  await popDrag('transfers', -600, -400, 'grip');
+  const dFloor = await geo();
+  await ok('floors hold: never below the default footprint', Math.abs(dFloor.w - 490) <= 1 && Math.abs(dFloor.h - 300) <= 1);
 
   // persisted geometry keeps placement ONLY — a reopen must track the
   // content afresh at the profile width
@@ -3725,17 +3749,17 @@ await step('popout-auto-height', async () => {
   await ok('only placement persisted for an auto-height window', !!saved && Number.isFinite(saved.x) && !('w' in saved) && !('h' in saved));
   await closePopout('transfers');
   await ok('window closed', !(await popoutVisible('transfers')));
-  await seed(6);
+  await seed(5);
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
   await sleep(80);
   const trItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
     .find((i) => /transfers/i.test(i.textContent)) || null);
   if (trItem) await trItem.asElement().click();
-  await waitFor(() => trRows(6), 4000, 'six rows again');
+  await waitFor(() => trRows(5), 4000, 'five rows again');
   await sleep(250); // fresh box replays modal-in — measure past the animation
   const d5 = await geo();
   await ok('reopen re-enables content tracking', Math.abs(d5.h - d2.h) <= 4 && d5.over === 0);
-  await ok('reopen lands back at the fixed 490 width', Math.abs(d5.w - 490) <= 1);
+  await ok('reopen lands back at the default 490 width', Math.abs(d5.w - 490) <= 1);
   await shotOf('popout-autoh-reopened', trSel);
   // leave no running jobs behind for later steps
   await evalPage(() => {
@@ -3782,6 +3806,16 @@ await step('popout-window-views', async () => {
   // duplicate it — no double header, no second close icon
   await ok('no duplicate in-page header', await pw.evaluate((s) =>
     document.querySelector(`${s} .modal-head`).offsetParent === null, trSel));
+  // the column partition rides along into the OS window: pinned under
+  // the title bar, Action alone light-bold
+  await ok('transfers window carries the column partition', await pw.evaluate((s) => {
+    const cells = Array.from(document.querySelectorAll(`${s} .tm-head > span`)).map((n) => n.textContent.trim());
+    return cells.length === 3 && cells.join('|') === 'Transfer|Progress|Action';
+  }, trSel));
+  await ok('transfers window: Action header alone is light-bold', await pw.evaluate((s) => {
+    const fw = (sel) => { const n = document.querySelector(`${s} .tm-head ${sel}`); return n ? getComputedStyle(n).fontWeight : ''; };
+    return fw('.tm-h-act') === '600' && fw('.tm-h-first') === '400' && fw('.tm-h-prog') === '400';
+  }, trSel));
   await ok('finished past is history in the window', await pw.evaluate((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
     const head = document.querySelector(`${s} .modal-foot .left`);
@@ -3817,6 +3851,11 @@ await step('popout-window-views', async () => {
   }, tkSel));
   await ok('tasks window: no duplicate header', await pt.evaluate((s) =>
     document.querySelector(`${s} .modal-head`).offsetParent === null, tkSel));
+  // the column partition names the merged list Task | Progress | Action
+  await ok('tasks window column partition reads Task|Progress|Action', await pt.evaluate((s) => {
+    const cells = Array.from(document.querySelectorAll(`${s} .tm-head > span`)).map((n) => n.textContent.trim());
+    return cells.length === 3 && cells.join('|') === 'Task|Progress|Action';
+  }, tkSel));
   await pt.evaluate((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, tkSel);
   await pt.waitForFunction((s) => document.querySelectorAll(`${s} .tr-job`).length === 3, tkSel, { timeout: 4000 });
   await ok('tasks window: history reveals the merged past', true);

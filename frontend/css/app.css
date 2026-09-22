@@ -552,19 +552,18 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
 }
 .popout.wide { width: 720px; }
 /* Auto-height monitoring windows (File transfers, Running tasks): the
-   Windows file-transfer footprint — a FIXED 490px width (the grip is
-   height-only, and neither tier ever remembers or restores a width) and
-   the height tracking the content between 300 and 740px. Beyond the cap
-   the window stays put and the body scrolls (overflow:auto above). A
-   manual grip height outranks the tracking for the window's life; a
-   reopen starts it fresh (only placement is remembered). The native
-   windows are DisableResize — the app itself drives the height. */
+   Windows file-transfer footprint — a 490px default width that is also
+   the floor (the user may never shrink below it; neither tier ever
+   remembers or restores a width) and the height tracking the content
+   between 300 and 740px. Beyond the cap the window stays put and the
+   body scrolls (overflow:auto above). The first manual resize (either
+   axis, either tier) takes the size over for the window's life — the
+   inline maxima clear and only the floors remain; a reopen starts it
+   fresh at the default footprint (only placement is remembered). */
 .popout.autoh {
   width: min(490px, calc(100vw - 48px)); min-width: min(490px, calc(100vw - 48px)); max-width: none;
   min-height: min(300px, 90vh); max-height: min(740px, 94vh);
 }
-/* the auto-height windows resize vertically only — the grip says so */
-.popout.autoh .pop-grip { cursor: ns-resize; }
 .popout.admin-modal { width: 880px; }
 /* the header is the drag handle — no text selection mid-drag */
 .popout .modal-head { cursor: grab; user-select: none; touch-action: none; }
@@ -599,6 +598,22 @@ body.popout-win .pop-grip { display: none; }
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; font-size: 12.5px; }
 .kv .k { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
 .kv .v { overflow-wrap: anywhere; }
+
+/* Column-header partition (File transfers / Running tasks): the pinned
+   strip over the rows. Same small dim text as every other label in the
+   app; the Action column alone is light-bold — it names the one column
+   holding a control (the row's Cancel). The 27px side padding lines the
+   labels up with the row text (16px body + 1px card border + 10px card
+   padding). */
+.tm-head {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 8px 27px 6px 27px;
+  font-size: 12px; color: var(--text-dim);
+  border-bottom: 1px solid var(--border-soft);
+}
+.tm-head .tm-h-first { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-head .tm-h-prog { flex: none; min-width: 36px; text-align: right; }
+.tm-head .tm-h-act { flex: none; min-width: 64px; text-align: right; font-weight: 600; }
 
 /* Transfer manager rows */
 .tr-job { border: 1px solid var(--border-soft); border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; }
