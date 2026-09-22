@@ -46,7 +46,7 @@ arguments opens the desktop app; with arguments it is the CLI).
 
 - Some operating system versions especially **beta** or **pre‑release** builds may still exhibit compatibility issues.  
 - The application is primarily developed and tested in **Windows environments**.  
-- Verification focuses on **application functionality**, not full OS‑level compatibility across all distributions or preview builds.
+- Verification focuses on **application functionality**, not full OS‑level compatibility across all distributions.
 
 The macOS floor is real, not aspirational: the release binaries carry a
 pinned 12.0 deployment target (the oldest macOS the Go 1.26 runtime itself
