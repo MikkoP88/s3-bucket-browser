@@ -122,10 +122,7 @@ function clampPop(box) {
 // footLeft: element pinned to the left end of the footer bar — style it
 // with class 'left' (see .modal-foot .left) so its margin-right:auto keeps
 // the action buttons on the right. Rendered even with no buttons.
-// headRow: an optional pinned partition rendered between the title bar
-// and the scrolling body (the monitoring windows' Task/Transfer column
-// header) — it never scrolls away with the rows.
-function openPopout({ id, title, body, headRow = null, buttons = [], footLeft = null, wide = false, cls = '', autoH = null, onClose }) {
+function openPopout({ id, title, body, buttons = [], footLeft = null, wide = false, cls = '', autoH = null, onClose }) {
   const existing = popouts.get(id);
   if (existing) { existing.focus(); return { ...existing, fresh: false }; }
 
@@ -167,7 +164,6 @@ function openPopout({ id, title, body, headRow = null, buttons = [], footLeft = 
       el('span', { text: title }),
       el('span', { class: 'x', text: '\u00D7', role: 'button', 'aria-label': 'Close', onclick: () => close(null) }),
     ),
-    headRow,
     el('div', { class: 'modal-body' }, body),
     buttons.length || footLeft ? foot : null,
     el('div', { class: 'pop-grip', 'aria-hidden': 'true' }),
@@ -1306,15 +1302,6 @@ function viewHistory(onToggle) {
 }
 
 // ---------- transfer manager ----------
-// tmHead is the column-header partition both monitoring windows carry
-// over their rows (Task | Progress | Action; transfers say Transfer
-// first). Same small dim text as every other label in the app — the
-// Action column alone is light-bold, marking the one column holding a
-// control (the row's Cancel).
-const tmHead = (firstKey) => el('div', { class: 'tm-head' },
-  el('span', { class: 'tm-h-first', text: t(firstKey) }),
-  el('span', { class: 'tm-h-prog', text: t('popout.colProgress') }),
-  el('span', { class: 'tm-h-act', text: t('popout.colAction') }));
 
 // transferManager is the user entry: opening by hand — View menu, status
 // bar, context menus — locks the window open (see xferAuto below); the
@@ -1346,7 +1333,6 @@ function openTransferManagerDom(onClose) {
     id: 'transfers',
     title: t('transfer.managerTitle'),
     body: el('div', {}, list),
-    headRow: tmHead('popout.colTransfer'),
     autoH: XFER_PROFILE,
     footLeft: hist.foot,
     buttons: [
@@ -1628,7 +1614,6 @@ function runningTasksDom() {
     id: 'tasks',
     title: t('tasks.title'),
     body: el('div', {}, list),
-    headRow: tmHead('popout.colTask'),
     autoH: XFER_PROFILE,
     footLeft: hist.foot,
     buttons: [
