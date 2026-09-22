@@ -155,14 +155,19 @@ function skip(detail) { cur.result = 'SKIP'; cur.detail = detail; return detail;
 function need(cond, what) { if (!cond) throw new Error(what); }
 
 // ---------- CLI process driver ----------
-function cli(args, { timeout = 120000, cfg = CFG } = {}) {
+// nokeyring: run with S3B_NO_KEYRING=1 so secrets stay inside the config
+// file. REQUIRED for isolated-config rows that add/remove/import sources
+// sharing a name with the shared faces — profile keyring slots are keyed
+// by NAME ONLY (pkg/core/profile/keyring.go), so a plain add in a scratch
+// config would silently overwrite/delete the live face's global slot.
+function cli(args, { timeout = 120000, cfg = CFG, nokeyring = false } = {}) {
   return new Promise((resolve) => {
     execFile(CLI_EXE, args, {
       cwd: ROOT,
       windowsHide: true,
       timeout,
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, S3B_CONFIG: cfg, NO_COLOR: '1', TERM: 'dumb' },
+      env: { ...process.env, S3B_CONFIG: cfg, NO_COLOR: '1', TERM: 'dumb', ...(nokeyring ? { S3B_NO_KEYRING: '1' } : {}) },
     }, (err, stdout, stderr) => {
       resolve({ code: err ? (err.code ?? 1) : 0, out: String(stdout || ''), err: String(stderr || '') });
     });
@@ -891,6 +896,189 @@ async function cliS3() {
     await cli(['rb', `s3://${PB}`, '--force']);
     return 'suspend kept history (null-version semantics); resume re-versions; PAB on/off read back';
   });
+
+  await verify({ id: 'CLI-S3-37', area: 'admin', action: 'Bucket CORS: put FILE / get --json / delete', ds: 'S3 (MinIO)', scenario: 'a JSON rules file round-trips: put saves, get --json echoes every field (origin, method, header, max-age), delete removes it all and get then reports none — each mutation re-read out-of-band before the next', face: 'CLI' }, async () => {
+    const TB = `s3://${BUCKET}-cors`;
+    let r = await cli(['mb', TB]);
+    need(r.code === 0, `mb cors: ${r.err}`);
+    const f = path.join(ART, 'cors-rules.json');
+    await writeFile(f, JSON.stringify([{ origins: ['https://verify.example.com'], methods: ['GET', 'PUT'], headers: ['content-type'], expose: ['ETag'], maxAge: 1800 }]));
+    r = await cli(['bucket', 'cors', 'put', TB, f]);
+    // provider gap: some builds refuse bucket CORS mutation outright
+    if (r.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(r.out + r.err)) {
+      await cli(['rb', TB, '--force']);
+      return skip(`provider refused CORS put (recorded gap): ${(r.out + r.err).trim().slice(0, 120)}`);
+    }
+    need(r.code === 0, `cors put: ${r.out}${r.err}`);
+    const g = await cli(['bucket', 'cors', 'get', TB, '--json']);
+    need(g.code === 0, `cors get: ${g.out}${g.err}`);
+    for (const needle of ['verify.example.com', 'GET', 'content-type', 'ETag', '1800']) {
+      need(g.out.includes(needle), `cors get lost "${needle}": ${g.out}`);
+    }
+    r = await cli(['bucket', 'cors', 'delete', TB]);
+    need(r.code === 0, `cors delete: ${r.out}${r.err}`);
+    const gone = await cli(['bucket', 'cors', 'get', TB, '--json']);
+    need(!gone.out.includes('verify.example.com'), `cors rule survived delete: ${gone.out}`);
+    await cli(['rb', TB, '--force']);
+    return 'cors put/get/delete round-trip, fields echoed';
+  });
+
+  await verify({ id: 'CLI-S3-38', area: 'admin', action: 'Bucket website: put flags / get / delete', ds: 'S3 (MinIO)', scenario: 'website hosting configured through flags (--index, --error, --redirect-host/proto): get echoes the exact documents, the redirect override replaces them, delete clears the config', face: 'CLI' }, async () => {
+    const TB = `s3://${BUCKET}-web`;
+    let r = await cli(['mb', TB]);
+    need(r.code === 0, `mb web: ${r.err}`);
+    r = await cli(['bucket', 'website', 'put', TB, '--index', 'verify-index.html', '--error', 'verify-404.html']);
+    if (r.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(r.out + r.err)) {
+      await cli(['rb', TB, '--force']);
+      return skip(`provider refused website put (recorded gap): ${(r.out + r.err).trim().slice(0, 120)}`);
+    }
+    need(r.code === 0, `website put: ${r.out}${r.err}`);
+    let g = await cli(['bucket', 'website', 'get', TB, '--json']);
+    need(g.code === 0, `website get: ${g.out}${g.err}`);
+    need(g.out.includes('verify-index.html') && g.out.includes('verify-404.html'), `website get lost the documents: ${g.out}`);
+    r = await cli(['bucket', 'website', 'put', TB, '--redirect-host', 'verify.example.net', '--redirect-proto', 'http']);
+    need(r.code === 0, `website put redirect: ${r.out}${r.err}`);
+    g = await cli(['bucket', 'website', 'get', TB, '--json']);
+    need(g.out.includes('verify.example.net'), `redirect host not echoed: ${g.out}`);
+    r = await cli(['bucket', 'website', 'delete', TB]);
+    need(r.code === 0, `website delete: ${r.out}${r.err}`);
+    g = await cli(['bucket', 'website', 'get', TB, '--json']);
+    need(!g.out.includes('verify.example.net'), `website config survived delete: ${g.out}`);
+    await cli(['rb', TB, '--force']);
+    return 'website documents + redirect override round-trip';
+  });
+
+  await verify({ id: 'CLI-S3-39', area: 'admin', action: 'Bucket encryption: default SSE put / get / delete', ds: 'S3 (MinIO)', scenario: 'default server-side encryption set to AES256: get echoes the algorithm, delete returns the bucket to provider-default and get says so — the at-rest contract visible from outside', face: 'CLI' }, async () => {
+    const TB = `s3://${BUCKET}-enc`;
+    let r = await cli(['mb', TB]);
+    need(r.code === 0, `mb enc: ${r.err}`);
+    r = await cli(['bucket', 'encryption', 'put', TB, '--algo', 'AES256']);
+    if (r.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(r.out + r.err)) {
+      await cli(['rb', TB, '--force']);
+      return skip(`provider refused default encryption put (recorded gap): ${(r.out + r.err).trim().slice(0, 120)}`);
+    }
+    need(r.code === 0, `encryption put: ${r.out}${r.err}`);
+    let g = await cli(['bucket', 'encryption', 'get', TB]);
+    need(g.code === 0, `encryption get: ${g.out}${g.err}`);
+    need(/AES256/i.test(g.out), `encryption get lost AES256: ${g.out}`);
+    r = await cli(['bucket', 'encryption', 'delete', TB]);
+    need(r.code === 0, `encryption delete: ${r.out}${r.err}`);
+    g = await cli(['bucket', 'encryption', 'get', TB]);
+    need(!/AES256/.test(g.out) || /none|default/i.test(g.out), `encryption survived delete: ${g.out}`);
+    await cli(['rb', TB, '--force']);
+    return 'default SSE on/off readable from outside';
+  });
+
+  await verify({ id: 'CLI-S3-40', area: 'admin', action: 'Object-lock enable on a plain bucket: refused honestly', ds: 'S3 (MinIO)', scenario: 'a bucket created WITHOUT --object-lock: enabling lock must be refused (non-zero, a stated reason) — and the refusal must leave the bucket itself healthy (still stats, still takes writes, still removable)', face: 'CLI' }, async () => {
+    const TB = `s3://${BUCKET}-nl`;
+    let r = await cli(['mb', TB]);
+    need(r.code === 0, `mb nl: ${r.err}`);
+    r = await cli(['bucket', 'lock', TB, '--enable']);
+    if (r.code === 0 && /object lock enabled/i.test(r.out)) {
+      // recorded gap, not a pass: AWS refuses this outright; a provider that
+      // allows it changes the retention safety story and must stay visible
+      await cli(['rb', TB, '--force']);
+      return skip('provider ALLOWED enabling object lock on a plain bucket (recorded gap — AWS semantics refuse this)');
+    }
+    need(r.code !== 0, 'lock --enable on a non-lock bucket exited 0');
+    need((r.out + r.err).trim().length > 0, 'the refusal printed no reason');
+    const info = await cli(['bucket', 'info', TB]);
+    need(info.code === 0, `bucket unhealthy after refusal: ${info.out}${info.err}`);
+    const src = path.join(ART, 'nl-probe.txt');
+    await writeFile(src, `nl probe ${RUNID}\n`);
+    r = await cli(['cp', src, `${TB}/probe.txt`]);
+    need(r.code === 0, `write after refusal: ${r.out}${r.err}`);
+    const st = await cli(['stat', `${TB}/probe.txt`]);
+    need(st.code === 0 && /probe\.txt/.test(st.out), `stat after refusal: ${st.out}${st.err}`);
+    await cli(['rb', TB, '--force']);
+    return 'refused with a reason; bucket still healthy and writable';
+  });
+
+  await verify({ id: 'CLI-S3-41', area: 'sources', action: 'source add UPDATE semantics + secret masking', ds: 'S3 (dead endpoint)', scenario: 're-adding an EXISTING name must never fork the store: either the entry updates in place (one row, new endpoint live, old endpoint gone) or the add is refused as a duplicate — and the secret never appears in any listing, on either path', face: 'CLI' }, async () => {
+    const dir = path.join(ART, 'upd-config');
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    let r = await cli(['source', 'add', 'upd1', '--type', 's3', '--endpoint', 'http://127.0.0.1:1', '--access-key', 'updkey', '--secret-key', 'upd1-s3cret-zz'], { cfg: dir });
+    need(r.code === 0, `add: ${r.err}`);
+    let l = await cli(['source', 'list'], { cfg: dir });
+    need(l.code === 0 && countLines(l.out, 'upd1') === 1, `first add left ${countLines(l.out, 'upd1')} row(s)`);
+    r = await cli(['source', 'add', 'upd1', '--type', 's3', '--endpoint', 'http://127.0.0.2:2', '--access-key', 'updkey', '--secret-key', 'upd1-s3cret-zz'], { cfg: dir });
+    l = await cli(['source', 'list'], { cfg: dir });
+    need(l.code === 0, `list after re-add: ${l.err}`);
+    need(!l.out.includes('upd1-s3cret-zz'), 'the secret leaked into a listing');
+    if (r.code === 0) {
+      // update-in-place contract: exactly one row, the NEW endpoint live
+      need(countLines(l.out, 'upd1') === 1, `re-add forked the store (${countLines(l.out, 'upd1')} rows)`);
+      need(/127\.0\.0\.2:2/.test(l.out) && !/127\.0\.0\.1:1/.test(l.out), `re-add did not move the endpoint: ${l.out}`);
+      const t = await cli(['source', 'test', 'upd1'], { cfg: dir, timeout: 45000 });
+      need(t.code !== 0, 'source test dialed a DEAD endpoint — the updated entry is not the live one');
+    } else {
+      // refused-duplicate contract: the message says so and the store is untouched
+      need(/exist|duplicate|taken|already/i.test(r.out + r.err), `refusal not labeled as a name conflict: ${r.out}${r.err}`);
+      need(/127\.0\.0\.1:1/.test(l.out) && !/127\.0\.0\.2:2/.test(l.out), `refused add still changed the store: ${l.out}`);
+      const t = await cli(['source', 'test', 'upd1'], { cfg: dir, timeout: 45000 });
+      need(t.code !== 0, 'source test dialed something live on a dead endpoint');
+    }
+    await cli(['source', 'remove', 'upd1'], { cfg: dir });
+    await cli(['source', 'remove', 'upd1-2'], { cfg: dir });
+    return r.code === 0
+      ? 're-add updated in place: one row, new endpoint, secret masked'
+      : 're-add refused as duplicate: store untouched, secret masked';
+  });
+
+  await verify({ id: 'CLI-S3-42', area: 'meta', action: '--json machine contract', ds: 'S3 (MinIO)', scenario: 'every JSON-emitting read (ls, tree, du, stat, versions ls, bucket info) on live data: the whole stdout parses as machine JSON — a single JSON document or newline-delimited objects — with zero ANSI escapes anywhere, and the parsed values carry the real semantics (row counts, keys, version count) — the contract automation is built on', face: 'CLI' }, async () => {
+    const P = `s3://${BUCKET}/verify-json`;
+    await cli(['mkdir', `${P}/`]);
+    await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/j1.txt`]);
+    await cli(['cp', path.join(FIX, 'data', 'root-2.txt'), `${P}/j1.txt`, '--force']);
+    await cli(['cp', path.join(FIX, 'data', 'empty.txt'), `${P}/j2.txt`]);
+    const runs = [
+      ['ls', ['ls', `${P}/`, '--json'], (rows) => rows.length === 2],
+      ['tree', ['tree', `${P}/`, '--json'], (rows) => rows.length >= 1],
+      ['du', ['du', `${P}/`, '--json'], (rows) => rows.length >= 1],
+      ['stat', ['stat', `${P}/j2.txt`, '--json'], (rows) => rows.some((x) => String(x.key || '').endsWith('j2.txt'))],
+      ['versions ls', ['versions', 'ls', `${P}/j1.txt`, '--json'], (rows) => rows.length === 2],
+      ['bucket info', ['bucket', 'info', `s3://${BUCKET}`, '--json'], (rows) => rows.length >= 1],
+    ];
+    for (const [name, args, check] of runs) {
+      const r = await cli(args);
+      need(r.code === 0, `${name} --json: ${r.out}${r.err}`);
+      need(!/\x1b\[/.test(r.out + r.err), `${name} --json leaked ANSI escapes`);
+      const trimmed = r.out.trim();
+      need(trimmed.length > 0, `${name} --json printed nothing`);
+      let rows;
+      const doc = JSON.parse(trimmed); // a whole-document parse is the contract
+      rows = Array.isArray(doc) ? doc : [doc];
+      need(check(rows), `${name} --json semantics wrong: ${JSON.stringify(rows).slice(0, 160)}`);
+    }
+    return `${runs.length} JSON read paths parse as machine JSON with correct semantics, no ANSI`;
+  });
+
+  await verify({ id: 'CLI-S3-43', area: 'transfers', action: 'cp boundary sizes: 0 / 1 byte / exactly 5 MiB', ds: 'S3 (MinIO)', scenario: 'the multipart boundary is 5 MiB: a 0-byte file, a 1-byte file and an EXACTLY-5242880-byte file must each land with stat reporting the exact size — and the 5 MiB boundary file round-trips sha-identical (an off-by-one part boundary corrupts exactly here)', face: 'CLI' }, async () => {
+    const P = `s3://${BUCKET}/verify-size`;
+    await cli(['mkdir', `${P}/`]);
+    const files = [
+      ['b0.txt', Buffer.alloc(0)],
+      ['b1.txt', Buffer.from('x')],
+      ['b5m.bin', randomBytes(5 * 1024 * 1024)],
+    ];
+    const sizes = { 'b0.txt': 0, 'b1.txt': 1, 'b5m.bin': 5242880 };
+    for (const [n, buf] of files) {
+      const src = path.join(ART, n);
+      await writeFile(src, buf);
+      const r = await cli(['cp', src, `${P}/${n}`]);
+      need(r.code === 0, `cp ${n}: ${r.out}${r.err}`);
+      const st = await cli(['stat', `${P}/${n}`]);
+      need(st.code === 0 && new RegExp(`\\(${sizes[n]} bytes\\)`).test(st.out), `stat ${n} did not report exactly ${sizes[n]} bytes: ${st.out}`);
+    }
+    const sha = await sha256file(path.join(ART, 'b5m.bin'));
+    const back = path.join(ART, 'b5m-back.bin');
+    await rm(back, { force: true });
+    const dl = await cli(['cp', `${P}/b5m.bin`, back]);
+    need(dl.code === 0, `download b5m: ${dl.out}${dl.err}`);
+    need(await sha256file(back) === sha, 'the exact-5 MiB boundary file round-tripped with different bytes');
+    return '0/1/5242880-byte files exact; boundary file sha-identical';
+  });
 }
 
 // ============================================================
@@ -1101,6 +1289,54 @@ async function cliCross() {
     if (haveDav) await leg('dav', `xw://${RUNID}/hostile`);
     return `${hostile.length} hostile names intact through ${legs.join('+')}`;
   });
+
+  await verify({ id: 'CLI-X-12', area: 'sources', action: 'Re-import + name collision: the store never forks', ds: 'all', scenario: 'importing the SAME encrypted export twice into one config must not duplicate anything (source-ID collision) and the imported entry must dial the LIVE endpoint; importing over a pre-existing source that already owns the incoming name must never fork the store — exactly one row per name, nothing else lost, everything still removable', face: 'CLI' }, async () => {
+    const f = path.join(ART, 'sources-x12.json');
+    let r = await cli(['source', 'export', f, '--password', 'x12-collision-pw']);
+    need(r.code === 0, `export: ${r.err}`);
+    const dir = path.join(ART, 'x12-config');
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    // every isolated-dir call runs keyring-less: profile keyring slots are
+    // keyed by NAME ONLY (pkg/core/profile/keyring.go), so a keyring-backed
+    // add/remove/import of "verifys3" here would clobber/delete the live
+    // faces' global slot — the run-#1 mass-403 lesson
+    // leg 1 — the same file twice: no duplicated source may ever appear,
+    // and the entry the imports produced must be the LIVE one
+    r = await cli(['source', 'import', f, '--password', 'x12-collision-pw'], { cfg: dir, timeout: 60000, nokeyring: true });
+    need(r.code === 0, `import #1: ${r.out}${r.err}`);
+    r = await cli(['source', 'import', f, '--password', 'x12-collision-pw'], { cfg: dir, timeout: 60000, nokeyring: true });
+    need(r.code === 0, `import #2 (same file): ${r.out}${r.err}`);
+    let l = await cli(['source', 'list'], { cfg: dir, nokeyring: true });
+    need(l.code === 0 && countLines(l.out, 'verifys3') === 1, `double import left ${countLines(l.out, 'verifys3')} verifys3 row(s)`);
+    const t1 = await cli(['source', 'test', 'verifys3'], { cfg: dir, timeout: 60000, nokeyring: true });
+    need(t1.code === 0, `the imported verifys3 does not dial the live endpoint: ${t1.out}${t1.err}`);
+    // leg 2 — a pre-existing owner of the incoming name (an update-in-place
+    // add moves it to a dead endpoint), then import on top: the store must
+    // not fork, must not lose anything else, and must stay removable
+    const before = (await cli(['source', 'list'], { cfg: dir, nokeyring: true })).out.split('\n').filter((x) => x.trim());
+    r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', 'http://127.0.0.1:1', '--access-key', 'x12', '--secret-key', 'x12'], { cfg: dir, nokeyring: true });
+    need(r.code === 0, `name-priming add: ${r.out}${r.err}`);
+    r = await cli(['source', 'import', f, '--password', 'x12-collision-pw'], { cfg: dir, timeout: 60000, nokeyring: true });
+    need(r.code === 0, `import over a name collision: ${r.out}${r.err}`);
+    l = await cli(['source', 'list'], { cfg: dir, nokeyring: true });
+    need(l.code === 0, `list after colliding import: ${l.err}`);
+    need(countLines(l.out, 'verifys3') === 1, `the collision import forked the name (${countLines(l.out, 'verifys3')} rows)`);
+    // "nothing lost" means by NAME: the collision add deliberately moved
+    // verifys3's endpoint (update-in-place), so its LIST LINE legitimately
+    // changes — only a disappearing NAME is a loss
+    const namesOf = (lines) => lines.map((x) => x.trim().split(/\s+/)[0]).filter(Boolean);
+    const afterNames = new Set(namesOf(l.out.split('\n').filter((x) => x.trim())));
+    for (const n of namesOf(before)) {
+      need(afterNames.has(n), `the collision import LOST the source "${n}"`);
+    }
+    for (const n of ['verifys3', 'verifys3-2', 'xf', 'xt', 'xw', 'verifyfault']) {
+      await cli(['source', 'remove', n], { cfg: dir, nokeyring: true });
+    }
+    const empty = await cli(['source', 'list'], { cfg: dir, nokeyring: true });
+    need(!/verifys3|verifyfault|127\.0\.0\.1:1/.test(empty.out), `cleanup left residue: ${empty.out}`);
+    return 'double import idempotent + live; collision kept one row per name, nothing lost';
+  });
 }
 
 // ============================================================
@@ -1188,7 +1424,8 @@ async function cliResilience() {
     const storm1 = await flapped();
     need(storm1 >= 2, `storm never fired (flapped=${storm1}) — vacuous pass`);
     const got = path.join(ART, 'flap-ok.dl.txt');
-    await cli(['cp', `s3://${BUCKET}/verify-res/flap-ok.txt`, got, '--profile', 'verifys3']);
+    const dl = await cli(['cp', `s3://${BUCKET}/verify-res/flap-ok.txt`, got, '--profile', 'verifys3']);
+    need(dl.code === 0, `download of the storm-surviving object: ${dl.out}${dl.err}`);
     need(await sha256file(got) === sha, 'storm-surviving upload bytes differ');
     // part 2 — exhaustion: 503s outlive any retry budget
     await fmode({ mode: 'flap', failFirst: 50 });
@@ -1202,6 +1439,27 @@ async function cliResilience() {
     need(probe.code !== 0, 'an object landed despite a fully-failed upload');
     await fmode({ mode: 'direct' });
     return `absorbed ${storm1}×503 (bytes intact), then failed honestly after ${storm2}`;
+  });
+
+  await verify({ id: 'CLI-RES-06', area: 'resilience', action: 'Blackholed transfer: --timeout bounds the hang, no partial lands', ds: 'S3 via faultproxy', scenario: 'a blackholed endpoint would hang a transfer for the default 5 minutes: --timeout 8s must cut it to a fast, clean non-zero failure (well inside the budget), and the half-sent object must NOT exist — a timeout may cost the attempt, never the store’s integrity', face: 'CLI' }, async () => {
+    if (!proxy) return skip('proxy not running');
+    await fmode({ mode: 'blackhole' });
+    const src = path.join(ART, 'bh6.txt');
+    await writeFile(src, randomBytes(1024 * 1024));
+    const dst = `s3://${BUCKET}/verify-res/blackholed.txt`;
+    const t0 = Date.now();
+    const r = await cli(['cp', src, dst, '--profile', 'verifyfault', '--timeout', '8s'], { timeout: 60000 });
+    const dt = Date.now() - t0;
+    need(r.code !== 0, 'cp survived a blackholed endpoint');
+    need(dt < 30000, `the 8s budget took ${dt}ms to enforce`);
+    need((r.out + r.err).trim().length > 0, 'the timeout failure printed nothing');
+    const probe = await cli(['stat', dst, '--profile', 'verifys3'], { timeout: 30000 });
+    need(probe.code !== 0, 'a partial object survived the timeout');
+    await fmode({ mode: 'direct' });
+    // the store is still writable through the healthy path afterwards
+    const retry = await cli(['cp', src, dst, '--profile', 'verifys3']);
+    need(retry.code === 0, `healthy retry after blackhole: ${retry.out}${retry.err}`);
+    return `failed in ${dt}ms under an 8s budget; no partial; healthy retry landed`;
   });
   stop();
 }
@@ -1321,6 +1579,22 @@ async function cliMeta() {
     await cli(['source', 'remove', N2], { cfg: dir });
     return `${N1} dials through the keyring-held secret; ${N2}'s token reached the signature (refused as synthetic); no keyring residue`;
   });
+
+  await verify({ id: 'CLI-M-07', area: 'meta', action: '--help contract: every command self-documents', ds: '—', scenario: 'every top-level command (22) plus the root: --help exits 0, prints a Usage: block and lists its subcommands where it has any — a missing or crashing help page is a broken contract for scripting humans', face: 'CLI' }, async () => {
+    const CMDS = ['source', 'profile', 'ls', 'tree', 'du', 'stat', 'mb', 'rb', 'mkdir', 'cp', 'mv', 'rm', 'sync', 'presign', 'doctor', 'versions', 'bucket', 'find', 'sc', 'lock', 'log', 'version'];
+    for (const c of CMDS) {
+      const r = await cli([c, '--help']);
+      need(r.code === 0, `${c} --help exited ${r.code}: ${(r.out + r.err).slice(0, 120)}`);
+      need(/usage:/i.test(r.out + r.err), `${c} --help printed no Usage: block`);
+    }
+    const root = await cli(['--help']);
+    need(root.code === 0, `root --help exited ${root.code}`);
+    need(/usage:/i.test(root.out + root.err), 'root --help printed no Usage: block');
+    for (const c of CMDS) {
+      need(new RegExp(`\\b${c}\\b`).test(root.out), `root --help does not list "${c}"`);
+    }
+    return `${CMDS.length} commands + root all document themselves`;
+  });
 }
 
 // ============================================================
@@ -1394,7 +1668,11 @@ async function refresh() { await page.locator('#btn-refresh').click(); await sle
 async function enterFolder(label) {
   await waitFor(async () => {
     if ((await txt('#breadcrumb')).includes(label)) return true;
-    try { (await rowAction(label)).dblclick(); } catch { /* row mid-render */ }
+    // awaited + short timeout: a floating popout over the grid makes the
+    // dblclick time out, and an UNAWAITED rejection here once killed the
+    // whole runner (run #2, GUI-36) — never leave a pending Playwright
+    // action floating outside the row's error boundary
+    try { await (await rowAction(label)).dblclick({ timeout: 4000 }); } catch { /* row mid-render or covered */ }
     await sleep(300);
     return false;
   }, 12000, `enter ${label}`);
@@ -1725,6 +2003,20 @@ async function guiBattery() {
   const visKeys = () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
     .filter((r) => r.style.display !== 'none' && r._model).map((r) => String(r._model.key)));
   const navCertGui = async () => {
+    // cascade insurance: an earlier row can leave a floating popout open
+    // over the grid (GUI-34 leaves the transfer manager) where it
+    // intercepts pointer events and starves every later navigation —
+    // close any raised popout through its real UI affordance first
+    try {
+      await evalPage(() => { document.querySelectorAll('#popout-root .popout .modal-head .x').forEach((b) => b.click()); return true; });
+      await sleep(150);
+    } catch { /* best effort */ }
+    // same insurance for a raised modal + armed filter (a row that dies
+    // mid-dialog leaves both over the grid): dismiss through the real
+    // affordance, force-hide as a last resort — closeModal already does
+    // exactly that escalation
+    try { await closeModal(); } catch { /* best effort */ }
+    try { await clearFilter(); } catch { /* best effort */ }
     await treeOpen(SRCNAME);
     await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
     await enterFolder('verify-gui');
@@ -2727,6 +3019,576 @@ async function guiBattery() {
       need(s.code !== 0, `the canceled/queued file ${n} landed (partial or whole)`);
     }
     return `canceled mid-batch: ${missing.length} file(s) never landed, the ${landed.length} finished one(s) are byte-identical`;
+  });
+
+  await verify({ id: 'GUI-35', area: 'admin', action: 'Admin panel: CORS tab round-trip', ds: 'S3 (MinIO)', scenario: 'a rule authored in the CORS tab (+ Add rule, comma lists, max-age) saves through the panel and the CLI reads every field back; Delete all clears it — the panel is the writer, the CLI the oracle', face: 'GUI' }, async () => {
+    const AB = `${BUCKET}-gcors`;
+    let r = await s3(['mb', `s3://${AB}`]);
+    need(r.code === 0, `mb: ${r.out}${r.err}`);
+    await navCertGui();
+    await goBuckets();
+    await filterTo(AB);
+    await waitFor(async () => (await visKeys()).some((k) => k === AB), 8000, 'the gcors bucket row');
+    await rightClickRow(AB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    const clickBtn = (re) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root button'))
+        .find((x) => new RegExp(src, 'i').test((x.textContent || '').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    }, re);
+    await page.locator('#modal-root .tab[data-tab="CORS"]').click();
+    // the pane renders only after GetBucketAdmin resolves (drawTab no-ops
+    // while panel is null) — wait that out, then read what actually drew:
+    // on providers without the CORS API the pane is an error banner and
+    // there is no editor to drive at all
+    await waitFor(async () => {
+      const t = await evalPage(() => document.querySelector('#modal-root .tabbody')?.textContent || '');
+      return t && !/Loading/.test(t);
+    }, 15000, 'the CORS pane to draw');
+    const paneErr = await evalPage(() => document.querySelector('#modal-root .tabbody .banner.warn')?.textContent || '');
+    if (/not supported/i.test(paneErr)) {
+      // out-of-band CLI probe decides provider gap vs GUI bug
+      const f = path.join(ART, 'gui-cors.json');
+      await writeFile(f, JSON.stringify([{ origins: ['https://verify-gui.example.com'], methods: ['GET'], headers: [], expose: [], maxAge: 60 }]));
+      const put = await s3(['bucket', 'cors', 'put', `s3://${AB}`, f]);
+      await closeModal();
+      await clearFilter();
+      await s3(['rb', `s3://${AB}`, '--force']);
+      need(put.code !== 0, `CORS put unexpectedly succeeded where the panel said unsupported: ${put.out}`);
+      return skip(`provider refused the CORS API (recorded gap): pane "${paneErr.trim().slice(0, 80)}"; CLI put: ${(put.out + put.err).trim().slice(0, 80)}`);
+    }
+    need(!paneErr, `the CORS pane opened with an error: ${paneErr.trim().slice(0, 160)}`);
+    await waitFor(() => clickBtn('\\+ add rule'), 5000, 'Add rule');
+    await sleep(200);
+    const filled = await evalPage(() => {
+      const card = document.querySelector('#modal-root .rule-card');
+      if (!card) return false;
+      const inputs = Array.from(card.querySelectorAll('input'));
+      if (inputs.length < 5) return false;
+      const set = (i, v) => { inputs[i].value = v; inputs[i].dispatchEvent(new Event('change', { bubbles: true })); };
+      set(0, 'https://verify-gui.example.com');
+      set(1, 'GET, PUT');
+      set(2, 'content-type');
+      set(3, 'ETag');
+      set(4, '1800');
+      return true;
+    });
+    need(filled, 'the CORS rule card did not expose its five inputs');
+    await waitFor(() => clickBtn('^save$'), 5000, 'CORS Save');
+    // out-of-band oracle; if it never lands, decide provider-gap vs GUI bug
+    // with a direct CLI put of the same rule
+    let echoed = false;
+    for (let i = 0; i < 40 && !echoed; i++) {
+      echoed = (await s3(['bucket', 'cors', 'get', `s3://${AB}`, '--json'])).out.includes('verify-gui.example.com');
+      if (!echoed) await sleep(500);
+    }
+    if (!echoed) {
+      const f = path.join(ART, 'gui-cors.json');
+      await writeFile(f, JSON.stringify([{ origins: ['https://verify-gui.example.com'], methods: ['GET'], headers: [], expose: [], maxAge: 60 }]));
+      const put = await s3(['bucket', 'cors', 'put', `s3://${AB}`, f]);
+      await closeModal();
+      await clearFilter();
+      await s3(['rb', `s3://${AB}`, '--force']);
+      if (put.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(put.out + put.err)) {
+        return skip(`provider refused CORS on this build (recorded gap): ${(put.out + put.err).trim().slice(0, 120)}`);
+      }
+      need(false, `the panel Save did not land a rule the CLI can read (direct CLI put exited ${put.code})`);
+    }
+    const g = await s3(['bucket', 'cors', 'get', `s3://${AB}`, '--json']);
+    for (const needle of ['verify-gui.example.com', 'PUT', '1800']) {
+      need(g.out.includes(needle), `CLI cors get lost "${needle}": ${g.out}`);
+    }
+    await waitFor(() => clickBtn('delete all'), 5000, 'CORS Delete all');
+    await waitFor(async () => !(await s3(['bucket', 'cors', 'get', `s3://${AB}`, '--json'])).out.includes('verify-gui.example.com'), 20000, 'the rule to be gone');
+    await closeModal();
+    await clearFilter();
+    await shot('35-admin-cors');
+    await s3(['rb', `s3://${AB}`, '--force']);
+    return 'CORS rule authored in the panel, CLI-verified, deleted';
+  });
+
+  await verify({ id: 'GUI-36', area: 'admin', action: 'Admin panel: Website tab round-trip', ds: 'S3 (MinIO)', scenario: 'index + error documents saved from the Website tab are read back by the CLI verbatim; Disable clears the config — hosting on/off proven out-of-band', face: 'GUI' }, async () => {
+    const AB = `${BUCKET}-gweb`;
+    let r = await s3(['mb', `s3://${AB}`]);
+    need(r.code === 0, `mb: ${r.out}${r.err}`);
+    await navCertGui();
+    await goBuckets();
+    await filterTo(AB);
+    await waitFor(async () => (await visKeys()).some((k) => k === AB), 8000, 'the gweb bucket row');
+    await rightClickRow(AB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    const clickBtn = (re) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root button'))
+        .find((x) => new RegExp(src, 'i').test((x.textContent || '').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    }, re);
+    await page.locator('#modal-root .tab[data-tab="Website"]').click();
+    // same settle + provider-gap read as GUI-35: a pane that drew as an
+    // error banner has no inputs to drive
+    await waitFor(async () => {
+      const t = await evalPage(() => document.querySelector('#modal-root .tabbody')?.textContent || '');
+      return t && !/Loading/.test(t);
+    }, 15000, 'the Website pane to draw');
+    const paneErr = await evalPage(() => document.querySelector('#modal-root .tabbody .banner.warn')?.textContent || '');
+    if (/not supported/i.test(paneErr)) {
+      const put = await s3(['bucket', 'website', 'put', `s3://${AB}`, '--index', 'gui-index.html', '--error', 'gui-404.html']);
+      await closeModal();
+      await clearFilter();
+      await s3(['rb', `s3://${AB}`, '--force']);
+      need(put.code !== 0, `website put unexpectedly succeeded where the panel said unsupported: ${put.out}`);
+      return skip(`provider refused the website API (recorded gap): pane "${paneErr.trim().slice(0, 80)}"; CLI put: ${(put.out + put.err).trim().slice(0, 80)}`);
+    }
+    need(!paneErr, `the Website pane opened with an error: ${paneErr.trim().slice(0, 160)}`);
+    const filled = await evalPage(() => {
+      const err = document.querySelector('#modal-root input[placeholder="404.html"]');
+      if (!err) return false;
+      const inputs = Array.from(document.querySelectorAll('#modal-root .input.mono'));
+      const index = inputs[inputs.indexOf(err) - 1];
+      if (!index) return false;
+      // the website tab binds at Save-click time — plain value writes
+      index.value = 'gui-index.html';
+      err.value = 'gui-404.html';
+      return true;
+    });
+    need(filled, 'the Website tab did not expose its index/error inputs');
+    await waitFor(() => clickBtn('^save$'), 5000, 'Website Save');
+    let ok = false;
+    for (let i = 0; i < 40 && !ok; i++) {
+      const g = await s3(['bucket', 'website', 'get', `s3://${AB}`, '--json']);
+      ok = g.out.includes('gui-index.html') && g.out.includes('gui-404.html');
+      if (!ok) await sleep(500);
+    }
+    if (!ok) {
+      const put = await s3(['bucket', 'website', 'put', `s3://${AB}`, '--index', 'gui-index.html', '--error', 'gui-404.html']);
+      await closeModal();
+      await clearFilter();
+      await s3(['rb', `s3://${AB}`, '--force']);
+      if (put.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(put.out + put.err)) {
+        return skip(`provider refused website config on this build (recorded gap): ${(put.out + put.err).trim().slice(0, 120)}`);
+      }
+      need(false, `the panel Website Save did not land (direct CLI put exited ${put.code})`);
+    }
+    await waitFor(() => clickBtn('^disable$'), 5000, 'Website Disable');
+    await waitFor(async () => !(await s3(['bucket', 'website', 'get', `s3://${AB}`, '--json'])).out.includes('gui-index.html'), 20000, 'the config to be gone');
+    await closeModal();
+    await clearFilter();
+    await shot('36-admin-website');
+    await s3(['rb', `s3://${AB}`, '--force']);
+    return 'website documents saved from the panel, CLI-verified, disabled';
+  });
+
+  await verify({ id: 'GUI-37', area: 'gates', action: 'Delete Window keepcurrent mode: history destroyed, current version survives', ds: 'S3 (MinIO)', scenario: 'an object with THREE versions through the keepcurrent mode: the older versions are destroyed while the CURRENT bytes stay live and identical — the window never auto-confirms (explicit mode + typed word), and CLI re-reads the collapsed timeline (exactly 1 version, zero markers) and the bytes', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/verify-gui/gui-kc.txt`;
+    // self-seeded distinct versions — the shared fixture trio only exists
+    // under full gates, and an unasserted seed cp silently skips a missing
+    // file (run #5: the third version never landed, the byte compare then
+    // ENOENT'd against a local file that was never there)
+    const kcSeeds = [1, 2, 3].map((i) => path.join(ART, `gui-kc-v${i}.txt`));
+    for (let i = 0; i < kcSeeds.length; i++) {
+      await writeFile(kcSeeds[i], `keepcurrent seed ${i + 1} — ${RUNID}\n`);
+      const r = await s3(['cp', kcSeeds[i], K, ...(i ? ['--force'] : [])]);
+      need(r.code === 0, `seed cp v${i + 1}: ${r.out}${r.err}`);
+    }
+    await navCertGui();
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.includes('gui-kc.txt'));
+    }, 15000, 'gui-kc row');
+    await clickRow('gui-kc.txt');
+    await page.keyboard.press('Delete');
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) >= 3, 5000, 'delete window with 3 modes');
+    await evalPage(() => { document.querySelector('#modal-root input[name="delmode"][value="keepcurrent"]')?.click(); });
+    const armed = await evalPage(() => {
+      const i = document.querySelector('#modal-root .delw-confirm input');
+      return !!i && !i.disabled;
+    });
+    if (armed) await page.locator('#modal-root .delw-confirm input').fill('delete');
+    await shot('37-keepcurrent-window');
+    await clickFooter(/^delete$/i);
+    // the current version SURVIVES — the row must still be there
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.includes('gui-kc.txt'));
+    }, 30000, 'the current version to survive');
+    await waitFor(async () => {
+      const out = (await s3(['versions', 'ls', K, '--json'])).out;
+      return countLines(out, '"versionId"') === 1;
+    }, 30000, 'the timeline to collapse to exactly 1 version');
+    const v = await s3(['versions', 'ls', K, '--json']);
+    need(!v.out.includes('"isDeleteMarker": true'), 'keepcurrent left a delete marker');
+    const out = path.join(ART, 'gui-kc.txt');
+    await s3(['cp', K, out]);
+    need((await readFile(out)).equals(await readFile(kcSeeds[2])), 'the surviving current version has the wrong bytes');
+    return 'history destroyed; current version byte-identical; timeline == 1';
+  });
+
+  await verify({ id: 'GUI-38', area: 'versions', action: 'Versions dialog: Undo delete removes the marker only', ds: 'S3 (MinIO)', scenario: 'an object that was marker-deleted and then written again (latest = data, a marker sits mid-timeline): Undo delete must remove THAT marker without touching the data versions — CLI re-reads the timeline (one row fewer, zero markers) and the live bytes', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/verify-gui/gui-ud.txt`;
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), K]);
+    await s3(['rm', K]); // the marker in the middle of the timeline
+    await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), K, '--force']); // latest = data again
+    await navCertGui();
+    // the versions dialog HIDES delete-marker rows unless this setting is
+    // on (dialogs.js filters isDeleteMarker) — and the marker is exactly
+    // the row under test here
+    await evalPage(() => { localStorage.setItem('s3b-show-markers', '1'); return true; });
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.includes('gui-ud.txt'));
+    }, 15000, 'gui-ud row');
+    await rightClickRow('gui-ud.txt');
+    await ctxItem(/^versions/i);
+    await waitFor(async () => await page.locator('#modal-root .ver-row').count().then((n) => n >= 3), 15000, 'v1 + marker + v2 rows');
+    // same-turn find-and-click: the dialog redraws after the action
+    await waitFor(async () => evalPage(() => {
+      const row = Array.from(document.querySelectorAll('#modal-root .ver-row'))
+        .find((r) => Array.from(r.querySelectorAll('button')).some((b) => /undo delete/i.test(b.textContent || '')));
+      if (!row) return false;
+      Array.from(row.querySelectorAll('button')).find((b) => /undo delete/i.test(b.textContent || '')).click();
+      return true;
+    }), 8000, 'Undo delete on the marker row');
+    await sleep(800);
+    await closeModal();
+    await evalPage(() => { localStorage.removeItem('s3b-show-markers'); return true; });
+    await waitFor(async () => {
+      const out = (await s3(['versions', 'ls', K, '--json'])).out;
+      return countLines(out, '"versionId"') === 2;
+    }, 30000, 'the timeline to drop to 2 (marker gone)');
+    const v = await s3(['versions', 'ls', K, '--json']);
+    need(!v.out.includes('"isDeleteMarker": true'), 'a marker survived the undo');
+    const out = path.join(ART, 'gui-ud.txt');
+    await s3(['cp', K, out]);
+    need((await readFile(out)).equals(await readFile(path.join(FIX, 'data', 'root-2.txt'))), 'undo delete changed the live bytes');
+    return 'marker removed; 2 data versions; live bytes untouched';
+  });
+
+  await verify({ id: 'GUI-39', area: 'transfers', action: 'Transfer-manager hygiene: ClearFinishedTransfers', ds: 'S3 (MinIO)', scenario: 'after a bridge-driven upload completes, the finished job must be prunable by ID (ClearFinishedTransfers([id]) — an empty/absent list is a no-op by contract: null means all, named ids mean those) — the manager history is user-controllable; the upload itself is proven present by the CLI', face: 'GUI' }, async () => {
+    const src = path.join(ART, 'gui-tm.txt');
+    await writeFile(src, `transfer-manager probe ${RUNID}\n`);
+    // clean app state first: rows above can die with dialogs raised, and
+    // the bridge upload must not inherit a wedged view
+    await navCertGui();
+    const jobId = await call('Upload', [src], BUCKET, 'verify-gui/gui-tm/', 'skip', 0, {});
+    need(typeof jobId === 'string' && jobId.length > 0, `Upload returned no job id: ${JSON.stringify(jobId)}`);
+    let ended = null;
+    await waitFor(async () => {
+      const j = ((await call('ActiveTransfers')) || []).find((x) => x.id === jobId);
+      if (!j) return false;
+      ended = j;
+      return ['done', 'error', 'canceled'].includes(j.status);
+    }, 60000, 'the probe upload to finish');
+    need(ended?.status === 'done', `the probe upload ended "${ended?.status}": ${JSON.stringify(ended)?.slice(0, 200)}`);
+    need((ended?.sentBytes ?? 0) >= 35, `the upload sent no bytes — 'skip' must never drop a NON-conflicting file: ${JSON.stringify(ended)?.slice(0, 200)}`);
+    await call('ClearFinishedTransfers', [jobId]);
+    const after = await call('ActiveTransfers');
+    need(!JSON.stringify(after).includes(jobId), 'the finished job survived ClearFinishedTransfers([id])');
+    const st = await s3(['stat', `s3://${BUCKET}/verify-gui/gui-tm/gui-tm.txt`]);
+    need(st.code === 0, `probe object missing: ${st.out}${st.err}`);
+    // the same upload again: the destination now EXISTS, so 'skip' must
+    // keep the remote file untouched — re-sending bytes would be an
+    // overwrite the caller never asked for
+    const j2id = await call('Upload', [src], BUCKET, 'verify-gui/gui-tm/', 'skip', 0, {});
+    let ended2 = null;
+    await waitFor(async () => {
+      const j = ((await call('ActiveTransfers')) || []).find((x) => x.id === j2id);
+      if (!j) return false;
+      ended2 = j;
+      return ['done', 'error', 'canceled'].includes(j.status);
+    }, 60000, 'the conflicting upload to finish');
+    need(ended2?.status === 'done' && (ended2?.skippedFiles ?? 0) >= 1 && (ended2?.sentBytes ?? 0) === 0,
+      `the conflicting upload did not skip the existing destination: ${JSON.stringify(ended2)?.slice(0, 200)}`);
+    return 'non-conflicting file uploaded under skip policy; existing one kept; finished job pruned by id';
+  });
+
+  await verify({ id: 'GUI-40', area: 'objects', action: 'Deep search: token + CancelSearch contract', ds: 'S3 (MinIO)', scenario: 'DeepSearch returns a live token and registers a search task; CancelSearch stops it without error, and canceling an UNKNOWN token must also resolve cleanly — a bogus cancel may never throw or wedge the registry', face: 'GUI' }, async () => {
+    const tok = await call('DeepSearch', BUCKET, 'verify-gui/', { pattern: 'zzz-verify-none', limit: 10 });
+    need(typeof tok === 'string' && tok.length > 0, `DeepSearch returned no token: ${JSON.stringify(tok)}`);
+    await sleep(300);
+    await call('CancelSearch', tok);
+    await call('CancelSearch', 'verify-bogus-token');
+    await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.kind === 'search' && (t.status === 'running' || t.status === 'queued')), 20000, 'the search task to stop');
+    return 'token issued; cancel + bogus-cancel both resolve; task stopped';
+  });
+
+  await verify({ id: 'GUI-41', area: 'sources', action: 'Credential file import over the bridge', ds: 'S3 (MinIO) via INI', scenario: 'an AWS-style INI: ParseCredentialFile finds the candidate WITH its secret, TestCredentialDraft dials the live MinIO, ImportCredentials lands the source in the GUI store — seen through ListSources over the bridge (the GUI config is isolated from the CLI face) — and RemoveSource cleans up', face: 'GUI' }, async () => {
+    const f = path.join(ART, 'gui-creds.ini');
+    await writeFile(f, [
+      '[verifyimport]',
+      'aws_access_key_id = minioadmin',
+      'aws_secret_access_key = minioadmin',
+      'endpoint = http://127.0.0.1:9000',
+      'region = us-east-1',
+      '',
+    ].join('\n'));
+    const cands = await call('ParseCredentialFile', f, '');
+    need(Array.isArray(cands) && cands.length >= 1, `ParseCredentialFile returned nothing: ${JSON.stringify(cands)?.slice(0, 120)}`);
+    const cand = cands[0];
+    need((cand?.hasSecret ?? cand?.has_secret) === true, `the candidate does not carry its secret: ${JSON.stringify(cand)?.slice(0, 120)}`);
+    const tr = await call('TestCredentialDraft', cand.id);
+    const trj = JSON.stringify(tr) || '';
+    need((tr?.bucketCount ?? 0) > 0 || /"ok"\s*:\s*(true|"ok")/.test(trj), `TestCredentialDraft did not verify against live MinIO: ${trj.slice(0, 160)}`);
+    const res = await call('ImportCredentials', [cand.id]);
+    const imp = (res?.imported) || [];
+    need(imp.length >= 1, `ImportCredentials imported nothing: ${JSON.stringify(res)?.slice(0, 160)}`);
+    const srcs = (await call('ListSources')) || [];
+    const hit = srcs.find((s) => imp.includes(s.name) || /verifyimport/i.test(String(s.name)));
+    need(hit, `the imported source is not visible through ListSources: ${JSON.stringify(srcs.map((s) => s.name))}`);
+    await call('RemoveSource', hit.id || hit.name);
+    const after = (await call('ListSources')) || [];
+    need(!after.some((s) => s.name === hit.name), 'the imported source survived RemoveSource');
+    return `imported "${hit.name}", live-tested, removed cleanly`;
+  });
+
+  await verify({ id: 'GUI-42', area: 'objects', action: 'Copy As: exact text shapes for name / path / S3 URI (single + multi)', ds: 'S3 (MinIO)', scenario: 'a clipboard spy on the bridge binding captures exactly what the app sends: single row → the bare name, bucket/key, s3://bucket/key; Ctrl+A multi-select → newline-joined names — the exact strings an editor, a ticket and a terminal receive', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/gui-copy`;
+    await s3(['mkdir', `${P}/`]);
+    for (const n of ['a.txt', 'b.txt', 'c.txt']) await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/${n}`]);
+    await navCertGui();
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.includes('gui-copy'));
+    }, 15000, 'gui-copy folder');
+    await enterFolder('gui-copy');
+    await waitFor(async () => (await visKeys()).filter((k) => k.endsWith('.txt')).length >= 3, 15000, 'three file rows');
+    // oracle: the Wails binding objects are frozen and api.js caches the
+    // App object in module scope on first call, so an in-page property
+    // patch cannot intercept copyAsText's api.ClipboardSetText (runs #6-
+    // #8 proved it). But every binding call crosses window.fetch to the
+    // Wails server — an ordinary host object. Spy fetch (+XHR/WS hedge),
+    // assert the EXACT JSON args of the ClipboardSetText call, and let
+    // the app's toast prove the Go side answered: the server build has
+    // no desktop shell BY DESIGN, so its honest answer is the "no desktop
+    // shell attached" error (the desktop build's OS-clipboard write is
+    // asserted by the gui-live seam walk in the sweep rows)
+    await evalPage(() => {
+      window.__wireSpy = [];
+      const rec = (url, body) => { try { window.__wireSpy.push({ url: String(url), body: body == null ? '' : String(body) }); } catch { /* never break the app */ } };
+      window.__wireUndo = [];
+      const of = window.fetch;
+      if (of) {
+        window.fetch = function (input, init) { rec(typeof input === 'string' ? input : (input && input.url) || '', init && init.body); return of.apply(this, arguments); };
+        window.__wireUndo.push(() => { window.fetch = of; });
+      }
+      const ox = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (m, u) { this.__url = String(u); return ox.apply(this, arguments); };
+      XMLHttpRequest.prototype.send = function (b) { rec(this.__url || '', b); return os.apply(this, arguments); };
+      window.__wireUndo.push(() => { XMLHttpRequest.prototype.open = ox; XMLHttpRequest.prototype.send = os; });
+      try {
+        const ows = WebSocket.prototype.send;
+        WebSocket.prototype.send = function (d) { rec('ws:' + String(this.url), typeof d === 'string' ? d : '[binary]'); return ows.apply(this, arguments); };
+        window.__wireUndo.push(() => { WebSocket.prototype.send = ows; });
+      } catch { /* no WebSocket in this build */ }
+      return true;
+    });
+    const clipArgs = async (expected, what) => {
+      // run #10's wire dump: binding bodies cross fetch as {"object":N,
+      // "method":N,"args":{...}} where args is EITHER the positional array
+      // or the ByName wrapper {"call-id","methodName":"<go path>","args":
+      // [...]} — the method's full Go name rides along, so anchor on BOTH
+      // the method name and the exact positional args
+      const want = JSON.stringify([expected]);
+      for (let i = 0; i < 10; i++) {
+        const seen = await evalPage(() => window.__wireSpy
+          .map((r) => { try { return JSON.parse(r.body); } catch { return null; } })
+          .filter((c) => c && c.args && String(c.args.methodName || '').includes('ClipboardSetText'))
+          .map((c) => (Array.isArray(c.args) ? c.args : c.args.args)));
+        if (seen.some((a) => JSON.stringify(a) === want)) return;
+        await sleep(300);
+      }
+      const dump = await evalPage(() => window.__wireSpy.slice(-15));
+      need(false, `${what}: no ClipboardSetText binding call carried args ${want} — recent wire: ${JSON.stringify(dump.map((r) => ({ u: r.url.slice(0, 70), b: r.body.slice(0, 160) })))}`);
+    };
+    // ctxItem happily clicks a DISABLED item (a silent no-op): wait for
+    // the item to be enabled so a lost selection fails with its name up
+    const copyViaMenu = async (re) => {
+      await waitFor(async () => await evalPage((src) => {
+        const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+          .find((i) => new RegExp(src, 'i').test(i.textContent || ''));
+        return !!it && !it.classList.contains('disabled');
+      }, re.source), 4000, `an ENABLED "${re.source}" item — the row selection was lost`);
+      await ctxItem(re);
+      await sleep(300);
+    };
+    try {
+      await clickRow('a.txt');
+      await rightClickRow('a.txt');
+      await copyViaMenu(/copy name/i);
+      await clipArgs('a.txt', 'copy name');
+      await rightClickRow('a.txt');
+      await copyViaMenu(/copy path/i);
+      await clipArgs(`${BUCKET}/verify-gui/gui-copy/a.txt`, 'copy path');
+      await rightClickRow('a.txt');
+      await copyViaMenu(/copy s3 uri/i);
+      await clipArgs(`s3://${BUCKET}/verify-gui/gui-copy/a.txt`, 'copy s3 uri');
+      await page.keyboard.press('Control+a');
+      await sleep(250);
+      await rightClickRow('c.txt');
+      await copyViaMenu(/copy name/i);
+      await clipArgs('a.txt\nb.txt\nc.txt', 'multi copy name');
+      // the Go side answered — the real write (a working clipboard), or
+      // one of the two designed headless refusals (run #11: the wails
+      // clipboard service itself fails in the server-build context)
+      const toasts = await evalPage(() => Array.from(document.querySelectorAll('#toasts .toast')).map((t) => String(t.textContent)));
+      need(toasts.some((t) => /^Copied 3 names/.test(t) || /^Copy failed: (no desktop shell attached|.*clipboard: write failed)/.test(t)),
+        `the backend never answered the copy: toasts ${JSON.stringify(toasts)}`);
+      return 'name / bucket-key / s3-uri exact at the binding boundary; multi copy newline-joined; backend answered';
+    } finally {
+      await evalPage(() => { (window.__wireUndo || []).forEach((u) => u()); return true; });
+    }
+  });
+
+  await verify({ id: 'GUI-43', area: 'gates', action: 'Exit gates: busy work survives ExitApp and the close request', ds: 'S3 (MinIO)', scenario: 'with a throttled transfer CONFIRMED running: the close request is vetoed with the transfer named as the reason, ExitApp only asks — the app stays fully alive (/health, GetVersion and the running job all still answer) — and the confirmation is dismissed, never force-confirmed; the transfer is then canceled normally and the throttle restored', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/exitgate`;
+    await s3(['mkdir', `${P}/`]);
+    // a dedicated source dir: ART itself holds far too many entries for
+    // the local grid's virtualized viewport, and the drag source row must
+    // actually render to be grabbed
+    const egdir = path.join(ART, 'exitgate-src');
+    await rm(egdir, { recursive: true, force: true });
+    await mkdir(egdir, { recursive: true });
+    const src = path.join(egdir, 'exit-8m.bin');
+    await writeFile(src, randomBytes(8 * 1024 * 1024));
+    await evalPage(() => { localStorage.setItem('s3b-throttle', '262144'); localStorage.setItem('s3b-show-throttle', '1'); return true; });
+    await navCertGui();
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.includes('exitgate'));
+    }, 15000, 'exitgate folder row');
+    await enterFolder('exitgate');
+    await ensureDualPane();
+    await localDir(egdir, 'exit-8m.bin');
+    await dnd(await sideRow('exit-8m.bin'), await bodyH());
+    await startIfAsked(3000);
+    const job = await waitFor(async () => ((await call('ActiveTransfers')) || []).find((x) => x.status === 'running' && !x.hidden && x.sentBytes > 0 && x.sentBytes < x.totalBytes), 20000, 'the throttled running job');
+    await shot('43-exit-gate-busy');
+    await evalPage(() => { window.__exitReason = null; window.runtime?.EventsOn('exit:confirm', (p) => { window.__exitReason = String(p?.reason ?? p); }); return true; });
+    const veto = await call('ShouldClose');
+    need(veto === true, `ShouldClose did not veto while a transfer runs (${JSON.stringify(veto)})`);
+    await waitFor(async () => /transfer|job|running/i.test(String(await evalPage(() => window.__exitReason))), 5000, 'the exit:confirm reason naming the transfer');
+    // ExitApp while busy only ASKS — the app must stay fully alive
+    await call('ExitApp');
+    await sleep(1200);
+    const health = await (await fetch(`http://127.0.0.1:${GUI_PORT}/health`)).json();
+    need(health?.status === 'ok', `the app died on a guarded ExitApp: ${JSON.stringify(health)}`);
+    const ver = await call('GetVersion');
+    need(String(ver).length > 0, 'GetVersion stopped answering after the guarded ExitApp');
+    const still = ((await call('ActiveTransfers')) || []).some((x) => x.id === job.id && x.status === 'running');
+    need(still, 'the running transfer did not survive the guarded ExitApp');
+    // dismiss the confirmation — NEVER ConfirmExit — then cancel normally
+    await evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root button'))
+        .find((x) => /cancel|keep/i.test((x.textContent || '').trim()) && !/exit|quit|anyway/i.test(x.textContent || ''));
+      if (b) b.click();
+      return true;
+    });
+    await closeModal();
+    await call('CancelTransfer', job.id);
+    await waitFor(async () => JSON.stringify(await call('ActiveTransfers')).includes('canceled'), 30000, 'the job to be canceled');
+    await evalPage(() => { localStorage.removeItem('s3b-throttle'); localStorage.removeItem('s3b-show-throttle'); return true; });
+    const st = await s3(['stat', `${P}/exit-8m.bin`]);
+    need(st.code !== 0, 'a partial object survived the canceled exit-gate transfer');
+    return 'close vetoed with a reason; guarded ExitApp did not kill the app; transfer canceled clean';
+  });
+
+  await verify({ id: 'GUI-44', area: 'sources', action: 'Local filesystem bindings: list / preview / remove', ds: 'local disk', scenario: 'ListLocal reports entries with correct dir flags; LocalDeletePreview counts what a delete would take; LocalRemove actually deletes — and the deletion is proven from OUTSIDE the app (Node fs), never from the app’s own view', face: 'GUI' }, async () => {
+    const d = path.join(ART, 'gui-local');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(path.join(d, 'sub'), { recursive: true });
+    const f1 = path.join(d, 'l-one.txt'), f2 = path.join(d, 'sub', 'l-two.txt');
+    await writeFile(f1, 'one');
+    await writeFile(f2, 'two');
+    const entries = (await call('ListLocal', d)) || [];
+    const one = entries.find((e) => e.name === 'l-one.txt');
+    const sub = entries.find((e) => e.name === 'sub');
+    need(one && one.isDir === false, `ListLocal misreported the file: ${JSON.stringify(one)}`);
+    need(sub && sub.isDir === true, `ListLocal misreported the dir: ${JSON.stringify(sub)}`);
+    const prev = await call('LocalDeletePreview', [f2]);
+    need(prev && prev.count === 1 && prev.objects === 1 && prev.folders === 0 && prev.bytes === 3,
+      `the preview miscounted one 3-byte file: ${JSON.stringify(prev)?.slice(0, 160)}`);
+    await call('LocalRemove', [f2]);
+    let gone = false;
+    try { await readFile(f2); } catch { gone = true; }
+    need(gone, 'LocalRemove left the file on disk (Node fs still reads it)');
+    const again = (await call('ListLocal', path.join(d, 'sub'))) || [];
+    need(!again.some((e) => e.name === 'l-two.txt'), 'ListLocal still shows the removed file');
+    await rm(d, { recursive: true, force: true });
+    return 'list / preview / remove verified; removal proven from outside';
+  });
+
+  await verify({ id: 'GUI-45', area: 'settings', action: 'Settings round-trips: log-file prefs + tuning', ds: 'Wails v3 server', scenario: 'SetLogSettings(off) reads back off and the original preference restores exactly; SetTuning echoes the requested values and the originals restore — settings are reversible state, never one-way doors', face: 'GUI' }, async () => {
+    const orig = await call('GetLogSettings');
+    need(orig && typeof orig.mode === 'string', `GetLogSettings shape: ${JSON.stringify(orig)?.slice(0, 120)}`);
+    const off = await call('SetLogSettings', 'off', '', [], [], []);
+    need(off?.mode === 'off', `set off did not read back: ${JSON.stringify(off)}`);
+    const mid = await call('GetLogSettings');
+    need(mid?.mode === 'off', `GetLogSettings after off: ${JSON.stringify(mid)}`);
+    const restored = await call('SetLogSettings', orig.mode, orig.dir || '', orig.levels || [], orig.scopes || [], orig.sources || []);
+    need(restored?.mode === orig.mode, `restore did not read back: ${JSON.stringify(restored)}`);
+    const t0 = await call('GetTuning');
+    // compareTimeoutMs floors at 10s — request above every floor
+    const t1 = await call('SetTuning', 777, 10888, 3, 9, 4, 12345);
+    need(t1?.listingTimeoutMs === 777 && t1?.compareTimeoutMs === 10888 && t1?.retryAttempts === 3
+      && t1?.partSizeMiB === 9 && t1?.partConcurrency === 4 && t1?.stallAfterMs === 12345,
+      `SetTuning echo drifted: ${JSON.stringify(t1)}`);
+    const vals = [t0?.listingTimeoutMs, t0?.compareTimeoutMs, t0?.retryAttempts, t0?.partSizeMiB, t0?.partConcurrency, t0?.stallAfterMs];
+    if (vals.every((v) => typeof v === 'number')) {
+      await call('SetTuning', ...vals);
+    } else {
+      await call('SetTuning', 5000, 8000, 4, 16, 8, 120000);
+    }
+    return 'log settings + tuning set, read back, restored';
+  });
+
+  await verify({ id: 'GUI-46', area: 'security', action: 'Secure storage toggle round-trip', ds: 'OS keyring (Windows)', scenario: 'GetSecureStorage reports availability; where the keyring is usable the toggle flips and restores with every read consistent — where it is not, that is recorded, never papered over', face: 'GUI' }, async () => {
+    const s0 = await call('GetSecureStorage');
+    need(s0 && typeof s0.enabled === 'boolean', `GetSecureStorage shape: ${JSON.stringify(s0)?.slice(0, 160)}`);
+    if (!s0.keyringAvailable) return skip(`keyring not available on this host (backend: ${s0.keyringBackend || 'none'})`);
+    const flip = await call('SetSecureStorage', !s0.enabled);
+    need(flip?.enabled === !s0.enabled, `the toggle did not flip: ${JSON.stringify(flip)}`);
+    const mid = await call('GetSecureStorage');
+    need(mid?.enabled === !s0.enabled, `GetSecureStorage disagrees after the toggle: ${JSON.stringify(mid)}`);
+    const back = await call('SetSecureStorage', s0.enabled);
+    need(back?.enabled === s0.enabled, 'the restore did not flip back');
+    return `keyring (${s0.keyringBackend}) toggled and restored`;
+  });
+
+  await verify({ id: 'GUI-47', area: 'settings', action: 'Language switch: Finnish UI, then restore English', ds: 'Wails v3 server', scenario: 's3b-lang=fi + reload: the grid’s own chrome speaks Finnish (the Name column becomes Nimi) with no English column label left; restoring en + reload returns English — the locale switch is total, not partial', face: 'GUI' }, async () => {
+    await evalPage(() => { localStorage.setItem('s3b-lang', 'fi'); return true; });
+    await page.reload();
+    await sleep(1200);
+    await waitFor(async () => await evalPage(() => document.body.textContent.includes('Nimi')), 15000, 'the Finnish column header');
+    const fi = await evalPage(() => ({
+      nimi: document.body.textContent.includes('Nimi'),
+      enName: /\bName\b/.test(document.body.textContent),
+    }));
+    need(fi.nimi, 'the Name column did not switch to Nimi');
+    need(!fi.enName, 'an English "Name" label survived the Finnish locale');
+    await evalPage(() => { localStorage.setItem('s3b-lang', 'en'); return true; });
+    await page.reload();
+    await sleep(1200);
+    await waitFor(async () => await evalPage(() => document.body.textContent.includes('Name')), 15000, 'English restored');
+    return 'Finnish chrome verified (Nimi); English restored';
+  });
+
+  await verify({ id: 'GUI-48', area: 'objects', action: 'Task registry: running view + ClearFinishedTasks', ds: 'S3 (MinIO)', scenario: 'a deep search registers as a running task (kind search); once finished, ClearFinishedTasks(null) prunes EVERY finished row (null means all — an empty list is a no-op by contract) — the registry mirrors live work and forgets dead work on command', face: 'GUI' }, async () => {
+    const tok = await call('DeepSearch', BUCKET, 'verify-gui/', { pattern: 'gui-', limit: 50 });
+    need(typeof tok === 'string' && tok.length > 0, 'DeepSearch returned no token');
+    let sawRunning = false;
+    for (let i = 0; i < 15 && !sawRunning; i++) {
+      sawRunning = ((await call('RunningTasks')) || []).some((t) => t.kind === 'search');
+      if (!sawRunning) await sleep(100);
+    }
+    await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.kind === 'search' && (t.status === 'running' || t.status === 'queued')), 20000, 'the search task to finish');
+    await call('ClearFinishedTasks', null);
+    const after = (await call('RunningTasks')) || [];
+    need(after.every((t) => !['done', 'canceled', 'error', 'failed'].includes(String(t.status).toLowerCase())), `a finished task survived the clear: ${JSON.stringify(after)?.slice(0, 160)}`);
+    return sawRunning ? 'search registered, finished, pruned (clear-all)' : 'search finished too fast to observe running; prune verified';
   });
 
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {

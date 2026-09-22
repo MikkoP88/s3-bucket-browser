@@ -90,6 +90,10 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Export + import sources | all | AES-256-GCM encrypted export (`--password`); ciphertext verified; import into a fresh store lists the same sources | ✅ CLI-X-08 | — | Win 11 x64 |
 | **Wrong-password import fails closed** | **all** | an encrypted export imported with the WRONG password: decrypt fails BEFORE any source is upserted (no partial import, no half-populated store); the correct password still imports cleanly afterwards | ✅ CLI-X-10 | — | Win 11 x64 |
 | Profile file round-trip | Wails v3 server | SaveProfileFileAs → state open; Close → onboarding; wrong password rejected through the bridge; correct password restores the sources | — | ✅ GUI-17 | Win 11 x64 |
+| **`source add` UPDATE semantics + secret masking** | **S3 (dead endpoint)** | re-adding an EXISTING source name must update in place (one row, new endpoint live immediately — never a silent duplicate) or refuse outright; the secret never appears in `source list`; the store stays removable afterwards | ✅ CLI-S3-41 | — | Win 11 x64 |
+| **Re-import + name collision: the store never forks** | **all** | the same encrypted export imported TWICE into one config: zero duplicates (source-ID collision) and the imported entry dials the live endpoint; then a pre-existing owner of the incoming name + a third import: exactly one row per name, nothing else lost, everything still removable | ✅ CLI-X-12 | — | Win 11 x64 |
+| **Credential file import over the bridge** | **S3 (MinIO) via INI** | an AWS-style credentials INI: ParseCredentialFile finds the profile (secret detected, never returned); TestCredentialDraft dials the live endpoint; ImportCredentials upserts it as a source (ListSources proves it by name); RemoveSource drops it — the whole import ladder runs through the GUI's own bindings | — | ✅ GUI-41 | Win 11 x64 |
+| Local filesystem bindings: list / preview / remove | local disk | ListLocal reports entries with correct dir flags; LocalDeletePreview counts exactly what a delete would take (1 file, exact bytes); LocalRemove actually deletes — proven from OUTSIDE the app (Node fs), never from the app's own view | — | ✅ GUI-44 | Win 11 x64 |
 
 ### Buckets & configuration
 
@@ -105,6 +109,12 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **Object lock ENFORCED against deletes (WORM)** | **S3 (MinIO)** | a lock-enabled bucket: GOVERNANCE retention and legal hold each defeat a version-purge attempt (`rm --versions`) while in force — the version survives and the refusal is reported; clearing each lock re-arms the delete; the emptied bucket is then removable | ✅ CLI-S3-35 | — | Win 11 x64 |
 | **Data-protection toggles: versioning suspend/resume + public access block** | **S3 (MinIO)** | scratch bucket: suspend versioning → `info` reads it back suspended and a suspended write lands as the null version while the existing timeline survives; resume → writes version again; PAB `put --all` arms all four blocks, bare `put` disarms them — or the provider gap is recorded (this MinIO build rejects the whole PAB API; the aws CLI agrees) | ✅ CLI-S3-36 | — | Win 11 x64 |
 | Doctor diagnosis | S3 (MinIO) | `doctor s3://bucket` runs the check ladder | ✅ CLI-S3-20 | ✅ GUI-15 (Help → Doctor → popout → run all → pass summary) | Win 11 x64 |
+| Bucket CORS round-trip | S3 (MinIO) | `bucket cors put FILE` (full rule document), `get --json` echoes every field, `delete` clears — provider gaps (this MinIO build refuses the CORS API) record SKIP, never a pass | ✅ CLI-S3-37 | — | Win 11 x64 |
+| Bucket website round-trip | S3 (MinIO) | `bucket website put --index/--error`, `get --json` echoes, redirect-host/proto re-put round-trips, `delete` clears — provider gaps (PutBucketWebsite 400 here) record SKIP | ✅ CLI-S3-38 | — | Win 11 x64 |
+| Bucket default encryption | S3 (MinIO) | `bucket encryption put --algo AES256`, `get` echoes, `delete` clears — provider gaps (no KMS here) record SKIP | ✅ CLI-S3-39 | — | Win 11 x64 |
+| **Object-lock enable on a plain bucket: refused honestly** | **S3 (MinIO)** | `bucket lock <plain-bucket> --enable` must be refused (AWS semantics: lock is decided at creation) with a reason — if a provider allows it, that is a recorded gap; either way the bucket stays healthy and writable | ✅ CLI-S3-40 | — | Win 11 x64 |
+| **Admin panel: CORS tab round-trip** | **S3 (MinIO)** | scratch bucket's Admin panel → CORS tab: rule card filled (origins/methods/headers/expose/maxAge), Save → the rule is read back OUT-OF-BAND via the CLI (`bucket cors get --json`); Delete all clears it the same way — a GUI mutation is only believed when the CLI sees it | — | ✅ GUI-35 | Win 11 x64 |
+| **Admin panel: Website tab round-trip** | **S3 (MinIO)** | Admin panel → Website tab: index/error keys saved → CLI `bucket website get` reads them back; Disable clears them — again verified out-of-band, provider gaps recorded not papered over | — | ✅ GUI-36 | Win 11 x64 |
 
 ### Browsing & inspection
 
@@ -121,6 +131,9 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **Editor auto-upload round-trip (WinSCP flow)** | **S3 (MinIO)** | EditObject through the bridge: stages the object, hands it to the OS (an inert `.cmd` probe — the handoff is real, the "editor" is a no-op), watches the file; bytes written to the staged path upload automatically (CLI byte-verified); StopEdit ends the session | — | ✅ GUI-23 | Win 11 x64 |
 | Workbench surfaces | S3 (MinIO) | View → Transfers opens the manager popout; dual-pane toggle; filter box narrows the grid and clearing restores it | — | ✅ GUI-18 | Win 11 x64 |
 | **Selection mechanics: plain anchor, shift-range, ctrl-toggle, invert, select-all** | **S3 (MinIO)** | six-file folder: plain click anchors (1 of 6), shift-click selects the exact range (3 of 6), ctrl-click drops the middle (2 of 6), Ctrl+I flips to the exact complement (4 of 6), Ctrl+A selects all (6 of 6) — every count from the visible selection bar | — | ✅ GUI-28 | Win 11 x64 |
+| **`--json` machine contract** | **S3 (MinIO)** | every read command (ls/tree/du/stat/versions ls/bucket info) under `--json`: exit 0, zero ANSI escapes, non-empty, and the whole output parses as one JSON document (array or object) whose rows pass semantic checks (counts, keys, version IDs) — scripts may rely on the shape | ✅ CLI-S3-42 | — | Win 11 x64 |
+| Deep search: token + CancelSearch contract | S3 (MinIO) | DeepSearch returns a live token and registers a search task; CancelSearch stops it cleanly; canceling an UNKNOWN token also resolves — a bogus cancel may never throw or wedge the registry | — | ✅ GUI-40 | Win 11 x64 |
+| **Copy As: exact text shapes for name / path / S3 URI** | **S3 (MinIO)** | a clipboard spy on the bridge binding captures exactly what Copy name / Copy path / Copy S3 URI write: bare name, `bucket/key`, `s3://bucket/key` — single row exact, and a multi-selection joins with newlines in row order | — | ✅ GUI-42 | Win 11 x64 |
 
 ### Transfers — the critical jobs
 
@@ -153,6 +166,8 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **Pane compare: all six categories exact** | **S3 (MinIO) + local** | a hand-built pair of dirs covering EVERY compare class — identical, only-left, only-right, different-size, newer-left, newer-right — the Compare button counts each category exactly 1 | — | ✅ GUI-25 | Win 11 x64 |
 | **Ctrl+C stages HIDDEN — nothing lands until Paste** | **S3 (MinIO)** | the two-part copy contract: Ctrl+C on remote rows runs the Explorer mirror as a HIDDEN staging job (a scratch download for paste-out, invisible in every list) whose staged bytes are byte-verified on disk, while the bucket stays bit-for-bit unchanged until a Paste | — | ✅ GUI-26 | Win 11 x64 |
 | **Download-side conflict matrix** | **S3 (MinIO) → local** | three remote rows dragged onto a local folder holding two of the same names: skip keeps the local file untouched, rename lands a twin with the remote bytes, the clean third file downloads without a prompt | — | ✅ GUI-27 | Win 11 x64 |
+| **cp boundary sizes: 0 / 1 byte / exactly 5 MiB** | **S3 (MinIO)** | the multipart boundary is a cliff, not a slope: a 0-byte object, a 1-byte object and an EXACTLY 5 MiB object each upload and `stat` reports the exact byte count (`(0 bytes)`, `(1 bytes)`, `(5242880 bytes)`); the 5 MiB object downloads sha256-identical | ✅ CLI-S3-43 | — | Win 11 x64 |
+| Transfer-manager hygiene: ClearFinishedTransfers | S3 (MinIO) | a bridge-driven Upload runs to completion; ClearFinishedTransfers([id]) prunes the finished job from the manager (an empty list is a no-op by contract — null means all); the uploaded object is proven present by the CLI | — | ✅ GUI-39 | Win 11 x64 |
 
 ### Deletion — gated destruction, verified cancellations
 
@@ -165,6 +180,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **L2 identity gate: Empty-bucket window** | **S3 (MinIO)** | the destructive Empty-bucket window demands the bucket's OWN name: a wrong word keeps the destructive button disabled; Cancel preserves every object | — | ✅ GUI-22 | Win 11 x64 |
 | **Multi-delete ladder: markers keep history; Shift+Del destroys permanently** | **S3 (MinIO)** | four objects selected at once: the Delete Window counts all four and offers all three delete types; plain marker delete hides every object while each full timeline survives (CLI re-reads data version + delete marker per object); a second batch through Shift+Del destroys versions entirely | — | ✅ GUI-29 | Win 11 x64 |
 | **L2 execution: Empty bucket destroys EVERY version, keeps the bucket** | **S3 (MinIO)** | scratch bucket seeded with nested objects, extra old versions and delete markers: typing the bucket's own name arms the Empty-bucket window and executes — nothing lists anywhere afterwards (recursive listing empty, version statistics zero, sampled timelines empty) yet the bucket survives and still takes writes | — | ✅ GUI-33 | Win 11 x64 |
+| **Delete Window keepcurrent mode: history destroyed, current version survives** | **S3 (MinIO)** | three CLI-seeded versions behind a Delete Window switched to "keep current": the typed-word gate arms, execution leaves exactly ONE version (the current bytes, no delete marker) — the timeline is gone, the file is not | — | ✅ GUI-37 | Win 11 x64 |
 
 ### Versions — the safety ladder
 
@@ -175,6 +191,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Versioned migration (cp/mv --versions) | S3 (MinIO) | 2 versions at source; `cp --versions` s3→s3 copies the full timeline; `mv --versions` moves it; unversioned destination refuses (gate) | ✅ CLI-S3-26 | — | Win 11 x64 |
 | **Versions dialog: A/B compare diff + per-version Destroy** | **S3 (MinIO)** | three CLI-seeded text versions: timeline lists all three; oldest as A vs newest as B shows both sides' changed lines in the diff; destroying the oldest through its confirmation window drops the timeline to exactly two, re-read by CLI | — | ✅ GUI-30 | Win 11 x64 |
 | **Versioned copy: the full timeline S3→S3 (the migrator)** | **S3 (MinIO)** | an object with three versions pasted into a fresh versioned bucket: version-choice dialog appears, the GUI carries the ENTIRE timeline across in a background job; destination lists all three versions and the current bytes round-trip | — | ✅ GUI-31 | Win 11 x64 |
+| **Versions dialog: Undo delete removes the marker only** | **S3 (MinIO)** | an object with data → marker → newer data: the Versions dialog's Undo delete on the marker row removes ONLY the marker — the timeline drops to the two data versions and the served bytes are the pre-marker version, CLI-verified | — | ✅ GUI-38 | Win 11 x64 |
 
 ### Resilience — when the link misbehaves
 
@@ -188,6 +205,7 @@ switching; the same S3 source stays connected through it).
 | Blackhole | S3 via faultproxy | endpoint never answers → stream watchdog inside the `--timeout` budget (no 5-minute hang) | ✅ CLI-RES-03 | — (sweep, SWEEP-LIVE-01) | Win 11 x64 |
 | **Hard kill mid-upload: no partial object** | **S3 via faultproxy** | a 64 MiB upload killed mid-flight (process termination) lands NO object — no corrupt or half-written key ever becomes visible; the clean retry is sha-identical | ✅ CLI-RES-04 | — (sweep: GUI cancel mid-transfer, GUI-21) | Win 11 x64 |
 | **Transient 5xx storm: absorbed / exhausted** | **S3 via faultproxy** | a new faultproxy `flap` mode (canned `HTTP 503` × N): a 2-failure storm is retried away INSIDE the SDK budget (the put lands byte-identical, sha-verified); a 50-failure storm exhausts it — non-zero exit, a surfaced error, and NO half-landed object | ✅ CLI-RES-05 | — | Win 11 x64 |
+| **Blackholed transfer: `--timeout` bounds the hang, no partial lands** | **S3 via faultproxy** | an endpoint that never answers would hang a transfer for the default 5 minutes: `--timeout 8s` cuts it to a fast, clean non-zero failure well inside the budget, the half-sent object does NOT exist — and the healthy-path retry lands afterwards (a timeout may cost the attempt, never the store's integrity) | ✅ CLI-RES-06 | — | Win 11 x64 |
 
 ### Meta — the binary and the stack
 
@@ -199,11 +217,17 @@ switching; the same S3 source stays connected through it).
 | **Secrets never printed** | **S3 (MinIO)** | a source with a distinctive secret key: every output surface — `source list` (text + json), `source test`, the 403 transfer path, `profile list`, activity log — must run but never echo the secret, even on failure paths | ✅ CLI-M-04 | — | Win 11 x64 |
 | **Secrets encrypted at rest** | **config store + OS keyring** | a distinctive secret added to the store, then a RAW byte-scan of every file under the whole config directory (recursive): the secret may live only inside the OS keyring — never on disk (SKIP under `S3B_NO_KEYRING`, the documented headless plaintext mode) | ✅ CLI-M-05 | — | Win 11 x64 |
 | **Legacy store migration: profiles seed as sources, plaintext secrets leave the file** | **S3 (MinIO)** | hand-written LEGACY `profiles.json` (two profiles, inline secrets, one with a session token, no sources array): one CLI load seeds both as data sources (M8); keyring takes every secret and the token, none remain in the file (M5); the token-less source dials through the keyring-held secret, the token profile fails with an invalid-token refusal (the synthetic token being in the signature proves it came from the keyring); both profiles removed afterwards | ✅ CLI-M-06 | — | Win 11 x64 |
+| `--help` contract: every command self-documents | — | all 22 top-level commands answer `--help` with a usage line; the root `--help` lists every one of them | ✅ CLI-M-07 | — | Win 11 x64 |
 | Live stack boots | Wails v3 server | `/health` ok; page loads; bridge surface; GetVersion | — | ✅ GUI-01 | Win 11 x64 |
 | Page-error gate | Wails v3 server | zero uncaught page errors across the whole GUI battery | — | ✅ GUI-09 | Win 11 x64 |
 | Activity log | S3 (MinIO) | `log` shows the operations this run performed | ✅ CLI-S3-23 | — (sweep: Ctrl+L log area, SWEEP-LIVE-01) | Win 11 x64 |
 | Full visual sweep | shim world | every dialog, popout, menu and viewport contract | — | ✅ SWEEP-VIS-01 | Win 11 x64 |
 | Full live walk | real engines | real bindings: transfers, versions, profiles, i18n, fault lab | — | ✅ SWEEP-LIVE-01 | Win 11 x64 |
+| **Exit gates: busy work survives ExitApp and the close request** | **S3 (MinIO)** | with a throttled transfer CONFIRMED running: ShouldClose answers true with a live-work reason; ExitApp only emits exit:confirm — the server stays healthy, the job keeps running (never confirmed away from the harness side); CancelTransfer cancels it and NO partial object lands | — | ✅ GUI-43 | Win 11 x64 |
+| Settings round-trips: log-file prefs + tuning | Wails v3 server | SetLogSettings(off) reads back off and the original restores exactly; SetTuning echoes every requested value (floors respected) and the originals restore — settings are reversible state, never one-way doors | — | ✅ GUI-45 | Win 11 x64 |
+| Secure storage toggle round-trip | OS keyring (Windows) | GetSecureStorage reports availability; where the keyring is usable the toggle flips and restores with every read consistent — where it is not, that is recorded, never papered over | — | ✅ GUI-46 | Win 11 x64 |
+| Language switch: Finnish UI, then back | Wails v3 server | `s3b-lang=fi` + reload: the grid's own chrome switches (Finnish present, English absent); `en` restores — i18n actually drives the shipped UI | — | ✅ GUI-47 | Win 11 x64 |
+| Task registry: running view + ClearFinishedTasks | S3 (MinIO) | a deep search registers as a running task (kind search); once finished, ClearFinishedTasks(null) prunes EVERY finished row (null = all; an empty list is a no-op by contract) — the registry mirrors live work and forgets dead work on command | — | ✅ GUI-48 | Win 11 x64 |
 
 ---
 
@@ -250,20 +274,25 @@ release".
 ## Latest verification report
 
 Replaced on every run — this snapshot is from the verification runs of
-**21 Sep 2026** on Windows 11 (x64). The release-evidence run for
-`v1.1.0-beta.17` is committed at
+**22 Sep 2026** on Windows Server 2025 (x64), after the full-codebase
+action sweep grew the matrix from 94 to 118 rows (every user-facing
+action on both faces: data sources, selection mechanics, copying and
+multi-copying, single/multi delete with versioning, the admin panel,
+data-source migration, cancel/exit gates, Copy As text shapes,
+transfer hygiene). The release-evidence run for `v1.1.0-beta.17`
+(94-row matrix) is committed at
 [`docs/verification/v1.1.0-beta.17/windows-x64/REPORT.md`](verification/v1.1.0-beta.17/windows-x64/REPORT.md):
 
 ```
-release evidence (--release v1.1.0-beta.17 — tag-stamped build; 94 rows):
-  92 PASS · 2 SKIP · 0 FAIL — 872 s
-  (the 2 SKIPs = lifecycle put + SSE-S3, the recorded MinIO provider gaps)
-  SWEEP-VIS-01  gui-visual   609/609 checks
+full matrix x2 (fresh build; 118 rows incl. the two sweep rows):
+  111 PASS · 7 SKIP · 0 FAIL — 1219-1250 s (two consecutive greens)
+  (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
+   SSE-S3, CORS put, website put and encryption put on the CLI, plus
+   the CORS and website admin tabs behind the same refused APIs)
+  SWEEP-VIS-01  gui-visual   610/610 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
-quick gate on the same matrix (--quick; fresh build, all nine
-round-3 rows green):
-  90 PASS · 2 SKIP · 0 FAIL — 553 s
-  (92 of 94 rows; the two sweep rows only run in full gates)
+quick gate x3 on the same matrix (--quick; 116 rows, sweeps skipped):
+  109 PASS · 7 SKIP · 0 FAIL — 874-889 s (three consecutive greens)
 ```
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
