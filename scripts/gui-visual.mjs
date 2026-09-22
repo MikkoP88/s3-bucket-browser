@@ -3751,6 +3751,68 @@ await step('popout-auto-height', async () => {
   });
 });
 
+await step('popout-row-details', async () => {
+  // Progressive disclosure on the monitoring rows: every row ends in a
+  // chevron toggling a detail panel (the app's kv grid) with what the
+  // compact row can't show — started, id, average, remaining, and the
+  // full error text. Icon-only on purpose: the title already ends
+  // "+2 more" for multi-item jobs. An errored job opens itself (its row
+  // line is ellipsized); progress redraws never lose the state.
+  const trSel = '#popout-root .popout[data-pop="transfers"]';
+  const seedJob = (status, extra = {}) => evalPage(([status, extra]) => {
+    window.__shim.world.transfers = [{
+      id: 'dx1', op: 'upload', status, currentFile: 'a.bin',
+      totalFiles: 4, doneFiles: 2, totalBytes: 8388608, sentBytes: 4194304, speedBps: 262144,
+      startedAt: Date.now() - 60000, ...extra,
+    }, {
+      id: 'dx2', op: 'download', status: 'running', currentFile: 'b.bin',
+      totalFiles: 2, doneFiles: 1, totalBytes: 2097152, sentBytes: 1048576, speedBps: 131072,
+      startedAt: Date.now() - 30000,
+    }];
+    window.__shim.emit('transfer:update', { id: 'dx1', op: 'upload', status });
+  }, [status, extra]);
+  await evalPage(() => { window.__shim.world.transfers = []; window.__shim.emit('transfer:update', {}); });
+  await sleep(120);
+  await seedJob('running');
+  await waitFor(() => popoutVisible('transfers'), 4000, 'auto-open');
+  await sleep(250);
+  const chev = () => page.locator(`${trSel} .tr-job .tr-more[data-id="dx1"]`);
+  const nRows = await evalPage((s) => document.querySelectorAll(`${s} .tr-job .tr-more`).length, trSel);
+  await ok('every row carries a details chevron', nRows === 2 && await chev().evaluate((b) =>
+    b.getAttribute('aria-expanded') === 'false' && !!b.getAttribute('aria-label')));
+
+  const hBefore = await evalPage((s) => document.querySelector(s).getBoundingClientRect().height, trSel);
+  await chev().click();
+  await sleep(300); // toggle redraw + auto-height settle
+  await ok('chevron opens a kv detail panel', evalPage((s) => {
+    const ks = Array.from(document.querySelectorAll(`${s} .tr-detail .k`)).map((x) => x.textContent);
+    return ['Started', 'ID', 'Average speed', 'Remaining'].every((k) => ks.includes(k));
+  }, trSel));
+  await ok('aria-expanded flips with the panel', await chev().evaluate((b) => b.getAttribute('aria-expanded') === 'true'));
+  const hAfter = await evalPage((s) => document.querySelector(s).getBoundingClientRect().height, trSel);
+  await ok('window grows to fit the panel', hAfter > hBefore + 40);
+
+  // a progress redraw must not close it — the state lives in an id Set
+  await seedJob('running', { sentBytes: 5242880 });
+  await sleep(300);
+  await ok('progress redraws keep the panel open', evalPage((s) => !!document.querySelector(`${s} .tr-detail`), trSel));
+
+  await chev().click();
+  await sleep(300);
+  await ok('chevron closes the panel again', evalPage((s) => !document.querySelector(`${s} .tr-detail`), trSel));
+
+  // failure opens itself: the full error text (the row line ellipsizes)
+  await seedJob('error', { error: 'AccessDenied: a long reason the row would truncate' });
+  await sleep(350);
+  await ok('an errored job opens itself', evalPage((s) => {
+    const panel = document.querySelector(`${s} .tr-detail`);
+    return !!panel && panel.textContent.includes('AccessDenied');
+  }, trSel));
+
+  await closePopout('transfers');
+  await evalPage(() => { window.__shim.world.transfers = []; window.__shim.emit('transfer:update', {}); });
+});
+
 await step('popout-window-views', async () => {
   // A native popout window is its own webview at /?popout=<kind>: the
   // same view code renders full-bleed (body.popout-win) while the OS
@@ -3806,6 +3868,11 @@ await step('popout-window-views', async () => {
     return fits.length >= 1 && fits.every((c) =>
       c.args[0] === 'transfers' && c.args[2] - chromeH >= 299 && c.args[2] - chromeH <= 741);
   }));
+  // row details ride along into the OS window
+  await pw.locator(`${trSel} .tr-job .tr-more`).first().click();
+  await pw.waitForFunction((s) => !!document.querySelector(`${s} .tr-detail`), trSel, { timeout: 4000 });
+  await ok('native window: chevron opens the detail panel', true);
+
   await pw.screenshot({ path: 'testartifacts/gui/popout-win-transfers.png' });
   await pw.close();
   // the tasks window: same contract over the merged list (t2 done +
