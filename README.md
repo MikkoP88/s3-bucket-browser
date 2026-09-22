@@ -69,6 +69,7 @@ or later.
 
 ## Quickstart (GUI)
 
+**Use the provided release builds or compile your own from source:**
 ```bash
 # `production` strips Wails v3's devtools — the GUI is the default build
 go build -tags production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop app
@@ -79,6 +80,12 @@ go build -tags production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop 
 # launch (the CLI still prints normally — it re-attaches the parent
 # terminal on demand; release builds use exactly this):
 # go build -tags production -ldflags "-H windowsgui" -o s3b.exe ./cmd/s3b
+```
+
+Headless Linux servers can build a pure-Go CLI without GTK dependencies:
+
+```bash
+go build -tags s3b_headless -o s3b ./cmd/s3b
 ```
 
 - **Data sources**: color-coded connections in one sidebar hierarchy — S3 sources (account-wide, or bucket-scoped via `--bucket` / `s3b source add s3://bucket`), SFTP/SCP, FTP/FTPS servers, WebDAV/WebDAVs shares and local folders, all browsable with the same Explorer UI. **Import credentials** from files or KMS/secrets services — with a live bucket-count test; the very first import, straight from the welcome screen, opens the imported bucket's content.
@@ -97,18 +104,15 @@ go build -tags production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop 
 - **Secure Storage** (Settings → Security): the shared-host hardening that encrypts the whole store, protects temp workspaces and auto-clears pre-signed URLs from the clipboard — see [docs/security.md](docs/security.md).
 - **Light/dark theme**, 15 languages built in (English default, optional auto-detect), accessibility pass (ARIA roles, focus trap), portable mode (`s3b-portable` marker keeps config beside the binary).
 
-Headless Linux servers can build a pure-Go CLI without GTK dependencies:
-
-```bash
-go build -tags s3b_headless -o s3b ./cmd/s3b
-```
-
 ## Quickstart (CLI)
 
+**Use the provided release builds or compile your own from source:**
 ```bash
 go build -o s3b ./cmd/s3b   # CLI-only works in any build; add -tags
                              # production if you want the GUI too
+```
 
+```bash
 # Connect to any S3 provider (AWS, MinIO, Wasabi, R2, ...) — credentials
 # also fall back to $S3B_ACCESS_KEY / $S3B_SECRET_KEY
 s3b profile add lab --endpoint http://localhost:9000 \
