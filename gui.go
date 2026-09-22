@@ -278,7 +278,9 @@ func installShell(app3 *application.App, a *api.App) {
 				MinHeight: 220,
 			}
 			// Per-window resize bounds when the caller passes them (the
-			// auto-height windows pin the Windows file-transfer footprint).
+			// auto-height windows pin the Windows file-transfer footprint:
+			// their 490x300 default is the MINIMUM, and they pass no MaxH
+			// so the OS never caps what the user may grow the window to).
 			if geo.MinW > 0 {
 				opts.MinWidth = geo.MinW
 			}
@@ -288,14 +290,11 @@ func installShell(app3 *application.App, a *api.App) {
 			if geo.MaxH > 0 {
 				opts.MaxHeight = geo.MaxH
 			}
-			// The auto-height windows (MinH > 0 marks them) are
-			// app-driven: the content fit owns the height
-			// (ResizePopout) and the width is the fixed profile
-			// footprint — the user never resizes them, so the OS border
-			// is disabled outright (programmatic SetSize still works).
-			if geo.MinH > 0 {
-				opts.DisableResize = true
-			}
+			// The auto-height windows (MinH > 0 marks them) stay
+			// user-resizable with the footprint as their floor: until the
+			// user resizes one, the content fit owns the height
+			// (ResizePopout) — the first user resize takes the size over
+			// for the window's life and the body scrolls inside.
 			if geo.W > 0 {
 				opts.Width = geo.W
 			}
@@ -307,8 +306,8 @@ func installShell(app3 *application.App, a *api.App) {
 			// they left it (session memory — see popoutGeoms) — except an
 			// auto-height window (MinH > 0 marks it), which reopens at its
 			// profile footprint: the height tracks the content again and
-			// the width is fixed, so no remembered size may bleed in —
-			// only the placement is honored.
+			// no remembered size may bleed in — only the placement is
+			// honored.
 			autoH := geo.MinH > 0
 			popoutMu.Lock()
 			last, hadLast := popoutGeoms[id]

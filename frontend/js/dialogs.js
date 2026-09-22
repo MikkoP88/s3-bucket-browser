@@ -95,13 +95,13 @@ const popouts = new Map(); // id -> handle
 let popZ = 60; // sibling z-order counter (modal-root stays above at 100)
 
 // The monitoring windows (File transfers, Running tasks) ride the Windows
-// file-transfer footprint: a FIXED 490px width and a 300px minimum height
-// that tracks the content up to 740px — beyond that the window stays put
-// and the content scrolls inside. The width is never user-resizable and
-// never remembered (neither tier of the app may change it); a manual
-// height resize takes over for the window's life (never growing past
-// what the content fills); reopening starts the tracking fresh. See
-// openPopout's autoH.
+// file-transfer footprint: a 490x300 DEFAULT that is also the MINIMUM —
+// the user may never shrink a window below it. The height tracks the
+// content up to 740px (beyond that it stays put and the content scrolls
+// inside) until the first manual resize takes the size over for the
+// window's life; after it both axes are the user's, floored at the
+// default. The size is never remembered — a reopen starts fresh at the
+// default footprint (only placement persists). See openPopout's autoH.
 const XFER_PROFILE = { w: 490, h: 300, minW: 490, minH: 300, maxH: 740 };
 
 // popoutsRemembered gates the per-id geometry store (s3b-popout-<id>):
@@ -122,7 +122,10 @@ function clampPop(box) {
 // footLeft: element pinned to the left end of the footer bar — style it
 // with class 'left' (see .modal-foot .left) so its margin-right:auto keeps
 // the action buttons on the right. Rendered even with no buttons.
-function openPopout({ id, title, body, buttons = [], footLeft = null, wide = false, cls = '', autoH = null, onClose }) {
+// headRow: an optional pinned partition rendered between the title bar
+// and the scrolling body (the monitoring windows' Task/Transfer column
+// header) — it never scrolls away with the rows.
+function openPopout({ id, title, body, headRow = null, buttons = [], footLeft = null, wide = false, cls = '', autoH = null, onClose }) {
   const existing = popouts.get(id);
   if (existing) { existing.focus(); return { ...existing, fresh: false }; }
 
@@ -164,6 +167,7 @@ function openPopout({ id, title, body, buttons = [], footLeft = null, wide = fal
       el('span', { text: title }),
       el('span', { class: 'x', text: '\u00D7', role: 'button', 'aria-label': 'Close', onclick: () => close(null) }),
     ),
+    headRow,
     el('div', { class: 'modal-body' }, body),
     buttons.length || footLeft ? foot : null,
     el('div', { class: 'pop-grip', 'aria-hidden': 'true' }),
@@ -203,9 +207,9 @@ function openPopout({ id, title, body, buttons = [], footLeft = null, wide = fal
   }
   if (geo?.w || (autoH && (geo?.x || geo?.y))) {
     if (autoH) {
-      // an auto-height window restores PLACEMENT only: the width is the
-      // fixed 490px profile footprint (never remembered, never resized)
-      // and the height tracks the content afresh on every reopen — the
+      // an auto-height window restores PLACEMENT only: the size is
+      // never remembered — every reopen starts at the 490px profile
+      // footprint with the height tracking the content afresh — the
       // CSS cap (not remembered geometry) owns the maximum
       box.style.left = `${geo.x || 0}px`;
       box.style.top = `${geo.y || 0}px`;
@@ -268,34 +272,38 @@ document.addEventListener('pointerdown', (e) => {
   const resize = !!grip;
   box.classList.toggle('dragging', !resize);
   // auto-height windows carry their own floor (the Windows file-transfer
-  // footprint) and never take more height than their content fills
+  // footprint — the DEFAULT is the minimum, never below it); their first
+  // manual resize takes the size over for the window's life
   const auto = box._autoH || null;
+  if (resize && auto) box._autoManual = true;
+  const manual = !auto || !!box._autoManual;
   const floorW = auto ? auto.minW : 320;
   const floorH = auto ? auto.minH : 180;
   const move = (ev) => {
     if (resize) {
-      // the tallest an auto window may get: what its content fills.
-      // Measured as the natural (height:auto) height before the next
-      // paint — the CSS max-height already caps that reading at the
-      // profile cap, exactly the ceiling we want.
+      // while an auto window still tracks its content, the tallest it
+      // may get is what the content fills. Measured as the natural
+      // (height:auto) height before the next paint — the CSS max-height
+      // already caps that reading at the profile cap, exactly the
+      // ceiling we want. A manual resize answers to no ceiling: the
+      // window is the user's, floored at the default footprint only.
       let capH = window.innerHeight - 16;
-      if (auto) {
+      if (auto && !manual) {
         const keep = box.style.height;
         box.style.height = 'auto';
         const natural = box.offsetHeight;
         box.style.height = keep;
         capH = Math.min(auto.maxH, Math.max(auto.minH, natural), capH);
       }
-      // auto-height windows resize VERTICALLY ONLY — the 490px footprint
-      // width is fixed (CSS pins it; the grip never touches it)
-      if (!auto) {
-        box.style.width = `${Math.max(floorW, Math.min(ow + ev.clientX - sx, window.innerWidth - 16))}px`;
-        box.style.maxWidth = 'none';
-      }
+      box.style.width = `${Math.max(floorW, Math.min(ow + ev.clientX - sx, window.innerWidth - 16))}px`;
       box.style.height = `${Math.max(floorH, Math.min(oh + ev.clientY - sy, capH))}px`;
-      // a plain window's remembered size outranks the CSS maxima; an
-      // auto window keeps its cap
-      if (!auto) box.style.maxHeight = 'none';
+      // a manual size outranks the CSS maxima (they only shape the
+      // default, content-driven size); a tracking auto window keeps
+      // its cap
+      if (manual) {
+        box.style.maxWidth = 'none';
+        box.style.maxHeight = 'none';
+      }
     } else {
       box.style.left = `${ox + ev.clientX - sx}px`;
       box.style.top = `${oy + ev.clientY - sy}px`;
@@ -309,9 +317,9 @@ document.addEventListener('pointerdown', (e) => {
     const pid = box.dataset.pop;
     if (pid && popoutsRemembered()) localStorage.setItem(`s3b-popout-${pid}`, JSON.stringify(
       box._autoH
-        // an auto-height window persists PLACEMENT ONLY — the width is
-        // the fixed profile footprint and the height tracks the content
-        // afresh on every reopen
+        // an auto-height window persists PLACEMENT ONLY — a manual size
+        // lives for the window's life and every reopen starts fresh at
+        // the default footprint with the content tracking again
         ? { x: parseFloat(box.style.left) || 0, y: parseFloat(box.style.top) || 0 }
         : {
           x: parseFloat(box.style.left) || 0,
@@ -389,11 +397,13 @@ function maybeNativePopout({ id, query, title, w, h, minW = 0, minH = 0, maxH = 
     return true;
   }
   nativeOpen.add(id);
-  // auto-height windows (minH > 0) always open at their profile default
-  // and non-resizable: the height tracks the content afresh (a remembered
-  // height would only flash before the content fit overrides it), the
-  // width is the fixed 490px footprint, and the backend skips its whole
-  // remembered size for them
+  // auto-height windows (minH > 0) always open at their profile default:
+  // the height tracks the content afresh (a remembered height would only
+  // flash before the content fit overrides it), and the backend skips its
+  // whole remembered size for them. minW/minH travel on as the OS resize
+  // floor — the default footprint is the minimum — while maxH stays ours:
+  // a caller passing 0 leaves the OS uncapped (the fit caps itself at
+  // the profile cap; the user may size past it and let the body scroll)
   const auto = minH > 0;
   let geo = null;
   if (!auto && popoutsRemembered()) {
@@ -433,41 +443,61 @@ function verifyNativePopout(id, domOpen) {
 
 // installAutoHeight drives a native auto-height popout window (File
 // transfers, Running tasks — the Windows file-transfer footprint). The
-// window is created non-resizable (the backend's DisableResize — see
-// OpenPopout), so the ONLY sizing is ours: the height tracks the content
-// between the profile's floor and cap, and the body scrolls inside
-// beyond the cap. The WIDTH is never touched — ResizePopout is called
-// with w=0, which the backend reads as "keep the current width": the
-// 490px default from creation stays put for the window's life (passing
+// window is user-resizable with the profile footprint as its floor
+// (MinWidth/MinHeight ride in the geometry), and until the user resizes
+// it the content fit owns the height: it tracks the content between the
+// profile's floor and cap, and the body scrolls inside beyond the cap.
+// The FIRST user resize takes the size over for the window's life —
+// after it the body just scrolls and neither axis is driven again. The
+// WIDTH is never touched by us — ResizePopout is called with w=0, which
+// the backend reads as "keep the current width" (passing
 // window.outerWidth instead fed a rounding feedback loop through the
 // DIP<->physical conversion and made the width drift). Our own
 // ResizePopout round-trips raise window resize events too, so a
-// suppress counter separates them from outside causes (DPI change
-// above all); a width-only resize is a reflow — re-fit to it.
+// suppress counter separates them from outside causes (a height change
+// we did not apply — and not a DPI re-scale — is the user taking over);
+// a width-only resize is a reflow — re-fit to it.
 function installAutoHeight(id, box, p) {
   const body = box.querySelector('.modal-body');
-  const foot = box.querySelector('.modal-foot');
   // the height the window must be to show its content whole (the box is
-  // full-bleed here: no border, no padding, head hidden by CSS)
-  const contentH = () => body.scrollHeight + (foot ? foot.offsetHeight : 0);
+  // full-bleed here: no border, no padding, head hidden by CSS) — every
+  // laid-out child counts, the pinned column strip included
+  const contentH = () => [...box.children]
+    .filter((n) => !n.classList.contains('modal-head') && !n.classList.contains('pop-grip'))
+    .reduce((h, n) => h + n.offsetHeight, 0);
   // OS-window height -> webview height delta (title bar etc.)
   const chrome = () => window.outerHeight - window.innerHeight;
   let suppress = 0; // self-resizes still in flight
+  let manual = false; // a user resize owns the size now
+  let applied = 0; // the height the fit last settled on
+  let lastApplyAt = 0; // late echoes of our own resize are not the user
+  let lastW = window.innerWidth;
+  let lastDPR = window.devicePixelRatio;
   const apply = (innerH) => {
+    applied = innerH;
+    lastApplyAt = Date.now();
     suppress++;
     Promise.resolve(api.ResizePopout(id, 0, Math.round(innerH + chrome())))
       .finally(() => setTimeout(() => { suppress = Math.max(0, suppress - 1); }, 150));
   };
-  let lastW = window.innerWidth;
   window.addEventListener('resize', () => {
+    const dprChanged = window.devicePixelRatio !== lastDPR;
     const wChanged = window.innerWidth !== lastW;
     lastW = window.innerWidth;
-    if (suppress > 0) return;    // ours — the MutationObserver fit covers it
-    if (wChanged) fit();         // reflow: re-fit the height to the new width
+    lastDPR = window.devicePixelRatio;
+    if (suppress > 0) return;   // ours — the MutationObserver fit covers it
+    if (!dprChanged && Math.abs(window.innerHeight - applied) > 2
+      && Date.now() - lastApplyAt > 500) {
+      manual = true;            // the user dragged the frame: their size wins
+      return;
+    }
+    if (wChanged || dprChanged) fit(); // reflow / DPI re-scale: re-fit
   });
   const fit = () => {
+    if (manual) return;
     const want = Math.min(p.maxH, Math.max(p.minH, contentH()));
     if (Math.abs(want - window.innerHeight) > 1) apply(want);
+    else applied = want;
   };
   new MutationObserver(fit).observe(body, { childList: true, subtree: true, characterData: true });
   fit();
@@ -1276,6 +1306,16 @@ function viewHistory(onToggle) {
 }
 
 // ---------- transfer manager ----------
+// tmHead is the column-header partition both monitoring windows carry
+// over their rows (Task | Progress | Action; transfers say Transfer
+// first). Same small dim text as every other label in the app — the
+// Action column alone is light-bold, marking the one column holding a
+// control (the row's Cancel).
+const tmHead = (firstKey) => el('div', { class: 'tm-head' },
+  el('span', { class: 'tm-h-first', text: t(firstKey) }),
+  el('span', { class: 'tm-h-prog', text: t('popout.colProgress') }),
+  el('span', { class: 'tm-h-act', text: t('popout.colAction') }));
+
 // transferManager is the user entry: opening by hand — View menu, status
 // bar, context menus — locks the window open (see xferAuto below); the
 // automatic path goes through openTransferManager directly.
@@ -1287,7 +1327,7 @@ export function transferManager(onClose) {
 function openTransferManager(onClose) {
   if (maybeNativePopout({
     id: 'transfers', query: 'popout=transfers', title: t('transfer.managerTitle'),
-    ...XFER_PROFILE,
+    ...XFER_PROFILE, maxH: 0, // no OS cap: the fit caps itself; the user may size taller
     domOpen: () => openTransferManagerDom(onClose),
   })) {
     return { close: () => api.ClosePopout('transfers') };
@@ -1306,6 +1346,7 @@ function openTransferManagerDom(onClose) {
     id: 'transfers',
     title: t('transfer.managerTitle'),
     body: el('div', {}, list),
+    headRow: tmHead('popout.colTransfer'),
     autoH: XFER_PROFILE,
     footLeft: hist.foot,
     buttons: [
@@ -1571,7 +1612,7 @@ export function taskKindVerb(j) {
 export function runningTasks() {
   if (maybeNativePopout({
     id: 'tasks', query: 'popout=tasks', title: t('tasks.title'),
-    ...XFER_PROFILE,
+    ...XFER_PROFILE, maxH: 0, // no OS cap: the fit caps itself; the user may size taller
     domOpen: runningTasksDom,
   })) {
     return { close: () => api.ClosePopout('tasks') };
@@ -1587,6 +1628,7 @@ function runningTasksDom() {
     id: 'tasks',
     title: t('tasks.title'),
     body: el('div', {}, list),
+    headRow: tmHead('popout.colTask'),
     autoH: XFER_PROFILE,
     footLeft: hist.foot,
     buttons: [
