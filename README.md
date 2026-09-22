@@ -44,6 +44,10 @@ arguments opens the desktop app; with arguments it is the CLI).
 | **Linux servers / arm64** | amd64, arm64 | none — the `-tags s3b_headless` build is a pure-Go CLI with no GUI libraries |
 | **Any OS, browser-driven** | `-tags server` | none on the host — the same stack runs windowless and serves the UI over HTTP |
 
+- Some operating system versions especially **beta** or **pre‑release** builds may still exhibit compatibility issues.  
+- The application is primarily developed and tested in **Windows environments**.  
+- Verification focuses on **application functionality**, not full OS‑level compatibility across all distributions or preview builds.
+
 The macOS floor is real, not aspirational: the release binaries carry a
 pinned 12.0 deployment target (the oldest macOS the Go 1.26 runtime itself
 runs on) and the release pipeline verifies it (`vtool`) before shipping.
