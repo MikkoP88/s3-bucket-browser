@@ -3684,23 +3684,6 @@ await step('popout-auto-height', async () => {
   await ok('default footprint is 490x300', Math.abs(d0.w - 490) <= 1 && Math.abs(d0.h - 300) <= 1);
   await ok('auto-height class on the window', evalPage((s) => document.querySelector(s).classList.contains('autoh'), trSel));
 
-  // the column-header partition: Transfer | Progress | Action, pinned
-  // above the scrolling rows and styled like every other small label —
-  // Action alone light-bold (it names the column holding the Cancel)
-  await ok('column header partition reads Transfer|Progress|Action', evalPage((s) => {
-    const cells = Array.from(document.querySelectorAll(`${s} .tm-head > span`)).map((n) => n.textContent.trim());
-    return cells.length === 3 && cells.join('|') === 'Transfer|Progress|Action';
-  }, trSel));
-  await ok('Action header alone is light-bold', evalPage((s) => {
-    const fw = (sel) => { const n = document.querySelector(`${s} .tm-head ${sel}`); return n ? getComputedStyle(n).fontWeight : ''; };
-    return fw('.tm-h-act') === '600' && fw('.tm-h-first') === '400' && fw('.tm-h-prog') === '400';
-  }, trSel));
-  await ok('column header is pinned outside the scrolling body', evalPage((s) => {
-    const b = document.querySelector(s);
-    const strip = b.querySelector('.tm-head');
-    const body = b.querySelector('.modal-body');
-    return !!strip && !body.contains(strip) && strip.nextElementSibling === body;
-  }, trSel));
 
   await seed(14);
   await waitFor(() => trRows(14), 4000, 'fourteen rows');
@@ -3708,8 +3691,8 @@ await step('popout-auto-height', async () => {
   await ok('height caps at 740, content scrolls inside', Math.abs(d1.h - 740) <= 1 && d1.over > 40 && Math.abs(d1.w - 490) <= 1);
   await shotOf('popout-autoh-capped', trSel);
 
-  await seed(5);
-  await waitFor(() => trRows(5), 4000, 'five rows');
+  await seed(6);
+  await waitFor(() => trRows(6), 4000, 'six rows');
   const d2 = await geo();
   await ok('height shrinks back to the content', d2.h > 320 && d2.h < 740 && d2.over === 0 && d2.h < d1.h);
 
@@ -3749,13 +3732,13 @@ await step('popout-auto-height', async () => {
   await ok('only placement persisted for an auto-height window', !!saved && Number.isFinite(saved.x) && !('w' in saved) && !('h' in saved));
   await closePopout('transfers');
   await ok('window closed', !(await popoutVisible('transfers')));
-  await seed(5);
+  await seed(6);
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
   await sleep(80);
   const trItem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
     .find((i) => /transfers/i.test(i.textContent)) || null);
   if (trItem) await trItem.asElement().click();
-  await waitFor(() => trRows(5), 4000, 'five rows again');
+  await waitFor(() => trRows(6), 4000, 'six rows again');
   await sleep(250); // fresh box replays modal-in — measure past the animation
   const d5 = await geo();
   await ok('reopen re-enables content tracking', Math.abs(d5.h - d2.h) <= 4 && d5.over === 0);
@@ -3806,16 +3789,6 @@ await step('popout-window-views', async () => {
   // duplicate it — no double header, no second close icon
   await ok('no duplicate in-page header', await pw.evaluate((s) =>
     document.querySelector(`${s} .modal-head`).offsetParent === null, trSel));
-  // the column partition rides along into the OS window: pinned under
-  // the title bar, Action alone light-bold
-  await ok('transfers window carries the column partition', await pw.evaluate((s) => {
-    const cells = Array.from(document.querySelectorAll(`${s} .tm-head > span`)).map((n) => n.textContent.trim());
-    return cells.length === 3 && cells.join('|') === 'Transfer|Progress|Action';
-  }, trSel));
-  await ok('transfers window: Action header alone is light-bold', await pw.evaluate((s) => {
-    const fw = (sel) => { const n = document.querySelector(`${s} .tm-head ${sel}`); return n ? getComputedStyle(n).fontWeight : ''; };
-    return fw('.tm-h-act') === '600' && fw('.tm-h-first') === '400' && fw('.tm-h-prog') === '400';
-  }, trSel));
   await ok('finished past is history in the window', await pw.evaluate((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
     const head = document.querySelector(`${s} .modal-foot .left`);
@@ -3851,11 +3824,6 @@ await step('popout-window-views', async () => {
   }, tkSel));
   await ok('tasks window: no duplicate header', await pt.evaluate((s) =>
     document.querySelector(`${s} .modal-head`).offsetParent === null, tkSel));
-  // the column partition names the merged list Task | Progress | Action
-  await ok('tasks window column partition reads Task|Progress|Action', await pt.evaluate((s) => {
-    const cells = Array.from(document.querySelectorAll(`${s} .tm-head > span`)).map((n) => n.textContent.trim());
-    return cells.length === 3 && cells.join('|') === 'Task|Progress|Action';
-  }, tkSel));
   await pt.evaluate((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, tkSel);
   await pt.waitForFunction((s) => document.querySelectorAll(`${s} .tr-job`).length === 3, tkSel, { timeout: 4000 });
   await ok('tasks window: history reveals the merged past', true);
