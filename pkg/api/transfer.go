@@ -473,7 +473,10 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 		j.emit(true)
 
 		pol := filePolicy(decisions, p.key, policy)
-		if pol == PolicySkip { // user kept the destination file
+		if pol == PolicySkip && remoteExists(ctx, c, bucket, p.key) {
+			// "skip" keeps an EXISTING destination file — with nothing at
+			// the key there is no conflict to resolve, and silently
+			// dropping a file the caller asked to transfer is data loss
 			j.mu.Lock()
 			j.info.SkippedFiles++
 			j.mu.Unlock()

@@ -99,7 +99,10 @@ type CORSRule struct {
 func GetCORS(ctx context.Context, client *s3.Client, bucket string) ([]CORSRule, error) {
 	out, err := client.GetBucketCors(ctx, &s3.GetBucketCorsInput{Bucket: aws.String(bucket)})
 	if err != nil {
-		if isCode(err, "NoSuchBucketConfiguration") {
+		// NoSuchCORSConfiguration is the documented "nothing set" answer
+		// (AWS and MinIO); a bucket without CORS rules is the normal state,
+		// not an error the admin panel should banner about
+		if isCode(err, "NoSuchCORSConfiguration", "NoSuchBucketConfiguration") {
 			return nil, nil
 		}
 		return nil, mapUnsupported(err, "CORS")

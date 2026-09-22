@@ -77,12 +77,22 @@ func keyringGet(name, kind string) (string, error) {
 
 // keyringDeleteAll removes both keyring entries of a profile.
 func keyringDeleteAll(name string) {
+	if !keyringAvailable() {
+		// S3B_NO_KEYRING stores never wrote keyring entries — a delete
+		// here would instead remove a GLOBAL same-named slot owned by a
+		// DIFFERENT config dir (profile slots are keyed by name only)
+		return
+	}
 	_ = keyring.Delete(keyringService, secretAccount(name, "secret"))
 	_ = keyring.Delete(keyringService, secretAccount(name, "token"))
 }
 
 // sourceKeyringDeleteAll removes every keyring entry of a source.
 func sourceKeyringDeleteAll(id string) {
+	if !keyringAvailable() {
+		// see keyringDeleteAll: no keyring, no entries to remove
+		return
+	}
 	for _, kind := range []string{"password", "s3secret", "s3token"} {
 		_ = keyring.Delete(keyringService, sourceSecretAccount(id, kind))
 	}
