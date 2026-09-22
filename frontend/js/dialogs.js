@@ -1301,6 +1301,32 @@ function viewHistory(onToggle) {
   };
 }
 
+// ---------- monitoring row details (progressive disclosure) ----------
+// Every monitoring row (File transfers + Running tasks) ends in a
+// disclosure chevron: icon-only on purpose — the title already ends
+// "+2 more" for multi-item jobs, a second textual "more" would read as
+// the same thing. The word rides aria-label for screen readers,
+// aria-expanded carries the state, the rotating chevron the visual.
+// Toggling flips an id-keyed Set (rows are rebuilt on every progress
+// event — DOM-local state would not survive one) and re-renders through
+// draw(); focus returns to the fresh chevron so a keyboard toggle
+// doesn't strand focus on a node the redraw just replaced.
+const trMoreBtn = (id, isOpen, onToggle) => el('button', {
+  class: 'tr-more', type: 'button', 'data-id': id,
+  'aria-expanded': String(isOpen), 'aria-label': t('transfer.details'),
+  'aria-controls': `tr-det-${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+  onclick: () => onToggle(id),
+}, el('span', { class: 'chev', text: '\u25B8', 'aria-hidden': 'true' }));
+
+// kvPairs: label/value pairs for the detail panel — the app's kv grid
+// (dim labels, wrapping values) already styles it; the danger flag
+// marks the full error text.
+const kvPairs = (pairs) => pairs.flatMap(([k, v, danger]) => [
+  el('span', { class: 'k', text: k }),
+  el('span', { class: `v${danger ? ' danger' : ''}`, text: String(v) }),
+]);
+
+
 // ---------- transfer manager ----------
 
 // transferManager is the user entry: opening by hand — View menu, status
@@ -1346,6 +1372,15 @@ function openTransferManagerDom(onClose) {
 
   let rows = [];
 
+  // which rows sit expanded — keyed by job id so the progress redraws
+  // (replaceChildren) never lose the user's disclosure state
+  const expanded = new Set();
+  const toggle = (id) => {
+    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+    draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
+  };
+
+
   // Clear retires exactly what the window shows (viewHistory decides
   // the ids); null still means "every finished job" for the nothing-
   // hidden case.
@@ -1362,6 +1397,12 @@ function openTransferManagerDom(onClose) {
     jobs.sort((x, y) => (rank[x.status] ?? 9) - (rank[y.status] ?? 9));
     hist.seed(jobs);
     rows = jobs;
+    // a failed job opens itself: the row's error line is one ellipsized
+    // line, the panel carries the full text — the moment a job fails is
+    // exactly when the details matter
+    jobs.filter((x) => (x.status === 'error' || x.status === 'failed') && x.error)
+      .forEach((x) => expanded.add(x.id));
+
     const visible = hist.visible(jobs);
     // Same-named transfers get disambiguated the moment they collide:
     // every title after the first in display order gains " (2)", " (3)"…
@@ -1482,6 +1523,7 @@ function openTransferManagerDom(onClose) {
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
         running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
+        trMoreBtn(j.id, expanded.has(j.id), toggle),
       ),
       bar,
       el('div', { class: 'tr-meta' },
@@ -1491,10 +1533,31 @@ function openTransferManagerDom(onClose) {
       route,
       cur,
       j.error ? el('div', { class: 'tr-sub', text: j.error }) : null,
+      expanded.has(j.id) ? jobDetail(j) : null,
     );
     job.dataset.id = j.id;
     return job;
   }
+
+  // jobDetail: the expanded panel — what the compact row can't afford:
+  // when it started, the id (log correlation), the lifetime average,
+  // what's left, and the full error text (the row's line is ellipsized).
+  function jobDetail(j) {
+    const running = j.status === 'running';
+    const pairs = [];
+    if (j.startedAt > 0) pairs.push([t('transfer.startedAt'), new Date(j.startedAt).toLocaleString()]);
+    pairs.push([t('transfer.idLabel'), j.id]);
+    const elapsed = j.elapsedMs > 0 ? j.elapsedMs : (j.startedAt > 0 ? Date.now() - j.startedAt : 0);
+    if (elapsed > 1000 && j.sentBytes > 0) pairs.push([t('transfer.avgSpeed'), fmtSpeed(j.sentBytes / (elapsed / 1000))]);
+    if (running && (j.totalFiles > 0 || j.totalBytes > 0)) {
+      const remFiles = Math.max(0, (j.totalFiles || 0) - (j.doneFiles || 0) - (j.failedFiles || 0) - (j.skippedFiles || 0));
+      pairs.push([t('transfer.remaining'), `${remFiles} \u00B7 ${fmtBytes(Math.max(0, j.totalBytes - j.sentBytes))}`]);
+    }
+    if (j.error) pairs.push([t('transfer.errorText'), j.error, true]);
+    return el('div', { class: 'tr-detail kv', id: `tr-det-${String(j.id).replace(/[^a-zA-Z0-9_-]/g, '_')}` },
+      ...kvPairs(pairs));
+  }
+
 
   draw();
   off = onEvent('transfer:update', () => draw());
@@ -1626,6 +1689,15 @@ function runningTasksDom() {
 
   let rows = [];
 
+  // which rows sit expanded — keyed by job id so the progress redraws
+  // (replaceChildren) never lose the user's disclosure state
+  const expanded = new Set();
+  const toggle = (id) => {
+    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+    draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
+  };
+
+
   // Clear retires exactly what the window shows (viewHistory decides
   // the ids); null still means "every finished row" for the nothing-
   // hidden case.
@@ -1700,6 +1772,7 @@ function runningTasksDom() {
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
         running ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { await api.CancelTask(j.id); } }) : null,
+        trMoreBtn(j.id, expanded.has(j.id), toggle),
       ),
       bar,
       (counts || pace) ? el('div', { class: 'tr-meta' },
@@ -1708,12 +1781,27 @@ function runningTasksDom() {
       ) : null,
       (running && j.current) ? el('div', { class: 'tr-cur', title: j.current, text: j.current }) : null,
       j.error ? el('div', { class: 'tr-sub', text: j.error }) : null,
+      expanded.has(j.id) ? taskDetail(j) : null,
     );
     task.dataset.id = j.id;
     return task;
   }
 
   draw();
+  // taskDetail: the tasks-window panel — id, kind, start; the error
+  // already rides the row (one line), the panel wraps it in full.
+  function taskDetail(j) {
+    const pairs = [
+      [t('transfer.idLabel'), j.id],
+      [t('transfer.kind'), j.kind],
+    ];
+    if (j.startedAt > 0) pairs.push([t('transfer.startedAt'), new Date(j.startedAt).toLocaleString()]);
+    if (j.error) pairs.push([t('transfer.errorText'), j.error, true]);
+    return el('div', { class: 'tr-detail kv', id: `tr-det-${String(j.id).replace(/[^a-zA-Z0-9_-]/g, '_')}` },
+      ...kvPairs(pairs));
+  }
+
+
   // jobs still speak transfer:update; everything else speaks tasks:update
   offs.push(onEvent('tasks:update', () => draw()));
   offs.push(onEvent('transfer:update', () => draw()));

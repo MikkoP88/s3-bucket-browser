@@ -637,6 +637,18 @@ body.popout-win .pop-grip { display: none; }
 .tr-job .tr-cur { font-size: 12px; margin-top: 2px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-job.stalled .tr-bar > div { background: var(--warn); }
 .tr-job .tr-sub { font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Row disclosure: the chevron toggling a row's detail panel */
+.tr-more { flex: none; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: none; border-radius: 4px; background: none; color: var(--text-dim);
+  cursor: pointer; font-size: 13px; line-height: 1; }
+.tr-more:hover { color: var(--text); background: var(--border-soft); }
+.tr-more .chev { display: inline-block; transition: transform 0.15s ease; }
+.tr-more[aria-expanded="true"] .chev { transform: rotate(90deg); }
+/* the expanded panel: the app's kv grid, tucked into the row card */
+.tr-job .tr-detail { grid-template-columns: 110px 1fr; margin-top: 6px; padding-top: 6px;
+  border-top: 1px dashed var(--border-soft); font-size: 12px; }
+.tr-job .tr-detail .v.danger { color: var(--danger); }
+
 .tr-job .btn { padding: 2px 10px; font-size: 12px; }
 .tr-job .tr-pct { flex: none; min-width: 36px; text-align: right; font-size: 12px; color: var(--text-dim); }
 .tm-empty { color: var(--text-dim); padding: 16px 4px; }
