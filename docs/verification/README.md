@@ -15,3 +15,5 @@ report in the release notes.
 | [v1.1.0-beta.17](v1.1.0-beta.17/) | windows-x64 | 2026-09-20 | PASS | 92 PASS · 2 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.17/windows-x64/REPORT.md) |
 | [v1.1.0-beta.16](v1.1.0-beta.16/) | windows-x64 | 2026-09-20 | PASS | 83 PASS · 2 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.16/windows-x64/REPORT.md) |
 | [v1.1.0-beta.15](v1.1.0-beta.15/) | windows-x64 | 2026-09-20 | PASS | 74 PASS · 2 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.15/windows-x64/REPORT.md) |
+
+Verification focuses on application functionality, not full OS‑level compatibility across all distributions.
