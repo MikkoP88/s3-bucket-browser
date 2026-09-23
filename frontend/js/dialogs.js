@@ -528,6 +528,7 @@ export function renderPopoutView(kind, qs) {
   else if (kind === 'tasks') runningTasks();
   else if (kind === 'keys') helpSheet();
   else if (kind === 'guide') usageGuideDialog();
+  else if (kind === 'license') licenseDialog();
   else if (kind === 'sources') sourcesInfoDialog();
   else document.body.textContent = `Unknown popout: ${kind}`;
 }
@@ -2468,22 +2469,80 @@ export function sourcesInfoDialog() {
 // Identity comes from license.js — the single source shared with the About
 // box — and the normative text stays in LICENSE/NOTICE at the repo root.
 // This window is a summary, not a copy, so it cannot drift out of date.
+// Three partitions: About (the About box's identity block), License (the
+// summary with the license name linked to the published text) and
+// Third-party components (the NOTICE pointer).
+
+// extLink renders an external http(s) link: the click goes through the
+// OpenExternal binding so the user's default browser opens it (never the
+// app's own webview), falling back to window.open where the binding is
+// absent (devtools, plain-browser contexts).
+function extLink(url, text) {
+  const a = el('a', { class: 'ext-link', href: url, text });
+  a.addEventListener('click', (e) => {
+    e.preventDefault();
+    api.OpenExternal(url).catch(() => window.open(url, '_blank', 'noopener'));
+  });
+  return a;
+}
+
 export function licenseDialog() {
   if (maybeNativePopout({ id: 'license', query: 'popout=license', title: t('menu.license'), w: 640, h: 560, domOpen: licenseDialog })) return;
-  const body = el('div', { class: 'guide' },
-    el('div', { class: 'guide-item' },
-      el('div', { class: 'guide-h', text: LICENSE.product }),
-      el('div', { class: 'guide-p', text: `Copyright (c) ${LICENSE.year} ${LICENSE.holderFull}.` }),
-      el('div', { class: 'guide-p', text: `${LICENSE.name} ${LICENSE.version}. The full license text is published by the Polyform Project and ships as LICENSE in the repository and release archives:` }),
-      el('div', { class: 'guide-p mono', text: LICENSE.url }),
-      el('div', { class: 'guide-p', text: `Source code and releases: ${LICENSE.repo}` }),
+  const strip = el('div', { class: 'tabstrip' });
+  const content = el('div', { class: 'tabbody' });
+  let version = '';
+  let current = '';
+
+  const licenseName = () => extLink(LICENSE.url, `${LICENSE.name} ${LICENSE.version}`);
+
+  const partitions = {
+    about: () => el('div', { class: 'kv' },
+      el('div', { class: 'k', text: 's3b' }),
+      // strip a tag's leading v so every injection style renders "v1.2.3"
+      el('div', { class: 'v mono', text: 'v' + String(version || '?').replace(/^v/, '') }),
+      el('div', { class: 'k', text: t('menu.aboutPublisher') }),
+      el('div', { class: 'v', text: 'MikkoP88' }),
+      el('div', { class: 'k', text: t('menu.aboutLicense') }),
+      el('div', { class: 'v' }, licenseName()),
+      el('div', { class: 'k', text: t('menu.aboutUrl') }),
+      el('div', { class: 'v mono' }, extLink(LICENSE.repo, LICENSE.repo)),
     ),
-    el('div', { class: 'guide-item' },
-      el('div', { class: 'guide-h', text: 'Third-party components' }),
-      el('div', { class: 'guide-p', text: 'This product includes third-party software licensed under Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause and ISC terms — among them the AWS SDK for Go, Wails, Cobra, go-keyring, pkg/sftp, jlaffaye/ftp and their dependencies. The complete attribution inventory (every direct dependency with its license, plus the full pinned module graph) ships in the NOTICE file next to the binary and in the release SBOM.' }),
+    license: () => el('div', { class: 'guide' },
+      el('div', { class: 'guide-item' },
+        el('div', { class: 'guide-h', text: LICENSE.product }),
+        el('div', { class: 'guide-p', text: `Copyright (c) ${LICENSE.year} ${LICENSE.holderFull}.` }),
+        el('div', { class: 'guide-p' },
+          'Licensed under ', licenseName(),
+          '. The full license text is published by the Polyform Project and ships as LICENSE in the repository and release archives:'),
+        el('div', { class: 'guide-p mono', text: LICENSE.url }),
+        el('div', { class: 'guide-p', text: `Source code and releases: ${LICENSE.repo}` }),
+      ),
     ),
+    third: () => el('div', { class: 'guide' },
+      el('div', { class: 'guide-item' },
+        el('div', { class: 'guide-h', text: 'Third-party components' }),
+        el('div', { class: 'guide-p', text: 'This product includes third-party software licensed under Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause and ISC terms — among them the AWS SDK for Go, Wails, Cobra, go-keyring, pkg/sftp, jlaffaye/ftp and their dependencies. The complete attribution inventory (every direct dependency with its license, plus the full pinned module graph) ships in the NOTICE file next to the binary and in the release SBOM.' }),
+      ),
+    ),
+  };
+
+  const select = (name) => {
+    current = name;
+    strip.querySelectorAll('.tab').forEach((tb) => tb.classList.toggle('active', tb.dataset.tab === name));
+    content.replaceChildren(partitions[name]());
+  };
+  strip.replaceChildren(
+    el('div', { class: 'tab', 'data-tab': 'about', text: t('menu.about'), onclick: () => select('about') }),
+    el('div', { class: 'tab', 'data-tab': 'license', text: t('menu.license'), onclick: () => select('license') }),
+    el('div', { class: 'tab', 'data-tab': 'third', text: 'Third-party components', onclick: () => select('third') }),
   );
-  openPopout({ id: 'license', title: t('menu.license'), body, wide: true });
+  select('about');
+  // Version arrives async; re-draw the About partition if it is on screen.
+  api.GetVersion().then((v) => {
+    version = v;
+    if (current === 'about') select('about');
+  }).catch(() => {});
+  openPopout({ id: 'license', title: t('menu.license'), body: el('div', { class: 'admin' }, strip, content), cls: 'admin-modal' });
 }
 
 // ---------- conflict policy + transfer throttle ----------

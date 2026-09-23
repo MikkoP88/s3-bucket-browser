@@ -18,6 +18,15 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The License window is now three partitions: About, License and
+  Third-party components.** About carries the About-box identity —
+  live version from the backend, publisher, license and project links;
+  the license name is a link to the published PolyForm text in both the
+  About and License partitions. External links open in the default
+  browser through the new `OpenExternal` binding (http/https with a host
+  only — `file://` and custom schemes are refused before the shell ever
+  sees them), never in the app webview.
+
 - **Round 2 of extreme-level rows: the gate grew from 76 to 85.** WORM
   enforcement (GOVERNANCE retention and legal hold each defeat a
   version-purge attempt while in force; clearing re-arms the delete),
@@ -295,6 +304,14 @@ follow [Semantic Versioning](https://semver.org/).
   under their name with the "+N" item count.
 
 ### Fixed
+
+- **Help → License opened an empty window in the desktop app.** The
+  native-popout dispatcher had no `license` case, so the OS window the
+  menu opened rendered a dead "Unknown popout" page instead of the
+  license view (the DOM fallback the tests exercise worked, which is
+  why it slipped through). The dispatcher routes `license` again, and
+  battery row GUI-52 loads the popout URL itself — the exact payload a
+  native window loads — so the gap cannot reopen.
 
 - **macOS release builds no longer die at Gatekeeper as “damaged”.**
   The darwin dmg shipped completely unsigned: Sequoia shows

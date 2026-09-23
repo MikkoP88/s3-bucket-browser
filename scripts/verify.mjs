@@ -3950,6 +3950,45 @@ async function guiBattery() {
     need((v1.out.match(/"(key|versionId)"/g) || []).length >= 2, 'm1.txt: the data timeline did not survive the undo');
     return 'merged + single windows shaped right; both undos CLI-proven, data timeline intact';
   });
+  await verify({ id: 'GUI-52', area: 'gui', action: 'Help → License window: popout payload + external-link guard', ds: 'Wails v3 server', scenario: 'the exact URL a native popout window loads (?popout=license) renders the three-partition window — About (version, publisher, links), License (the name linked to the published text), Third-party — with no Unknown-popout dead end, the guide sibling still routing, and OpenExternal refusing file:// so a hostile href can never reach the shell', face: 'GUI' }, async () => {
+    // the native window payload — the path the sweeps never load (they
+    // exercise the DOM fallback), which is how an empty window shipped
+    await page.goto(`http://127.0.0.1:${GUI_PORT}/?popout=license`);
+    await waitFor(async () => await evalPage(() => !!document.querySelector('.tabstrip .tab.active')), 8000, 'license popout tabs');
+    const shape = await evalPage(() => ({
+      dead: document.body.textContent.includes('Unknown popout'),
+      tabs: Array.from(document.querySelectorAll('.tabstrip .tab')).map((t) => t.dataset.tab),
+      active: (document.querySelector('.tabstrip .tab.active') || {}).dataset.tab || '',
+      links: Array.from(document.querySelectorAll('a.ext-link')).map((a) => a.href),
+      version: (document.querySelector('.tabbody .v.mono') || {}).textContent || '',
+    }));
+    need(!shape.dead, 'rendered the Unknown-popout dead end');
+    need(shape.tabs.join(',') === 'about,license,third', `partitions: ${shape.tabs.join(',')}`);
+    need(shape.active === 'about', 'About is not the default partition');
+    need(/^v\d/.test(shape.version) && !/vv\d/.test(shape.version), `version row: "${shape.version}"`);
+    need(shape.links.includes('https://polyformproject.org/licenses/internal-use/1.0.0.txt'), `license link missing: ${shape.links.join(',')}`);
+    need(shape.links.includes('https://github.com/MikkoP88/s3-bucket-browser'), `project link missing: ${shape.links.join(',')}`);
+    await shot('52-license-about');
+    await evalPage(() => { document.querySelector('.tab[data-tab="license"]').click(); return true; });
+    const lic = await evalPage(() => ({
+      links: Array.from(document.querySelectorAll('a.ext-link')).map((a) => a.href),
+      text: (document.querySelector('.tabbody') || document.body).textContent,
+    }));
+    need(lic.links.length === 1 && lic.links[0] === 'https://polyformproject.org/licenses/internal-use/1.0.0.txt', `license partition links: ${lic.links.join(',')}`);
+    need(lic.text.includes('Copyright (c) 2026 Mikko Pesonen (MikkoP88).'), 'license partition lost the copyright line');
+    await shot('52-license-license');
+    // dispatcher regression (guide still routes) + the scheme guard,
+    // proven WITHOUT opening anything: file:// must be refused
+    await page.goto(`http://127.0.0.1:${GUI_PORT}/?popout=guide`);
+    await waitFor(async () => await evalPage(() => !!document.querySelector('.tabstrip .tab.active')), 8000, 'guide popout tabs');
+    need(!(await evalPage(() => document.body.textContent.includes('Unknown popout'))), 'guide popout stopped rendering');
+    const refused = await evalPage(async () => {
+      const mod = await import('/js/api.js');
+      try { await mod.api.OpenExternal('file:///C:/Windows/win.ini'); return false; } catch { return true; }
+    });
+    need(refused, 'OpenExternal accepted file:// — the guard is down');
+    return 'popout payload renders; guards hold';
+  });
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
     need(pageErrors.length === 0, `${pageErrors.length} page error(s): ${pageErrors[0]}`);
     return 'clean console';

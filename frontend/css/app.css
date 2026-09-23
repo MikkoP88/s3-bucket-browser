@@ -969,6 +969,11 @@ kbd {
 .guide-h { font-weight: 600; font-size: 13px; margin: 0 0 2px; }
 .guide-p { margin: 0 0 4px; color: var(--text); line-height: 1.45; overflow-wrap: anywhere; }
 
+/* External http(s) links (license/about views) — the click is routed
+   through the OpenExternal binding to the default browser */
+.ext-link { color: var(--accent); cursor: pointer; text-decoration: none; overflow-wrap: anywhere; }
+.ext-link:hover, .ext-link:focus-visible { text-decoration: underline; }
+
 /* Banner (inline notice inside dialogs) */
 .banner {
   border: 1px solid var(--border); border-left: 3px solid var(--accent);
