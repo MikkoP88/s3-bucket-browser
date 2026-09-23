@@ -71,6 +71,13 @@ index at [`docs/verification/`](docs/verification/). The release job then
 checks the report for the tag (full matrix, zero FAIL) and links it at the
 top of the release notes.
 
+The provenance guard runs alongside every suite: `node
+scripts/provenance.mjs check` decodes the covert creator/license
+watermarks from the nine marked files (see the Hidden provenance
+markers row in [docs/VERIFICATION.md](docs/VERIFICATION.md)) and fails
+if one was stripped or drifted — `go test ./internal/provenance/` is
+the same guard on the Go side.
+
 Also bump `CHANGELOG.md` for the new version (and `docs/security.md` if the
 safety model moved).
 
