@@ -122,6 +122,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 |---|---|---|---|---|---|
 | List / tree / du / stat | S3 (MinIO) | dir-view `ls`, `tree` shows folders, `du` counts objects+bytes, bucket `stat` shows region | ✅ CLI-S3-06 | — (sweep: browse/tree guards, SWEEP-LIVE-01) | Win 11 x64 |
 | Remote browse | FTP | `ls`/`du`/`stat`/`tree` on the remote engine | ✅ CLI-X-04 | ✅ GUI-04 (browse FTP seed dir through the tree) | Win 11 x64 |
+| **FTP sources survive idle control-connection drops** | **FTP** | vsftpd drops idle control connections after ~5 minutes and the drop can be silent — the next operation meets a dead socket; the engine redials once on the stored source settings and answers (listing verified after the drop, write verified on the fresh connection); server 4xx/5xx replies about the filesystem are never mistaken for a dead connection | ✅ Go test: pkg/core/remotefs/ftp_test.go TestFTPRedialAfterControlDrop | ✅ GUI-50 (the battery's FTP leg runs ~7 min after its last FTP touch — every run exercises the redial for real) | Win 11 x64 |
 | Deep find | S3 (MinIO) | `--name` glob/substring, `--smaller`, `--limit`, subtree prefix, summary line | ✅ CLI-S3-19 | — (sweep: Ctrl+Shift+F dialog, SWEEP-LIVE-01) | Win 11 x64 |
 | find size + time filters | S3 (MinIO) | controlled prefix (1 big + 1 small): `--larger`/`--smaller` counts; `--newer 1h` finds both; `--older 1h` finds none | ✅ CLI-S3-28 | — | Win 11 x64 |
 | **Pagination across the 1000-key page boundary** | **S3 (MinIO)** | 1006 objects (incl. one empty): recursive `ls` returns every one across the S3 1000-key page boundary; the last object stays findable; a gated mass delete clears them all | ✅ CLI-S3-30 | — | Win 11 x64 |
@@ -134,6 +135,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **`--json` machine contract** | **S3 (MinIO)** | every read command (ls/tree/du/stat/versions ls/bucket info) under `--json`: exit 0, zero ANSI escapes, non-empty, and the whole output parses as one JSON document (array or object) whose rows pass semantic checks (counts, keys, version IDs) — scripts may rely on the shape | ✅ CLI-S3-42 | — | Win 11 x64 |
 | Deep search: token + CancelSearch contract | S3 (MinIO) | DeepSearch returns a live token and registers a search task; CancelSearch stops it cleanly; canceling an UNKNOWN token also resolves — a bogus cancel may never throw or wedge the registry | — | ✅ GUI-40 | Win 11 x64 |
 | **Copy As: exact text shapes for name / path / S3 URI** | **S3 (MinIO)** | a clipboard spy on the bridge binding captures exactly what Copy name / Copy path / Copy S3 URI write: bare name, `bucket/key`, `s3://bucket/key` — single row exact, and a multi-selection joins with newlines in row order | — | ✅ GUI-42 | Win 11 x64 |
+| **Copy URL: the real address, resolved from the viewing source** | **S3 (MinIO) + FTP** | the bridge clipboard spy again: Copy URL on an S3 row writes exactly `http://localhost:9000/bucket/key` — the source's OWN endpoint and addressing style, no signature query — and a bare out-of-band GET on that address is answered 403: the address is real, the grant is not; on an FTP file row it writes `ftp://user@host:port/server-path` — username and non-default port from the source's own connection fields, the anchored server path, never the password | — | ✅ GUI-49 + GUI-50 | Win 11 x64 |
 
 ### Transfers — the critical jobs
 
@@ -141,6 +143,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 |---|---|---|---|---|---|
 | Single upload | S3 (MinIO) | `cp` one file → `stat` reports size | ✅ CLI-S3-04 | ✅ GUI-10 (dual-pane DnD of a unicode filename; CLI sees it; bytes identical) | Win 11 x64 |
 | Multi upload (recursive) | S3 (MinIO) | `cp -r` fixture tree (10 files: unicode, empty file, nested dirs) → recursive `ls` count matches | ✅ CLI-S3-05 | — (sweep: folder-row DnD upload ×3 engines, SWEEP-LIVE-01) | Win 11 x64 |
+| **S3 folder markers never ride transfers as files** | **S3 (MinIO)** | transfer planning (copy/move) treats zero-byte folder markers as folders, never payload: marker keys are excluded from the plan, so a tree copy recreates the folder structure without uploading marker objects as files | ✅ Go test: pkg/api/xfer_markers_test.go | — (sweep: folder-row DnD ×3 engines, SWEEP-LIVE-01) | Win 11 x64 |
 | Single download | S3 (MinIO) | `cp` object → local; bytes identical | ✅ CLI-S3-07 | ✅ GUI-11 (DnD S3 row → local pane; file lands on disk; bytes identical) | Win 11 x64 |
 | Multi download (recursive) | S3 (MinIO) | `cp -r` prefix → local dir; full tree diff byte-identical | ✅ CLI-S3-08 | — (sweep, SWEEP-LIVE-01) | Win 11 x64 |
 | Server-side copy S3→S3 | S3 (MinIO) | `cp s3://→s3://` lands a copyable object | ✅ CLI-S3-09 | — | Win 11 x64 |
@@ -179,6 +182,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **Delete Window CANCEL keeps the object** | **S3 (MinIO)** | Del on a row opens the Delete Window; Cancel/Esc leaves the object untouched on BOTH faces — the cancellation contract | — | ✅ GUI-14 | Win 11 x64 |
 | **L2 identity gate: Empty-bucket window** | **S3 (MinIO)** | the destructive Empty-bucket window demands the bucket's OWN name: a wrong word keeps the destructive button disabled; Cancel preserves every object | — | ✅ GUI-22 | Win 11 x64 |
 | **Multi-delete ladder: markers keep history; Shift+Del destroys permanently** | **S3 (MinIO)** | four objects selected at once: the Delete Window counts all four and offers all three delete types; plain marker delete hides every object while each full timeline survives (CLI re-reads data version + delete marker per object); a second batch through Shift+Del destroys versions entirely | — | ✅ GUI-29 | Win 11 x64 |
+| **Delete-marker windows: merged multi view, single-object view, Undo delete restores** | **S3 (MinIO)** | two marker-carrying objects selected together open the merged Delete markers window — both keys listed, bulk checkboxes, Remove selected un-deletes both through its confirm (CLI re-reads both timelines); one object alone opens the fitted single view — no bulk checkboxes, Close footer, per-row Remove — and the window closes itself after the last undo, the data timeline intact | — | ✅ GUI-51 | Win 11 x64 |
 | **L2 execution: Empty bucket destroys EVERY version, keeps the bucket** | **S3 (MinIO)** | scratch bucket seeded with nested objects, extra old versions and delete markers: typing the bucket's own name arms the Empty-bucket window and executes — nothing lists anywhere afterwards (recursive listing empty, version statistics zero, sampled timelines empty) yet the bucket survives and still takes writes | — | ✅ GUI-33 | Win 11 x64 |
 | **Delete Window keepcurrent mode: history destroyed, current version survives** | **S3 (MinIO)** | three CLI-seeded versions behind a Delete Window switched to "keep current": the typed-word gate arms, execution leaves exactly ONE version (the current bytes, no delete marker) — the timeline is gone, the file is not | — | ✅ GUI-37 | Win 11 x64 |
 
@@ -228,6 +232,9 @@ switching; the same S3 source stays connected through it).
 | Secure storage toggle round-trip | OS keyring (Windows) | GetSecureStorage reports availability; where the keyring is usable the toggle flips and restores with every read consistent — where it is not, that is recorded, never papered over | — | ✅ GUI-46 | Win 11 x64 |
 | Language switch: Finnish UI, then back | Wails v3 server | `s3b-lang=fi` + reload: the grid's own chrome switches (Finnish present, English absent); `en` restores — i18n actually drives the shipped UI | — | ✅ GUI-47 | Win 11 x64 |
 | Task registry: running view + ClearFinishedTasks | S3 (MinIO) | a deep search registers as a running task (kind search); once finished, ClearFinishedTasks(null) prunes EVERY finished row (null = all; an empty list is a no-op by contract) — the registry mirrors live work and forgets dead work on command | — | ✅ GUI-48 | Win 11 x64 |
+| Context menu closes on every outside click | S3 (MinIO) | the open context menu dismisses on a plain click outside it — grid, tree and the hidden-objects world (markers, empty states) never leave an orphaned menu behind | — | — (sweep: ctxmenu-click-outside, SWEEP-VIS-01) | Win 11 x64 |
+| Sidebar-originated deletes refresh the sidebar | S3 (MinIO) + remote | deleting a folder through the sidebar tree refreshes the sidebar itself — the folder's subtree disappears from the tree — while the main view's breadcrumb stays where it was | — | — (sweep: tree-delete-syncs-sidebar, SWEEP-VIS-01) | Win 11 x64 |
+| Monitoring windows: 490×300 footprint, auto-height, row detail panels | Wails v3 server | the monitor popouts (transfers, searches) open at their 490×300 footprint — also their resize floor — grow with content instead of scrolling it away, expand per-row detail panels in place, collapse long lists behind "+N more", and carry the header strip that identifies the window | — | — (sweep: popout-auto-height + popout-row-details + popout-window-views, SWEEP-VIS-01) | Win 11 x64 |
 
 ---
 
@@ -274,25 +281,33 @@ release".
 ## Latest verification report
 
 Replaced on every run — this snapshot is from the verification runs of
-**22 Sep 2026** on Windows Server 2025 (x64), after the full-codebase
-action sweep grew the matrix from 94 to 118 rows (every user-facing
-action on both faces: data sources, selection mechanics, copying and
-multi-copying, single/multi delete with versioning, the admin panel,
-data-source migration, cancel/exit gates, Copy As text shapes,
-transfer hygiene). The release-evidence run for `v1.1.0-beta.17`
-(94-row matrix) is committed at
+**23 Sep 2026** on Windows Server 2025 (x64), after this week's feature
+work grew the matrix from 118 to 121 rows: Copy URL — the real address
+of a selection on every source type (S3: the endpoint-resolved form,
+proven real by an out-of-band bare GET answered 403; FTP: the
+user@host:port form with the anchored server path, never the password),
+the merged and single Delete-marker windows including the hidden-marker
+opt-in, and the FTP engine's redial on idle control-connection drops.
+The same runs surfaced and fixed three harness defects the new rows
+exposed: the GUI battery is self-sufficient (`--only gui` runs green
+from empty stores with no CLI battery before it), the bucket-policy row
+restores the private default it tests against, and the hostile-names
+presign oracle parses the presign JSON (a regex over the raw text had
+been mangling the query into an anonymous request). The
+release-evidence run for `v1.1.0-beta.17` (94-row matrix) is committed
+at
 [`docs/verification/v1.1.0-beta.17/windows-x64/REPORT.md`](verification/v1.1.0-beta.17/windows-x64/REPORT.md):
 
 ```
-full matrix x2 (fresh build; 118 rows incl. the two sweep rows):
-  111 PASS · 7 SKIP · 0 FAIL — 1219-1250 s (two consecutive greens)
+full matrix (fresh build; 121 rows incl. the two sweep rows):
+  114 PASS · 7 SKIP · 0 FAIL — 1342 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
-  SWEEP-VIS-01  gui-visual   610/610 checks
+  SWEEP-VIS-01  gui-visual   656/656 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
-quick gate x3 on the same matrix (--quick; 116 rows, sweeps skipped):
-  109 PASS · 7 SKIP · 0 FAIL — 874-889 s (three consecutive greens)
+standalone GUI battery (--only gui; empty stores, nothing before it):
+  49 PASS · 2 SKIP · 0 FAIL — 499 s
 ```
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,

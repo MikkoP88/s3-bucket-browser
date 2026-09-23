@@ -32,11 +32,12 @@ import (
 type FTP struct {
 	c    *ftp.ServerConn
 	root string // absolute remote path of the source root (no trailing slash)
+	src  profile.Source // redial template (see withRetry)
 }
 
-// DialFTP connects to src (ftp or ftps) and anchors "/" at src.Root (the
-// login directory when Root is empty).
-func DialFTP(ctx context.Context, src profile.Source) (FS, error) {
+// dialFTPConn dials and logs in one control connection — the shared body
+// of the first dial and every redial (withRetry).
+func dialFTPConn(ctx context.Context, src profile.Source) (*ftp.ServerConn, error) {
 	port := src.Port
 	if port == 0 {
 		port = src.DefaultPort()
@@ -71,7 +72,16 @@ func DialFTP(ctx context.Context, src profile.Source) (FS, error) {
 		_ = conn.Quit()
 		return nil, fmt.Errorf("ftp %s login %q: %w", addr, user, err)
 	}
+	return conn, nil
+}
 
+// DialFTP connects to src (ftp or ftps) and anchors "/" at src.Root (the
+// login directory when Root is empty).
+func DialFTP(ctx context.Context, src profile.Source) (FS, error) {
+	conn, err := dialFTPConn(ctx, src)
+	if err != nil {
+		return nil, err
+	}
 	root := strings.TrimRight(src.Root, "/")
 	if root == "" {
 		if wd, err := conn.CurrentDir(); err == nil && wd != "" {
@@ -81,7 +91,7 @@ func DialFTP(ctx context.Context, src profile.Source) (FS, error) {
 	if root != "" && !strings.HasPrefix(root, "/") {
 		root = "/" + root
 	}
-	return &FTP{c: conn, root: root}, nil
+	return &FTP{c: conn, root: root, src: src}, nil
 }
 
 // abs maps an anchored path onto the remote filesystem.
@@ -111,21 +121,69 @@ func ftpEntry(dir string, e *ftp.Entry) listing.Entry {
 	return out
 }
 
+// isConnErr reports whether err means the CONTROL CONNECTION is gone —
+// an idle-timeout write (the classic "server dropped us after ~5 minutes"
+// failure), an EOF/RST, or the server's polite 421 close. Server
+// rejections about the filesystem (4xx/5xx such as 550 not-found) are
+// honest answers, never a reason to redial.
+func isConnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return true
+	}
+	var tp *textproto.Error
+	if errors.As(err, &tp) && tp.Code == 421 {
+		return true
+	}
+	return false
+}
+
+// withRetry runs one engine operation against the control connection.
+// FTP servers drop idle control connections (vsftpd after ~5 minutes) and
+// often silently — the next command write times out at the OS level or
+// reads EOF. That failure is about the CONNECTION, not the source, so
+// redial once with the stored source settings and retry; only a second
+// failure is reported. f.c is swapped here, which is race-safe because
+// every engine call on a source serializes on the app's per-source lock
+// (remote.go srcLock) and DialFTP publishes the engine only after
+// constructing it.
+func withRetry[T any](f *FTP, ctx context.Context, op func() (T, error)) (T, error) {
+	v, err := op()
+	if err == nil || !isConnErr(err) {
+		return v, err
+	}
+	_ = f.c.Quit() // already dead; best effort
+	c, derr := dialFTPConn(ctx, f.src)
+	if derr != nil {
+		return v, err // the original connection error is the honest one
+	}
+	f.c = c
+	return op()
+}
+
 func (f *FTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
-	raw, err := f.c.List(f.abs(dir))
-	if err != nil {
-		return nil, err
-	}
-	parent := CleanPath(dir)
-	entries := make([]listing.Entry, 0, len(raw))
-	for _, e := range raw {
-		if e.Name == "." || e.Name == ".." || e.Name == "" {
-			continue
+	return withRetry(f, ctx, func() ([]listing.Entry, error) {
+		raw, err := f.c.List(f.abs(dir))
+		if err != nil {
+			return nil, err
 		}
-		entries = append(entries, ftpEntry(parent, e))
-	}
-	listing.SortEntries(entries)
-	return entries, nil
+		parent := CleanPath(dir)
+		entries := make([]listing.Entry, 0, len(raw))
+		for _, e := range raw {
+			if e.Name == "." || e.Name == ".." || e.Name == "" {
+				continue
+			}
+			entries = append(entries, ftpEntry(parent, e))
+		}
+		listing.SortEntries(entries)
+		return entries, nil
+	})
 }
 
 // ftpGetEntry stats one path. jlaffaye's GetEntry needs server-side MLST
@@ -161,15 +219,21 @@ func ftpGetEntry(c *ftp.ServerConn, absPath string) (*ftp.Entry, error) {
 }
 
 func (f *FTP) Stat(ctx context.Context, p string) (listing.Entry, error) {
-	cleaned := CleanPath(p)
-	e, err := ftpGetEntry(f.c, f.abs(cleaned))
+	v, err := withRetry(f, ctx, func() (listing.Entry, error) {
+		e, err := ftpGetEntry(f.c, f.abs(CleanPath(p)))
+		if err != nil {
+			return listing.Entry{}, err
+		}
+		cleaned := CleanPath(p)
+		name := path.Base(strings.TrimSuffix(cleaned, "/"))
+		entry := ftpEntry(path.Dir(cleaned), e)
+		entry.Name = name
+		return entry, nil
+	})
 	if err != nil {
 		return listing.Entry{}, ftpNotExist(p, err)
 	}
-	name := path.Base(strings.TrimSuffix(cleaned, "/"))
-	entry := ftpEntry(path.Dir(cleaned), e)
-	entry.Name = name
-	return entry, nil
+	return v, nil
 }
 
 // ftpNotExist maps the FTP 550 "unavailable" reply to a PathError over
@@ -184,24 +248,36 @@ func ftpNotExist(p string, err error) error {
 	return err
 }
 
+// ftpOpen carries Open's pair through withRetry's single-value channel.
+type ftpOpen struct {
+	rc   io.ReadCloser
+	size int64
+}
+
 func (f *FTP) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) {
-	// SIZE must precede RETR: the server sends the transfer-complete
-	// reply (226) right after the data connection closes, and that reply
-	// would still sit unread on the control channel when SIZE is issued,
-	// desyncing it (the size would silently come back 0).
-	size, err := f.c.FileSize(f.abs(p))
-	if err != nil {
-		size = 0 // server refused SIZE (ASCII mode); stream without it
-	}
-	resp, err := f.c.Retr(f.abs(p))
-	if err != nil {
-		return nil, 0, err
-	}
-	return resp, size, nil
+	v, err := withRetry(f, ctx, func() (ftpOpen, error) {
+		// SIZE must precede RETR: the server sends the transfer-complete
+		// reply (226) right after the data connection closes, and that reply
+		// would still sit unread on the control channel when SIZE is issued,
+		// desyncing it (the size would silently come back 0).
+		size, err := f.c.FileSize(f.abs(p))
+		if err != nil {
+			size = 0 // server refused SIZE (ASCII mode); stream without it
+		}
+		resp, err := f.c.Retr(f.abs(p))
+		if err != nil {
+			return ftpOpen{}, err
+		}
+		return ftpOpen{rc: resp, size: size}, nil
+	})
+	return v.rc, v.size, err
 }
 
 func (f *FTP) Create(ctx context.Context, p string, r io.Reader) error {
-	return f.c.Stor(f.abs(p), r)
+	_, err := withRetry(f, ctx, func() (struct{}, error) {
+		return struct{}{}, f.c.Stor(f.abs(p), r)
+	})
+	return err
 }
 
 // MkdirAll creates dir segment by segment: FTP's MKD is single-level and
@@ -212,19 +288,22 @@ func (f *FTP) MkdirAll(ctx context.Context, dir string) error {
 	if cleaned == "/" {
 		return nil
 	}
-	cur := ""
-	for _, seg := range strings.Split(strings.Trim(cleaned, "/"), "/") {
-		cur += "/" + seg
-		// Every segment is anchored at the source root — a bare path
-		// would create the tree at the server root instead.
-		if err := f.c.MakeDir(f.abs(cur)); err != nil {
-			e, statErr := ftpGetEntry(f.c, f.abs(cur))
-			if statErr != nil || e.Type != ftp.EntryTypeFolder {
-				return fmt.Errorf("mkdir %s: %w", cur, err)
+	_, err := withRetry(f, ctx, func() (struct{}, error) {
+		cur := ""
+		for _, seg := range strings.Split(strings.Trim(cleaned, "/"), "/") {
+			cur += "/" + seg
+			// Every segment is anchored at the source root — a bare path
+			// would create the tree at the server root instead.
+			if err := f.c.MakeDir(f.abs(cur)); err != nil {
+				e, statErr := ftpGetEntry(f.c, f.abs(cur))
+				if statErr != nil || e.Type != ftp.EntryTypeFolder {
+					return struct{}{}, fmt.Errorf("mkdir %s: %w", cur, err)
+				}
 			}
 		}
-	}
-	return nil
+		return struct{}{}, nil
+	})
+	return err
 }
 
 func (f *FTP) Remove(ctx context.Context, p string) error {
@@ -232,21 +311,27 @@ func (f *FTP) Remove(ctx context.Context, p string) error {
 	if cleaned == "/" {
 		return fmt.Errorf("refusing to remove the source root")
 	}
-	e, err := ftpGetEntry(f.c, f.abs(cleaned))
-	if err != nil {
-		return err
-	}
-	if e.Type == ftp.EntryTypeFolder {
-		return f.c.RemoveDirRecur(f.abs(cleaned))
-	}
-	return f.c.Delete(f.abs(cleaned))
+	_, err := withRetry(f, ctx, func() (struct{}, error) {
+		e, err := ftpGetEntry(f.c, f.abs(cleaned))
+		if err != nil {
+			return struct{}{}, err
+		}
+		if e.Type == ftp.EntryTypeFolder {
+			return struct{}{}, f.c.RemoveDirRecur(f.abs(cleaned))
+		}
+		return struct{}{}, f.c.Delete(f.abs(cleaned))
+	})
+	return err
 }
 
 func (f *FTP) Rename(ctx context.Context, oldp, newp string) error {
 	if CleanPath(newp) == "/" {
 		return fmt.Errorf("invalid target")
 	}
-	return f.c.Rename(f.abs(oldp), f.abs(newp))
+	_, err := withRetry(f, ctx, func() (struct{}, error) {
+		return struct{}{}, f.c.Rename(f.abs(oldp), f.abs(newp))
+	})
+	return err
 }
 
 func (f *FTP) Close() error {
