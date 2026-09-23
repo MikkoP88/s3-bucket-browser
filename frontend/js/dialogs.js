@@ -1325,14 +1325,16 @@ const kvPairs = (pairs) => pairs.flatMap(([k, v, danger]) => [
   el('span', { class: `v${danger ? ' danger' : ''}`, text: String(v) }),
 ]);
 
-// moreLink: the title's "+N more" suffix as its own control — it opens
-// the same panel the info glyph does, because that panel is where the
-// contained items get named. Opening only, never toggling: the glyph
-// stays the closer.
-const moreLink = (id, items, onOpen) => el('button', {
+// moreLink: the title's "+N more" suffix as its own control — a
+// two-way toggle over the same panel the info glyph opens, because
+// that panel is where the contained items get named. aria-expanded
+// and the accent open-cue mirror the glyph; focus stays on it.
+const moreLink = (id, items, isOpen, onToggle) => el('button', {
   class: 'tr-morelink', type: 'button', 'data-id': id,
   title: t('transfer.showItems'), 'aria-label': t('transfer.showItems'),
-  onclick: () => onOpen(id),
+  'aria-expanded': String(isOpen),
+  'aria-controls': `tr-det-${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+  onclick: () => onToggle(id, 'morelink'),
 }, t('transfer.more', { n: items - 1 }));
 
 // itemsBlock: the contained-items list for multi-item rows — "+2 more"
@@ -1406,17 +1408,14 @@ function openTransferManagerDom(onClose) {
   // which rows sit expanded — keyed by job id so the progress redraws
   // (replaceChildren) never lose the user's disclosure state
   const expanded = new Set();
-  const toggle = (id) => {
+  const toggle = (id, via) => {
     if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
-    draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
+    const cls = via === 'morelink' ? '.tr-morelink' : '.tr-more';
+    draw().then(() => list.querySelector(`${cls}[data-id="${CSS.escape(id)}"]`)?.focus());
   };
 
   // item names cache: one fetch per job per window life
   const itemCache = new Map();
-  const openDetail = (id) => {
-    expanded.add(id);
-    draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
-  };
 
 
   // Clear retires exactly what the window shows (viewHistory decides
@@ -1557,7 +1556,7 @@ function openTransferManagerDom(onClose) {
     const job = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
         el('span', { class: 'tr-name', title: title, text: title }),
-        (j.items > 1) ? moreLink(j.id, j.items, openDetail) : null,
+        (j.items > 1) ? moreLink(j.id, j.items, expanded.has(j.id), toggle) : null,
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
         running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
@@ -1734,17 +1733,14 @@ function runningTasksDom() {
   // which rows sit expanded — keyed by job id so the progress redraws
   // (replaceChildren) never lose the user's disclosure state
   const expanded = new Set();
-  const toggle = (id) => {
+  const toggle = (id, via) => {
     if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
-    draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
+    const cls = via === 'morelink' ? '.tr-morelink' : '.tr-more';
+    draw().then(() => list.querySelector(`${cls}[data-id="${CSS.escape(id)}"]`)?.focus());
   };
 
   // item names cache: one fetch per job per window life
   const itemCache = new Map();
-  const openDetail = (id) => {
-    expanded.add(id);
-    draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
-  };
 
 
   // Clear retires exactly what the window shows (viewHistory decides
@@ -1823,7 +1819,7 @@ function runningTasksDom() {
     const task = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
         el('span', { class: 'tr-name', title: title, text: title }),
-        (j.items > 1) ? moreLink(j.id, j.items, openDetail) : null,
+        (j.items > 1) ? moreLink(j.id, j.items, expanded.has(j.id), toggle) : null,
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
         running ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { await api.CancelTask(j.id); } }) : null,
