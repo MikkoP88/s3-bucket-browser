@@ -486,8 +486,16 @@ async function cliS3() {
       need(/policy saved/.test(r.out), `policy put: ${r.out}${r.err}`);
       r = await cli(['bucket', 'policy', 'get', B]);
       need(r.out.includes(BUCKET), 'policy get');
+      // restore the private default: this bucket is shared with the GUI
+      // battery, whose Copy-URL row proves the anonymous 403 of a real,
+      // ungranted address — a leftover public-read policy would serve
+      // bytes to that probe (the full-run GUI-49 flake of 23 Sep 2026)
+      r = await cli(['bucket', 'policy', 'delete', B]);
+      need(/policy removed/.test(r.out), `policy delete: ${r.out}${r.err}`);
+      r = await cli(['bucket', 'policy', 'get', B]);
+      need(/no policy set/.test(r.out), `policy survived the delete: ${r.out.slice(0, 120)}`);
     }
-    return 'info/tags/policy verified';
+    return 'info/tags/policy verified (private default restored)';
   });
 
   await verify({ id: 'CLI-S3-22', area: 'admin', action: 'Object lock: retention + legal hold', ds: 'S3 (MinIO)', scenario: 'mb --object-lock; retention set/show/clear; legalhold on/off (GOVERNANCE only — cleanup stays possible)', face: 'CLI' }, async () => {
@@ -720,11 +728,22 @@ async function cliS3() {
     }
     // the %2F-literal must presign+fetch WITHOUT being decoded into a slash
     r = await cli(['presign', `${B}/verify-names/pct %2F edge 100%.txt`, '--json']);
-    const url = (r.out.match(/"url":\s*"([^"]+)"/) || [])[1];
-    need(url, `presign hostile: ${r.out}${r.err}`);
-    const res = await fetch(url);
-    need(res.ok, `presign fetch of %2F name: HTTP ${res.status}`);
-    need((await res.text()) === 'percent hazard\n', 'presigned %2F name delivered wrong bytes');
+    // JSON.parse, never a regex over the raw text: the JSON escapes "&"
+    // as \u0026 and a regex hands fetch a mangled query — the URL then
+    // carries no signature and the fetch silently degrades to an
+    // ANONYMOUS request (200 while a public policy leaked from S3-21,
+    // 403 once the private default is restored: the oracle would never
+    // have tested the signature at all)
+    let pres = null;
+    try { pres = JSON.parse(r.out); } catch { pres = null; }
+    need(pres && pres.url, `presign hostile: ${r.out}${r.err}`);
+    const res = await fetch(pres.url);
+    // one body read for both the failure message (the error XML names
+    // the reason — SignatureDoesNotMatch vs AccessDenied vs expired)
+    // and the byte check
+    const body = await res.text();
+    need(res.ok, `presign fetch of %2F name: HTTP ${res.status}: ${body.replace(/\s+/g, ' ').slice(0, 240)}`);
+    need(body === 'percent hazard\n', 'presigned %2F name delivered wrong bytes');
     await cli(['rm', '-r', `${B}/verify-names/`, '--force']);
     return `${Object.keys(legal).length + nasty.length + 1} hostile keys exact-listed; legal set byte-identical; %2F presigned clean`;
   });
@@ -1788,6 +1807,42 @@ async function stopServer() {
 
 async function guiBattery() {
   const { chromium } = await import('playwright-core');
+  // ---- self-sufficiency prologue: --only gui must run green alone ----
+  // Both S3B_CONFIG stores are wiped fresh every run, so leftovers from an
+  // earlier invocation can never help: a FULL run builds the GUI battery's
+  // prerequisites in this same process — cliS3 adds the verifys3 profile,
+  // creates the versioned run bucket with its data/ + docs/ roots, and
+  // cliCross adds the xf FTP source this battery seeds through. Recreate
+  // anything missing here so the documented standalone unit (--only gui)
+  // is real; in a full run every branch resolves to a no-op and the rows
+  // below see exactly the state they saw before.
+  const s3p = (args) => cli(['--profile', 'verifys3', ...args]);
+  {
+    const ftpUp = await portOpen(FTP_PORT);
+    const srcs = await cli(['source', 'list']).catch(() => ({ out: '' }));
+    if (!srcs.out.includes('verifys3')) {
+      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+      need(r.code === 0, `prologue: verifys3 source add: ${r.err}`);
+    }
+    if (ftpUp && !srcs.out.includes('xf')) {
+      const r = await cli(['source', 'add', 'xf', '--type', 'ftp', '--host', '127.0.0.1', '--port', String(FTP_PORT), '--username', E2E_USER, '--password', E2E_PASS]);
+      need(r.code === 0, `prologue: xf source add: ${r.err}`);
+    }
+    const rootLs = await s3p(['ls', `s3://${BUCKET}`]).catch(() => ({ code: 1, out: '' }));
+    if (rootLs.code !== 0) {
+      const r = await s3p(['mb', `s3://${BUCKET}`]);
+      need(r.code === 0, `prologue: mb ${BUCKET}: ${r.out}${r.err}`);
+    }
+    const v = await s3p(['bucket', 'versioning', `s3://${BUCKET}`, 'on']);
+    need(v.code === 0, `prologue: versioning on: ${v.out}${v.err}`);
+    if (!/docs/.test(rootLs.out)) await s3p(['mkdir', `s3://${BUCKET}/docs/`]).catch(() => {});
+    if (!/data/.test(rootLs.out)) await s3p(['cp', '-r', path.join(FIX, 'data'), `s3://${BUCKET}/data/`, '--json']).catch(() => {});
+    if (ftpUp) {
+      const f = await cli(['ls', `xf://${RUNID}/gui`]).catch(() => ({ code: 1 }));
+      if (f.code !== 0) await cli(['cp', '-r', path.join(FIX, 'data'), `xf://${RUNID}/gui`, '--json']).catch(() => {});
+    }
+  }
+
 
   await verify({ id: 'GUI-01', area: 'gui', action: 'Live stack boots', ds: 'Wails v3 server', scenario: 'server /health ok; page loads; GetVersion binding round-trips the build version', face: 'GUI' }, async () => {
     srv = await startServer();
@@ -3345,6 +3400,63 @@ async function guiBattery() {
     return `imported "${hit.name}", live-tested, removed cleanly`;
   });
 
+  // ---- the bridge wire spy, shared by the Copy rows (GUI-42/49/50) ----
+  // Oracle: the Wails binding objects are frozen and api.js caches the App
+  // object in module scope on first call, so an in-page property patch
+  // cannot intercept copyAsText's api.ClipboardSetText. But every binding
+  // call crosses window.fetch to the Wails server — an ordinary host
+  // object. Spy fetch (+XHR/WS hedge) and assert the EXACT JSON args of
+  // the ClipboardSetText call; the spy is best-effort by design and may
+  // never break the app.
+  const installWireSpy = () => evalPage(() => {
+    window.__wireSpy = [];
+    const rec = (url, body) => { try { window.__wireSpy.push({ url: String(url), body: body == null ? '' : String(body) }); } catch { /* never break the app */ } };
+    window.__wireUndo = [];
+    const of = window.fetch;
+    if (of) {
+      window.fetch = function (input, init) { rec(typeof input === 'string' ? input : (input && input.url) || '', init && init.body); return of.apply(this, arguments); };
+      window.__wireUndo.push(() => { window.fetch = of; });
+    }
+    const ox = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (m, u) { this.__url = String(u); return ox.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function (b) { rec(this.__url || '', b); return os.apply(this, arguments); };
+    window.__wireUndo.push(() => { XMLHttpRequest.prototype.open = ox; XMLHttpRequest.prototype.send = os; });
+    try {
+      const ows = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (d) { rec('ws:' + String(this.url), typeof d === 'string' ? d : '[binary]'); return ows.apply(this, arguments); };
+      window.__wireUndo.push(() => { WebSocket.prototype.send = ows; });
+    } catch { /* no WebSocket in this build */ }
+    return true;
+  });
+  const undoWireSpy = () => evalPage(() => { (window.__wireUndo || []).forEach((u) => u()); return true; });
+  // binding bodies cross fetch as {"object":N,"method":N,"args":{...}} where
+  // args is EITHER the positional array or the ByName wrapper {"call-id",
+  // "methodName":"<go path>","args":[...]} — the method's full Go name rides
+  // along, so anchor on BOTH the method name and the exact positional args
+  const waitForClipArgs = async (expected, what) => {
+    const want = JSON.stringify([expected]);
+    for (let i = 0; i < 10; i++) {
+      const seen = await evalPage(() => window.__wireSpy
+        .map((r) => { try { return JSON.parse(r.body); } catch { return null; } })
+        .filter((c) => c && c.args && String(c.args.methodName || '').includes('ClipboardSetText'))
+        .map((c) => (Array.isArray(c.args) ? c.args : c.args.args)));
+      if (seen.some((a) => JSON.stringify(a) === want)) return;
+      await sleep(300);
+    }
+    const dump = await evalPage(() => window.__wireSpy.slice(-15));
+    need(false, `${what}: no ClipboardSetText binding call carried args ${want} — recent wire: ${JSON.stringify(dump.map((r) => ({ u: r.url.slice(0, 70), b: r.body.slice(0, 160) })))}`);
+  };
+  // ctxItem happily clicks a DISABLED item (a silent no-op): wait for the
+  // item to be enabled so a lost selection fails with its name up
+  const copyViaMenu = async (re) => {
+    await waitFor(async () => await evalPage((src) => {
+      const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+        .find((i) => new RegExp(src, 'i').test(i.textContent || ''));
+      return !!it && !it.classList.contains('disabled');
+    }, re.source), 4000, `an ENABLED "${re.source}" item — the row selection was lost`);
+    await ctxItem(re);
+    await sleep(300);
+  };
   await verify({ id: 'GUI-42', area: 'objects', action: 'Copy As: exact text shapes for name / path / S3 URI (single + multi)', ds: 'S3 (MinIO)', scenario: 'a clipboard spy on the bridge binding captures exactly what the app sends: single row → the bare name, bucket/key, s3://bucket/key; Ctrl+A multi-select → newline-joined names — the exact strings an editor, a ticket and a terminal receive', face: 'GUI' }, async () => {
     const P = `s3://${BUCKET}/verify-gui/gui-copy`;
     await s3(['mkdir', `${P}/`]);
@@ -3591,6 +3703,253 @@ async function guiBattery() {
     return sawRunning ? 'search registered, finished, pruned (clear-all)' : 'search finished too fast to observe running; prune verified';
   });
 
+  // Navigation oracle: a breadcrumb substring LIES when the row starts
+  // deeper than its target (an earlier row may have left the view inside
+  // verify-gui/<subfolder>, and "…/verify-gui/sub" includes "verify-gui"),
+  // and during a stalled remote listing the DOM keeps the PREVIOUS rows.
+  // The only trustworthy proof of "we are inside X" is X's OWN listing:
+  // retry the dblclick until the expected CHILD row renders.
+  const enterFolderByChild = async (label, childNeedle) => {
+    try {
+      return await waitFor(async () => {
+        if ((await rowKeys()).some((k) => k.includes(childNeedle))) return true;
+        try { await (await rowAction(label)).dblclick({ timeout: 4000 }); } catch { /* row not rendered yet / mid-render */ }
+        await sleep(300);
+        return false;
+      }, 25000, `inside ${label} (its ${childNeedle} row visible)`);
+    } catch (e) {
+      // one-line state dump + screenshot: a covered row starves the
+      // dblclick and the bare timeout says nothing about WHY (run 4 was
+      // exactly this — a floating popout over the target rows)
+      await shot(`navfail-${label}`.replace(/[^a-z0-9-]/gi, '')).catch(() => {});
+      const st = await evalPage(() => JSON.stringify({
+        crumb: (document.querySelector('#breadcrumb')?.textContent || '').trim(),
+        rows: Array.from(document.querySelectorAll('#grid-body .grid-row')).slice(0, 10)
+          .map((r) => r.dataset.key || (r.querySelector('.tname')?.textContent || '')),
+        popouts: Array.from(document.querySelectorAll('#popout-root .popout')).map((p) => {
+          const r = p.getBoundingClientRect();
+          return `${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}`;
+        }),
+      })).catch(() => '?');
+      throw new Error(`${e.message}: ${st}`);
+    }
+  };
+  // A floating popout over the grid intercepts pointer events and starves
+  // row clicks — the battery hit this before (GUI-34 leaves the transfer
+  // manager; navCertGui carries this insurance for the mid-battery rows).
+  // The rows right before these (GUI-44..48) never navigate, so whatever
+  // they leave floating sails straight into the walk: close raised popouts
+  // through their real affordance, dismiss any modal, clear any armed
+  // filter — all programmatically, immune to what covers what.
+  const sweepOverlays = async () => {
+    try {
+      await evalPage(() => { document.querySelectorAll('#popout-root .popout .modal-head .x').forEach((b) => b.click()); return true; });
+      await sleep(150);
+    } catch { /* best effort */ }
+    try { await closeModal(); } catch { /* best effort */ }
+    try {
+      await evalPage(() => {
+        const f = document.querySelector('#filter');
+        if (f && f.value) { f.value = ''; f.dispatchEvent(new Event('input', { bubbles: true })); }
+        return true;
+      });
+      await sleep(200);
+    } catch { /* best effort */ }
+  };
+
+  await verify({ id: 'GUI-49', area: 'objects', action: 'Copy URL: the real address, resolved from the viewing source (S3)', ds: 'S3 (MinIO)', scenario: 'Copy URL on an object resolves through the source\'s OWN endpoint and addressing style: the clipboard receives exactly http://localhost:9000/bucket/key (MinIO path-style, no signature query) — and a bare GET from OUTSIDE the app, with no credentials, reaches the real object address and is answered 403: the address is real, the grant is not (a presigned URL would have served bytes)', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/gui-url`;
+    await s3(['mkdir', `${P}/`]);
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/url.txt`]);
+    await treeOpen(SRCNAME);
+    await sweepOverlays();
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 15000, 's3 root');
+    await enterFolderByChild('verify-gui', 'gui-url');
+    await enterFolderByChild('gui-url', 'url.txt');
+    const want = `http://localhost:9000/${BUCKET}/verify-gui/gui-url/url.txt`;
+    await installWireSpy();
+    try {
+      await clickRow('url.txt');
+      await rightClickRow('url.txt');
+      await copyViaMenu(/copy url/i);
+      await waitForClipArgs(want, 'copy url');
+      // out-of-band: the address is REAL — MinIO answers it, access
+      // controlled (403 for a bare anonymous GET: no grant rides along)
+      const res = await fetch(want);
+      need(res.status === 403, `bare GET on the copied URL answered ${res.status}, not the anonymous 403 of a real ungranted object address`);
+      await shot('49-copy-url-s3');
+      return 'exact endpoint-resolved URL; out-of-band bare GET → 403 (real address, no grant)';
+    } finally {
+      await undoWireSpy();
+    }
+  });
+
+  if (haveFtp) {
+    await verify({ id: 'GUI-50', area: 'sources', action: 'Copy URL: the real address of a remote source row', ds: 'FTP', scenario: 'a file row of the FTP source: Copy URL puts ftp://user@host:port/server-path on the clipboard — username and the non-default port from the source\'s own connection fields, the anchored server path exactly as the engine addresses it, and never the password', face: 'GUI' }, async () => {
+      await treeOpen(FTPNAME);
+      await sweepOverlays();
+      // PROVE the switch before trusting any row: the crumb must END with
+      // the source name (the root crumb), and a stalled remote listing
+      // keeps the previous grid under a loading state
+      await waitFor(async () => {
+        await refresh();
+        return (await txt('#breadcrumb')).trim().endsWith(FTPNAME);
+      }, 25000, `the view on the ${FTPNAME} root`);
+      // the row's own seed is deterministic: this run uploaded the fixture
+      // tree to <runid>/gui — descend into IT, never whatever else the
+      // shared engine holds at its root (old runids, other harnesses).
+      // The engine sat idle since the early rows, so the server has since
+      // dropped the control connection (vsftpd idle timeout) — the first
+      // listing fails on the dead socket and the app redials on the next
+      // attempt, so KEEP REFRESHING until a real listing lands; polling a
+      // stale DOM without new requests would wait forever (run 4 did).
+      await waitFor(async () => {
+        await refresh();
+        return (await rowKeys()).some((k) => k.startsWith(RUNID));
+      }, 50000, `this run's ${RUNID}/ seed folder`);
+      await enterFolderByChild(RUNID, 'gui');
+      await enterFolderByChild('gui', 'readme.md');
+      // the expected address is built from the ROW MODEL's anchored key —
+      // dataset.key is the bare display name; the backend joins the model
+      // key (rooted at the source root, here empty) onto the URL path
+      const key = await evalPage(() => {
+        const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+          .find((x) => String(x._model?.key ?? '').endsWith('readme.md'));
+        return r ? String(r._model.key) : '';
+      });
+      need(key.startsWith('/'), `readme.md row model key not anchored: "${key}"`);
+      const want = `ftp://${E2E_USER}@127.0.0.1:${FTP_PORT}${key}`;
+      await installWireSpy();
+      try {
+        // bounded, retried clicks: a re-rendering remote grid must fail
+        // the row fast and let the retry land it, never hang 20 s
+        await waitFor(async () => {
+          try { await (await rowAction('readme.md')).click({ timeout: 4000 }); return true; } catch { return false; }
+        }, 15000, 'a stable click on readme.md');
+        await waitFor(async () => {
+          try { await (await rowAction('readme.md')).click({ button: 'right', timeout: 4000 }); return true; } catch { return false; }
+        }, 15000, 'a stable right-click on readme.md');
+        await copyViaMenu(/copy url/i);
+        await waitForClipArgs(want, 'remote copy url');
+        await shot('50-copy-url-ftp');
+        return `${want} — user + non-default port, anchored path, no password`;
+      } finally {
+        await undoWireSpy();
+      }
+    });
+  } else {
+    await verify({ id: 'GUI-50', area: 'sources', action: 'Copy URL: the real address of a remote source row', ds: 'FTP', scenario: 'FTP container not running', face: 'GUI' }, () => skip('FTP :2121 not reachable'));
+  }
+
+  await verify({ id: 'GUI-51', area: 'deletion', action: 'Delete-marker windows: merged multi view, single-object view, Undo delete restores', ds: 'S3 (MinIO)', scenario: 'two objects whose timelines carry markers (delete then overwrite, so the rows stay visible): selecting both opens the merged Delete markers window — both keys listed, bulk checkboxes; one object alone opens the fitted single view — no checkboxes, Close footer; Remove selected un-deletes both and the single view\'s own Remove restores its object, every recovery proven by the CLI timeline afterwards', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui/gui-mark`;
+    await s3(['mkdir', `${P}/`]);
+    for (const n of ['m1.txt', 'm2.txt']) {
+      await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/${n}`]);
+      await s3(['rm', `${P}/${n}`]); // marker: the object hides
+      await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `${P}/${n}`]); // newer data: the row is back, marker in history
+    }
+    await treeOpen(SRCNAME);
+    await sweepOverlays();
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 15000, 's3 root');
+    await enterFolderByChild('verify-gui', 'gui-mark');
+    await enterFolderByChild('gui-mark', 'm1.txt');
+    await waitFor(async () => {
+      await refresh();
+      const keys = await rowKeys();
+      return ['m1.txt', 'm2.txt'].every((n) => keys.some((k) => k.endsWith(n)));
+    }, 20000, 'marker-carrying rows');
+    // the marker counts land on a second async pass (the version summary) —
+    // wait until the menu actually offers the entry, never a fixed sleep
+    const entryEnabled = (re) => evalPage((src) => {
+      const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+        .find((i) => new RegExp(src, 'i').test(i.textContent || ''));
+      return !!it && !it.classList.contains('disabled');
+    }, re.source);
+    const rightClickStable = (l) => waitFor(async () => {
+      try { await (await rowAction(l)).click({ button: 'right', timeout: 4000 }); return true; } catch { return false; }
+    }, 15000, `a stable right-click on ${l}`);
+    // --- merged multi window ---
+    await clickRow('m1.txt');
+    await ctrlClickRow('m2.txt');
+    let opened = false;
+    for (let i = 0; i < 12 && !opened; i++) {
+      await rightClickStable('m1.txt');
+      opened = await entryEnabled(/delete markers \(2 selected\)/i);
+      if (!opened) { await page.keyboard.press('Escape'); await sleep(500); await refresh(); }
+    }
+    need(opened, 'the merged-window entry never appeared (version summary missing?)');
+    await ctxItem(/delete markers \(2 selected\)/i);
+    // every marker surface honors the Settings → View toggle: while off
+    // the window shows the hidden-notice + its own inline opt-in instead
+    // of rows — click the window's real affordance, never reach around
+    await waitFor(async () => {
+      if (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length >= 2)) return true;
+      await evalPage(() => {
+        const b = Array.from(document.querySelectorAll('#modal-root button'))
+          .find((x) => /show delete markers/i.test(x.textContent || ''));
+        if (b) b.click();
+        return true;
+      });
+      return false;
+    }, 12000, 'merged window rows');
+    const multiShape = await evalPage(() => ({
+      title: (document.querySelector('#modal-root .modal-head span') || {}).textContent || '',
+      checks: document.querySelectorAll('#modal-root .ver-check input').length,
+      keys: Array.from(document.querySelectorAll('#modal-root .ver-row .ver-main > div:first-child')).map((d) => d.textContent.trim()),
+    }));
+    need(/delete markers \(2 selected\)/i.test(multiShape.title), `merged title: "${multiShape.title}"`);
+    need(multiShape.checks >= 2, `merged window must carry bulk checkboxes: ${multiShape.checks}`);
+    need(multiShape.keys.some((k) => k.includes('m1.txt')) && multiShape.keys.some((k) => k.includes('m2.txt')),
+      `merged window misses a key: ${JSON.stringify(multiShape.keys)}`);
+    await shot('51-marker-window-multi');
+    // select both markers and remove them (a confirm stands between)
+    await evalPage(() => { document.querySelectorAll('#modal-root .ver-check input').forEach((c) => c.click()); return true; });
+    await clickFooter(/remove selected/i);
+    await clickFooter(/remove selected/i); // the confirm
+    await sleep(800);
+    for (const n of ['m1.txt', 'm2.txt']) {
+      const v = await s3(['versions', 'ls', `${P}/${n}`, '--json']);
+      need(!v.out.includes('"isDeleteMarker": true'), `${n}: a marker survived the bulk undo`);
+    }
+    await closeModal();
+    // --- fitted single view ---
+    await s3(['rm', `${P}/m1.txt`]);
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/m1.txt`]);
+    await waitFor(async () => { await refresh(); return true; }, 1, 'one refresh');
+    await clickRow('m1.txt');
+    opened = false;
+    for (let i = 0; i < 12 && !opened; i++) {
+      await rightClickStable('m1.txt');
+      opened = await entryEnabled(/^delete marker(?!s)/i);
+      if (!opened) { await page.keyboard.press('Escape'); await sleep(500); await refresh(); }
+    }
+    need(opened, 'the single-view entry never appeared');
+    await ctxItem(/^delete marker(?!s)/i);
+    await waitFor(async () => await evalPage(() => !!document.querySelector('#modal-root .ver-row')), 8000, 'single view row');
+    const singleShape = await evalPage(() => ({
+      title: (document.querySelector('#modal-root .modal-head span') || {}).textContent || '',
+      checks: document.querySelectorAll('#modal-root .ver-check input').length,
+      foot: Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).map((b) => b.textContent.trim()),
+    }));
+    need(/delete marker — s3:\/\//i.test(singleShape.title), `single title: "${singleShape.title}"`);
+    need(singleShape.checks === 0, `the fitted single view must not carry bulk checkboxes: ${singleShape.checks}`);
+    need(singleShape.foot.some((b) => /^close$/i.test(b)), `single view footer lost its Close: ${JSON.stringify(singleShape.foot)}`);
+    await shot('52-marker-window-single');
+    // its own Remove undoes the marker and closes the fitted view
+    const clicked = await evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .ver-row .btn'))
+        .find((x) => /^remove$/i.test(x.textContent.trim()));
+      if (b) b.click();
+      return !!b;
+    });
+    need(clicked, 'no Remove button in the single view');
+    await waitFor(async () => !(await modalVisible()), 8000, 'the single view to close after its last undo');
+    const v1 = await s3(['versions', 'ls', `${P}/m1.txt`, '--json']);
+    need(!v1.out.includes('"isDeleteMarker": true'), 'm1.txt: a marker survived the single-view undo');
+    need((v1.out.match(/"(key|versionId)"/g) || []).length >= 2, 'm1.txt: the data timeline did not survive the undo');
+    return 'merged + single windows shaped right; both undos CLI-proven, data timeline intact';
+  });
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
     need(pageErrors.length === 0, `${pageErrors.length} page error(s): ${pageErrors[0]}`);
     return 'clean console';

@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,6 +55,55 @@ func startTestFTPServerMode(t *testing.T, mlst bool) (host string, port int, sto
 		ln.Close()
 		<-done
 	}
+}
+
+// startTestFTPServerSessions is startTestFTPServerMode plus live control
+// connection tracking: kill(n) force-closes the n-th accepted connection
+// (0-based) and count() reports how many were accepted. The redial test
+// drops a connection behind the engine's back — a server's idle-timeout
+// close — and watches a fresh one take its place.
+func startTestFTPServerSessions(t *testing.T, mlst bool) (host string, port int, kill func(n int) bool, count func() int, stop func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, conn)
+			mu.Unlock()
+			go serveFTPTestConn(conn, mlst)
+		}
+	}()
+	addr := ln.Addr().(*net.TCPAddr)
+	return addr.IP.String(), addr.Port,
+		func(n int) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			if n >= len(conns) {
+				return false
+			}
+			_ = conns[n].Close()
+			return true
+		},
+		func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(conns)
+		},
+		func() {
+			ln.Close()
+			<-done
+		}
 }
 
 // ftpTestSession is one control connection. Paths on the wire are virtual
@@ -381,6 +431,54 @@ func TestFTPEngineContractWithoutMLST(t *testing.T) {
 	host, port, stop := startTestFTPServerMode(t, false)
 	defer stop()
 	runFTPEngineContract(t, host, port)
+}
+
+// A server that drops an idle control connection (vsftpd after ~5 minutes)
+// must not kill the source for the rest of the session: the next operation
+// redials on the stored source settings and answers. The dropped socket
+// reads as EOF on the client — the exact shape isConnErr treats as
+// connection-dead — and the second control session proves the redial.
+func TestFTPRedialAfterControlDrop(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "readme.md"), []byte("over ftp"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host, port, kill, count, stop := startTestFTPServerSessions(t, true)
+	defer stop()
+
+	fs := dialTestFTP(t, host, port, root)
+	ctx := context.Background()
+
+	first, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatalf("initial list: %v", err)
+	}
+	if len(first) != 1 || first[0].Name != "readme.md" {
+		t.Fatalf("initial listing: %+v", first)
+	}
+
+	if !kill(0) {
+		t.Fatal("no control connection to kill")
+	}
+	second, err := fs.List(ctx, "/")
+	if err != nil {
+		t.Fatalf("list after the server dropped the control connection: %v", err)
+	}
+	if len(second) != len(first) || second[0].Name != first[0].Name {
+		t.Fatalf("post-redial listing drifted: %+v", second)
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("expected the engine to redial (2 control sessions), saw %d", n)
+	}
+
+	// The redial is a full re-login: writes keep working on the new
+	// connection too, not just listings.
+	if err := fs.Create(ctx, "/after-redial.txt", strings.NewReader("new conn")); err != nil {
+		t.Fatalf("create after redial: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "after-redial.txt")); err != nil {
+		t.Fatalf("the post-redial write never landed: %v", err)
+	}
 }
 
 func runFTPEngineContract(t *testing.T, host string, port int) {
