@@ -297,6 +297,16 @@ Additional rules:
   `xattr -dr com.apple.quarantine` step (README “First launch on
   macOS”). A configured certificate that fails to import, sign or
   notarize fails the release.
+- **Provenance markers.** The source tree and every built binary carry
+  the creator/license identity in two hidden layers (see
+  `internal/provenance`): zero-width watermarks on comment lines of
+  nine core files — decodable by `node scripts/provenance.mjs check`
+  and guarded by a Go test, so refactors cannot strip them silently —
+  and the hidden `s3b provenance` readout (absent from `--help`) that
+  answers from any built binary. One honest limit, per Mikko Pesonen:
+  a static watermark proves derivation of the marked files, not
+  per-byte integrity — that's the right tool for license-abuse
+  evidence (artifact integrity stays with `dist/SHA256SUMS`).
 
 ## Reporting a vulnerability
 
