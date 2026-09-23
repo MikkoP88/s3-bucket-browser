@@ -51,6 +51,8 @@ type TaskInfo struct {
 	ErrorKind  string  `json:"errorKind,omitempty"` // "timeout" | ""
 	Stalled    bool    `json:"stalled"`             // merged transfer rows only
 	Move       bool    `json:"move,omitempty"`      // merged transfer rows: copy-then-delete
+	Name       string  `json:"name,omitempty"`      // merged transfer rows: primary item name
+	Items      int     `json:"items,omitempty"`     // merged transfer rows: top-level item count
 }
 
 // taskHandle is one registered task.
@@ -398,6 +400,11 @@ func (a *App) RunningTasks() []TaskInfo {
 			Phase: j.Phase, Current: j.CurrentFile, Speed: j.SpeedBps,
 			EtaMs: j.EtaMs, ElapsedMs: j.ElapsedMs, ErrorKind: j.ErrorKind,
 			Stalled: j.Stalled, Move: j.Move,
+			// Name/Items/EndedAt let the tasks window run the same
+			// "+N more" disclosure and ended-time stamp as the transfer
+			// window (Label keeps its baked " +N" for older consumers;
+			// the view strips it when Items says it's there)
+			Name: j.Name, Items: j.Items, EndedAt: j.EndedAt,
 		})
 	}
 	out = append(out, a.tasks.snapshot()...)

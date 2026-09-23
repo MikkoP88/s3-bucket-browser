@@ -1302,21 +1302,20 @@ function viewHistory(onToggle) {
 }
 
 // ---------- monitoring row details (progressive disclosure) ----------
-// Every monitoring row (File transfers + Running tasks) ends in a
-// disclosure chevron: icon-only on purpose — the title already ends
-// "+2 more" for multi-item jobs, a second textual "more" would read as
-// the same thing. The word rides aria-label for screen readers,
-// aria-expanded carries the state, the rotating chevron the visual.
+// Every monitoring row (File transfers + Running tasks) ends in an
+// info glyph: icon-only on purpose — the "+N more" suffix is its own
+// clickable affordance for multi-item jobs. The word rides
+// aria-label for screen readers, aria-expanded carries the state,
 // Toggling flips an id-keyed Set (rows are rebuilt on every progress
 // event — DOM-local state would not survive one) and re-renders through
-// draw(); focus returns to the fresh chevron so a keyboard toggle
+// draw(); focus returns to the fresh glyph so a keyboard toggle
 // doesn't strand focus on a node the redraw just replaced.
 const trMoreBtn = (id, isOpen, onToggle) => el('button', {
   class: 'tr-more', type: 'button', 'data-id': id,
   'aria-expanded': String(isOpen), 'aria-label': t('transfer.details'),
   'aria-controls': `tr-det-${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}`,
   onclick: () => onToggle(id),
-}, el('span', { class: 'chev', text: '\u25B8', 'aria-hidden': 'true' }));
+}, el('span', { class: 'ic', text: '\u24D8', 'aria-hidden': 'true' }));
 
 // kvPairs: label/value pairs for the detail panel — the app's kv grid
 // (dim labels, wrapping values) already styles it; the danger flag
@@ -1325,6 +1324,38 @@ const kvPairs = (pairs) => pairs.flatMap(([k, v, danger]) => [
   el('span', { class: 'k', text: k }),
   el('span', { class: `v${danger ? ' danger' : ''}`, text: String(v) }),
 ]);
+
+// moreLink: the title's "+N more" suffix as its own control — it opens
+// the same panel the info glyph does, because that panel is where the
+// contained items get named. Opening only, never toggling: the glyph
+// stays the closer.
+const moreLink = (id, items, onOpen) => el('button', {
+  class: 'tr-morelink', type: 'button', 'data-id': id,
+  title: t('transfer.showItems'), 'aria-label': t('transfer.showItems'),
+  onclick: () => onOpen(id),
+}, t('transfer.more', { n: items - 1 }));
+
+// itemsBlock: the contained-items list for multi-item rows — "+2 more"
+// finally answers WHO the other two are. Names arrive through a
+// one-shot per-window fetch (id -> names cache), never on the 100ms
+// redraw path: the first render shows a placeholder, the fetch's
+// redraw paints the list.
+const itemsBlock = (j, cache, redraw) => {
+  if (!(j.items > 1)) return null;
+  let names = cache.get(j.id);
+  if (names === undefined) {
+    cache.set(j.id, Promise.resolve(api.TransferItems(j.id)).then((v) => {
+      cache.set(j.id, v || []);
+      redraw();
+    }, () => { cache.set(j.id, []); }));
+    names = null;
+  }
+  return el('div', { class: 'tr-items' },
+    el('div', { class: 'tr-items-h', text: t('transfer.itemsN', { n: j.items }) }),
+    Array.isArray(names)
+      ? el('ul', { class: 'tr-items-l' }, names.map((nm) => el('li', { text: nm, title: nm })))
+      : el('div', { class: 'tr-items-load', text: '\u2026' }));
+};
 
 
 // ---------- transfer manager ----------
@@ -1377,6 +1408,13 @@ function openTransferManagerDom(onClose) {
   const expanded = new Set();
   const toggle = (id) => {
     if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+    draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
+  };
+
+  // item names cache: one fetch per job per window life
+  const itemCache = new Map();
+  const openDetail = (id) => {
+    expanded.add(id);
     draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
   };
 
@@ -1459,7 +1497,6 @@ function openTransferManagerDom(onClose) {
     // when several items ride the job, " (k)" when another visible row
     // already answers to the same title.
     let title = `${v.icon} ${v.label} ${jobName(j)}`;
-    if (j.items > 1) title += ` ${t('transfer.more', { n: j.items - 1 })}`;
     if (j._dup > 1) title += ` (${j._dup})`;
 
     // The bar: indeterminate shimmer when a running job has no totals
@@ -1520,6 +1557,7 @@ function openTransferManagerDom(onClose) {
     const job = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
         el('span', { class: 'tr-name', title: title, text: title }),
+        (j.items > 1) ? moreLink(j.id, j.items, openDetail) : null,
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
         running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
@@ -1546,6 +1584,9 @@ function openTransferManagerDom(onClose) {
     const running = j.status === 'running';
     const pairs = [];
     if (j.startedAt > 0) pairs.push([t('transfer.startedAt'), new Date(j.startedAt).toLocaleString()]);
+    const endedAt = j.endedAt > 0 ? j.endedAt
+      : (!running && j.elapsedMs > 0 && j.startedAt > 0 ? j.startedAt + j.elapsedMs : 0);
+    if (endedAt > 0) pairs.push([t('transfer.endedAt'), new Date(endedAt).toLocaleString()]);
     pairs.push([t('transfer.idLabel'), j.id]);
     const elapsed = j.elapsedMs > 0 ? j.elapsedMs : (j.startedAt > 0 ? Date.now() - j.startedAt : 0);
     if (elapsed > 1000 && j.sentBytes > 0) pairs.push([t('transfer.avgSpeed'), fmtSpeed(j.sentBytes / (elapsed / 1000))]);
@@ -1555,6 +1596,7 @@ function openTransferManagerDom(onClose) {
     }
     if (j.error) pairs.push([t('transfer.errorText'), j.error, true]);
     return el('div', { class: 'tr-detail kv', id: `tr-det-${String(j.id).replace(/[^a-zA-Z0-9_-]/g, '_')}` },
+      itemsBlock(j, itemCache, draw),
       ...kvPairs(pairs));
   }
 
@@ -1697,6 +1739,13 @@ function runningTasksDom() {
     draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
   };
 
+  // item names cache: one fetch per job per window life
+  const itemCache = new Map();
+  const openDetail = (id) => {
+    expanded.add(id);
+    draw().then(() => list.querySelector(`.tr-more[data-id="${CSS.escape(id)}"]`)?.focus());
+  };
+
 
   // Clear retires exactly what the window shows (viewHistory decides
   // the ids); null still means "every finished row" for the nothing-
@@ -1731,9 +1780,14 @@ function runningTasksDom() {
     // Every row leads with its action type: "✕ Deleting s3://b — 3
     // item(s)". Unknown kinds fall back to the bracketed raw kind.
     const verb = taskKindVerb(j);
+    // merged transfer rows bake " +N" into the label server-side; here
+    // it comes off again and becomes the clickable "+N more" (properly
+    // localized on the way, which the baked suffix never was)
+    let label = j.label || j.id;
+    if (j.items > 1) label = label.replace(/\s\+\d+$/, '');
     const title = verb
-      ? `${verb.icon} ${verb.label} ${j.label || j.id}`
-      : `[${j.kind}] ${j.label || j.id}`;
+      ? `${verb.icon} ${verb.label} ${label}`
+      : `[${j.kind}] ${label}`;
     // The bar: indeterminate shimmer while a task runs without a total
     // (count phases, searches, streamed listings) — visible activity
     // instead of a frozen 0%.
@@ -1769,6 +1823,7 @@ function runningTasksDom() {
     const task = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
         el('span', { class: 'tr-name', title: title, text: title }),
+        (j.items > 1) ? moreLink(j.id, j.items, openDetail) : null,
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
         running ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { await api.CancelTask(j.id); } }) : null,
@@ -1791,13 +1846,18 @@ function runningTasksDom() {
   // taskDetail: the tasks-window panel — id, kind, start; the error
   // already rides the row (one line), the panel wraps it in full.
   function taskDetail(j) {
+    const running = j.status === 'running' || j.status === 'queued';
     const pairs = [
       [t('transfer.idLabel'), j.id],
       [t('transfer.kind'), j.kind],
     ];
     if (j.startedAt > 0) pairs.push([t('transfer.startedAt'), new Date(j.startedAt).toLocaleString()]);
+    const endedAt = j.endedAt > 0 ? j.endedAt
+      : (!running && j.elapsedMs > 0 && j.startedAt > 0 ? j.startedAt + j.elapsedMs : 0);
+    if (endedAt > 0) pairs.push([t('transfer.endedAt'), new Date(endedAt).toLocaleString()]);
     if (j.error) pairs.push([t('transfer.errorText'), j.error, true]);
     return el('div', { class: 'tr-detail kv', id: `tr-det-${String(j.id).replace(/[^a-zA-Z0-9_-]/g, '_')}` },
+      itemsBlock(j, itemCache, draw),
       ...kvPairs(pairs));
   }
 

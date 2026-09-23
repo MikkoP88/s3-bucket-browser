@@ -671,6 +671,7 @@ function shim() {
     }),
     RunDoctorCheck: (name) => ({ check: name, status: 'pass', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 're-run ok' }),
     ActiveTransfers: () => JSON.parse(JSON.stringify(world.transfers)),
+    TransferItems: (id) => JSON.parse(JSON.stringify((world.transferItems || {})[id] || [])),
     // Running tasks = transfer jobs merged with the tracked-task registry
     // (the backend's RunningTasks does the same join server-side)
     RunningTasks: () => JSON.parse(JSON.stringify([
@@ -678,11 +679,12 @@ function shim() {
         id: j.id, kind: j.op, status: j.status,
         label: j.name ? j.name + (j.items > 1 ? ` +${j.items - 1}` : '') : (j.currentFile || j.id),
         doneUnits: (j.doneFiles || 0) + (j.failedFiles || 0) + (j.skippedFiles || 0),
-        totalUnits: j.totalFiles || 0, startedAt: 0, error: j.error || '',
+        totalUnits: j.totalFiles || 0, startedAt: j.startedAt || 0, error: j.error || '',
         // the full-picture fields ride along exactly like the backend join
         phase: j.phase || '', current: j.currentFile || '', speed: j.speedBps || 0,
         etaMs: j.etaMs || 0, elapsedMs: j.elapsedMs || 0, errorKind: j.errorKind || '',
         stalled: !!j.stalled,
+        name: j.name || '', items: j.items || 0, endedAt: j.endedAt || 0, move: !!j.move,
       })),
       ...(world.tasks || []),
     ])),
@@ -3167,7 +3169,9 @@ await step('transfers', async () => {
   // From/To route stacked one per line, and the now-transferring line
   await ok('row titled action + source name (+N more)', evalPage((s) => {
     const n = document.querySelector(`${s} .tr-job.running .tr-name`);
-    return !!n && /^\u2191 Uploading video-final\.mp4/.test(n.textContent) && /\+2 more/.test(n.textContent);
+    const more = document.querySelector(`${s} .tr-job.running .tr-morelink`);
+    return !!n && /^\u2191 Uploading video-final\.mp4/.test(n.textContent)
+      && !!more && more.textContent.trim() === '+2 more';
   }, trSel));
   await ok('From/To route stacked on two legs, no arrow', evalPage((s) => {
     const r = document.querySelector(`${s} .tr-job.running .tr-route`);
@@ -3387,7 +3391,12 @@ await step('running-tasks', async () => {
   if (tItem) await tItem.asElement().click();
   await waitFor(() => popoutVisible('tasks'), 4000, 'tasks popout');
   const popSel = '#popout-root .popout[data-pop="tasks"]';
-  await ok('transfer jobs merged into the task list', waitFor(async () => (await evalPage((s) => document.querySelector(s).textContent, popSel)).includes('video-final.mp4 +2'), 4000, 'merged jobs'));
+  await ok('transfer jobs merged into the task list', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="t1"]`);
+    const t = document.querySelector(s).textContent;
+    return !!row && t.includes('video-final.mp4')
+      && row.querySelector('.tr-morelink')?.textContent.trim() === '+2 more';
+  }, popSel), 4000, 'merged jobs'));
   await ok('search task shows its label', evalPage((s) => document.querySelector(s).textContent.includes('backup*'), popSel));
   // fresh window: the finished rows (and the done transfer job from
   // before) are history — only live rows show, counted in the head
@@ -3401,7 +3410,7 @@ await step('running-tasks', async () => {
   // never the bare raw kind in brackets
   await ok('every running row leads with its action verb', evalPage((s) => {
     const want = {
-      t1: /^\u2191 Uploading video-final\.mp4 /,
+      t1: /^\u2191 Uploading video-final\.mp4/,
       'task-7': /^\uD83D\uDD0D Searching "backup\*"/,
       'task-12': /^\u21C4 Copying 1 item\(s\): s3:\/\/team-files/,
       'task-14': /^\u2795 Creating s3:\/\/team-files\/plans\//,
@@ -3763,7 +3772,7 @@ await step('popout-row-details', async () => {
     window.__shim.world.transfers = [{
       id: 'dx1', op: 'upload', status, currentFile: 'a.bin',
       totalFiles: 4, doneFiles: 2, totalBytes: 8388608, sentBytes: 4194304, speedBps: 262144,
-      startedAt: Date.now() - 60000, ...extra,
+      startedAt: Date.now() - 60000, name: 'photos', items: 3, ...extra,
     }, {
       id: 'dx2', op: 'download', status: 'running', currentFile: 'b.bin',
       totalFiles: 2, doneFiles: 1, totalBytes: 2097152, sentBytes: 1048576, speedBps: 131072,
@@ -3771,7 +3780,11 @@ await step('popout-row-details', async () => {
     }];
     window.__shim.emit('transfer:update', { id: 'dx1', op: 'upload', status });
   }, [status, extra]);
-  await evalPage(() => { window.__shim.world.transfers = []; window.__shim.emit('transfer:update', {}); });
+  await evalPage(() => {
+    window.__shim.world.transfers = [];
+    window.__shim.world.transferItems = { dx1: ['photos/vacation.jpg', 'photos/family.png', 'photos/timelapse.mov'] };
+    window.__shim.emit('transfer:update', {});
+  });
   await sleep(120);
   await seedJob('running');
   await waitFor(() => popoutVisible('transfers'), 4000, 'auto-open');
@@ -3800,6 +3813,31 @@ await step('popout-row-details', async () => {
   await chev().click();
   await sleep(300);
   await ok('chevron closes the panel again', evalPage((s) => !document.querySelector(`${s} .tr-detail`), trSel));
+
+  // the multi-item title: "+2 more" is a button that opens the panel
+  // and names every contained item — the count alone tells nothing
+  const link = () => page.locator(`${trSel} .tr-morelink[data-id="dx1"]`);
+  await ok('multi-item title carries a "+2 more" button', await link().evaluate((b) =>
+    b.textContent.trim() === '+2 more' && !!b.getAttribute('aria-label')));
+  await link().click();
+  await sleep(350); // fetch + redraw
+  await ok('"+2 more" reveals every contained item', evalPage((s) => {
+    const lis = Array.from(document.querySelectorAll(`${s} .tr-items-l li`)).map((x) => x.textContent);
+    return lis.length === 3 && lis.includes('photos/vacation.jpg')
+      && lis.includes('photos/family.png') && lis.includes('photos/timelapse.mov');
+  }, trSel));
+  await ok('the disclosure glyph is now an info mark', await chev().evaluate((b) =>
+    b.querySelector('.ic').textContent === '\u24D8'));
+
+  // finished rows stamp their end time beside the start (panel open)
+  await seedJob('done', { elapsedMs: 45000, endedAt: Date.now() - 15000 });
+  await sleep(350);
+  await ok('a finished job shows its ended time', evalPage((s) => {
+    const ks = Array.from(document.querySelectorAll(`${s} .tr-detail .k`)).map((x) => x.textContent);
+    return ks.includes('Ended');
+  }, trSel));
+  await chev().click(); // close again: the error flow must open itself
+  await sleep(300);
 
   // failure opens itself: the full error text (the row line ellipsizes)
   await seedJob('error', { error: 'AccessDenied: a long reason the row would truncate' });
