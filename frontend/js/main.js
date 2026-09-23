@@ -1320,6 +1320,8 @@ function showContextMenu(e, rows) {
     }
     items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
     items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
+    // scheme://user@host[:port]/server-path, built backend-side
+    items.push(['Copy URL', '', () => copyAsText(rows, 'url'), !sel]);
     items.push(null);
     items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
@@ -1339,6 +1341,9 @@ function showContextMenu(e, rows) {
     items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
     items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
     items.push(['Copy S3 URI', '', () => copyAsText(rows, 'uri'), !sel]);
+    // the real address (WinSCP's Copy URI): the endpoint-resolved URL of
+    // the browsing source; the s3:// URI above stays as the CLI form
+    items.push(['Copy URL', '', () => copyAsText(rows, 'url'), !sel]);
     items.push(null);
     items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
@@ -2926,6 +2931,7 @@ function showLocalRowMenu(e, rows) {
     ['Cut', 'Ctrl+X', () => cutSelection()],
     ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'local' }), !sel],
     ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'local' }), !sel],
+    ['Copy URL', '', () => copyAsText(rows, 'url', { kind: 'local' }), !sel],
     null,
     ['Delete\u2026', 'Del', () => deleteLocalSelection(rows.map((r) => r.path)), !sel],
     null,
@@ -2979,6 +2985,7 @@ function showSideRemoteRowMenu(e, rows) {
     ['Cut', 'Ctrl+X', () => cutSelection(), !sel],
     ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'remote' }), !sel],
     ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'remote' }), !sel],
+    ['Copy URL', '', () => copyAsText(rows, 'url', { kind: 'remote', source: b.source }), !sel],
     ...(sel === 1 && rows[0].isDir
       ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir: rows[0].key }), !pasteReady()]]
       : []),
@@ -3091,6 +3098,7 @@ function showSideS3RowMenu(e, rows) {
     ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
     ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
     ['Copy S3 URI', '', () => copyAsText(rows, 'uri', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
+    ['Copy URL', '', () => copyAsText(rows, 'url', { kind: 'objects', bucket: localPane.bucket, source: b.source }), hasBucketRow],
     null,
     ['Rename', 'F2', async () => {
       const row = rows[0];
@@ -3590,6 +3598,7 @@ function mountMenubar() {
             { label: t('menu.copyName'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'name', c.ctx); }, enabled: () => st().canCopy },
             { label: t('menu.copyPath'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'path', c.ctx); }, enabled: () => st().canCopy },
             { label: t('menu.copyUri'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'uri', c.ctx); }, enabled: () => st().canCopy && canCopyUriFromMenu() },
+            { label: t('menu.copyUrl'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'url', c.ctx); }, enabled: () => st().canCopy && canCopyUrlFromMenu() },
           ],
         },
         { label: t('menu.paste'), kbd: 'Ctrl+V', action: () => paste(), enabled: () => st().canPaste },
@@ -3833,23 +3842,50 @@ async function osCopyRemote(items) {
 }
 
 // copyAsText puts rows on the OS clipboard as plain text (api.ClipboardSetText)
-// — the Explorer-style "copy name / copy path / copy S3 URI" actions. Ctrl+C
-// mirrors the selection as files through hidden staging (see osCopyRemote);
-// these explicit actions copy text for editors, tickets and terminals. what: 'name' | 'path'
-// | 'uri'. ctx: {kind, bucket} — 'objects' rows format bucket/key and
-// s3://bucket/key, 'buckets' rows the bare bucket name (and s3://bucket),
-// 'remote' rows the source path, 'local' rows the absolute path. Non-S3
-// selections have no URI form — the call is a no-op then.
+// — the Explorer-style "copy name / copy path / copy S3 URI / copy URL"
+// actions. Ctrl+C mirrors the selection as files through hidden staging (see
+// osCopyRemote); these explicit actions copy text for editors, tickets and
+// terminals. what: 'name' | 'path' | 'uri' | 'url'. ctx: {kind, bucket,
+// source} — 'objects' rows format bucket/key and s3://bucket/key, 'buckets'
+// rows the bare bucket name (and s3://bucket), 'remote' rows the source
+// path, 'local' rows the absolute path. 'uri' is the S3 CLI-interop form;
+// 'url' is the REAL address (WinSCP's Copy URI purpose): the
+// endpoint-resolved https URL for S3 objects, scheme://user@host[:port]/
+// server-path for remote sources, file:/// for local rows.
 async function copyAsText(rows, what, ctx = {}) {
   if (!rows.length) return;
   const kind = ctx.kind || nav.current?.kind || 'objects';
   const bucket = ctx.bucket ?? nav.current?.bucket;
+  if (what === 'url' && (kind === 'objects' || kind === 'remote')) {
+    // real addresses come from the backend: the source's endpoint,
+    // addressing style and root are backend-side facts, and one call
+    // carries the whole selection
+    const source = ctx.source ?? nav.current?.source ?? '';
+    const paths = rows.map((r) => r.key);
+    try {
+      const urls = kind === 'objects'
+        ? await api.SourceObjectUrls(source, bucket, paths)
+        : await api.RemoteUrls(source, paths);
+      await api.ClipboardSetText(urls.join('\n'));
+      toast(`Copied ${urls.length} URL${urls.length === 1 ? '' : 's'}`, 'ok');
+    } catch (err) {
+      toast(`Copy failed: ${err}`, 'error');
+    }
+    return;
+  }
   let fmt;
   if (what === 'name') fmt = (r) => r.name;
   else if (what === 'uri') {
     if (kind === 'objects') fmt = (r) => `s3://${bucket}/${r.key}`;
     else if (kind === 'buckets') fmt = (r) => `s3://${r.key}`;
     else return;
+  } else if (what === 'url') {
+    // local rows: the file URL is pure path reshaping (UNC paths keep
+    // the //server/share authority form)
+    fmt = (r) => {
+      const p = encodeURI(String(r.path).replace(/\\/g, '/'));
+      return p.startsWith('//') ? `file:${p}` : `file:///${p.replace(/^\/+/, '')}`;
+    };
   } else if (kind === 'objects') fmt = (r) => `${bucket}/${r.key}`;
   else if (kind === 'local') fmt = (r) => r.path;
   else fmt = (r) => r.key; // buckets: name; remote: source path
@@ -3868,14 +3904,14 @@ async function copyAsText(rows, what, ctx = {}) {
 function copyAsFromMenu() {
   const loc = nav.current;
   const rows = grid.selectedRows();
-  if (rows.length) return { rows, ctx: { kind: loc?.kind, bucket: loc?.bucket } };
+  if (rows.length) return { rows, ctx: { kind: loc?.kind, bucket: loc?.bucket, source: loc?.source } };
   if (localPane.visible) {
     const b = localPane.binding;
     const lrows = localPane.grid.selectedRows();
     if (b.kind === 'local' && lrows.length) return { rows: lrows, ctx: { kind: 'local' } };
-    if (b.kind === 'remote' && lrows.length) return { rows: lrows, ctx: { kind: 'remote' } };
+    if (b.kind === 'remote' && lrows.length) return { rows: lrows, ctx: { kind: 'remote', source: b.source } };
     if (b.kind === 's3' && localPane.bucket) {
-      return { rows: lrows.filter((r) => !r.isBucket), ctx: { kind: 'objects', bucket: localPane.bucket } };
+      return { rows: lrows.filter((r) => !r.isBucket), ctx: { kind: 'objects', bucket: localPane.bucket, source: b.source } };
     }
   }
   return { rows: [], ctx: {} };
@@ -3886,6 +3922,20 @@ function canCopyUriFromMenu() {
   const loc = nav.current;
   if (grid.selectedRows().length) return loc?.kind === 'objects' || loc?.kind === 'buckets';
   return localPane.visible && localPane.binding.kind === 's3' && !!localPane.bucket;
+}
+
+// canCopyUrlFromMenu: every pane kind has a real-address form (S3 object,
+// remote path, local file) — unlike the s3:// URI, which is S3-only.
+function canCopyUrlFromMenu() {
+  if (grid.selectedRows().length) {
+    const k = nav.current?.kind;
+    return k === 'objects' || k === 'remote';
+  }
+  if (!localPane.visible) return false;
+  const b = localPane.binding;
+  const lrows = localPane.grid.selectedRows();
+  if (b.kind === 's3') return !!localPane.bucket && lrows.some((r) => !r.isBucket);
+  return lrows.length > 0;
 }
 
 // copySelection/cutSelection: shared by Ctrl+C/X and the Edit menu.

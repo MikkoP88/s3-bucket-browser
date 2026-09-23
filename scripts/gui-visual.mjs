@@ -821,6 +821,17 @@ function shim() {
       return JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || []));
     },
     SourceRenameObject: () => ({}),
+    // ---- WinSCP-style real-address copy ("Copy URL") ----
+    // S3 addresses resolve through the viewing source's endpoint (custom
+    // endpoint + addressing style are backend facts); remote ones through
+    // scheme://user@host[:port]/server-path
+    ObjectUrls: (bucket, keys) => keys.map((k) => `https://team-files.s3.example.test/${bucket}/${k}`),
+    SourceObjectUrls: (src, bucket, keys) => keys.map((k) => `https://${src}.s3.example.test/${bucket}/${k}`),
+    RemoteUrls: (src, paths) => {
+      // backend resolves by name OR id — pane bindings carry the id
+      const s = world.sources.find((x) => x.name === src || x.id === src);
+      return paths.map((p) => `${s?.type || 'sftp'}://demo@${s?.name || src}.example.test:2022${p}`);
+    },
     // folder creation mutates the key space like the backend's marker
     // PutObject does: the UI refresh after creating lists the folder back
     SourceCreateFolder: (_src, bucket, prefix, name) => {
@@ -1339,6 +1350,7 @@ await step('folder-ctxmenu', async () => {
 });
 
 await step('copy-as-ctxmenu', async () => {
+  await navObjects('team-files'); // self-contained: no inherited view
   await resetCalls();
   await clickRow('readme.md');
   await openCtx('readme.md');
@@ -1357,6 +1369,25 @@ await step('copy-as-ctxmenu', async () => {
   await ctxItem(/^copy name$/i);
   c = await findCall('ClipboardSetText');
   await ok('copy name copies the bare name', !!c && c.args[0] === 'readme.md');
+  // Copy URL — the real address (WinSCP's Copy URI purpose): resolved
+  // backend-side through the viewing source, one call per selection
+  await openCtx('readme.md');
+  await ctxItem(/^copy url$/i);
+  c = await findCall('ClipboardSetText');
+  let sc = await findCall('SourceObjectUrls');
+  await ok('copy url resolves the endpoint address (view source)', !!c
+    && c.args[0] === 'https://hetzner.s3.example.test/team-files/readme.md'
+    && !!sc && sc.args[0] === 'hetzner' && sc.args[1] === 'team-files'
+    && sc.args[2][0] === 'readme.md');
+  const second = await gridRow('scan.png');
+  await second.asElement().click({ modifiers: ['Control'] });
+  await openCtx('scan.png');
+  await ctxItem(/^copy url$/i);
+  c = await findCall('ClipboardSetText');
+  sc = await findCall('SourceObjectUrls');
+  await ok('multi-selection: one batched call, one URL per line', !!c
+    && c.args[0] === 'https://hetzner.s3.example.test/team-files/readme.md\nhttps://hetzner.s3.example.test/team-files/scan.png'
+    && !!sc && sc.args[2].length === 2);
   await closeCtx();
 });
 
@@ -1725,7 +1756,18 @@ await step('remote-view', async () => {
   const n = await openCtx('backup.sh');
   await ok('remote file menu items', n >= 3);
   await shot('remote-sftp');
-  await closeCtx();
+  // remote Copy URL: scheme://user@host[:port]/server-path, backend-built
+  // from the source's own connection fields
+  const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+    .map((i) => i.textContent.trim()));
+  await ok('remote row menu offers Copy URL (and no s3 URI)', items.some((x) => /^copy url$/i.test(x))
+    && !items.some((x) => /s3 uri/i.test(x)));
+  await ctxItem(/^copy url$/i);
+  const c = await findCall('ClipboardSetText');
+  const ru = await findCall('RemoteUrls');
+  await ok('copy url formats sftp://user@host:port/path', !!c
+    && c.args[0] === 'sftp://demo@backup-box.example.test:2022/backup.sh'
+    && !!ru && ru.args[0] === 'backup-box' && ru.args[1][0] === '/backup.sh');
 });
 
 await step('tree-source-ctxmenu', async () => {
@@ -4224,6 +4266,18 @@ await step('dual-pane', async () => {
   await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote listing');
   await ok('pane binds sftp source', (await txt('#local-crumb')).includes('backup-box'));
   await shot('pane-remote');
+  // side remote Copy URL: the same real-address form as the main remote
+  // view, pinned to the pane's own source
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#local-grid-body .grid-row')).find((x) => x._model && x._model.key === '/backup.sh');
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  });
+  await sleep(80);
+  await ctxItem(/^copy url$/i);
+  let ru = await findCall('RemoteUrls');
+  let cc = await findCall('ClipboardSetText');
+  await ok('side pane remote copy url pins the pane source (by id)', !!ru && ru.args[0] === 'src-box'
+    && ru.args[1][0] === '/backup.sh' && !!cc && cc.args[0] === 'sftp://demo@backup-box.example.test:2022/backup.sh');
   // s3 binding (slice 5)
   await page.selectOption('#local-src', 'src-hetzner');
   await waitFor(async () => (await sideKeys()).includes('logs-2026'), 6000, 'pane s3 buckets');
@@ -4231,6 +4285,14 @@ await step('dual-pane', async () => {
   await shot('pane-s3');
   await page.selectOption('#local-src', 'local');
   await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane back to local');
+  // side local Copy URL: file:/// reshaping, no backend call involved
+  const nt = await sideRow('notes.txt');
+  await nt.asElement().click({ button: 'right' });
+  await sleep(80);
+  await ctxItem(/^copy url$/i);
+  cc = await findCall('ClipboardSetText');
+  await ok('side pane local copy url formats file:///', !!cc
+    && cc.args[0] === 'file:///C:/Users/demo/notes.txt');
 });
 
 await step('side-pane-delete-window', async () => {
