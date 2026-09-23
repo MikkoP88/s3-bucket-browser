@@ -154,6 +154,12 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 	j := a.jobs.add("transfer", len(plan.files), plan.total)
 	j.src = xferDestSource(dest)
 	j.setMeta(xferTitle(items, localPaths), xferFromLabel(items, localPaths), xferDestLabel(dest), len(items)+len(localPaths), move)
+	names := make([]string, 0, len(items)+len(localPaths))
+	for _, it := range items {
+		names = append(names, it.Key)
+	}
+	names = append(names, localPaths...)
+	j.setNames(names)
 	if hidden {
 		j.mu.Lock()
 		j.info.Hidden = true

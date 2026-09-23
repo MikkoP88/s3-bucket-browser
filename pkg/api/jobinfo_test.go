@@ -126,3 +126,29 @@ func TestRunningTasksLabelsJobsByName(t *testing.T) {
 		t.Fatalf("fallback label = %+v", got[1])
 	}
 }
+
+// TestFinishStampsEndedAndItems: the finish stamp (EndedAt) lands beside
+// ElapsedMs, the stored item names survive the job's whole life for
+// TransferItems, and the RunningTasks join passes the name/items/ended
+// triple through so the tasks window can run the same disclosure.
+func TestFinishStampsEndedAndItems(t *testing.T) {
+	a := newTestApp(t)
+	j := a.jobs.add("upload", 2, 20)
+	j.setMeta("a.txt", `C:\\`, "s3://b", 2, false)
+	j.setNames([]string{`C:\\a.txt`, `C:\\b.txt`})
+	if names := a.TransferItems(j.info.ID); len(names) != 2 || names[0] != `C:\\a.txt` || names[1] != `C:\\b.txt` {
+		t.Fatalf("TransferItems = %v", names)
+	}
+	if names := a.TransferItems("no-such-job"); names != nil {
+		t.Fatalf("unknown id must yield nil, got %v", names)
+	}
+	a.finishJob(j, JobDone, "")
+	snap := a.jobs.snapshot()[0]
+	if snap.EndedAt < snap.StartedAt || snap.EndedAt == 0 {
+		t.Fatalf("ended stamp missing: %+v", snap)
+	}
+	got := a.RunningTasks()
+	if len(got) != 1 || got[0].Name != "a.txt" || got[0].Items != 2 || got[0].EndedAt != snap.EndedAt {
+		t.Fatalf("merged row full picture = %+v (want name/items/ended from %+v)", got, snap)
+	}
+}

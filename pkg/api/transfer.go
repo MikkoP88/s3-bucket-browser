@@ -78,6 +78,7 @@ type JobInfo struct {
 	CurrentTotal int64  `json:"currentTotal"`        // its size (0 = unknown/server-side)
 	EtaMs        int64  `json:"etaMs,omitempty"`     // computed on emit while running
 	ElapsedMs    int64  `json:"elapsedMs,omitempty"` // stamped at finish
+	EndedAt      int64  `json:"endedAt,omitempty"`   // unix millis, stamped at finish
 	Stalled      bool   `json:"stalled"`             // no byte movement within the stall threshold
 	ErrorKind    string `json:"errorKind,omitempty"` // "timeout" | ""
 	Hidden       bool   `json:"hidden,omitempty"`    // internal staging (drag-out scratch download) — never shown in any list or badge
@@ -108,6 +109,7 @@ type jobHandle struct {
 	lastEmSent int64     // SentBytes at the previous emit (EMA speed input)
 	lastEmAt   time.Time // when that was
 	stallAfter time.Duration
+	itemNames  []string // display names of the top-level items (TransferItems)
 }
 
 // jobManager owns all jobs in insertion order.
@@ -263,6 +265,23 @@ func (m *jobManager) cancel(id string) bool {
 	return false
 }
 
+// itemsOf returns the stored item names of a job (nil when unknown —
+// the frontend shows no list).
+func (m *jobManager) itemsOf(id string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, j := range m.all {
+		j.mu.Lock()
+		match := j.info.ID == id
+		names := j.itemNames
+		j.mu.Unlock()
+		if match {
+			return names
+		}
+	}
+	return nil
+}
+
 // emit pushes a JobInfo snapshot to the frontend (throttled unless force).
 // Besides the raw counters it keeps the derived numbers honest: an EMA
 // speed over the bytes moved since the previous emit, and the ETA those
@@ -349,6 +368,15 @@ func (j *jobHandle) setMeta(name, from, to string, items int, move bool) {
 	j.mu.Unlock()
 }
 
+// setNames records the top-level items' display names — the expanded
+// panel's contents list, fetched on demand via TransferItems so the
+// 100ms progress events stay lean.
+func (j *jobHandle) setNames(names []string) {
+	j.mu.Lock()
+	j.itemNames = names
+	j.mu.Unlock()
+}
+
 // setPhase labels what the worker is doing between "running" snapshots.
 func (j *jobHandle) setPhase(p string) {
 	j.mu.Lock()
@@ -383,6 +411,10 @@ func (a *App) ClearFinishedTransfers(ids []string) { a.jobs.clearFinished(ids) }
 // CancelTransfer cancels a running job by ID.
 func (a *App) CancelTransfer(id string) bool { return a.jobs.cancel(id) }
 
+// TransferItems lists the top-level items of a job by ID — the expanded
+// panel's contents list ("photos +2" finally says who the other two are).
+func (a *App) TransferItems(id string) []string { return a.jobs.itemsOf(id) }
+
 // uploadPair is one planned file upload.
 type uploadPair struct {
 	local string
@@ -414,6 +446,7 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 	j := a.jobs.add("upload", len(pairs), total)
 	j.src = bucket
 	j.setMeta(uploadTitle(paths), filepath.Dir(paths[0]), s3Label(bucket, dirPrefix(prefix)), len(paths), false)
+	j.setNames(paths)
 	id := j.info.ID
 	a.emitLogSrc(LogInfo, "upload", bucket, fmt.Sprintf("job %s: uploading %d file(s) (%d bytes) to %s/%s", id, len(pairs), total, bucket, dirPrefix(prefix)))
 	logDecisions(a, "upload", decisions)
@@ -537,6 +570,7 @@ func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	j.info.Stalled = false
 	j.info.EtaMs = 0
 	j.info.ElapsedMs = now.Sub(j.start).Milliseconds()
+	j.info.EndedAt = now.UnixMilli()
 	// The finished row keeps the lifetime average — "done in 12s at
 	// 8 MB/s" — rather than the last live EMA sample.
 	if elapsed := now.Sub(j.start).Seconds(); elapsed > 0 && sentBytes > 0 {
@@ -701,6 +735,15 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	j := a.jobs.add("download", len(items), total)
 	j.src = bucket
 	j.setMeta(downloadTitle(items), s3Label(bucket, ""), destDir, len(items), false)
+	names := make([]string, len(items))
+	for i, it := range items {
+		if it.Local != "" {
+			names[i] = it.Local
+		} else {
+			names[i] = it.Key
+		}
+	}
+	j.setNames(names)
 	id := j.info.ID
 	a.emitLogSrc(LogInfo, "download", bucket, fmt.Sprintf("job %s: downloading %d object(s) (%d bytes) from %s to %s", id, len(items), total, bucket, destDir))
 	logDecisions(a, "download", decisions)

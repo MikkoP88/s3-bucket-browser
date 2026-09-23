@@ -87,6 +87,7 @@ func (a *App) CopySelectionVersions(srcSource, srcBucket string, keys []string, 
 	j := a.jobs.add("transfer", total+markers, totalBytes)
 	j.setMeta(path.Base(strings.TrimSuffix(keys[0], "/")),
 		s3Label(srcBucket, ""), s3Label(dstBucket, dstPrefix), len(keys), move)
+	j.setNames(keys)
 	id := j.info.ID
 	verb := "copying"
 	if move {
