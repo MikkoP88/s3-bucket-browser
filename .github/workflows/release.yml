@@ -318,7 +318,7 @@ jobs:
       - name: Verification gate
         run: |
           TAG="${GITHUB_REF_NAME}"
-          J="docs/verification/${TAG}/verification.json"
+          J=$(find "docs/verification/${TAG}" -name verification.json | head -n 1)
           if [ ! -f "$J" ]; then
             echo "::error::No verification report at docs/verification/${TAG}/ — run 'node scripts/verify.mjs --release ${TAG}' on the tagged commit and commit the report first (CONTRIBUTING.md, Cutting a release)."
             exit 1
@@ -337,7 +337,7 @@ jobs:
           REPORT_OS=$(jq -r '.os' "$J")
           {
             echo "VERIFIED=${PASS} PASS / ${SKIP} SKIP / 0 FAIL on ${REPORT_OS}"
-            echo "REPORT_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${TAG}/docs/verification/${TAG}"
+            echo "REPORT_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${TAG}/$(dirname "$J")"
           } >> "$GITHUB_ENV"
           echo "verification report for ${TAG}: ${PASS} PASS / ${SKIP} SKIP / 0 FAIL (${REPORT_OS})"
 
