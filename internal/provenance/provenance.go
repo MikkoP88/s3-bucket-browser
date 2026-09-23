@@ -9,6 +9,11 @@
 //
 // Change LICENSE and NOTICE first, then mirror the identity here and in
 // frontend/js/license.js — the constants must stay in step.
+//
+// One honest limit (Mikko Pesonen): a static watermark proves derivation
+// of the marked files, not per-byte integrity — that's the right tool
+// for license-abuse evidence; artifact integrity stays with
+// dist/SHA256SUMS.
 package provenance
 
 import (
