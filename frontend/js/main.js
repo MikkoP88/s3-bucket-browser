@@ -1063,7 +1063,7 @@ function wireGrid() {
   grid.on.badgeM = (row) => {
     const loc = nav.current;
     if (!loc || loc.kind !== 'objects') return;
-    markersDialog(loc.bucket, row.key, row.isDir, refreshCurrent);
+    markersDialog(loc.bucket, [{ key: row.key, isDir: row.isDir }], loc.prefix || '', refreshCurrent);
   };
   // The Delete Marker window's inline opt-in flips the same localStorage
   // knob boot reads — keep the grid's ⛔ badges in step the moment it
@@ -1362,11 +1362,13 @@ function showContextMenu(e, rows) {
       items.push(['Versions\u2026', '', () => (rows[0].isDir
         ? contentVersionsDialog(loc.bucket, rows[0].key, refreshCurrent)
         : versionsDialog(loc.bucket, rows[0].key, refreshCurrent))]);
-      // "Delete marker(s)…" — only when the row actually carries
-      // marker(s); single objects use the singular.
-      if (rows[0].mcount > 0) {
-        items.push([`${t(rows[0].isDir ? 'markw.title' : 'markw.titleOne')}\u2026`, '', () => markersDialog(loc.bucket, rows[0].key, rows[0].isDir, refreshCurrent)]);
-      }
+    }
+    // "Delete marker(s)…" — offered while any selected row carries
+    // marker(s); one row uses the singular for a file, and a multi
+    // selection (objects and/or directories) opens the merged window.
+    if (g?.versioning === 'Enabled' && rows.some((r) => r.mcount > 0)) {
+      items.push([`${sel === 1 ? t(rows[0].isDir ? 'markw.title' : 'markw.titleOne') : t('markw.multiTitle', { n: sel })}\u2026`, '',
+        () => markersDialog(loc.bucket, rows.map((r) => ({ key: r.key, isDir: r.isDir })), loc.prefix || '', refreshCurrent)]);
     }
     if (sel) items.push(['Storage class\u2026', '', () => classDialog(loc.bucket, rows, refreshCurrent)]);
     if (sel && !rows.some((r) => r.isDir) && g?.lockEnabled) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows, refreshCurrent)]);
