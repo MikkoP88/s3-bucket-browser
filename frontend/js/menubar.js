@@ -89,9 +89,12 @@ export function createMenubar(defs) {
     root.appendChild(wrap);
   });
 
+  // capture phase — grid checkboxes and V/M badges stop mousedown
+  // propagation, which a bubble-phase listener never sees (same fix as
+  // the shared context menu's closer in main.js)
   document.addEventListener('mousedown', (e) => {
     if (!root.contains(e.target)) close();
-  });
+  }, { capture: true });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && openIdx >= 0) close();
   });
