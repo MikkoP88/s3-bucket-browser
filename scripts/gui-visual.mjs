@@ -1569,6 +1569,67 @@ await step('tree-delete-syncs-sidebar', async () => {
   await closeModal();
 });
 
+await step('ctxmenu-click-outside', async () => {
+  // "the menu stays open when I click somewhere else": the closer is a
+  // document-level mousedown listener, and grid checkboxes and the V/M
+  // badges STOP mousedown propagation — a bubble-phase listener never saw
+  // those clicks. Both closers (shared ctx menu + menubar dropdown) now
+  // run in the capture phase, before any stopper; Escape closes the menu
+  // before the grid clears its selection. (Locators, not row handles: the
+  // version-marker pass re-renders rows and detaches captured handles;
+  // the Help dropdown — short enough to clear the rows — drives the same closer.)
+  await navObjectsOf('hetzner', 'team-files');
+  await waitFor(() => gridRow('readme.md'), 6000, 'readme row');
+  const menuHidden = () => evalPage(() => document.getElementById('ctxmenu').classList.contains('hidden'));
+  const ddHidden = () => evalPage(() => !document.querySelector('#menubar .mb-dd:not(.hidden)'));
+  const cbOf = (name) => page.locator('#grid-body .grid-row', { hasText: name }).first().locator('.gc.check input');
+  // a checkbox of any row clear of the open menubar dropdown (which can
+  // reach halfway down the grid over short listings)
+  const cbClearOfDropdown = async () => {
+    const name = await evalPage(() => {
+      const dd = document.querySelector('#menubar .mb-dd:not(.hidden)');
+      const bottom = dd ? dd.getBoundingClientRect().bottom : 0;
+      for (const r of Array.from(document.querySelectorAll('#grid-body .grid-row'))) {
+        if (r.style.display === 'none' || !r._model) continue;
+        const b = r.querySelector('.gc.check input')?.getBoundingClientRect();
+        if (b && b.top > bottom + 10) return r._model.name;
+      }
+      return '';
+    });
+    if (!name) throw new Error('no row clear of the open dropdown');
+    return cbOf(name);
+  };
+  const openRowMenu = async () => { await page.locator('#grid-body .grid-row', { hasText: 'readme.md' }).first().click({ button: 'right' }); await sleep(80); };
+
+  // the stopped-mousedown click: the exact case that left menus open
+  await openRowMenu();
+  await ok('ctx menu open on row right-click', !(await menuHidden()));
+  await cbOf('readme.md').click();
+  await sleep(120);
+  await ok('checkbox click (mousedown stopped) closes the ctx menu', await menuHidden());
+
+  // the menubar dropdown shares the same closer pattern
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  await ok('menubar dropdown open', !(await ddHidden()));
+  await (await cbClearOfDropdown()).click();
+  await sleep(120);
+  await ok('checkbox click closes the menubar dropdown too', await ddHidden());
+
+  // Escape: the menu owns it before the grid clears its selection
+  await openRowMenu();
+  await page.keyboard.press('Escape');
+  await sleep(80);
+  await ok('Escape closes the ctx menu', await menuHidden());
+
+  // the everyday path stays covered: a plain click anywhere outside
+  await openRowMenu();
+  const y = await evalPage(() => innerHeight - 6); // status bar = inert
+  await page.mouse.click(300, y);
+  await sleep(80);
+  await ok('plain outside click closes the ctx menu', await menuHidden());
+});
+
 await step('remote-view', async () => {
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box listing');

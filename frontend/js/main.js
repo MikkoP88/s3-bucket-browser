@@ -1733,9 +1733,13 @@ async function treeProperties(node) {
 }
 
 function hideContextMenu() { $('ctxmenu').classList.add('hidden'); }
+// capture phase: grid checkboxes and the V/M badges stop mousedown
+// propagation, and a bubble-phase document listener never saw those —
+// the menu stayed open when the user clicked exactly them. Capture runs
+// before any component handler, so no stopper can defeat the close.
 document.addEventListener('mousedown', (e) => {
   if (!e.target.closest('#ctxmenu')) hideContextMenu();
-});
+}, { capture: true });
 window.addEventListener('blur', hideContextMenu);
 
 // ============================ actions ============================
@@ -3916,7 +3920,12 @@ function wireKeys() {
     if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); downloadSelection(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newFolder(); return; }
     if (e.shiftKey && e.key === 'F4') { e.preventDefault(); newFile(); return; }
-    if (e.key === 'Escape') { grid.clearSelection(); return; }
+    if (e.key === 'Escape') {
+      // an open context menu owns Escape first: close it and keep the
+      // selection (the menubar dropdown closes on Escape the same way)
+      if (!$('ctxmenu').classList.contains('hidden')) { hideContextMenu(); return; }
+      grid.clearSelection(); return;
+    }
 
     // grid navigation keys (arrows, Enter, type-to-jump)
     if (grid.keydown(e)) e.preventDefault();
