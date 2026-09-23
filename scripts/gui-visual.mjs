@@ -1578,6 +1578,8 @@ await step('ctxmenu-click-outside', async () => {
   // before the grid clears its selection. (Locators, not row handles: the
   // version-marker pass re-renders rows and detaches captured handles;
   // the Help dropdown — short enough to clear the rows — drives the same closer.)
+  // The second half builds the hidden-objects view (View toggles + ghost
+  // rows) so the ⛔ badge and the delete-marked rows get the same treatment.
   await navObjectsOf('hetzner', 'team-files');
   await waitFor(() => gridRow('readme.md'), 6000, 'readme row');
   const menuHidden = () => evalPage(() => document.getElementById('ctxmenu').classList.contains('hidden'));
@@ -1628,6 +1630,91 @@ await step('ctxmenu-click-outside', async () => {
   await page.mouse.click(300, y);
   await sleep(80);
   await ok('plain outside click closes the ctx menu', await menuHidden());
+
+  // ---- the hidden-objects world: the OTHER stopped-mousedown objects only
+  // exist here — the ⟲/⛔ badges render with the View icon toggles on, and
+  // delete-marked ghost rows only with "Show hidden (delete-marked) objects"
+  // enabled. Build that view through the real View menu, then give every
+  // object type the outside-click test. ctx-gone.txt is a TRUE ghost
+  // (all-deleted and absent from the listing — same shape hidden-ghost-
+  // refresh uses later).
+  const ghostName = 'ctx-gone.txt';
+  await evalPage((n) => {
+    window.__shim.world.versionKids['team-files/'].push(
+      { name: n, isDir: false, versions: 2, markers: 1, allDeleted: true });
+  }, ghostName);
+  const viewTitle = page.locator('#menubar .mb-title', { hasText: /view/i }).first();
+  const viewTick = async (re) => {
+    await viewTitle.click();
+    await sleep(80);
+    await page.locator('#menubar .mb-dd:not(.hidden) .mb-item', { hasText: re }).first().click();
+    await sleep(120);
+  };
+  await viewTick(/show version count icons/i); // ⟲ badges on
+  await viewTick(/show delete marker icons/i); // ⛔ badges on
+  await viewTick(/show hidden \(delete-marked\) objects/i); // ghosts on + refresh
+  await ok('show-hidden enabled: the setting reads on',
+    evalPage(() => localStorage.getItem('s3b-show-hidden') === '1'));
+  const ghostRowVisible = () => evalPage((n) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .filter((r) => r.style.display !== 'none' && r._model && r._model.name === n && r.classList.contains('ghost')).length, ghostName);
+  await ok('show-hidden enabled: delete-marked ghost row shown',
+    waitFor(async () => (await ghostRowVisible()) === 1, 5000, 'ghost row'));
+  // the View item itself must read back checked — the setting, verified
+  await viewTitle.click();
+  await sleep(80);
+  await ok('View shows "Show hidden (delete-marked) objects" checked', evalPage(() => Array
+    .from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .some((i) => /show hidden \(delete-marked\) objects/i.test(i.textContent.trim()) && i.classList.contains('checked'))));
+  await page.keyboard.press('Escape');
+  await sleep(60);
+
+  // the ⛔ badge is the second mousedown stopper (grid.js badges) and the
+  // click also opens the Delete Marker window — the menu must still close
+  await ok('⛔ badge rendered on the marked file', evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'readme.md');
+    return !!r && /⛔/.test(r.querySelector('.mbadge').textContent);
+  }));
+  await openRowMenu();
+  await page.locator('#grid-body .grid-row', { hasText: 'readme.md' }).first().locator('.mbadge').click();
+  await sleep(120);
+  await ok('⛔ badge click (mousedown stopped) closes the ctx menu', await menuHidden());
+  // the badge ALSO opened the Delete Marker window — it mounts async (after
+  // PrefixMarkers resolves), so wait for it, not a race; its backdrop would
+  // swallow every later click
+  await waitFor(modalVisible, 3000, 'marker window');
+  await closeModal();
+
+  // delete-marked rows are clickable objects like any other. The menu drops
+  // down over the rows below its anchor — the ghost row is the LAST row and
+  // sits underneath it — so the row-body click goes to the name cell, left
+  // of the menu (same plain row mousedown selection path).
+  await openRowMenu();
+  await page.locator('#grid-body .grid-row', { hasText: ghostName }).first().locator('.tname').click();
+  await sleep(120);
+  await ok('ghost row click closes the ctx menu', await menuHidden());
+  await openRowMenu();
+  await cbOf(ghostName).click();
+  await sleep(120);
+  await ok('ghost row checkbox click (mousedown stopped) closes the ctx menu', await menuHidden());
+
+  // ---- restore: toggles off through the same menu, fixture out, keys null
+  // (the settings walk later asserts the three keys default to null)
+  await viewTick(/show version count icons/i);
+  await viewTick(/show delete marker icons/i);
+  await viewTick(/show hidden \(delete-marked\) objects/i); // off + refresh drops ghosts
+  await evalPage((n) => {
+    const k = window.__shim.world.versionKids['team-files/'];
+    const i = k.findIndex((c) => c.name === n);
+    if (i >= 0) k.splice(i, 1);
+    localStorage.removeItem('s3b-show-versions');
+    localStorage.removeItem('s3b-show-markers');
+    localStorage.removeItem('s3b-show-hidden');
+  }, ghostName);
+  await ok('hidden-objects walk leaves no trace', evalPage(() =>
+    localStorage.getItem('s3b-show-versions') === null
+    && localStorage.getItem('s3b-show-markers') === null
+    && localStorage.getItem('s3b-show-hidden') === null)
+    && waitFor(async () => (await ghostRowVisible()) === 0, 5000, 'ghost row gone'));
 });
 
 await step('remote-view', async () => {
