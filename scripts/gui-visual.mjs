@@ -1900,9 +1900,20 @@ await step('help-guide', async () => {
   if (lic) {
     await lic.asElement().click();
     await waitFor(() => popoutVisible('license'), 4000, 'license popout');
-    const ltxt = await evalPage(() => document.querySelector('#popout-root .popout[data-pop="license"]').textContent);
-    await ok('license window shows identity + third-party summary', ltxt.includes('PolyForm Internal Use License 1.0.0') && ltxt.includes('Third-party components') && ltxt.includes('NOTICE'));
+    const ltxt = () => evalPage(() => document.querySelector('#popout-root .popout[data-pop="license"]').textContent);
+    let lt = await ltxt();
+    await ok('license window: About partition (identity, linked name, publisher)', lt.includes('PolyForm Internal Use License 1.0.0') && lt.includes('MikkoP88'));
     await shot('license');
+    // License partition: the identity + canonical URL
+    await evalPage(() => { document.querySelector('#popout-root .popout[data-pop="license"] .tab[data-tab="license"]').click(); });
+    await sleep(80);
+    lt = await ltxt();
+    await ok('license window: License partition (copyright + canonical URL)', lt.includes('Copyright (c) 2026 Mikko Pesonen (MikkoP88).') && lt.includes('polyformproject.org/licenses/internal-use/1.0.0.txt'));
+    // Third-party partition: the NOTICE summary
+    await evalPage(() => { document.querySelector('#popout-root .popout[data-pop="license"] .tab[data-tab="third"]').click(); });
+    await sleep(80);
+    lt = await ltxt();
+    await ok('license window: third-party summary (NOTICE pointer)', lt.includes('Third-party components') && lt.includes('NOTICE'));
     await closePopout('license');
   }
   await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
