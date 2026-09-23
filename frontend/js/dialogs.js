@@ -804,6 +804,83 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
   draw();
 }
 
+// markerDialog is the single-object Delete marker view: one key's marker
+// history as plain rows — no checkboxes or bulk buttons, which only ever
+// made sense for lists. The marker hiding the object is flagged and
+// accent-bordered (the object stays invisible to listings until it is
+// removed), history markers say so, and every row keeps one-click Remove
+// ("undo delete" — the object reappears with its previous current
+// version; removing the last marker closes the window, its job done).
+// The marker-setting opt-in notice behaves exactly like the list
+// window's.
+export function markerDialog(bucket, key, onChanged) {
+  const status = el('div', { class: 'dlg-status', text: t('loading') });
+  const list = el('div', { class: 'ver-list' });
+  let listed = [];
+
+  const undo = async (mk) => {
+    try {
+      await api.UndoDelete(bucket, mk.key, mk.versionId);
+      toast(t('markw.undone'), 'ok');
+      onChanged?.();
+      // the last marker is gone — the object is back; nothing left to show
+      if (listed.length <= 1) m.close(null);
+      else draw();
+    } catch (err) {
+      toast(`Failed: ${err}`, 'error');
+    }
+  };
+
+  async function draw() {
+    // Hidden markers (the default): no fetch, no rows — the notice plus
+    // the inline opt-in instead (the same flip the View menu makes).
+    if (localStorage.getItem('s3b-show-markers') !== '1') {
+      status.style.color = 'var(--text-dim)';
+      status.textContent = t('markw.hiddenNotice');
+      list.replaceChildren(el('div', { class: 'ver-sub', style: 'margin:10px 0' },
+        el('button', {
+          class: 'btn', text: t('markw.show'),
+          onclick: () => {
+            localStorage.setItem('s3b-show-markers', '1');
+            window.dispatchEvent(new Event('s3b-markers-changed'));
+            draw();
+          },
+        })));
+      return;
+    }
+    status.style.color = 'var(--text-dim)';
+    status.textContent = t('loading');
+    list.replaceChildren();
+    try {
+      const res = await api.PrefixMarkers(bucket, key, true);
+      listed = res.markers || [];
+      status.textContent = listed.length
+        ? t('markw.count', { n: listed.length }) + (res.truncated ? ` ${t('markw.more')}` : '')
+        : t('markw.emptyOne');
+      list.replaceChildren(...listed.map((mk) => el('div', { class: `ver-row${mk.isLatest ? ' latest' : ''}` },
+        el('span', { class: 'ver-icon', text: '⛔' }),
+        el('span', { class: 'ver-main' },
+          el('div', { text: mk.isLatest ? t('markw.latest') : t('markw.history') }),
+          el('div', { class: 'ver-sub', text: `${mk.lastModified ? fmtDate(asMillis(mk.lastModified)) : ''}${mk.versionId ? ` — ${mk.versionId}` : ''}` }),
+        ),
+        el('span', { class: 'ver-actions' },
+          el('button', { class: 'btn', text: t('markw.remove'), title: t('markw.removeTip'), onclick: () => undo(mk) }),
+        ),
+      )));
+    } catch (err) {
+      status.textContent = String(err);
+      status.style.color = 'var(--danger)';
+    }
+  }
+
+  const m = openModal({
+    title: `${t('markw.titleOne')} — s3://${bucket}/${key}`,
+    body: el('div', {}, status, list),
+    buttons: [{ label: 'Close' }], // single content: no bulk actions
+  });
+  draw();
+}
+
 // markersDialog is the Delete Marker window: every delete marker of one
 // key (exact — titled "Delete marker", since a single object carries at
 // most one) or under one folder prefix ("Delete markers"), newest
@@ -821,6 +898,9 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
 // items = [{ key, isDir }]; prefix is the folder the selection lives in
 // (multi only — row keys print relative to it).
 export function markersDialog(bucket, items, prefix, onChanged) {
+  // a single OBJECT opens the dedicated single-marker view (no list
+  // machinery); folders and multi-selections list
+  if (items.length === 1 && !items[0].isDir) return markerDialog(bucket, items[0].key, onChanged);
   const status = el('div', { class: 'dlg-status', text: t('loading') });
   const list = el('div', { class: 'ver-list' });
   let listed = [];
