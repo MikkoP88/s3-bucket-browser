@@ -3186,27 +3186,28 @@ await step('marker-window', async () => {
   await waitFor(async () => (await txt('#modal-root')).includes('delete marker'), 4000, 'marker window content');
   await ok('markers listed with version ids', evalPage(() => document.querySelectorAll('#modal-root .ver-row').length === 2
     && /vm-0001/.test(document.getElementById('modal-root').textContent)));
-  await ok('file window titled singular, rows checkbox-selectable', evalPage(() => {
+  // the single-OBJECT view: fitted to one key — no checkbox/bulk
+  // machinery, the hiding marker flagged, history markers noted
+  await ok('single view: titled singular, no checkboxes or bulk buttons', evalPage(() => {
     const h = document.querySelector('#modal-root .modal-head span')?.textContent || '';
+    const foot = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).map((b) => b.textContent.trim());
     return /^delete marker — s3:\/\//i.test(h)
-      && document.querySelectorAll('#modal-root .ver-check input').length === 2;
+      && document.querySelectorAll('#modal-root .ver-check input').length === 0
+      && foot.length === 1 && /^close$/i.test(foot[0])
+      && !/remove (selected|all)/i.test(foot.join(' '));
   }));
-  await ok('Remove selected wakes on selection', evalPage(() => {
-    const sel = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
-      .find((b) => /remove selected/i.test(b.textContent));
-    if (!sel || !sel.disabled) return false;
-    document.querySelector('#modal-root .ver-check input').click();
-    return !sel.disabled;
+  await ok('single view: hiding marker flagged, history marker noted', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .ver-row .ver-main > div:first-child')).map((d) => d.textContent);
+    const latest = document.querySelector('#modal-root .ver-row.latest');
+    return rows.length === 2
+      && /latest — object hidden/i.test(rows[0]) && !/history/i.test(rows[0])
+      && /in history/i.test(rows[1]) && !/hidden/i.test(rows[1])
+      && !!latest && latest.querySelector('.ver-main > div:first-child').textContent === rows[0];
   }));
-  // polish: no per-row tag pills any more (a marker is by definition the
-  // key's latest version — the "latest" badge said nothing), and Remove all
-  // is NOT danger-styled — removing a marker restores the object
-  await ok('no tag pills; Remove all is calm', evalPage(() => {
-    const pills = Array.from(document.querySelectorAll('#modal-root .ver-row .tag'));
-    const all = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
-      .find((b) => /remove all/i.test(b.textContent));
-    return pills.length === 0 && !!all && !all.classList.contains('danger');
-  }));
+  // polish: no per-row tag pills (a marker is by definition the key's
+  // latest version — the "latest" badge said nothing)
+  await ok('single view: no tag pills', evalPage(() =>
+    document.querySelectorAll('#modal-root .ver-row .tag').length === 0));
   await ok('marker window layout clean', (await layoutAudit()).ok);
   await shot('marker-window');
   await evalPage(() => Array.from(document.querySelectorAll('#modal-root .ver-row .btn'))
