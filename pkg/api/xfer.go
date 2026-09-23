@@ -405,6 +405,13 @@ func (a *App) planS3Item(ctx context.Context, p *xferPlan, addDir func(int, stri
 		size := aws.ToInt64(o.Size)
 		del.keys = append(del.keys, key)
 		rel := strings.TrimPrefix(key, prefix)
+		if rel == "" {
+			// key == prefix: the item's own root (an explicit folder
+			// marker object). It is the folder itself, never a file —
+			// planning it as one aims a file write at the directory
+			// path, which fails on paste with "is a directory".
+			return nil
+		}
 		if strings.HasSuffix(rel, "/") { // folder marker → directory
 			addDir(idx, base, rel)
 			return nil
