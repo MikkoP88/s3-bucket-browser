@@ -4204,6 +4204,8 @@ async function writeReleaseReport(v) {
     const ok = j.summary?.fail === 0;
     I.push(`| [${tag}](${tag}/) | ${osid} | ${(j.generatedAt || '').slice(0, 10)} | ${ok ? 'PASS' : '**FAIL**'} | ${j.summary?.pass ?? '?'} PASS · ${j.summary?.skip ?? '?'} SKIP · ${j.summary?.fail ?? '?'} FAIL | [REPORT.md](${tag}/${osid}/REPORT.md) |`);
   }
+  I.push('');
+  I.push('Verification focuses on application functionality, not full OS\u2011level compatibility across all distributions.');
   await writeFile(path.join(base, 'README.md'), I.join('\n') + '\n');
   return path.join('docs', 'verification', RELEASE, OSID);
 }

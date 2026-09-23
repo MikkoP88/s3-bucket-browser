@@ -283,34 +283,36 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot is from the verification runs of
-**23 Sep 2026** on Windows Server 2025 (x64), after this week's feature
-work grew the matrix from 118 to 121 rows: Copy URL — the real address
-of a selection on every source type (S3: the endpoint-resolved form,
-proven real by an out-of-band bare GET answered 403; FTP: the
-user@host:port form with the anchored server path, never the password),
-the merged and single Delete-marker windows including the hidden-marker
-opt-in, and the FTP engine's redial on idle control-connection drops.
-The same runs surfaced and fixed three harness defects the new rows
-exposed: the GUI battery is self-sufficient (`--only gui` runs green
-from empty stores with no CLI battery before it), the bucket-policy row
-restores the private default it tests against, and the hostile-names
-presign oracle parses the presign JSON (a regex over the raw text had
-been mangling the query into an anonymous request). The
-release-evidence run for `v1.1.0-beta.17` (94-row matrix) is committed
-at
-[`docs/verification/v1.1.0-beta.17/windows-x64/REPORT.md`](verification/v1.1.0-beta.17/windows-x64/REPORT.md):
+Replaced on every run — this snapshot is from the release gate of
+**24 Sep 2026** (`node scripts/verify.mjs --release v1.1.0-beta.18`,
+tag-stamped, binary-checked, on the tree of `81fd1b6`) on Windows
+Server 2025 (x64), after the license work grew the matrix from 121 to
+124 rows: the rebuilt Help → License window — About | License |
+Third-party partitions, license name and project URL as external
+links (GUI-52) — the first-launch accept-license phase every fresh
+install now walks (GUI-53: the gate holds boot, Escape cannot dismiss
+it, Decline blocks with Exit the only way out, a reload re-arms, and
+acceptance is recorded cross-face in `license.json`), and the license
+CLI face round-trip (CLI-M-08). The visual sweep's license check was
+partitioned across the window's three tabs — the NOTICE summary lives
+on its own — which is the 656 → 658 growth. The same sitting found and
+fixed a latent release-pipeline bug: the workflow's verification gate
+now locates the evidence by glob (`verification.json` under the tag)
+instead of assuming it at the tag root, where it would have missed the
+`windows-x64/` directory every real report lives in. Evidence committed
+for the tag at
+[`docs/verification/v1.1.0-beta.18/windows-x64/REPORT.md`](verification/v1.1.0-beta.18/windows-x64/REPORT.md)
+(the previous release evidence, beta.17's 94-row matrix, stays at
+[`docs/verification/v1.1.0-beta.17/windows-x64/REPORT.md`](verification/v1.1.0-beta.17/windows-x64/REPORT.md)):
 
 ```
-full matrix (fresh build; 121 rows incl. the two sweep rows):
-  114 PASS · 7 SKIP · 0 FAIL — 1342 s
+release gate (--release v1.1.0-beta.18; fresh build; 124 rows incl. the two sweep rows):
+  117 PASS · 7 SKIP · 0 FAIL — 1342 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
-  SWEEP-VIS-01  gui-visual   656/656 checks
+  SWEEP-VIS-01  gui-visual   658/658 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
-standalone GUI battery (--only gui; empty stores, nothing before it):
-  49 PASS · 2 SKIP · 0 FAIL — 499 s
 ```
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
