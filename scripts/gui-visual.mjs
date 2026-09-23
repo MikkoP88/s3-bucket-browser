@@ -1516,6 +1516,59 @@ await step('tree-bucket-scoped-source', async () => {
   await closeCtx();
 });
 
+await step('tree-delete-syncs-sidebar', async () => {
+  // Sidebar-originated deletes must refresh the sidebar itself: the tree
+  // only self-updates when the MAIN VIEW lists a folder, and the tree
+  // Delete handlers used to leave the parent's stale row behind (S3 even
+  // navigated INTO the deleted prefix). The main view stays wherever it
+  // was — the deleted folders live in OTHER sources, so nothing but the
+  // sidebar's own reload can drop those rows.
+  const crumb0 = await txt('#breadcrumb');
+
+  // S3: delete the bucket-scoped source's 'data' folder from the sidebar
+  // (parent = the source node itself — the bucket-scoped id rule).
+  if (!(await treeRow('data'))) await evalHandleClickTwist('nightly');
+  await waitFor(async () => !!(await treeRow('data')), 6000, 'nightly children');
+  const world1 = await evalPage(() => {
+    // the backend delete removes the folder: mirror it in the key space
+    // BEFORE confirming so the parent's re-list answers without 'data'
+    const w = window.__shim.world;
+    w.objects['db-dumps'] = w.objects['db-dumps'].filter((o) => !o.key.startsWith('data/'));
+    return w.objects['db-dumps'].length;
+  });
+  await ok('victim folder seeded away', world1 === 1); // only hello.txt remains
+  await resetCalls();
+  await rightClick(await treeRow('data'));
+  await sleep(80);
+  await ctxItem(/^delete/i);
+  await waitFor(modalVisible, 4000, 'S3 delete window');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('SourceDeleteSelection')) !== null, 4000, 'tree SourceDeleteSelection');
+  await ok('deleted S3 folder leaves the sidebar', waitFor(async () => !(await treeRow('data')), 4000, 'data row gone'));
+  await ok('main view never navigated into the deleted folder', (await txt('#breadcrumb')) === crumb0);
+
+  // Remote (sftp): delete '/upload' of backup-box — parent = the source
+  // root node (the rdir id rule).
+  if (!(await treeRow('upload'))) await evalHandleClickTwist('backup-box');
+  await waitFor(async () => !!(await treeRow('upload')), 6000, 'backup-box children');
+  await evalPage(() => {
+    const w = window.__shim.world;
+    w.remote['backup-box'] = w.remote['backup-box'].filter((o) => o.key !== '/upload/' && !o.key.startsWith('/upload/'));
+  });
+  await resetCalls();
+  await rightClick(await treeRow('upload'));
+  await sleep(80);
+  await ctxItem(/^delete/i);
+  await waitFor(modalVisible, 4000, 'remote delete window');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.danger').click());
+  await waitFor(async () => (await findCall('RemoteRemove')) !== null, 4000, 'tree RemoteRemove');
+  await ok('deleted remote folder leaves the sidebar', waitFor(async () => !(await treeRow('upload')), 4000, 'upload row gone'));
+  await ok('sibling folder survives', !!(await treeRow('docs')));
+  await ok('sidebar deletes never moved the main view', (await txt('#breadcrumb')) === crumb0);
+  await shot('tree-after-sidebar-delete');
+  await closeModal();
+});
+
 await step('remote-view', async () => {
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box listing');

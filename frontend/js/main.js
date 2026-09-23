@@ -1601,7 +1601,7 @@ function showTreeMenu(e, node) {
       ['New folder here\u2026', 'Ctrl+Shift+N', () => newRemoteFolderIn(node.source, node.path)],
       null,
       ['Rename\u2026', 'F2', () => renameRemoteTreeFolder(node)],
-      ['Delete\u2026', 'Del', () => deleteRemoteSelection(node.source, [node.path])],
+      ['Delete\u2026', 'Del', async () => { if (await deleteRemoteSelection(node.source, [node.path])) tree.reloadParentOf(node); }],
     ]);
     return;
   }
@@ -1643,7 +1643,12 @@ function showTreeMenu(e, node) {
     ['Paste into folder', 'Ctrl+V', () => paste(node.prefix, node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: node.prefix }), !(st.hasProfile && pasteReady())],
     null,
     ['Rename\u2026', 'F2', goThen(() => renameTreeFolder(node)), !st.hasProfile],
-    ['Delete\u2026', 'Del', goThen(() => deleteSelection(node.bucket, [node.prefix], node.source)), !st.hasProfile],
+    // Delete is source-pinned (no view-source dialog), so no goThen nav:
+    // refresh the deleted folder's PARENT in the tree — the sidebar only
+    // self-updates when the main view lists a folder, and navigating into
+    // the deleted folder (the old goThen target) left the parent's stale
+    // row behind (and the view inside a deleted prefix).
+    ['Delete\u2026', 'Del', async () => { if (await deleteSelection(node.bucket, [node.prefix], node.source)) tree.reloadParentOf(node); }, !st.hasProfile],
     null,
     ['Find here\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, node.prefix, openSearchResult)), !st.hasProfile],
     ['Properties', '', goThen(() => treeProperties(node)), !st.hasProfile],
@@ -1966,7 +1971,7 @@ async function deleteS3Keys(source, bucket, keys, preset, target, after) {
     mode: preset,
     classicMsg: `You are about to delete ${desc}.\n${undoNote}`,
   });
-  if (mode === null) return;
+  if (mode === null) return false;
   // force contract: the plain mode's backend gate re-counts the same
   // objects this preview counted, so requiresL2 maps 1:1 onto it. The
   // versioned destructive modes (keepcurrent/permanent) destroy VERSIONS —
@@ -1997,6 +2002,7 @@ async function deleteS3Keys(source, bucket, keys, preset, target, after) {
     reportDeleteResult(res, (n) => `Deleted ${n} object(s)${versioned ? ' — restorable from version history' : ''}`);
   }
   after?.();
+  return true;
 }
 
 async function deleteSelection(bucketOverride, keysOverride, sourceOverride, presetMode = '') {
@@ -2019,9 +2025,12 @@ async function deleteSelection(bucketOverride, keysOverride, sourceOverride, pre
     ? `s3://${bucket}/${keys[0]}`
     : `${scheme}${bucket}/${loc?.prefix || ''}`;
   try {
-    await deleteS3Keys(source, bucket, keys, presetMode, target, refreshCurrent);
+    // resolves true when the deletion ran (false = canceled window) so
+    // sidebar callers know to refresh the tree's parent node
+    return await deleteS3Keys(source, bucket, keys, presetMode, target, refreshCurrent);
   } catch (err) {
     toast(`Delete failed: ${err}`, 'error');
+    return false;
   }
 }
 
@@ -2235,12 +2244,14 @@ async function deleteRemoteSelection(overrideSource, overrideKeys, presetMode = 
       classicTyped: true, // no undo on remotes: classic mode types the word when the setting is on
       classicMsg: `You are about to delete ${desc}.\nRemote sources have no trash or versions — this cannot be undone.`,
     });
-    if (mode === null) return;
+    if (mode === null) return false;
     const res = await api.RemoteRemove(source, keys);
     reportDeleteResult(res, (n) => `Deleted ${n} item(s)`);
     refreshCurrent();
+    return true;
   } catch (err) {
     toast(`Delete failed: ${err}`, 'error');
+    return false;
   }
 }
 

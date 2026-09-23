@@ -269,6 +269,31 @@ export class Tree {
     this.expand(id);
   }
 
+  // reloadParentOf re-lists one child node's parent after a sidebar
+  // mutation (context Delete): the parent's folder rows rebuild without
+  // the deleted child. The sidebar only self-updates when the main view
+  // lists a folder (updateObjectsDir/updateRemoteDir) — that is why grid
+  // deletes refreshed the tree but sidebar deletes left a stale row.
+  // Parent ids follow the tree's own rules: rdir paths climb one segment
+  // (the source node at the root); S3 prefixes drop their last segment
+  // (a bucket-scoped source node IS the bucket root).
+  reloadParentOf(node) {
+    let id;
+    if (node.kind === 'rdir') {
+      const up = node.path.replace(/\/+$/, '').replace(/\/[^/]*$/, '');
+      id = up ? this.rsrcKey(node.source, up + '/') : this.srcKey(node.source);
+    } else {
+      const parent = String(node.prefix || '').replace(/[^/]*\/$/, '');
+      id = this.nodeKey(node.source, node.bucket, parent);
+      if (!parent) {
+        const s = this.nodes.get(this.srcKey(node.source));
+        if (s && s.stype === 's3' && s.bucket === node.bucket) id = s.id;
+      }
+    }
+    const n = this.nodes.get(id);
+    if (n && n.loaded) this.reload(id);
+  }
+
   collapseAll() {
     for (const n of this.nodes.values()) n.expanded = false;
     this.render();
