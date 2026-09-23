@@ -2545,6 +2545,65 @@ export function licenseDialog() {
   openPopout({ id: 'license', title: t('menu.license'), body: el('div', { class: 'admin' }, strip, content), cls: 'admin-modal' });
 }
 
+// ---------- first-launch license gate (the setup phase) ----------
+// Every fresh install walks this once: the app stays locked behind a
+// full-screen gate until the CURRENT license version is accepted. The
+// record lives in the config store (license.json), keyed by license
+// name+version — a license bump re-runs the phase on the next launch.
+// The promise resolves when the app may start. Contexts without the
+// binding (the visual sweep's shim world) skip the gate rather than
+// brick a window that can never answer.
+export function licenseGate() {
+  return new Promise((resolve) => {
+    api.GetLicenseState().catch(() => null).then((st) => {
+      if (!st || !st.required) { resolve(); return; }
+
+      // Decline swaps the card for a blocked state — the only way out is
+      // Exit (or the next launch, which walks the gate again).
+      const blocked = () => {
+        card.replaceChildren(
+          el('div', { class: 'licgate-title', text: t('licgate.declinedTitle') }),
+          el('div', { class: 'licgate-p', text: t('licgate.declinedMsg') }),
+          el('div', { class: 'licgate-actions' },
+            el('button', { class: 'btn', text: t('licgate.exit'), onclick: () => { api.ExitApp().catch(() => window.close()); } }),
+          ),
+        );
+      };
+      const accept = () => {
+        const btns = card.querySelectorAll('button');
+        btns.forEach((b) => { b.disabled = true; });
+        api.AcceptLicense('gui').then((after) => {
+          if (!after || !after.required) { scrim.remove(); resolve(); return; }
+          const again = card.querySelector('.btn.primary');
+          if (again) again.disabled = false; // write landed but state says due — allow retry
+        }).catch(() => { const again = card.querySelector('.btn.primary'); if (again) again.disabled = false; });
+      };
+
+      const card = el('div', { class: 'licgate-card' },
+        el('div', { class: 'licgate-mark', text: st.product }),
+        el('div', { class: 'licgate-title', text: t('licgate.title') }),
+        el('div', { class: 'licgate-p', text: t('licgate.intro') }),
+        el('ul', { class: 'licgate-terms' },
+          el('li', { text: t('licgate.term1') }),
+          el('li', { text: t('licgate.term2') }),
+          el('li', { text: t('licgate.term3') }),
+          el('li', { text: t('licgate.term4') }),
+        ),
+        el('div', { class: 'licgate-p' },
+          `${t('licgate.licenseLine')} `, extLink(st.url, `${st.license} ${st.version}`), '.'),
+        el('div', { class: 'licgate-p dim', text: `Copyright (c) ${st.year} ${st.holder}.` }),
+        el('div', { class: 'licgate-actions' },
+          el('button', { class: 'btn', text: t('licgate.decline'), onclick: blocked }),
+          el('button', { class: 'btn primary', text: t('licgate.accept'), onclick: accept }),
+        ),
+      );
+      const scrim = el('div', { class: 'licgate', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('licgate.title') }, card);
+      document.body.appendChild(scrim);
+      card.querySelector('.btn.primary').focus();
+    });
+  });
+}
+
 // ---------- conflict policy + transfer throttle ----------
 const RATE_LIMITS = [
   [0, 'Unlimited'],

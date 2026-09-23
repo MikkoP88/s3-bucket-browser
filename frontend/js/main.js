@@ -9,7 +9,7 @@ import {
   sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
   versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
-  renderPopoutView,
+  renderPopoutView, licenseGate,
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile,
 } from './dialogs.js';
 import { LICENSE, licenseLine } from './license.js';
@@ -115,6 +115,10 @@ async function boot() {
     renderPopoutView(popoutQS.get('popout'), popoutQS);
     return;
   }
+  // Setup phase: a fresh install accepts the license before any chrome
+  // renders. Popout windows skip it — they only ever open from an
+  // already-accepted session.
+  await licenseGate();
   // Popout geometry is session state: a window reopens at its last
   // position/size until the app closes, and the next launch starts
   // fresh — wipe the leftovers a previous run persisted (the placement

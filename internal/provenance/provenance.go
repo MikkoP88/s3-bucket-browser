@@ -31,6 +31,10 @@ const (
 	LicenseVersion = "1.0.0"
 	Repo           = "github.com/MikkoP88/s3-bucket-browser"
 
+	// LicenseURL is where the normative license text is published — the
+	// link every license surface points at (mirrors frontend license.js).
+	LicenseURL = "https://polyformproject.org/licenses/internal-use/1.0.0.txt"
+
 	// Tag prefixes every watermark payload so a decoded marker can be
 	// recognized and its format versioned independently of the identity.
 	Tag = "s3b-provenance-v1"

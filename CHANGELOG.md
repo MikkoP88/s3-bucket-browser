@@ -18,6 +18,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Every fresh install now walks an accept-license phase.** First
+  launch boots into a full-screen gate: the license terms summarized,
+  the license name linked to the published PolyForm text, and the app
+  held until accepted — Escape cannot dismiss it, Decline leads to a
+  blocked state whose only exit is Exit. Acceptance is recorded in the
+  config store (`license.json`, 0600) with timestamp, OS user and face,
+  keyed by license name+version so a license bump re-runs the phase.
+  `s3b license status|accept|decline|show` drives the same record from
+  the terminal — the CLI stays script-friendly, no hard gate — and both
+  faces prove the shared store in the matrix (GUI-53, CLI-M-08).
+
 - **The License window is now three partitions: About, License and
   Third-party components.** About carries the About-box identity —
   live version from the backend, publisher, license and project links;

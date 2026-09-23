@@ -308,6 +308,13 @@ Additional rules:
   per-byte integrity — that's the right tool for license-abuse
   evidence (artifact integrity stays with `dist/SHA256SUMS`).
 
+- **License acceptance is enforced at first launch.** Every fresh install
+  walks a full-screen accept-license phase before the app unlocks; the
+  record (`license.json`, 0600) is keyed by license name+version, so a
+  license bump re-runs it, and carries timestamp, OS user and face.
+  `s3b license status` answers from either face; declining leaves the
+  application locked.
+
 ## Reporting a vulnerability
 
 Please open a private security advisory on GitHub

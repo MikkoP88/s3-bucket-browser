@@ -1600,7 +1600,7 @@ async function cliMeta() {
   });
 
   await verify({ id: 'CLI-M-07', area: 'meta', action: '--help contract: every command self-documents', ds: '—', scenario: 'every top-level command (22) plus the root: --help exits 0, prints a Usage: block and lists its subcommands where it has any — a missing or crashing help page is a broken contract for scripting humans', face: 'CLI' }, async () => {
-    const CMDS = ['source', 'profile', 'ls', 'tree', 'du', 'stat', 'mb', 'rb', 'mkdir', 'cp', 'mv', 'rm', 'sync', 'presign', 'doctor', 'versions', 'bucket', 'find', 'sc', 'lock', 'log', 'version'];
+    const CMDS = ['source', 'profile', 'ls', 'tree', 'du', 'stat', 'mb', 'rb', 'mkdir', 'cp', 'mv', 'rm', 'sync', 'presign', 'doctor', 'versions', 'bucket', 'find', 'sc', 'lock', 'log', 'version', 'license'];
     for (const c of CMDS) {
       const r = await cli([c, '--help']);
       need(r.code === 0, `${c} --help exited ${r.code}: ${(r.out + r.err).slice(0, 120)}`);
@@ -1613,6 +1613,23 @@ async function cliMeta() {
       need(new RegExp(`\\b${c}\\b`).test(root.out), `root --help does not list "${c}"`);
     }
     return `${CMDS.length} commands + root all document themselves`;
+  });
+  await verify({ id: 'CLI-M-08', area: 'meta', action: 'License face: status/accept/decline round-trip', ds: '—', scenario: 'a fresh config reports not accepted; `license accept --yes` prints the identity block and records it (status shows the timestamp, user and face cli; --json agrees); decline revokes so status reports not accepted again — the same record the GUI setup gate writes', face: 'CLI' }, async () => {
+    const dir = path.join(ART, 'm08-config');
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    let r = await cli(['license', 'status'], { cfg: dir });
+    need(r.code === 0 && r.out.includes('not accepted'), `fresh status: ${r.out}`);
+    r = await cli(['license', 'accept', '--yes'], { cfg: dir });
+    need(r.code === 0 && r.out.includes('PolyForm Internal Use License'), `accept output: ${r.out.slice(0, 80)}`);
+    r = await cli(['license', 'status', '--json'], { cfg: dir });
+    const rec = JSON.parse(r.out);
+    need(rec.accepted === 'true' && rec.face === 'cli' && rec.current === 'true' && !!rec.acceptedAt, `record: ${JSON.stringify(rec).slice(0, 120)}`);
+    r = await cli(['license', 'decline'], { cfg: dir });
+    need(r.code === 0, `decline: ${r.err}`);
+    r = await cli(['license', 'status'], { cfg: dir });
+    need(r.code === 0 && r.out.includes('not accepted'), `status after decline: ${r.out}`);
+    return 'status/accept/decline round-trip clean';
   });
 }
 
@@ -1863,6 +1880,49 @@ async function guiBattery() {
     need(ver === VERSION, `GetVersion=${ver}`);
     await shot('01-boot');
     return `v3 stack up, ${ver}`;
+  });
+  await verify({ id: 'GUI-53', area: 'security', action: 'First-launch license gate: the setup phase', ds: 'Wails v3 server', scenario: 'a fresh install boots into a full-screen accept-license gate — Escape cannot dismiss it, Decline swaps to a blocked state whose only exit is the Exit button, a reload walks the gate again with no record written; Accept unlocks the app (status bar stamps), records acceptance in the shared store which the CLI face reads back (face gui), and an accepted install boots straight in until `s3b license decline` re-arms the gate', face: 'GUI' }, async () => {
+    // the gate is up from GUI-01's load (fresh GUICFG every run)
+    await waitFor(async () => await evalPage(() => !!document.querySelector('.licgate .btn.primary')), 8000, 'license gate');
+    const shape = await evalPage(() => ({
+      title: (document.querySelector('.licgate .licgate-title') || {}).textContent || '',
+      link: ((document.querySelector('.licgate a.ext-link') || {}).href) || '',
+      btns: Array.from(document.querySelectorAll('.licgate button')).map((b) => b.textContent.trim()),
+      stamped: (document.getElementById('status-version') || {}).textContent || '',
+    }));
+    need(shape.title === 'License acceptance', `gate title: "${shape.title}"`);
+    need(shape.link === 'https://polyformproject.org/licenses/internal-use/1.0.0.txt', `gate link: ${shape.link}`);
+    need(shape.btns.join(',') === 'I decline,I accept', `gate buttons: ${shape.btns.join(',')}`);
+    need(!shape.stamped.trim(), 'boot is held behind the gate');
+    await page.keyboard.press('Escape');
+    await sleep(400);
+    need(!!(await evalPage(() => !!document.querySelector('.licgate'))), 'Escape dismissed the gate');
+    // decline → blocked state; the only way out is Exit (not clicked: the rig must live)
+    await evalPage(() => { document.querySelector('.licgate .btn:not(.primary)').click(); return true; });
+    await waitFor(async () => await evalPage(() => (document.querySelector('.licgate .licgate-title') || {}).textContent === 'License declined'), 5000, 'blocked state');
+    const blockedBtns = await evalPage(() => Array.from(document.querySelectorAll('.licgate button')).map((b) => b.textContent.trim()));
+    need(blockedBtns.join(',') === 'Exit', `blocked state buttons: ${blockedBtns.join(',')}`);
+    // reload: no record was written, the gate runs again
+    await page.reload();
+    await waitFor(async () => await evalPage(() => !!document.querySelector('.licgate .btn.primary')), 8000, 'gate after reload');
+    let st = await cli(['license', 'status', '--json'], { cfg: GUICFG });
+    need(st.code === 0 && JSON.parse(st.out).accepted === 'false', `record after decline: ${st.out.slice(0, 80)}`);
+    // accept → the app boots and the CLI face reads the same record
+    await evalPage(() => { document.querySelector('.licgate .btn.primary').click(); return true; });
+    await waitFor(() => txt('#status-version').then((s) => s.includes(VERSION)), 15000, 'status bar after acceptance');
+    st = await cli(['license', 'status', '--json'], { cfg: GUICFG });
+    const rec = JSON.parse(st.out);
+    need(rec.accepted === 'true' && rec.face === 'gui', `record after accept: face ${rec.face}`);
+    // an accepted install boots straight in; CLI decline re-arms the gate
+    await page.reload();
+    await waitFor(() => txt('#status-version').then((s) => s.includes(VERSION)), 15000, 'boot straight in');
+    need(!(await evalPage(() => !!document.querySelector('.licgate'))), 'gate showed on an accepted install');
+    await cli(['license', 'decline'], { cfg: GUICFG });
+    await page.reload();
+    await waitFor(async () => await evalPage(() => !!document.querySelector('.licgate .btn.primary')), 8000, 'gate re-armed by CLI decline');
+    await evalPage(() => { document.querySelector('.licgate .btn.primary').click(); return true; });
+    await waitFor(() => txt('#status-version').then((s) => s.includes(VERSION)), 15000, 'final boot');
+    return 'gate held the boot, decline blocked, accept recorded cross-face, decline re-arms';
   });
 
   await verify({ id: 'GUI-02', area: 'sources', action: 'Add S3 source (GUI)', ds: 'S3 (MinIO)', scenario: 'onboarding → editor → Test ✅ → Save → bucket root lists', face: 'GUI' }, async () => {

@@ -577,6 +577,7 @@ function shim() {
   // everything else falls through to record + benign default.
   const H = {
     GetVersion: () => '1.1.0-beta.13',
+    GetLicenseState: () => ({ required: false }), // shim world: no setup phase
     ListSources: () => JSON.parse(JSON.stringify(world.sources)),
     // fault-injectable listing paths: delays hold the answer past the
     // navigation so in-flight UI states are observable; listError rides the

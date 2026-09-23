@@ -527,6 +527,14 @@ async function walk() {
       localStorage.setItem('s3b-show-markers', '1');
     });
     await page.reload();
+    // the setup phase: a fresh rig config walks the first-launch license
+    // gate — accept it (a no-op once the record is on file, and the wait
+    // doubles as the boot-past-gate barrier for the assertions below)
+    await waitFor(async () => await evalPage(() => {
+      const b = document.querySelector('.licgate .btn.primary');
+      if (b) { b.click(); return false; }
+      return !!(document.getElementById('status-version')?.textContent || '').trim();
+    }), 15000, 'boot past the license gate');
     // THE layer the desktop webview runs: v3 runtime as ES module, bridge
     // surface, binding call round-trip, backend→frontend event delivery.
     await waitFor(() => evalPage(() => !!window.wails?.Call?.ByName && !!window.wails?.Events?.On), 15000, 'window.wails');
