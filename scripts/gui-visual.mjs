@@ -3823,8 +3823,10 @@ await step('popout-row-details', async () => {
   await sleep(350); // fetch + redraw
   await ok('"+2 more" reveals every contained item', evalPage((s) => {
     const lis = Array.from(document.querySelectorAll(`${s} .tr-items-l li`)).map((x) => x.textContent);
+    const open = document.querySelector(`${s} .tr-morelink[data-id="dx1"]`)?.getAttribute('aria-expanded');
     return lis.length === 3 && lis.includes('photos/vacation.jpg')
-      && lis.includes('photos/family.png') && lis.includes('photos/timelapse.mov');
+      && lis.includes('photos/family.png') && lis.includes('photos/timelapse.mov')
+      && open === 'true';
   }, trSel));
   await ok('the disclosure glyph is now an info mark', await chev().evaluate((b) =>
     b.querySelector('.ic').textContent === '\u24D8'));
@@ -3836,8 +3838,11 @@ await step('popout-row-details', async () => {
     const ks = Array.from(document.querySelectorAll(`${s} .tr-detail .k`)).map((x) => x.textContent);
     return ks.includes('Ended');
   }, trSel));
-  await chev().click(); // close again: the error flow must open itself
+  await link().click(); // "+2 more" is a two-way toggle: the same element closes
   await sleep(300);
+  await ok('"+2 more" closes the panel it opened', evalPage((s) =>
+    !document.querySelector(`${s} .tr-detail`)
+    && document.querySelector(`${s} .tr-morelink[data-id="dx1"]`)?.getAttribute('aria-expanded') === 'false', trSel));
 
   // failure opens itself: the full error text (the row line ellipsizes)
   await seedJob('error', { error: 'AccessDenied: a long reason the row would truncate' });
