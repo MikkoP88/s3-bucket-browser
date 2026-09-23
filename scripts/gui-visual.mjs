@@ -3217,6 +3217,70 @@ await step('marker-window', async () => {
   await closeModal();
 });
 
+await step('marker-window-multi', async () => {
+  // a MULTI selection of objects/directories opens the Delete Marker window
+  // too: one query per selected item (exact for files, subtree for folders)
+  // merged newest-first, titled with the selection count, keys relative to
+  // the open folder. readme.md (markers:1 fixture ×2 shim rows) + docs/
+  // (subtree ×2) = 4 merged rows. The marker-window step left the toggle ON.
+  await navObjects('team-files');
+  await clickRow('readme.md');
+  const docsRow = await gridRow('docs');
+  await docsRow.asElement().click({ modifiers: ['Control'] });
+  await sleep(80);
+  await resetCalls();
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'readme.md');
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  });
+  await sleep(80);
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /delete markers \(2 selected\)/i.test(i.textContent.trim()));
+    it?.click();
+  });
+  await waitFor(modalVisible, 4000, 'marker window (multi)');
+  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) === 4, 4000, 'merged markers listed');
+  const markerCalls = async () => (await calls()).filter((c) => c.m === 'PrefixMarkers');
+  await ok('one query per selected item (file exact + folder subtree)', async () => {
+    const cs = await markerCalls();
+    const a = JSON.stringify(cs.map((c) => c.args));
+    return cs.length === 2 && a.includes('"readme.md"') && a.includes('"docs/"');
+  });
+  await ok('multi window titled with the selection count', evalPage(() => {
+    const h = document.querySelector('#modal-root .modal-head span')?.textContent || '';
+    return /^delete markers \(2 selected\) — s3:\/\/team-files\/$/i.test(h);
+  }));
+  await ok('merged rows: both items, keys relative to the folder', evalPage(() => {
+    const keys = Array.from(document.querySelectorAll('#modal-root .ver-row .ver-main > div:first-child')).map((d) => d.textContent);
+    return keys.length === 4
+      && keys.filter((k) => k === 'readme.md').length === 2
+      && keys.filter((k) => k === 'docs/legacy/old.txt').length === 2;
+  }));
+  await ok('status counts the union', evalPage(() =>
+    /^4 delete marker\(s\)$/i.test(document.querySelector('#modal-root .dlg-status')?.textContent || '')));
+  await ok('Remove selected wakes on multi selection', evalPage(() => {
+    const selBtn = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+      .find((b) => /remove selected/i.test(b.textContent));
+    if (!selBtn || !selBtn.disabled) return false;
+    document.querySelector('#modal-root .ver-check input').click();
+    return !selBtn.disabled;
+  }));
+  await shot('marker-window-multi');
+  await closeModal();
+  // an unmarked-only selection offers nothing: scan.png carries no marker
+  await clickRow('scan.png');
+  await evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row')).find((x) => x.querySelector('.tname')?.textContent === 'scan.png');
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 300 }));
+  });
+  await sleep(80);
+  await ok('unmarked single selection offers no marker entry', evalPage(() =>
+    !Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .some((i) => /delete marker/i.test(i.textContent.trim()))));
+  await page.keyboard.press('Escape');
+});
+
 await step('content-versions-window', async () => {
   // clicking the version badge on a FOLDER opens Content Versions: a
   // one-line version count up top (the same format as the Delete Marker

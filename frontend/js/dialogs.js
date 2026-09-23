@@ -783,7 +783,7 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
                   ? el('button', { class: 'btn', text: t('dirv.openDir'), title: t('dirv.openDirTip'), onclick: () => contentVersionsDialog(bucket, childKey, onChanged) })
                   : el('button', { class: 'btn', text: t('dirv.viewVersions'), title: t('dirv.viewVersionsTip'), onclick: () => versionsDialog(bucket, childKey, onChanged) }),
                 markersOn && c.markers
-                  ? el('button', { class: 'btn', text: t('dirv.viewMarkers'), title: t('dirv.viewMarkersTip'), onclick: () => markersDialog(bucket, childKey, c.isDir, onChanged) })
+                  ? el('button', { class: 'btn', text: t('dirv.viewMarkers'), title: t('dirv.viewMarkersTip'), onclick: () => markersDialog(bucket, [{ key: childKey, isDir: c.isDir }], '', onChanged) })
                   : null,
               ),
             );
@@ -807,7 +807,9 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
 // markersDialog is the Delete Marker window: every delete marker of one
 // key (exact — titled "Delete marker", since a single object carries at
 // most one) or under one folder prefix ("Delete markers"), newest
-// first. Rows carry selection checkboxes (remove several at once) plus
+// first. A MULTI selection of objects and/or directories queries every
+// item and merges the answers into one list, titled with the selection
+// count. Rows carry selection checkboxes (remove several at once) plus
 // one-click Remove ("undo delete" — the object reappears with its
 // previous current version) and a bulk remove for everything listed.
 // Works for files and directories alike. Like every marker surface it
@@ -816,11 +818,14 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
 // flip the View menu does, so this undo-delete surface stays reachable
 // (the context menu keeps opening it) yet shows no marker versions
 // until the user opts in.
-export function markersDialog(bucket, key, isDir, onChanged) {
+// items = [{ key, isDir }]; prefix is the folder the selection lives in
+// (multi only — row keys print relative to it).
+export function markersDialog(bucket, items, prefix, onChanged) {
   const status = el('div', { class: 'dlg-status', text: t('loading') });
   const list = el('div', { class: 'ver-list' });
   let listed = [];
   const sel = new Set(); // selected versionIds
+  const multi = items.length > 1;
 
   const undo = async (mk) => {
     try {
@@ -881,12 +886,27 @@ export function markersDialog(bucket, key, isDir, onChanged) {
     status.textContent = t('loading');
     list.replaceChildren();
     try {
-      const res = await api.PrefixMarkers(bucket, key, !isDir);
+      // single item: the exact key (file) or its subtree (folder) — the
+      // classic window. Multi: one query per selected item in parallel,
+      // merged newest-first (selected rows are siblings, so no marker can
+      // arrive twice; each query carries the same 500 cap as the single
+      // window, and any truncation surfaces in the status line).
+      const res = multi
+        ? await (async () => {
+            const parts = await Promise.all(items.map((it) => api.PrefixMarkers(bucket, it.key, !it.isDir)));
+            const markers = parts.flatMap((p) => p.markers || []);
+            markers.sort((a, b) => (asMillis(b.lastModified) || 0) - (asMillis(a.lastModified) || 0));
+            return { markers, truncated: parts.some((p) => p.truncated) };
+          })()
+        : await api.PrefixMarkers(bucket, items[0].key, !items[0].isDir);
       listed = res.markers || [];
       status.textContent = listed.length
         ? t('markw.count', { n: listed.length }) + (res.truncated ? ` ${t('markw.more')}` : '')
         : t('markw.empty');
-      const rel = isDir ? (k) => k.slice(key.length) || k : (k) => k;
+      // multi prints keys relative to the folder the selection lives in;
+      // the single window keeps its own anchor (folder prefix / full key)
+      const base = multi ? prefix : (items[0].isDir ? items[0].key : '');
+      const rel = (k) => (base && k.startsWith(base) ? k.slice(base.length) || k : k);
       list.replaceChildren(...listed.map((mk) => {
         const cb = el('input', { type: 'checkbox', title: t('markw.select') });
         cb.checked = sel.has(mk.versionId);
@@ -914,7 +934,9 @@ export function markersDialog(bucket, key, isDir, onChanged) {
   }
 
   const m = openModal({
-    title: `${t(isDir ? 'markw.title' : 'markw.titleOne')} — s3://${bucket}/${key}`,
+    title: multi
+      ? `${t('markw.multiTitle', { n: items.length })} — s3://${bucket}/${prefix}`
+      : `${t(items[0].isDir ? 'markw.title' : 'markw.titleOne')} — s3://${bucket}/${items[0].key}`,
     body: el('div', {}, status, list),
     wide: true,
     buttons: [
