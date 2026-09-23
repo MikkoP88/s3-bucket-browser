@@ -54,6 +54,22 @@ runs on) and the release pipeline verifies it (`vtool`) before shipping.
 Releases up to and including **v1.1.0-beta.13** were built without that
 pin and accidentally required macOS 26 — if one of those told you "This
 version cannot be used with this version of macOS", take v1.1.0-beta.14
+
+**First launch on macOS (“damaged and can’t be opened”):** that dialog is
+Gatekeeper, not a broken download — macOS 15 Sequoia stopped offering
+“Open Anyway” for apps Apple has not notarized, and it words the refusal
+as damage. Un-notarized builds need one Terminal command after dragging
+the app to `/Applications` (copy-paste as-is):
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/S3 Bucket Browser.app"
+```
+
+This clears the download quarantine flag only; verify the download
+itself against `SHA256SUMS` as always. Once the release pipeline is
+configured with a Developer ID certificate (see
+[docs/security.md](docs/security.md)), notarized releases open without
+any step.
 or later.
 
 - **To run**: the portable editions need no install and no admin rights —

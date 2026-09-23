@@ -296,6 +296,18 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **macOS release builds no longer die at Gatekeeper as “damaged”.**
+  The darwin dmg shipped completely unsigned: Sequoia shows
+  “‘S3 Bucket Browser.app’ is damaged and can’t be opened” for any
+  downloaded copy it cannot assess, and on Apple Silicon an unsigned
+  binary is killed outright. The release pipeline now signs the .app
+  bundle before packaging — ad-hoc when no certificate is configured
+  (launchable after the one-time `xattr -dr com.apple.quarantine` step
+  README documents; Developer ID + hardened runtime + notarization +
+  stapling when the `MACOS_CERT_B64` / `APPLE_*` secrets are set) — and
+  a configured certificate that fails any stage fails the release
+  (`scripts/sign-macos.sh`).
+
 - **`bucket pab delete` can no longer destroy the bucket.** Found by the
   verification probes and confirmed at the wire level: some S3-compatible
   servers (observed on MinIO RELEASE.2025-09-07) mis-handle

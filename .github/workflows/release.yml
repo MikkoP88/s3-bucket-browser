@@ -198,7 +198,7 @@ jobs:
           cache: true
 
       # The frontend is embedded, so go build with Wails' tags suffices
-      # (no wails CLI toolchain); hand-roll a minimal .app bundle and dmg.
+      # (no wails CLI toolchain); hand-roll a minimal .app bundle.
       # CGO_ENABLED: Wails' darwin frontend is cgo and cross-arch builds
       # (amd64 on arm64 runners) disable it by default. CGO_CFLAGS /
       # CGO_LDFLAGS: pin the deployment target for BOTH the cgo compile
@@ -206,7 +206,7 @@ jobs:
       # way; MACOSX_DEPLOYMENT_TARGET alone is not honored at link time).
       # The macOS 26 SDK also no longer auto-links UniformTypeIdentifiers,
       # which Wails' UTType usage needs.
-      - name: Build app bundle and dmg
+      - name: Build app bundle
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           APP="dist/S3 Bucket Browser.app"
@@ -214,7 +214,6 @@ jobs:
           go build -tags production -ldflags "-s -w -X main.version=${VERSION}" -o "$APP/Contents/MacOS/s3b" ./cmd/s3b
           sed -e "s/__VERSION__/${VERSION}/g" -e "s/__MINOS__/${MACOS_MIN}/g" \
             scripts/installer/Info.plist > "$APP/Contents/Info.plist"
-          hdiutil create -volname "S3 Bucket Browser" -srcfolder "$APP" -ov -format UDZO "dist/s3b-${VERSION}-darwin-${{ matrix.goarch }}.dmg"
         env:
           GOOS: darwin
           GOARCH: ${{ matrix.goarch }}
@@ -222,6 +221,28 @@ jobs:
           CGO_CFLAGS: "-mmacosx-version-min=${{ env.MACOS_MIN }}"
           CGO_LDFLAGS: "-mmacosx-version-min=${{ env.MACOS_MIN }} -framework UniformTypeIdentifiers"
           MACOSX_DEPLOYMENT_TARGET: "12.0"
+
+      # Sign the bundle BEFORE packaging so the dmg carries the signed
+      # app, then notarize + staple the dmg itself. Secrets-gated like
+      # the Windows signing: without MACOS_CERT_B64 the bundle gets an
+      # ad-hoc signature (launchable after the quarantine step README
+      # documents — an unsigned bundle is what macOS Sequoia calls a
+      # "damaged" app); with the secret, Developer ID signing and
+      # notarization must succeed or the release fails.
+      - name: Sign bundle and package dmg
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP="dist/S3 Bucket Browser.app"
+          DMG="dist/s3b-${VERSION}-darwin-${{ matrix.goarch }}.dmg"
+          bash scripts/sign-macos.sh app "$APP"
+          hdiutil create -volname "S3 Bucket Browser" -srcfolder "$APP" -ov -format UDZO "$DMG"
+          bash scripts/sign-macos.sh dmg "$DMG"
+        env:
+          MACOS_CERT_B64: ${{ secrets.MACOS_CERT_B64 }}
+          MACOS_CERT_PASS: ${{ secrets.MACOS_CERT_PASS }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       # Gate: never again ship an artifact whose binary enforces a
       # different minimum than we document. vtool prints the Mach-O
