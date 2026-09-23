@@ -66,6 +66,11 @@ described here. The same engine backs both.
 - [s3b du](#s3b-du) — Count objects and total size under a prefix or source folder
 - [s3b find](#s3b-find) — Deep search objects by name, size, age or storage class
 - [s3b help](#s3b-help) — Help about any command
+- [s3b license](#s3b-license) — Show the software license and manage its acceptance
+  - [s3b license accept](#s3b-license-accept) — Record acceptance of the license
+  - [s3b license decline](#s3b-license-decline) — Revoke the recorded acceptance
+  - [s3b license show](#s3b-license-show) — Print the license identity block
+  - [s3b license status](#s3b-license-status) — Print the license acceptance record
 - [s3b lock](#s3b-lock) — Object lock: retention and legal hold per object version
   - [s3b lock legalhold](#s3b-lock-legalhold) — Show or toggle the legal hold of an object version
   - [s3b lock retention](#s3b-lock-retention) — Show, set or clear object retention
@@ -139,6 +144,7 @@ Documentation: https://github.com/MikkoP88/s3-bucket-browser
 * [s3b du](#s3b-du)
 * [s3b find](#s3b-find)
 * [s3b help](#s3b-help)
+* [s3b license](#s3b-license)
 * [s3b lock](#s3b-lock)
 * [s3b log](#s3b-log)
 * [s3b ls](#s3b-ls)
@@ -1633,6 +1639,170 @@ s3b help [command]
 ### SEE ALSO
 
 * [s3b](#s3b)
+
+## s3b license
+
+Show the software license and manage its acceptance
+
+### Synopsis
+
+Every fresh install walks an accept-license phase before the application unlocks;
+the GUI shows it as a gate on first launch. These commands read and write the same
+acceptance record from the terminal, keyed by license name and version — a license
+bump makes the phase run again on the next launch.
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b](#s3b)
+* [s3b license accept](#s3b-license-accept)
+* [s3b license decline](#s3b-license-decline)
+* [s3b license show](#s3b-license-show)
+* [s3b license status](#s3b-license-status)
+
+## s3b license accept
+
+Record acceptance of the license
+
+```
+s3b license accept [flags]
+```
+
+### Options
+
+```
+  -y, --yes   accept without the interactive prompt
+
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b license](#s3b-license)
+
+## s3b license decline
+
+Revoke the recorded acceptance
+
+```
+s3b license decline
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b license](#s3b-license)
+
+## s3b license show
+
+Print the license identity block
+
+```
+s3b license show
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b license](#s3b-license)
+
+## s3b license status
+
+Print the license acceptance record
+
+```
+s3b license status
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b license](#s3b-license)
 
 ## s3b lock
 
