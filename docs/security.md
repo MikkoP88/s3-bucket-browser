@@ -283,6 +283,20 @@ Additional rules:
   reputation. A self-signed certificate never clears the warning — it only
   proves tamper-proofing inside your own fleet. Swapping in a CA
   certificate is a matter of replacing the two secrets.
+- **Code signing (macOS).** Every release signs the .app bundle before
+  packaging the DMG. With the repository secrets configured —
+  `MACOS_CERT_B64` / `MACOS_CERT_PASS` (base64-encoded Developer ID
+  Application P12) plus `APPLE_ID` / `APPLE_PASSWORD` (an app-specific
+  password) / `APPLE_TEAM_ID` for `notarytool` — the bundle is signed
+  with a hardened runtime and timestamp, and the DMG is notarized and
+  stapled, so Gatekeeper opens the downloaded app cleanly (see
+  `scripts/sign-macos.sh`). Without the certificate the bundle ships
+  with an **ad-hoc signature**: bytes Gatekeeper can verify, but no
+  notarization — macOS Sequoia then reports the downloaded copy as
+  “damaged”, and the documented remedy is the one-time
+  `xattr -dr com.apple.quarantine` step (README “First launch on
+  macOS”). A configured certificate that fails to import, sign or
+  notarize fails the release.
 
 ## Reporting a vulnerability
 
