@@ -185,23 +185,31 @@ func uploadPath(ctx context.Context, c *s3client.Client, localPath, dst string, 
 		return 0, err
 	}
 
-	uploadOne := func(local, key string) error {
+	// ok=false means "skipped under --no-clobber": nothing was uploaded,
+	// so a move must NOT remove the local source.
+	uploadOne := func(local, key string) (ok bool, err error) {
 		if opts.DryRun {
 			fmt.Printf("upload %s -> s3://%s/%s\n", local, u.Bucket, key)
-			return nil
+			return true, nil
+		}
+		if opts.NoClobber && transfer.ObjectExists(ctx, c.S3, u.Bucket, key) {
+			if !flagJSON {
+				rprintf("skip s3://%s/%s — already exists\n", u.Bucket, key)
+			}
+			return false, nil
 		}
 		if err := transfer.UploadFile(ctx, c.S3, local, u.Bucket, key, opts.uploadOptions()); err != nil {
-			return fmt.Errorf("%s: %w", local, err)
+			return false, fmt.Errorf("%s: %w", local, err)
 		}
 		if opts.Move {
 			if err := os.Remove(local); err != nil {
-				return err
+				return false, err
 			}
 		}
 		if flagVerbose {
 			col.dim.Printf("up s3://%s/%s\n", u.Bucket, key)
 		}
-		return nil
+		return true, nil
 	}
 
 	if !st.IsDir() {
@@ -209,8 +217,12 @@ func uploadPath(ctx context.Context, c *s3client.Client, localPath, dst string, 
 		if u.IsPrefix || !u.HasPrefix { // DST is a folder or bucket root: keep filename
 			key = joinKeyNoSlash(u.Key, filepath.Base(localPath))
 		}
-		if err := uploadOne(localPath, key); err != nil {
+		ok, err := uploadOne(localPath, key)
+		if err != nil {
 			return 0, err
+		}
+		if !ok {
+			return 0, nil
 		}
 		return 1, nil
 	}
@@ -230,11 +242,17 @@ func uploadPath(ctx context.Context, c *s3client.Client, localPath, dst string, 
 		if err != nil {
 			return err
 		}
-		count++
-		return uploadOne(p, joinKeyNoSlash(u.Key, rel))
+		ok, err := uploadOne(p, joinKeyNoSlash(u.Key, rel))
+		if err != nil {
+			return err
+		}
+		if ok {
+			count++
+		}
+		return nil
 	})
 	if err != nil {
-		return count - 1, err
+		return count, err
 	}
 	return count, nil
 }
@@ -313,18 +331,26 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 		return 0, err
 	}
 
-	copyOne := func(srcKey, dstKey string) error {
+	// copied=false means "skipped under --no-clobber": nothing was
+	// written, so a move must NOT delete the source either.
+	copyOne := func(srcKey, dstKey string) (copied bool, err error) {
 		if opts.DryRun {
 			fmt.Printf("copy s3://%s/%s -> s3://%s/%s\n", su.Bucket, srcKey, du.Bucket, dstKey)
-			return nil
+			return true, nil
+		}
+		if opts.NoClobber && transfer.ObjectExists(ctx, c.S3, du.Bucket, dstKey) {
+			if !flagJSON {
+				rprintf("skip s3://%s/%s — already exists\n", du.Bucket, dstKey)
+			}
+			return false, nil
 		}
 		if err := transfer.Copy(ctx, c.S3, su.Bucket, srcKey, du.Bucket, dstKey); err != nil {
-			return fmt.Errorf("%s: %w", srcKey, err)
+			return false, fmt.Errorf("%s: %w", srcKey, err)
 		}
 		if flagVerbose {
 			col.dim.Printf("copy s3://%s/%s\n", du.Bucket, dstKey)
 		}
-		return nil
+		return true, nil
 	}
 
 	if su.IsPrefix || opts.Recursive {
@@ -336,12 +362,18 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 			if strings.HasSuffix(key, "/") {
 				return nil
 			}
-			count++
-			keys = append(keys, key)
-			return copyOne(key, joinKeyNoSlash(du.Key, strings.TrimPrefix(key, prefix)))
+			copied, err := copyOne(key, joinKeyNoSlash(du.Key, strings.TrimPrefix(key, prefix)))
+			if err != nil {
+				return err
+			}
+			if copied { // moves delete only what actually landed
+				count++
+				keys = append(keys, key)
+			}
+			return nil
 		})
 		if err != nil {
-			return count - 1, err
+			return count, err
 		}
 		if opts.Move && !opts.DryRun && len(keys) > 0 {
 			res, err := transfer.DeleteKeys(ctx, c.S3, su.Bucket, keys)
@@ -360,8 +392,12 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 	if du.IsPrefix || !du.HasPrefix {
 		dstKey = joinKeyNoSlash(du.Key, path.Base(su.Key))
 	}
-	if err := copyOne(su.Key, dstKey); err != nil {
+	copied, err := copyOne(su.Key, dstKey)
+	if err != nil {
 		return 0, err
+	}
+	if !copied {
+		return 0, nil
 	}
 	if opts.Move && !opts.DryRun {
 		res, err := transfer.DeleteKeys(ctx, c.S3, su.Bucket, []string{su.Key})

@@ -634,6 +634,57 @@ follow [Semantic Versioning](https://semver.org/).
   blur, matching the Browse buttons) and clears when the fields it
   described are emptied; a hand-typed name still always wins.
 
+- **A rename can no longer clobber what already owns the target name.**
+  F2 onto an existing name used to merge silently: the file rename
+  overwrote the target object, and a folder rename copied its contents
+  INTO the target folder and then deleted the source — two trees
+  quietly becoming one. The occupancy guard that was supposed to stop
+  this probed a double-slash key ("name//") and so found nothing, and
+  remote sources (SFTP/SCP/FTP/WebDAV) had no guard at all. Now every
+  rename — file or folder, S3 or remote — refuses when the target
+  exists in ANY form (the file key, the folder marker, or anything
+  beneath the prefix: a folder with no marker still counts as
+  occupied), a folder rename lands beside its parent under the new
+  name, and a same-name rename is a no-op. Remote renames Stat the
+  target first — engine Rename semantics vary (SFTP overwrites files
+  silently, WebDAV MOVE merges by server policy).
+
+- **A stopped editor session stays stopped.** Discarding an edit
+  (StopEdit with upload=false) ended the session, but the watcher
+  goroutine could outlive it and keep pushing the discarded local
+  changes to the object on its next poll — a discard that un-did
+  itself about a second later. The watcher now re-checks the session
+  state on every tick and exits with it: what the user throws away
+  stays thrown away.
+
+- **--no-clobber now means no clobber on every copy path.** Server-side
+  S3→S3 copies and remote-engine uploads (SFTP/WebDAV/FTP → S3) ignored
+  the flag outright; worse, mv deleted the source file after a SKIPPED
+  upload — the copy was refused and the move still happened — and a
+  directory move pruned the emptied source folder recursively even
+  when skipped files were still in it. Every path now pre-checks the
+  destination, reports the skip, moves nothing, and the source is only
+  ever removed after a real transfer.
+
+### Added
+
+- **Round 3 of extreme-level verification: the destructive surface
+  under proof.** The matrix grew from 124 to 132 rows across S3, SFTP,
+  WebDAV, FTP and the local disk, CLI and GUI: the execute-time delete
+  gate (a preview can go stale — 49 objects previewed, 3 more land
+  before Execute, and the fresh expansion refuses without force,
+  deleting nothing), canceling a 600-object delete mid-flight (the
+  out-of-scope prefix untouched, the scoped one countable, the task
+  registry never wedged, the job finishable afterwards), rename
+  refusals (file, folder and remote; both trees byte-intact after),
+  the editor-discard zombie regression, the local delete ladder
+  (filesystem roots refuse; siblings survive; mixed lists report
+  honestly), RemoveSource as pure bookkeeping (the data survives the
+  removal), and per-engine cross-source delete scope. The sweep also
+  caught a row the modal-stack change had made stale: GUI-30 now
+  proves the version timeline refreshes in place after a destroy,
+  instead of reopening through the grid the restored timeline covers.
+
 
 ## [1.1.0-beta.17] — 2026-09-21
 

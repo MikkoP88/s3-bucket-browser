@@ -241,6 +241,15 @@ switching; the same S3 source stays connected through it).
 | Sidebar-originated deletes refresh the sidebar | S3 (MinIO) + remote | deleting a folder through the sidebar tree refreshes the sidebar itself — the folder's subtree disappears from the tree — while the main view's breadcrumb stays where it was | — | — (sweep: tree-delete-syncs-sidebar, SWEEP-VIS-01) | Win 11 x64 |
 | Monitoring windows: 490×300 footprint, auto-height, row detail panels | Wails v3 server | the monitor popouts (transfers, searches) open at their 490×300 footprint — also their resize floor — grow with content instead of scrolling it away, expand per-row detail panels in place, collapse long lists behind "+N more", and carry the header strip that identifies the window | — | — (sweep: popout-auto-height + popout-row-details + popout-window-views, SWEEP-VIS-01) | Win 11 x64 |
 
+| **Execute-time delete gate: a stale preview can never authorize the delete** | S3 (MinIO) | 49 objects previewed (under the L2 gate), 3 more land before Execute: the FRESH expansion crosses 50 and the delete without force REFUSES with nothing gone (the ladder re-checks at execute time — the count-then-act window cannot be abused); the fresh dry-run counts 53; --force then deletes exactly what exists | ✅ CLI-S3-44 | ✅ GUI-54 (leg 1: real grid + bridge refusal, ≥52 remain) | Win 11 x64 |
+| **Canceling a running delete stays scoped, countable, recoverable** | S3 (MinIO) | a 600-object delete canceled from the task registry mid-flight: the out-of-scope control prefix untouched (3/3 files), the scoped prefix left countable (≤ seeded), the task settles — never wedged — and a fresh delete finishes the job; a bogus CancelList on an unknown token resolves without wedging the list registry | — | ✅ GUI-54 (legs 2–3) | Win 11 x64 |
+| **mv/cp --no-clobber on every path — and the source survives the skip** | S3 (MinIO) | server-side S3→S3 copies and remote-engine uploads ignored --no-clobber, and mv deleted the source even when the upload was skipped; every path now pre-checks, prints the skip, moves nothing, keeps the source; a clobbered mv is recoverable byte-identical through versioning (versions ls → restore --version-id) | ✅ CLI-S3-45 | — | Win 11 x64 |
+| **Cross-engine delete scope: the out-of-scope prefix is never touched** | SFTP + WebDAV | per engine: a 3-file tree copied into a scoped prefix, rm -r --dry-run counts exactly the scoped files, --force removes them, the sibling keep/ prefix survives with its file readable, and a stat on the removed path errors honestly | ✅ CLI-X-13 | — | Win 11 x64 |
+| **Renames refuse occupied targets — file, folder, remote** | S3 (MinIO) | F2 onto a name another object owns REFUSES with both sides byte-intact afterwards (file and folder; the guard checks both key forms plus a prefix walk — an unmarked folder still counts as occupied); a folder rename lands at parent/NEW-name with the old prefix fully gone, never nested inside it; a same-name rename is a clean no-op; remote sources get the same refusal — engine Rename semantics vary, so the target is Stat-checked first | — | ✅ GUI-55 (+ targeted repro: the real F2 flow, refusal toast, both trees intact) | Win 11 x64 |
+| **Editor discard: StopEdit(false) never pushes — and a stopped watcher stays stopped** | S3 (MinIO) | EditObject stages the object locally (the real OS open path); a tampered staged file discarded with upload=false leaves the object byte-original immediately AND past two watcher polls (the zombie-watcher regression: the discard goroutine used to outlive the session and push the discarded edits); StopEdit on an object that is not being edited refuses honestly | — | ✅ GUI-56 | Win 11 x64 |
+| **Local delete ladder: roots refuse, siblings survive, mixed reports honestly** | local disk | LocalDeletePreview and LocalRemove BOTH refuse filesystem roots (C:\) with the directory untouched; a scoped victim tree deletes exactly its own files while the sibling survives byte-identical; a mixed [missing, real] list deletes the real one and reports the missing one as an error — never silently | — | ✅ GUI-57 | Win 11 x64 |
+| **RemoveSource: the store forgets, the data stays** | FTP | removing a saved source deletes exactly the config/keyring/workspace records (ListSources empty afterwards) while the data itself survives — the CLI face still reads it through a fresh source; source removal is bookkeeping, never data deletion | — | ✅ GUI-58 | Win 11 x64 |
+
 ---
 
 ## SKIP policy — honest gaps, never silent passes
@@ -285,35 +294,34 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot is from the release gate of
-**24 Sep 2026** (`node scripts/verify.mjs --release v1.1.0-beta.18`,
-tag-stamped, binary-checked, on the tree of `81fd1b6`) on Windows
-Server 2025 (x64), after the license work grew the matrix from 121 to
-124 rows: the rebuilt Help → License window — About | License |
-Third-party partitions, license name and project URL as external
-links (GUI-52) — the first-launch accept-license phase every fresh
-install now walks (GUI-53: the gate holds boot, Escape cannot dismiss
-it, Decline blocks with Exit the only way out, a reload re-arms, and
-acceptance is recorded cross-face in `license.json`), and the license
-CLI face round-trip (CLI-M-08). The visual sweep's license check was
-partitioned across the window's three tabs — the NOTICE summary lives
-on its own — which is the 656 → 658 growth. The same sitting found and
-fixed a latent release-pipeline bug: the workflow's verification gate
-now locates the evidence by glob (`verification.json` under the tag)
-instead of assuming it at the tag root, where it would have missed the
-`windows-x64/` directory every real report lives in. Evidence committed
-for the tag at
-[`docs/verification/v1.1.0-beta.18/windows-x64/REPORT.md`](verification/v1.1.0-beta.18/windows-x64/REPORT.md)
-(the previous release evidence, beta.17's 94-row matrix, stays at
-[`docs/verification/v1.1.0-beta.17/windows-x64/REPORT.md`](verification/v1.1.0-beta.17/windows-x64/REPORT.md)):
+Replaced on every run — this snapshot is from the destructive-surface
+sweep of **25 Sep 2026** (`node scripts/verify.mjs`, full matrix, on
+the tree of `3515740` plus this round's own changes) on Windows
+Server 2025 (x64), after the extreme-level verification round grew
+the matrix from 124 to 132 rows: execute-time delete-gate refusals
+(CLI-S3-44 + GUI-54 — a preview can go stale, the fresh expansion
+cannot authorize the delete), mid-flight cancellation of a 600-object
+delete with the task registry never wedged (GUI-54), rename refusals
+with both trees byte-intact — file, folder and remote (GUI-55; the
+row caught a double-slash bug that defeated the occupancy guard and
+an entirely unguarded remote path), the editor-discard zombie
+regression (GUI-56), the local delete ladder — roots refuse,
+siblings survive, mixed lists report honestly (GUI-57), RemoveSource
+as pure bookkeeping with the data surviving (GUI-58), per-engine
+cross-source delete scope (CLI-X-13) and mv --no-clobber
+recoverability through versioning (CLI-S3-45). GUI-30 was re-anchored
+to the modal stack: the version timeline now refreshes in place after
+a destroy, instead of reopening through the grid the restored
+timeline covers. The release evidence for beta.18 stays at
+[`docs/verification/v1.1.0-beta.18/windows-x64/REPORT.md`](verification/v1.1.0-beta.18/windows-x64/REPORT.md):
 
 ```
-release gate (--release v1.1.0-beta.18; fresh build; 124 rows incl. the two sweep rows):
-  117 PASS · 7 SKIP · 0 FAIL — 1342 s
+full matrix (132 rows incl. the two sweep rows):
+  125 PASS · 7 SKIP · 0 FAIL — 1597 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
-  SWEEP-VIS-01  gui-visual   658/658 checks
+  SWEEP-VIS-01  gui-visual   669/669 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
 ```
 

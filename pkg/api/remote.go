@@ -254,6 +254,16 @@ func (a *App) RemoteRename(idOrName, path, newName string) error {
 	defer cancel()
 	unlock := a.lockSrcs(src.ID)
 	defer unlock()
+	if cleaned == target {
+		return nil // renaming to its own name is a no-op
+	}
+	// refuse rather than clobber: engine Rename semantics vary (SFTP
+	// overwrites files silently; WebDAV MOVE merges by server policy) —
+	// a rename onto an existing name must never destroy or merge into it.
+	if _, err := fs.Stat(ctx, target); err == nil {
+		a.emitLogSrc(LogError, "rename", idOrName, fmt.Sprintf("rename %s refused: %s already exists", cleaned, target))
+		return fmt.Errorf("%s already exists", strings.TrimSuffix(target, "/"))
+	}
 	if err := fs.Rename(ctx, cleaned, target); err != nil {
 		a.emitLogSrc(LogError, "rename", idOrName, fmt.Sprintf("rename %s failed: %v", cleaned, err))
 		return err
