@@ -603,6 +603,22 @@ follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Cancel on a sub-view now goes back, not out.** Cancelling the
+  start-directory browser while adding a data source closed the
+  whole editor with it — the dialog framework had a single shared
+  slot, so a sub-dialog replaced its parent and the parent was gone
+  when the child closed (Escape was worse: both dialogs' handlers
+  were live, so one press wiped both; the parent's handlers also
+  leaked). Modals are now a stack: only the top one answers Escape,
+  Tab and the backdrop; the parent is parked with every field value
+  intact and returns exactly as it was when the child closes —
+  Browse → Cancel (or Escape) lands back in the editor, the
+  browser's New-folder prompt stacks a third level and returns to
+  the browser, the admin panel survives its cleanup windows, the
+  settings sheet survives its Reset confirm, and the import dialog
+  no longer re-shows itself after a nested prompt (the old
+  workaround double-stacked it).
+
 
 - **Add-data-source name auto-fill no longer truncates.** A remote
   host shrank to its first label — "10.20.3.65" suggested the name

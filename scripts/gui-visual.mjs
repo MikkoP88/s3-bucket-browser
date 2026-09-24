@@ -2581,6 +2581,41 @@ await step('source-editor-autoname', async () => {
     await folder.asElement().dispatchEvent('change');
   }
   await ok('typed name survives field changes', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'my-box'));
+  // a sub-view's Cancel goes BACK, not out: the directory browser
+  // stacks on the editor, a New-folder prompt stacks on the browser,
+  // and each level returns exactly to the view below it, fields intact
+  await page.selectOption('#modal-root select', 'scp');
+  const hostIn2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
+    .find((i) => /server\.example\.com/.test(i.placeholder || '')) || null);
+  if (hostIn2) {
+    await hostIn2.asElement().fill('10.20.3.65');
+    await hostIn2.asElement().dispatchEvent('input');
+  }
+  const browse2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /browse/i.test(b.textContent)) || null);
+  await ok('scp Browse button present', !!browse2);
+  if (browse2) {
+    await browse2.asElement().click();
+    await waitFor(async () => (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('Start directory'), 4000, 'directory browser over the editor');
+    await ok('directory browser opens ON TOP of the editor', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('Start directory'));
+    const nf = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button')).find((b) => /new folder/i.test(b.textContent)) || null);
+    if (nf) {
+      await nf.asElement().click();
+      await waitFor(async () => (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).trim() === 'New folder', 4000, 'prompt over the browser');
+      await ok('New-folder prompt opens over the browser (3 levels)', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).trim() === 'New folder');
+      await page.keyboard.press('Escape');
+      await sleep(140);
+      await ok('Escape on the prompt returns to the browser', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('Start directory'));
+    }
+    await evalPage(() => { document.querySelectorAll('#modal-root .modal-foot .btn')[0].click(); return true; });
+    await sleep(140);
+    await ok('Cancel on the browser returns to the editor', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')) === 'Add data source');
+    await ok('editor fields survived the round-trip', await evalPage(() => {
+      const host = Array.from(document.querySelectorAll('#modal-root input.mono')).find((i2) => /server\.example\.com/.test(i2.placeholder || ''));
+      const nm = document.querySelector('#modal-root input.input');
+      return !!host && host.value === '10.20.3.65' && nm?.value === 'my-box';
+    }));
+  }
   await shot('source-editor');
   await closeModal();
 });
@@ -4451,8 +4486,9 @@ await step('delete-window-uniform', async () => {
     await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'bucket list');
     await openCtx('team-files');
   };
-  const adminVersions = async () => { // openModal nests nothing: the delete
-    // window replaces the admin panel, so it is reopened for each tool
+  const adminVersions = async () => { // the cleanup windows stack ON the
+    // admin panel; the modal stack returns it when they close, so (d)+
+    // wait for the return instead of re-navigating
     await openBucketCtx();
     await ctxItem(/admin panel/i);
     await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('.tabstrip .tab')).some((x) => x.textContent.trim() === 'Versions')), 4000, 'admin tabs');
@@ -4521,7 +4557,8 @@ await step('delete-window-uniform', async () => {
   await waitFor(async () => (await findCall('PurgeVersions')) !== null, 4000, 'PurgeVersions fired');
 
   // (d) empty bucket — the window again, L2 name check (admin was replaced)
-  await adminVersions();
+  await waitFor(async () => evalPage(() => document.getElementById('modal-root').textContent.includes('Cleanup tools')), 4000, 'admin panel back after the purge window');
+  await ok('cleanup window goes BACK to the admin panel (not out)', evalPage(() => document.getElementById('modal-root').textContent.includes('Cleanup tools') && !document.querySelector('#modal-root .delw-modal')));
   await resetCalls();
   await evalPage(() => {
     const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => /empty bucket \(all versions\)/i.test(x.textContent));
@@ -4540,6 +4577,9 @@ await step('delete-window-uniform', async () => {
   await sleep(80);
   await evalPage(() => document.querySelector('#modal-root .delw-modal .btn.danger').click());
   await waitFor(async () => (await findCall('EmptyBucketAllVersions')) !== null, 4000, 'EmptyBucketAllVersions fired');
+
+  // the admin panel is back under the empty window — leave the step clean
+  await closeModal();
 
   await evalPage(() => {
     for (const k of ['s3b-del-window', 's3b-del-typeconfirm', 's3b-del-autoconfirm']) localStorage.removeItem(k);
