@@ -295,6 +295,16 @@ func (p *progressWriterAt) WriteAt(b []byte, off int64) (int, error) {
 	return n, err
 }
 
+// ObjectExists reports whether the object is already present — the
+// --no-clobber check for paths that do not go through UploadFile
+// (server-side copies, reader uploads from remote sources).
+func ObjectExists(ctx context.Context, client *s3.Client, bucket, key string) bool {
+	_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(key),
+	})
+	return err == nil
+}
+
 // Copy performs a server-side copy (single request; objects > 5 GB need
 // multipart copy — added in M2).
 func Copy(ctx context.Context, client *s3.Client, srcBucket, srcKey, dstBucket, dstKey string) error {

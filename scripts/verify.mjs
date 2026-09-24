@@ -1098,6 +1098,85 @@ async function cliS3() {
     need(await sha256file(back) === sha, 'the exact-5 MiB boundary file round-tripped with different bytes');
     return '0/1/5242880-byte files exact; boundary file sha-identical';
   });
+
+  await verify({ id: 'CLI-S3-44', area: 'objects', action: 'Deletion re-counts at execute time (TOCTOU gate)', ds: 'S3 (MinIO)', scenario: 'a 49-object prefix passes the dry-run under the gate; 3 more objects land while the window is open; rm -r WITHOUT --force must then refuse against the FRESH count (52) and delete nothing; --force afterwards deletes exactly the fresh set while a sibling prefix survives untouched', face: 'CLI' }, async () => {
+    const gate = path.join(ART, 'gate2');
+    await rm(gate, { recursive: true, force: true });
+    await mkdir(path.join(gate, 'victim'), { recursive: true });
+    await mkdir(path.join(gate, 'sibling'), { recursive: true });
+    for (let i = 0; i < 49; i++) await writeFile(path.join(gate, 'victim', `t-${String(i).padStart(2, '0')}.txt`), `toctou ${i}\n`);
+    await writeFile(path.join(gate, 'sibling', 'keep.txt'), 'sibling survives\n');
+    let r = await cli(['cp', '-r', path.join(gate, 'victim'), `${B}/toctou/`, '--json']);
+    need(r.code === 0 && r.out.includes('"items": 49'), `seed: ${r.out}${r.err}`);
+    r = await cli(['cp', path.join(gate, 'sibling', 'keep.txt'), `${B}/toctou-sib/keep.txt`]);
+    need(r.code === 0, `sibling seed: ${r.out}${r.err}`);
+    // the window: the dry-run counts 49 — under the gate...
+    r = await cli(['rm', `${B}/toctou/`, '-r', '--dry-run']);
+    const dry = /total: (\d+)/.exec(r.out);
+    need(dry && +dry[1] <= 50, `the dry-run should sit under the gate: ${r.out}`);
+    // ...then the world changes under the open window
+    const late = path.join(ART, 'toctou-late.txt');
+    for (let i = 0; i < 3; i++) {
+      await writeFile(late, `late arrival ${i}\n`);
+      const c = await cli(['cp', late, `${B}/toctou/late-${i}.txt`]);
+      need(c.code === 0, `late cp ${i}: ${c.out}${c.err}`);
+    }
+    r = await cli(['rm', `${B}/toctou/`, '-r']);
+    need(r.code !== 0, 'rm -r over a fresh count above the gate must fail without --force');
+    let l = await cli(['ls', `${B}/`, '--recursive']);
+    const still = l.out.split('\n').filter((x) => x.includes('toctou/')).length;
+    need(still >= 52, `the refusal deleted objects anyway (${still} of 52 left)`);
+    // the force path deletes exactly the FRESH set — counted now, not earlier
+    r = await cli(['rm', `${B}/toctou/`, '-r', '--dry-run']);
+    const fresh = +(/total: (\d+)/.exec(r.out)[1]);
+    need(fresh >= 52, `fresh dry-run total: ${r.out}`);
+    r = await cli(['rm', `${B}/toctou/`, '-r', '--force']);
+    const del = /deleted (\d+) object/.exec(r.out);
+    need(r.code === 0 && del && +del[1] === fresh, `force delete: ${r.out}${r.err}`);
+    l = await cli(['ls', `${B}/`, '--recursive']);
+    need(!l.out.includes('toctou/'), 'toctou/ residue after the force delete');
+    need(l.out.includes('toctou-sib/keep.txt'), 'the sibling prefix did not survive the delete');
+    return `gate held on the fresh count (${fresh}); refusal deleted nothing; sibling intact`;
+  });
+
+  await verify({ id: 'CLI-S3-45', area: 'objects', action: 'mv overwrite on a versioned bucket: the clobber is recoverable, --no-clobber refuses', ds: 'S3 (MinIO)', scenario: 'mv over an existing key must leave the previous timeline entry alive and restore byte-identical (a clobber is never data loss on a versioned bucket); mv --no-clobber must skip the overwrite with BOTH sides untouched — the destination byte-identical and the source still present (a skipped move may never delete its source)', face: 'CLI' }, async () => {
+    const a1 = path.join(ART, 'mv-clob-v1.txt'), a2 = path.join(ART, 'mv-clob-v2.txt');
+    await writeFile(a1, 'mv clobber original alpha\n');
+    await writeFile(a2, 'mv clobber replacement beta\n');
+    // leg 1 — the clobber: recoverable through the version timeline
+    let r = await cli(['cp', a1, `${B}/mv-clob.txt`]);
+    need(r.code === 0, `seed: ${r.out}${r.err}`);
+    r = await cli(['cp', a2, `${B}/mv-clob-src.txt`]);
+    need(r.code === 0, `src seed: ${r.out}${r.err}`);
+    r = await cli(['mv', `${B}/mv-clob-src.txt`, `${B}/mv-clob.txt`]);
+    need(r.code === 0, `clobber mv: ${r.out}${r.err}`);
+    let j = await cli(['versions', 'ls', `${B}/mv-clob.txt`, '--json']);
+    const ids = [...j.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
+    need(ids.length >= 2, `the clobbered timeline holds ${ids.length} version(s): ${j.out.slice(0, 120)}`);
+    const old = ids[ids.length - 1]; // versions ls lists newest first
+    r = await cli(['versions', 'restore', `${B}/mv-clob.txt`, '--version-id', old]);
+    need(r.code === 0, `restore the clobbered version: ${r.out}${r.err}`);
+    const back = path.join(ART, 'mv-clob-back.txt');
+    await rm(back, { force: true });
+    r = await cli(['cp', `${B}/mv-clob.txt`, back]);
+    need(r.code === 0 && (await readFile(back, 'utf8')) === 'mv clobber original alpha\n', `the recovered bytes differ: ${r.out}${r.err}`);
+    // leg 2 — --no-clobber: the overwrite is skipped, the source survives
+    await writeFile(a1, 'no-clobber destination ORIGINAL\n');
+    await writeFile(a2, 'no-clobber source STAYS\n');
+    r = await cli(['cp', a1, `${B}/mv-nc-dst.txt`]);
+    need(r.code === 0, `dst seed: ${r.out}${r.err}`);
+    r = await cli(['cp', a2, `${B}/mv-nc-src.txt`]);
+    need(r.code === 0, `src seed: ${r.out}${r.err}`);
+    r = await cli(['mv', `${B}/mv-nc-src.txt`, `${B}/mv-nc-dst.txt`, '--no-clobber']);
+    need(r.code === 0, `mv --no-clobber must skip cleanly: exit ${r.code} ${r.out}${r.err}`);
+    await rm(back, { force: true });
+    r = await cli(['cp', `${B}/mv-nc-dst.txt`, back]);
+    need(r.code === 0 && (await readFile(back, 'utf8')) === 'no-clobber destination ORIGINAL\n', `the destination changed under --no-clobber: ${r.out}${r.err}`);
+    j = await cli(['stat', `${B}/mv-nc-src.txt`]);
+    need(j.code === 0 && /size:/.test(j.out), `the skipped move DELETED its source: exit ${j.code} ${j.out}${j.err}`);
+    return 'clobber recoverable byte-identical; no-clobber left both sides intact';
+  });
+
 }
 
 // ============================================================
@@ -1356,6 +1435,41 @@ async function cliCross() {
     need(!/verifys3|verifyfault|127\.0\.0\.1:1/.test(empty.out), `cleanup left residue: ${empty.out}`);
     return 'double import idempotent + live; collision kept one row per name, nothing lost';
   });
+
+  if (haveSftp || haveDav) {
+    await verify({ id: 'CLI-X-13', area: 'objects', action: 'Remote delete scope: SFTP + WebDAV', ds: 'SFTP/WebDAV', scenario: 'per live engine: seed victim/ + keep/ siblings; rm -r --dry-run counts exactly the victim tree; --force deletes it; the sibling and the parent stay browsable afterwards and the removed path stats as an honest error — deletion never crosses its prefix', face: 'CLI' }, async () => {
+      const legs = [];
+      const leg = async (name, base) => {
+        const d = path.join(ART, 'x13-tree');
+        await rm(d, { recursive: true, force: true });
+        await mkdir(path.join(d, 'victim', 'inner'), { recursive: true });
+        await mkdir(path.join(d, 'keep'), { recursive: true });
+        await writeFile(path.join(d, 'victim', 'v-1.txt'), 'v1\n');
+        await writeFile(path.join(d, 'victim', 'inner', 'v-2.txt'), 'v2\n');
+        await writeFile(path.join(d, 'keep', 'k-1.txt'), 'keep\n');
+        let r = await cli(['cp', '-r', d, `${base}/x13-scope`, '--json']);
+        need(r.code === 0 && r.out.includes('"items": 3'), `${name} seed: ${r.out}${r.err}`);
+        r = await cli(['rm', `${base}/x13-scope/victim`, '-r', '--dry-run']);
+        const m = /total: (\d+)/.exec(r.out);
+        need(m && +m[1] >= 2, `${name} dry-run must count the victim tree (2 files + dirs): ${r.out}`);
+        const total = +m[1];
+        r = await cli(['rm', `${base}/x13-scope/victim`, '-r', '--force']);
+        need(r.code === 0, `${name} rm: ${r.out}${r.err}`);
+        r = await cli(['ls', `${base}/x13-scope`, '--json']);
+        need(r.code === 0 && !r.out.includes('victim'), `${name} victim still listed: ${r.out}`);
+        need(r.out.includes('keep'), `${name} sibling keep/ not listed: ${r.out}`);
+        r = await cli(['ls', `${base}/x13-scope/keep`]);
+        need(r.code === 0 && /k-1/.test(r.out), `${name} keep not browsable: ${r.out}${r.err}`);
+        r = await cli(['stat', `${base}/x13-scope/victim/v-1.txt`]);
+        need(r.code !== 0 && !/size:/.test(r.out), `${name} stat on the removed path must error honestly: exit ${r.code} ${r.out}${r.err}`);
+        legs.push(`${name}: dry-run ${total}, scoped, sibling + parent intact`);
+      };
+      if (haveSftp) await leg('sftp', `xt://${RUNID}`);
+      if (haveDav) await leg('webdav', `xw://${RUNID}`);
+      return legs.join('; ');
+    });
+  }
+
 }
 
 // ============================================================
@@ -2860,9 +2974,12 @@ async function guiBattery() {
     }
     await shot('30-destroy-oldest');
     await clickFooter(/^destroy$/i);
-    // the delete window occupies the single modal slot, so the timeline it
-    // replaced is gone once the destroy confirms — reopen and count
-    await openVersions(2);
+    // the delete window STACKS on the timeline now (modal stack): closing
+    // it returns the timeline — refreshed in place by the destroy — so the
+    // two remaining versions are verified THERE (the grid stays covered
+    // until the timeline closes; reopening through it is impossible)
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .ver-row').length)) === 2, 15000, 'the refreshed timeline (2 rows)');
+    await closeModal();
     const v = await s3(['versions', 'ls', K, '--json']);
     need(countLines(v.out, '"versionId"') === 2, `CLI disagrees after destroy: ${v.out}`);
     need(!v.out.includes(oldest), 'the destroyed version id still lists');
@@ -4049,6 +4166,207 @@ async function guiBattery() {
     need(refused, 'OpenExternal accepted file:// — the guard is down');
     return 'popout payload renders; guards hold';
   });
+
+  await verify({ id: 'GUI-54', area: 'deletion', action: 'Delete integrity: the execute-time gate + canceling a running delete', ds: 'S3 (MinIO)', scenario: 'a preview under the L2 gate whose FRESH expansion crosses it (objects landing after the preview) must be refused by DeleteSelection(force=false) with nothing deleted; a 600-object delete, canceled from the task registry mid-flight, must leave countable state, never touch an out-of-scope prefix, and leave the app healthy enough to finish the job afterwards; a bogus CancelList must never wedge the list registry', face: 'GUI' }, async () => {
+    // GUI-52 left the page on the popout URL — return to the app first
+    await page.goto(`http://127.0.0.1:${GUI_PORT}/`);
+    await waitFor(async () => await evalPage(() => !!window.go && !!document.querySelector('#sidebar')), 15000, 'main view after the popout');
+    await navCertGui();
+    // a failed earlier run may have left this row's prefixes behind (each
+    // leg's cleanup runs at its END) — clear the namespace first so the
+    // seed counts are exact on every rerun
+    for (const pre of ['toctou/', 'cancel/', 'cancel-keep/']) await s3(['rm', '-r', `s3://${BUCKET}/verify-gui/${pre}`, '--force']);
+    // leg 1 — the preview said 49, the fresh count says 52: no force, no delete
+    const g1 = path.join(ART, 'gui-toctou');
+    await rm(g1, { recursive: true, force: true });
+    await mkdir(g1, { recursive: true });
+    for (let i = 0; i < 49; i++) await writeFile(path.join(g1, `p-${String(i).padStart(2, '0')}.txt`), `preview ${i}\n`);
+    let r = await s3(['cp', '-r', g1, `s3://${BUCKET}/verify-gui/toctou/`, '--json']);
+    need(r.code === 0 && r.out.includes('"items": 49'), `seed: ${r.out}${r.err}`);
+    const prev = await call('PreviewDelete', BUCKET, ['verify-gui/toctou/']);
+    need(prev && prev.count === 49 && !prev.requiresL2, `preview: ${JSON.stringify(prev)}`);
+    for (let i = 0; i < 3; i++) await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `s3://${BUCKET}/verify-gui/toctou/late-${i}.txt`]);
+    let refused = null;
+    try { await call('DeleteSelection', BUCKET, ['verify-gui/toctou/'], false); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /force|confirmation/i.test(refused), `the execute-time gate let a fresh >50 expansion through: ${refused}`);
+    // ls --recursive prints keys RELATIVE to the listed prefix — count from
+    // the row's ancestor so the full 'toctou/…' keys appear in the filter
+    let l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+    const still = l.out.split('\n').filter((x) => x.includes('toctou/')).length;
+    need(still >= 52, `the refusal deleted objects anyway (${still} of 52 left)`);
+    await call('DeleteSelection', BUCKET, ['verify-gui/toctou/'], true);
+    l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+    need(!l.out.split('\n').some((x) => x.includes('toctou/')), `toctou residue after the forced delete: ${l.out.slice(0, 120)}`);
+    // leg 2 — cancel a 600-object delete mid-flight; the control prefix must survive
+    const big = path.join(ART, 'gui-cancel-seed');
+    await rm(big, { recursive: true, force: true });
+    await mkdir(big, { recursive: true });
+    const N = 600;
+    for (let i = 0; i < N; i++) await writeFile(path.join(big, `c-${String(i).padStart(4, '0')}.txt`), `cancel ${i}\n`);
+    r = await s3(['cp', '-r', big, `s3://${BUCKET}/verify-gui/cancel/`, '--json']);
+    need(r.code === 0 && r.out.includes(`"items": ${N}`), `big seed: ${r.out}${r.err}`);
+    for (const n of ['k-0', 'k-1', 'k-2']) await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `s3://${BUCKET}/verify-gui/cancel-keep/${n}.txt`]);
+    const deleting = call('DeleteSelection', BUCKET, ['verify-gui/cancel/'], true);
+    let id = null;
+    for (let i = 0; i < 200 && !id; i++) {
+      id = ((await call('RunningTasks')) || []).find((t) => t.kind === 'delete' && t.status === 'running')?.id;
+      if (!id) await sleep(25);
+    }
+    need(id, 'the delete never registered as a running task');
+    call('CancelTask', id); // fire-and-forget: the race is the point
+    await deleting.catch(() => {}); // canceled mid-flight or completed — both must hold the invariants
+    await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 20000, 'the canceled task to settle');
+    let keep = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+    need(keep.out.split('\n').filter((x) => x.includes('cancel-keep/')).length === 3, `out-of-scope prefix touched: ${keep.out.slice(0, 120)}`);
+    let rem = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+    const remaining = rem.out.split('\n').filter((x) => x.includes('cancel/')).length;
+    need(remaining <= N, `more objects than seeded (${remaining} > ${N})`);
+    await call('DeleteSelection', BUCKET, ['verify-gui/cancel/', 'verify-gui/cancel-keep/'], true);
+    rem = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+    need(!rem.out.split('\n').some((x) => x.includes('cancel/') || x.includes('cancel-keep/')), `cancel/ residue after the cleanup delete: ${rem.out.slice(0, 120)}`);
+    // leg 3 — a bogus list-cancel must resolve without wedging the registry
+    call('CancelList', 'verify-bogus-token').catch(() => {});
+    await sleep(200);
+    await refresh();
+    need((await rowKeys()).length > 0, 'listing wedged after a bogus CancelList');
+    return 'execute-time gate refused a stale preview; canceled delete stayed scoped and countable; bogus cancel inert';
+  });
+
+  await verify({ id: 'GUI-55', area: 'objects', action: 'Rename refuses occupied targets; a folder rename lands beside its parent', ds: 'S3 (MinIO)', scenario: 'F2 onto a name another object already owns must refuse — file AND folder — with both trees byte-intact afterwards (a rename may never clobber); a folder rename must land at parent/NEW-name, never nested inside its old name, with the old prefix fully gone; a same-name rename is a clean no-op', face: 'GUI' }, async () => {
+    const P = `s3://${BUCKET}/verify-gui`;
+    // clear this row's namespace first: a rerun after a mid-row failure must
+    // not find a stale rn-dir-c squatting on the rename target — the refusal
+    // this row proves would then fire against the WRONG object
+    for (const k of ['rn-file-a.txt', 'rn-file-b.txt']) await s3(['rm', `${P}/${k}`, '--force']);
+    for (const d of ['rn-dir-a/', 'rn-dir-b/', 'rn-dir-c/']) await s3(['rm', '-r', `${P}/${d}`, '--force']);
+    await writeFile(path.join(ART, 'rn-a.txt'), 'rename victim A\n');
+    await writeFile(path.join(ART, 'rn-b.txt'), 'rename owner B\n');
+    await s3(['cp', path.join(ART, 'rn-a.txt'), `${P}/rn-file-a.txt`]);
+    await s3(['cp', path.join(ART, 'rn-b.txt'), `${P}/rn-file-b.txt`]);
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('rn-file-a.txt')); }, 15000, 'rename rows');
+    const errToast = () => evalPage(() => Array.from(document.querySelectorAll('#toasts .toast.error'))
+      .some((t) => /already exists/i.test(t.textContent || '')));
+    // leg 1 — file clobber refused
+    await clickRow('rn-file-a.txt');
+    await page.keyboard.press('F2');
+    await answerPrompt('rn-file-b.txt');
+    await waitFor(errToast, 8000, 'the clobber refusal toast');
+    const back = path.join(ART, 'rn-check.txt');
+    for (const [k, want] of [['rn-file-a.txt', 'rename victim A\n'], ['rn-file-b.txt', 'rename owner B\n']]) {
+      await rm(back, { force: true });
+      await s3(['cp', `${P}/${k}`, back]);
+      need((await readFile(back, 'utf8')) === want, `the refused rename modified ${k}`);
+    }
+    // leg 2 — folder clobber refused (leg 1's error toast lives 7s — wait it
+    // out or it would satisfy this leg's toast check falsely)
+    await waitFor(async () => !(await evalPage(() => document.querySelector('#toasts .toast.error'))), 8000, 'the stale refusal toast to clear');
+    for (const d of ['rn-dir-a', 'rn-dir-b']) await s3(['mkdir', `${P}/${d}/`]);
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/rn-dir-a/fa.txt`]);
+    await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `${P}/rn-dir-b/fb.txt`]);
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('rn-dir-a')); }, 15000, 'folder rows');
+    await clickRow('rn-dir-a');
+    await page.keyboard.press('F2');
+    await answerPrompt('rn-dir-b');
+    await waitFor(errToast, 8000, 'the folder clobber refusal toast');
+    let l = await s3(['ls', `${P}/`, '--recursive']);
+    need(l.out.includes('rn-dir-a/fa.txt'), `victim folder lost content: ${l.out.slice(0, 160)}`);
+    need(l.out.includes('rn-dir-b/fb.txt'), `target folder lost content: ${l.out.slice(0, 160)}`);
+    // leg 3 — the rename lands at parent/newName with the old prefix gone
+    await clickRow('rn-dir-a');
+    await page.keyboard.press('F2');
+    await answerPrompt('rn-dir-c');
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('rn-dir-c')); }, 20000, 'the renamed folder');
+    l = await s3(['ls', `${P}/`, '--recursive']);
+    need(l.out.includes('rn-dir-c/fa.txt'), `renamed folder missing its content: ${l.out.slice(0, 160)}`);
+    need(!l.out.includes('rn-dir-a'), `the old prefix survived the rename: ${l.out.slice(0, 160)}`);
+    need(!l.out.includes('rn-dir-c/rn-dir-a'), `the rename nested the folder inside its old name: ${l.out.slice(0, 160)}`);
+    // leg 4 — a same-name rename is a clean no-op (UI guards it; bridge proves it)
+    await call('RenameObject', BUCKET, 'verify-gui/rn-file-a.txt', 'rn-file-a.txt');
+    await call('RenameObject', BUCKET, 'verify-gui/rn-dir-c/', 'rn-dir-c');
+    l = await s3(['ls', `${P}/`, '--recursive']);
+    need(l.out.includes('rn-file-a.txt'), 'the no-op file rename lost the object');
+    need(l.out.includes('rn-dir-c/fa.txt'), 'the no-op folder rename lost its content');
+    return 'clobbers refused (file + folder, both intact); folder landed beside its parent; no-op clean (file + folder)';
+  });
+
+  await verify({ id: 'GUI-56', area: 'objects', action: 'Editor discard: StopEdit(false) never pushes — and a stopped watcher stays stopped', ds: 'S3 (MinIO)', scenario: 'EditObject stages the object into a local workspace (this row opens the OS text editor once on the verify box — the real open path); tampering with the STAGED file and discarding (StopEdit upload=false) must leave the object byte-original not only immediately but past two watcher polls (a stopped session may never auto-upload afterwards — the zombie-watcher regression), and StopEdit on an object that is not being edited must refuse honestly', face: 'GUI' }, async () => {
+    const K = 'verify-gui/edit-discard.txt';
+    const orig = 'editor original payload\n';
+    await writeFile(path.join(ART, 'edit-orig.txt'), orig);
+    await s3(['cp', path.join(ART, 'edit-orig.txt'), `s3://${BUCKET}/${K}`]);
+    const info = await call('EditObject', BUCKET, K, false);
+    need(info && info.local && !info.dirty, `EditInfo: ${JSON.stringify(info)}`);
+    // tamper with the staged copy exactly as an external editor would
+    await writeFile(info.local, 'TAMPERED — user chose discard\n');
+    await call('StopEdit', BUCKET, K, false); // discard
+    // past two watcher polls the object must STILL be the original
+    await sleep(2 * 1300);
+    const back = path.join(ART, 'edit-back.txt');
+    await rm(back, { force: true });
+    await s3(['cp', `s3://${BUCKET}/${K}`, back]);
+    need((await readFile(back, 'utf8')) === orig, 'the discarded edit reached the object (zombie watcher)');
+    const editing = (await call('EditingFiles')) || [];
+    need(!editing.some((e) => e.key === K), 'the session outlived StopEdit');
+    let refused = null;
+    try { await call('StopEdit', BUCKET, K, false); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /not being edited/i.test(refused), `double StopEdit: ${refused}`);
+    await rm(info.local, { force: true });
+    return 'discard held past two watcher polls; double-stop refused';
+  });
+
+  await verify({ id: 'GUI-57', area: 'deletion', action: 'Local delete ladder: roots refused, exact scope, honest missing-path errors', ds: 'local disk', scenario: 'LocalDeletePreview and LocalRemove must BOTH refuse a filesystem root (C:\\) with nothing on disk touched — proven from OUTSIDE via Node fs; a scoped delete takes exactly the victim tree leaving the sibling witness intact; a missing path inside a batch produces an honest per-path error while its deletable batch-mate still goes — never a silent skip, never a partial lie', face: 'GUI' }, async () => {
+    // leg 1 — the filesystem root is untouchable on BOTH rungs
+    let refused = null;
+    try { await call('LocalDeletePreview', ['C:\\']); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /root/i.test(refused), `preview must refuse the root: ${refused}`);
+    const rootRes = await call('LocalRemove', ['C:\\']);
+    need(rootRes && (rootRes.errors || []).length === 1 && rootRes.deleted === 0 && /root/i.test(rootRes.errors[0]), `remove must refuse the root: ${JSON.stringify(rootRes)}`);
+    let entries = [];
+    try { entries = fs.readdirSync('C:\\'); } catch { /* permission-shaped environments */ }
+    need(entries.length > 0, 'C:\\ became unreadable after the refused delete');
+    // leg 2 — exact scope with a sibling witness
+    const d = path.join(ART, 'gui-ladder');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(path.join(d, 'victim', 'deep'), { recursive: true });
+    await mkdir(path.join(d, 'sibling'), { recursive: true });
+    await writeFile(path.join(d, 'victim', 'v.txt'), 'v');
+    await writeFile(path.join(d, 'victim', 'deep', 'v2.txt'), 'v2');
+    await writeFile(path.join(d, 'sibling', 's.txt'), 's');
+    const prev = await call('LocalDeletePreview', [path.join(d, 'victim')]);
+    need(prev && prev.count === 2 && prev.folders >= 2, `preview: ${JSON.stringify(prev)}`);
+    const res = await call('LocalRemove', [path.join(d, 'victim')]);
+    need(res && res.deleted === 1 && !(res.errors || []).length, `remove: ${JSON.stringify(res)}`);
+    let vGone = false;
+    try { await readFile(path.join(d, 'victim', 'v.txt')); } catch { vGone = true; }
+    need(vGone, 'the victim tree survived LocalRemove');
+    need((await readFile(path.join(d, 'sibling', 's.txt'), 'utf8')) === 's', 'the sibling witness was touched');
+    // leg 3 — a missing path is an honest error; its batch-mate still deletes
+    const miss = path.join(d, 'no-such-path', 'x.txt');
+    const real = path.join(d, 'sibling', 'extra.txt');
+    await writeFile(real, 'extra');
+    const mix = await call('LocalRemove', [miss, real]);
+    need(mix && (mix.errors || []).length === 1 && mix.errors[0].includes('no-such-path') && mix.deleted === 1, `mixed batch: ${JSON.stringify(mix)}`);
+    let rGone = false;
+    try { await readFile(real); } catch { rGone = true; }
+    need(rGone, 'the deletable batch-mate was not deleted');
+    await rm(d, { recursive: true, force: true });
+    return 'root refused on both rungs (C:\\ readable outside); exact scope; missing path honest';
+  });
+
+  await verify({ id: 'GUI-58', area: 'sources', action: 'RemoveSource: the store forgets, the data survives', ds: 'FTP', scenario: 'removing a saved source must delete exactly the STORE entry — the engine data it pointed at stays intact, witnessed through the CLI face on its own connection; the GUI keeps browsing afterwards; where the FTP engine is absent the row records the gap', face: 'GUI' }, async () => {
+    if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
+    const before = (await call('ListSources')) || [];
+    need(before.some((s) => s.name === FTPNAME), `the ${FTPNAME} source is not in the GUI store to remove`);
+    await call('RemoveSource', FTPNAME);
+    const after = (await call('ListSources')) || [];
+    need(!after.some((s) => s.name === FTPNAME), 'RemoveSource left the entry in the store');
+    const l = await cli(['ls', `xf://${RUNID}/gui`, '--json']);
+    need(l.code === 0 && /readme/.test(l.out), `engine data lost with the source: ${l.out.slice(0, 120)}${l.err}`);
+    await navCertGui();
+    return 'store entry gone; engine data intact through the CLI face';
+  });
+
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
     need(pageErrors.length === 0, `${pageErrors.length} page error(s): ${pageErrors[0]}`);
     return 'clean console';

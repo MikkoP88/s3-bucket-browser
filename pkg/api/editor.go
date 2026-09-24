@@ -109,6 +109,16 @@ func (a *App) watchEditor(s *editSession) {
 		case <-a.done():
 			return
 		}
+		// StopEdit ended the session: no more auto-uploads. Without this
+		// check the goroutine outlives the session and would keep pushing
+		// edits the user explicitly discarded (StopEdit upload=false) to
+		// the object.
+		s.mu.Lock()
+		done := s.done
+		s.mu.Unlock()
+		if done {
+			return
+		}
 		st, err := os.Stat(s.Local)
 		if err != nil {
 			return // deleted: session over

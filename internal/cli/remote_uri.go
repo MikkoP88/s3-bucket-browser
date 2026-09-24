@@ -630,6 +630,16 @@ func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string
 				n++
 				continue
 			}
+			// --no-clobber: skip (and never remove the source) when the
+			// destination is already taken
+			if opts.NoClobber {
+				if _, err := dstRef.fs.Stat(ctx, dstPath); err == nil {
+					if !flagJSON {
+						rprintf("skip %s — already exists\n", uri(dstRef.src.Name, dstPath))
+					}
+					continue
+				}
+			}
 			rc, _, err := f.open(ctx)
 			if err != nil {
 				return n, err
@@ -653,7 +663,7 @@ func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string
 				}
 			}
 		}
-		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n)
+		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n, len(files))
 	}
 
 	if dstS3 != nil {
@@ -661,7 +671,7 @@ func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string
 		if err != nil {
 			return n, err
 		}
-		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n)
+		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n, len(files))
 	}
 	if strings.HasPrefix(dst, "s3://") {
 		du, err := parseS3URI(dst)
@@ -672,13 +682,13 @@ func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string
 		if err != nil {
 			return n, err
 		}
-		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n)
+		return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n, len(files))
 	}
 	n, err := copyFilesToLocal(ctx, files, srcIsDir, dst, opts)
 	if err != nil {
 		return n, err
 	}
-	return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n)
+	return pruneMovedDir(ctx, srcRef, srcIsDir, opts, n, len(files))
 }
 
 // pruneMovedDir completes mv semantics for remote directory sources: the
@@ -686,8 +696,12 @@ func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string
 // stays behind. Every engine's Remove(dir) takes a whole tree — by this
 // point only empty dirs remain, so removing the root prunes the skeleton
 // without touching moved data.
-func pruneMovedDir(ctx context.Context, srcRef *remoteRef, srcIsDir bool, opts copyOptions, n int) (int, error) {
-	if opts.Move && !opts.DryRun && srcRef != nil && srcIsDir {
+// pruneMovedDir removes the emptied source folder after a directory move —
+// ONLY when every file actually moved. A --no-clobber skip leaves files
+// behind, and some engines remove recursively (WebDAV DELETE), which would
+// take the skipped files with the folder.
+func pruneMovedDir(ctx context.Context, srcRef *remoteRef, srcIsDir bool, opts copyOptions, n, total int) (int, error) {
+	if opts.Move && !opts.DryRun && srcRef != nil && srcIsDir && n >= total {
 		if err := srcRef.fs.Remove(ctx, srcRef.path); err != nil {
 			return n, opErr(err)
 		}
@@ -698,18 +712,28 @@ func pruneMovedDir(ctx context.Context, srcRef *remoteRef, srcIsDir bool, opts c
 // copyFilesToS3 uploads enumerated files; folder batches land under the
 // destination prefix, a single file honors an exact object destination.
 func copyFilesToS3(ctx context.Context, c *s3client.Client, files []copyFile, isDir bool, du s3URI, opts copyOptions) (int, error) {
-	for i, f := range files {
+	n := 0
+	for _, f := range files {
 		key := joinKeyNoSlash(du.Key, f.rel)
 		if !isDir && len(files) == 1 && du.HasPrefix && !du.IsPrefix {
 			key = du.Key // exact object destination
 		}
 		if opts.DryRun {
 			rprintf("copy -> s3://%s/%s (%s)\n", du.Bucket, key, humanSize(f.size))
+			n++
+			continue
+		}
+		// --no-clobber: skip (and never remove the source) when the
+		// object already exists — UploadReader itself has no gate
+		if opts.NoClobber && transfer.ObjectExists(ctx, c.S3, du.Bucket, key) {
+			if !flagJSON {
+				rprintf("skip s3://%s/%s — already exists\n", du.Bucket, key)
+			}
 			continue
 		}
 		rc, size, err := f.open(ctx)
 		if err != nil {
-			return i, err
+			return n, err
 		}
 		if size <= 0 {
 			size = f.size
@@ -717,18 +741,19 @@ func copyFilesToS3(ctx context.Context, c *s3client.Client, files []copyFile, is
 		err = transfer.UploadReader(ctx, c.S3, rc, size, du.Bucket, key, opts.uploadOptions())
 		rc.Close()
 		if err != nil {
-			return i, fmt.Errorf("%s: %w", f.rel, err)
+			return n, fmt.Errorf("%s: %w", f.rel, err)
 		}
+		n++
 		if flagVerbose {
 			col.dim.Fprintf(out, "put s3://%s/%s\n", du.Bucket, key)
 		}
 		if opts.Move {
 			if err := f.remove(ctx); err != nil {
-				return i + 1, err
+				return n, err
 			}
 		}
 	}
-	return len(files), nil
+	return n, nil
 }
 
 // copyFilesToLocal writes enumerated files under a local folder (or one

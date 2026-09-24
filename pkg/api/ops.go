@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strings"
@@ -150,6 +151,37 @@ func (a *App) deleteSelectionC(c *s3client.Client, bucket string, keys []string,
 }
 
 // expandSelection resolves folder selections into full object key lists.
+// errWalkDone stops a listing.Walk early — the rename guard only needs to
+// know that SOMETHING lives under the target prefix.
+var errWalkDone = errors.New("walk done")
+
+// renameTargetOccupied reports whether a rename's destination is taken.
+// The name is checked in BOTH key forms — the file 'x' and the folder
+// 'x/' name the same grid row, so a rename onto either must refuse — plus
+// a prefix walk, because a folder can carry content without its own
+// marker (MinIO omits markers from listings under their own prefix).
+// Renames must refuse rather than clobber: the underlying server-side
+// copy overwrites silently, and for critical data a wrong-name rename
+// must never destroy the object that already owns that name.
+func renameTargetOccupied(ctx context.Context, c *s3client.Client, bucket, key string) bool {
+	base := strings.TrimSuffix(key, "/")
+	if base == "" {
+		return true // the bucket root is always occupied
+	}
+	if remoteExists(ctx, c, bucket, base) { // file form
+		return true
+	}
+	if remoteExists(ctx, c, bucket, base+"/") { // folder-marker form
+		return true
+	}
+	occupied := false
+	_ = listing.Walk(ctx, c.S3, bucket, base+"/", func(o s3types.Object) error {
+		occupied = true
+		return errWalkDone
+	})
+	return occupied
+}
+
 func expandSelection(ctx context.Context, c *s3client.Client, bucket string, keys []string) ([]string, error) {
 	var out []string
 	for _, k := range keys {
@@ -204,8 +236,24 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 		if i := strings.LastIndex(trimmed, "/"); i >= 0 {
 			parent = trimmed[:i+1]
 		}
-		dstPrefix := joinKeyNoSlash(parent, newName)
-		res, err := a.copyMove(ctx, c, bucket, []string{key}, bucket, dstPrefix, true, nil)
+		// copyMove appends the item's own name to the destination prefix;
+		// passing parent + renameName lands the folder at parent/newName —
+		// the rename — instead of nesting it inside its old name.
+		newPrefix := transfer.JoinKey(parent, newName)
+		// JoinKey already returns the prefix form (trailing '/'); pass it
+		// as-is — appending another slash would probe "name//" and the
+		// occupancy check would silently miss the real destination.
+		if newPrefix == key {
+			return nil // renaming a folder to its own name is a no-op
+		}
+		// refuse rather than clobber: the server-side copies would silently
+		// overwrite anything already living at the destination
+		if renameTargetOccupied(ctx, c, bucket, newPrefix) {
+			err := fmt.Errorf("%s already exists", strings.TrimSuffix(newPrefix, "/"))
+			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s refused: %v", key, err))
+			return err
+		}
+		res, err := a.copyMove(ctx, c, bucket, []string{key}, bucket, parent, true, nil, newName)
 		if err != nil {
 			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s failed: %v", key, err))
 			return err
@@ -222,6 +270,11 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 	dstKey := joinKeyNoSlash(path.Dir(key), newName)
 	if dstKey == key {
 		return nil
+	}
+	if renameTargetOccupied(ctx, c, bucket, dstKey) {
+		err := fmt.Errorf("%s already exists", dstKey)
+		a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming %s to %q refused: %v", key, newName, err))
+		return err
 	}
 	if err := transfer.Copy(ctx, c.S3, bucket, key, bucket, dstKey); err != nil {
 		a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming %s to %q failed: %v", key, newName, err))
@@ -268,7 +321,7 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 		len(keys), bucket, dstBucket, dirPrefix(dstPrefix)))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
-	res, err = a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move, task)
+	res, err = a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move, task, "")
 	verb := "copied"
 	if move {
 		verb = "moved"
@@ -295,7 +348,9 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 // pairs), then copies pair by pair with live progress, and only deletes
 // the sources when every copy succeeded (move semantics, cleanup phase).
 // task may be nil (the single-key rename path runs without a task row).
-func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, keys []string, dstBucket, dstPrefix string, move bool, task *taskHandle) (CopyResult, error) {
+// renameName is non-empty only for the F2 folder rename: the destination
+// name is then the NEW name instead of the source's own.
+func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, keys []string, dstBucket, dstPrefix string, move bool, task *taskHandle, renameName string) (CopyResult, error) {
 	res := CopyResult{}
 	var toDelete []string
 
@@ -323,6 +378,9 @@ func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, k
 			continue
 		}
 		name := path.Base(strings.TrimSuffix(src, "/"))
+		if renameName != "" {
+			name = renameName // F2 folder rename: land at the NEW name
+		}
 		newPrefix := transfer.JoinKey(dstPrefix, name)
 		g := copyGroup{src: src, marker: newPrefix}
 		err := listing.Walk(ctx, c.S3, bucket, src, func(o s3types.Object) error {
