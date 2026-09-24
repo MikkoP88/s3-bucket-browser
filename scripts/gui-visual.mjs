@@ -2521,7 +2521,7 @@ await step('source-editor-autoname', async () => {
   await page.click('#sidebar-head .side-add');
   await waitFor(modalVisible, 4000, 'source editor');
   await ok('title is Add data source', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('Add data source'));
-  // S3: with no bucket typed, the endpoint host's first label becomes the
+  // S3: with no bucket typed, the endpoint's full hostname becomes the
   // name; once a bucket is typed it wins (an S3 data source IS one bucket)
   const ep = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
     .find((i) => /s3\.amazonaws/.test(i.placeholder || '')) || null);
@@ -2530,7 +2530,7 @@ await step('source-editor-autoname', async () => {
     await ep.asElement().fill('https://hel1.your-objectstorage.com');
     await ep.asElement().dispatchEvent('change');
   }
-  await ok('S3 endpoint auto-fills the name', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'hel1'));
+  await ok('S3 endpoint auto-fills the name', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'hel1.your-objectstorage.com'));
   const bk = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
     .find((i) => /bucket this source opens/.test(i.placeholder || '')) || null);
   await ok('bucket field present (required)', !!bk);
@@ -2539,6 +2539,29 @@ await step('source-editor-autoname', async () => {
     await bk.asElement().dispatchEvent('change');
   }
   await ok('the bucket name auto-fills the name', evalPage(() => document.querySelector('#modal-root input.input')?.value === 'hel1-media'));
+  // remote (scp): the FULL host is the name — "10.20.3.65", never its
+  // first label — and a start directory appends as "<host> - <dir>"
+  await page.selectOption('#modal-root select', 'scp');
+  const hostIn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
+    .find((i) => /server\.example\.com/.test(i.placeholder || '')) || null);
+  const rootIn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
+    .find((i) => /starting directory/.test(i.placeholder || '')) || null);
+  await ok('scp type shows host + start directory', !!hostIn && !!rootIn);
+  if (hostIn) {
+    await hostIn.asElement().fill('10.20.3.65');
+    await hostIn.asElement().dispatchEvent('input');
+  }
+  await ok('full host auto-fills the name (not its first label)', evalPage(() => document.querySelector('#modal-root input.input')?.value === '10.20.3.65'));
+  if (rootIn) {
+    await rootIn.asElement().fill('/var/media/clips');
+    await rootIn.asElement().dispatchEvent('input');
+  }
+  await ok('a start directory makes the name "<host> - <dir>"', evalPage(() => document.querySelector('#modal-root input.input')?.value === '10.20.3.65 - /var/media/clips'));
+  if (rootIn) {
+    await rootIn.asElement().fill('/');
+    await rootIn.asElement().dispatchEvent('input');
+  }
+  await ok('"/" falls back to the bare host', evalPage(() => document.querySelector('#modal-root input.input')?.value === '10.20.3.65'));
   // local: the folder leaf becomes the name
   await page.selectOption('#modal-root select', 'local');
   const folder = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))

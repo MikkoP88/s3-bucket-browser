@@ -602,6 +602,23 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Add-data-source name auto-fill no longer truncates.** A remote
+  host shrank to its first label — "10.20.3.65" suggested the name
+  "10" — and a start directory replaced the host entirely with the
+  directory's last segment. The suggestion now carries the full host,
+  and once a start directory is set, "<host> - <start directory>"
+  ("10.20.3.65 - /var/media/clips"); the S3 endpoint fallback likewise
+  keeps the full hostname instead of its first label. The name filter
+  was relaxed to match — it repurposed every space and slash into
+  dashes, which would have made that format impossible — safe because
+  names are display-only (IDs key the keyring and workspaces). The
+  suggestion also tracks the fields as they are typed (not only on
+  blur, matching the Browse buttons) and clears when the fields it
+  described are emptied; a hand-typed name still always wins.
+
+
 ## [1.1.0-beta.17] — 2026-09-21
 
 ### Added

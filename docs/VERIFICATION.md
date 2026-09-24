@@ -85,6 +85,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Action | Data source | Tested scenario | CLI | GUI | OS |
 |---|---|---|---|---|---|
 | Add + test source | S3 (MinIO) | `source add` with endpoint/keys; `source test` dials; listed; mirrored as a profile | ✅ CLI-S3-01 | ✅ GUI-02 (editor → Test ✅ → Save → bucket root lists) | Win 11 x64 |
+| **Source-editor name auto-fill takes the full host** | shim world | every source type: a remote host "10.20.3.65" suggests the name "10.20.3.65" (never its first label "10"), a start directory turns it into "<host> - <dir>", "/" falls back to the bare host, the S3 endpoint fallback keeps the full hostname, the bucket and the local folder leaf still win for their types, and a hand-typed name is never overwritten | — | — (sweep: source-editor-autoname, SWEEP-VIS-01 — 662/662) | Win 11 x64 |
 | Add + test remote sources | SFTP/FTP/WebDAV | `sftp://`/`webdav://` URL shorthand + ftp flags; `source test` dials each | ✅ CLI-X-01 | ✅ GUI-03 (FTP: Test ✅ → Save → root lists) | Win 11 x64 |
 | Source lifecycle: profile test + remove | S3 (MinIO) | add a temp source; `profile test` dials it (OK + bucket count); `source remove` drops it from BOTH source list and profile mirror | ✅ CLI-X-09 | — | Win 11 x64 |
 | Export + import sources | all | AES-256-GCM encrypted export (`--password`); ciphertext verified; import into a fresh store lists the same sources | ✅ CLI-X-08 | — | Win 11 x64 |
