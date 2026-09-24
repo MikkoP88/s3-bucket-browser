@@ -1985,8 +1985,9 @@ const SOURCE_TYPES = [
 // Source from ListSources or null. Secret fields arrive empty with the
 // stored mask as placeholder; the backend re-attaches stored values.
 // The name starts auto-filled from the connection details (the S3 bucket,
-// endpoint host, local folder name, remote host/start dir) and stays
-// editable — once the user types a name it is never overwritten.
+// endpoint hostname, local folder name, "<host> - <start dir>" for
+// remotes) and stays editable — once the user types a name it is never
+// overwritten.
 export function sourceEditor(existing, onSaved) {
   const f = {
     name: el('input', { class: 'input', value: existing?.name || '', spellcheck: 'false' }),
@@ -2026,40 +2027,43 @@ export function sourceEditor(existing, onSaved) {
 
   // ---- auto-filled name (kept until the user edits it) ----
   let nameDirty = !!existing?.name;
+  // Names are display-only (IDs key the keyring and workspaces), so the
+  // cleanup just collapses whitespace and drops control characters — the
+  // old [A-Za-z0-9._-] filter would mangle "host - dir" into host---dir.
+  const cleanName = (s) => s.replace(/[\u0000-\u001f\u007f]+/g, '').replace(/\s+/g, ' ').trim();
   const suggestName = () => {
     const t = f.type.value;
-    let s = '';
     if (t === 's3') {
-      // an S3 data source IS one bucket — the bucket is the natural name
+      // an S3 data source IS one bucket — the bucket is the natural name;
+      // without one, the endpoint's full hostname stands in (never just
+      // its first label: the name must tell endpoints apart)
       const b = f.bucket.value.trim();
-      if (b) {
-        s = b;
-      } else {
-        const ep = f.endpoint.value.trim();
-        if (ep) {
-          try { s = new URL(ep).hostname.split('.')[0] || ''; } catch { s = ''; }
-        }
-      }
-    } else if (t === 'local') {
-      s = f.localRoot.value.split(/[\\/]/).filter(Boolean).pop() || '';
-    } else {
-      const root = f.root.value.trim();
-      if (root && root !== '/') {
-        s = root.replace(/\/+$/, '').split('/').pop() || '';
-      } else {
-        const h = f.host.value.trim();
-        s = h ? h.split('.')[0] : '';
-      }
+      if (b) return cleanName(b);
+      const ep = f.endpoint.value.trim();
+      try { return cleanName(new URL(ep).hostname); } catch { return ''; }
     }
-    return s.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (t === 'local') {
+      return cleanName(f.localRoot.value.split(/[\\/]/).filter(Boolean).pop() || '');
+    }
+    // remote filesystems: "<host> - <start directory>" once a start
+    // directory is set, the FULL host alone until then ("10.20.3.65",
+    // not "10" — a first label is not a name). "/" alone is the whole
+    // server, not a directory worth naming.
+    const h = f.host.value.trim();
+    let dir = f.root.value.trim().replace(/\/+$/, '');
+    if (dir === '/') dir = '';
+    return cleanName(h && dir ? `${h} - ${dir}` : (h || dir));
   };
   const applySuggest = () => {
     if (nameDirty) return;
-    const s = suggestName();
-    if (s) f.name.value = s;
+    // sets AND clears — a stale suggestion describing nothing the form
+    // still holds is worse than an empty name
+    f.name.value = suggestName();
   };
   f.name.addEventListener('input', () => { nameDirty = f.name.value.trim() !== ''; });
-  for (const inp of [f.bucket, f.endpoint, f.host, f.root, f.localRoot]) inp.addEventListener('change', applySuggest);
+  // 'input', not 'change': the name tracks the fields as they are typed,
+  // the same instant the Browse buttons apply their picked path
+  for (const inp of [f.bucket, f.endpoint, f.host, f.root, f.localRoot]) inp.addEventListener('input', applySuggest);
   if (!nameDirty) applySuggest();
 
   // bucket completions: a successful account-wide Test reports the visible
