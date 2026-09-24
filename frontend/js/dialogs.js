@@ -7,18 +7,55 @@ import { LICENSE } from './license.js';
 
 const root = () => document.getElementById('modal-root');
 
+// Modal stack: sub-dialogs (the source editor's directory browser, a
+// prompt opened from inside a dialog, a confirm gate over the settings
+// sheet) open ON TOP of their parent. Only the top modal answers Escape,
+// Tab and the backdrop; the parent's box is parked with its state intact
+// (every field value, list and status line) and is re-attached when the
+// child closes — Cancel or Escape on a sub-view goes BACK to the view
+// that opened it, never out through it.
+const modalStack = [];
+
 export function openModal({ title, body, buttons = [], wide = false, cls = '', onClose }) {
   const r = root();
   const prevFocus = document.activeElement;
   r.classList.remove('hidden');
+  const suspend = (m) => {
+    document.removeEventListener('keydown', m.esc, true);
+    document.removeEventListener('keydown', m.trap, true);
+    r.removeEventListener('mousedown', m.onBackdrop);
+  };
+  const resume = (m) => {
+    document.addEventListener('keydown', m.esc, true);
+    document.addEventListener('keydown', m.trap, true);
+    r.addEventListener('mousedown', m.onBackdrop);
+  };
+  const top = modalStack[modalStack.length - 1];
+  if (top) suspend(top); // the parent goes quiet while a child is open
 
+  let open = true; // close is idempotent — the footer, the X, Escape and
+                   // a programmatic close can all fire for one modal
+  const entry = {};
   const close = (result) => {
-    r.classList.add('hidden');
-    r.replaceChildren();
-    document.removeEventListener('keydown', esc, true);
-    document.removeEventListener('keydown', trap, true);
-    r.removeEventListener('mousedown', onBackdrop);
-    prevFocus?.focus?.();
+    if (!open) return;
+    open = false;
+    const idx = modalStack.indexOf(entry);
+    if (idx < 0) return;
+    modalStack.splice(idx, 1);
+    const wasTop = idx === modalStack.length; // this modal held the listeners
+    if (wasTop) suspend(entry);
+    const parent = modalStack[modalStack.length - 1];
+    if (parent) {
+      // go back: the parent's box returns exactly as it was parked —
+      // every field value, list and status line it had
+      r.replaceChildren(parent.box);
+      if (wasTop) resume(parent);
+      prevFocus?.focus?.(); // where this dialog was opened from
+    } else {
+      r.classList.add('hidden');
+      r.replaceChildren();
+      prevFocus?.focus?.();
+    }
     onClose?.(result);
   };
   const esc = (e) => { if (e.key === 'Escape') close(null); };
@@ -60,12 +97,14 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
   );
   // Backdrop click closes (dismiss = null): the listener must sit on the
   // backdrop itself — r is box's PARENT, so an event targeted at r never
-  // bubbles through box; on box this handler could never fire. And because
-  // r is SHARED by every modal, close() must remove it — otherwise each
-  // modal leaves a stale close() behind and one backdrop press fires them
-  // all, each wiping whatever modal is open at the time.
+  // bubbles through box; on box this handler could never fire. And only
+  // the TOP modal keeps one attached — every parent's listeners are
+  // suspended while a child is open, so one backdrop press closes exactly
+  // one dialog, going back instead of wiping the pile.
   const onBackdrop = (e) => { if (e.target === r) close(null); };
   r.addEventListener('mousedown', onBackdrop);
+  Object.assign(entry, { box, esc, trap, onBackdrop });
+  modalStack.push(entry);
   r.replaceChildren(box);
   // initial focus: first form control, else first button
   const firstCtl = box.querySelector('input, select, textarea') || box.querySelector('.modal-foot .btn');
@@ -4149,7 +4188,7 @@ const KMS_SERVICES = [
 // kmsFetchDialog collects one service's params and fetches its secrets.
 // onDone fires when this dialog closes (any path) so a caller whose modal
 // it replaced can re-show itself.
-function kmsFetchDialog(onCandidates, onDone) {
+function kmsFetchDialog(onCandidates) {
   const service = el('select', { class: 'input' }, KMS_SERVICES.map(([v, l]) => el('option', { value: v }, l)));
   const holder = el('div', { style: 'margin-top:4px' });
   const status = el('div', { class: 'dlg-status' });
@@ -4202,7 +4241,6 @@ function kmsFetchDialog(onCandidates, onDone) {
         },
       },
     ],
-    onClose: () => onDone?.(),
   });
 }
 
@@ -4291,9 +4329,9 @@ export function importCredsDialog(onImported) {
     }
   };
 
-  // show (re)opens the dialog. Nested modals (the profile password prompt,
-  // the KMS fetch dialog) replace this one in the modal root — the candidate
-  // state lives here, so it re-shows itself when they close.
+  // show() opens the dialog once. Nested modals (the profile password
+  // prompt, the KMS fetch dialog) stack on top of it; the modal stack
+  // parks it with the candidate state and returns it when they close.
   const show = () => openModal({
     title: 'Import S3 Credential',
     body: el('div', {},
@@ -4303,8 +4341,8 @@ export function importCredsDialog(onImported) {
     ),
     wide: true,
     buttons: [
-      { label: 'From file\u2026', onclick: async () => { await fromFiles(); show(); } },
-      { label: 'From service\u2026', onclick: () => kmsFetchDialog(add, show) },
+      { label: 'From file\u2026', onclick: async () => { await fromFiles(); } },
+      { label: 'From service\u2026', onclick: () => kmsFetchDialog(add) },
       {
         label: 'Import', class: 'primary',
         onclick: async (close) => {
