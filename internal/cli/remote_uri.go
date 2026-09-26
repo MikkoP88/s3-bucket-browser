@@ -759,7 +759,8 @@ func copyFilesToS3(ctx context.Context, c *s3client.Client, files []copyFile, is
 // copyFilesToLocal writes enumerated files under a local folder (or one
 // file to a leaf path).
 func copyFilesToLocal(ctx context.Context, files []copyFile, isDir bool, dst string, opts copyOptions) (int, error) {
-	for i, f := range files {
+	n := 0 // copied files only: pruneMovedDir compares this against the total
+	for _, f := range files {
 		local := dst
 		if isDir || len(files) > 1 {
 			local = filepath.Join(dst, filepath.FromSlash(f.rel))
@@ -768,38 +769,53 @@ func copyFilesToLocal(ctx context.Context, files []copyFile, isDir bool, dst str
 		}
 		if opts.DryRun {
 			rprintf("copy -> %s (%s)\n", local, humanSize(f.size))
+			n++
 			continue
+		}
+		// --no-clobber: never overwrite an existing local file — and the
+		// move below must NOT remove the source of a skipped file, nor may
+		// the caller's prune believe everything moved
+		if opts.NoClobber {
+			if _, err := os.Stat(local); err == nil {
+				if !flagJSON {
+					rprintf("skip %s — already exists\n", local)
+				}
+				continue
+			}
 		}
 		rc, _, err := f.open(ctx)
 		if err != nil {
-			return i, err
+			return n, err
 		}
 		if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 			rc.Close()
-			return i, err
+			return n, err
 		}
-		out, err := os.Create(local)
+		// dstF (not out — that is the CLI's writer; writing the verbose
+		// line to the downloaded file itself was both wrong and closed)
+		dstF, err := os.Create(local)
 		if err != nil {
 			rc.Close()
-			return i, err
+			return n, err
 		}
-		_, copyErr := io.Copy(out, rc)
+		_, copyErr := io.Copy(dstF, rc)
 		rc.Close()
-		closeErr := out.Close()
+		closeErr := dstF.Close()
 		if copyErr != nil {
-			return i, copyErr
+			return n, copyErr
 		}
 		if closeErr != nil {
-			return i, closeErr
+			return n, closeErr
 		}
+		n++
 		if flagVerbose {
 			col.dim.Fprintf(out, "got %s\n", local)
 		}
 		if opts.Move {
 			if err := f.remove(ctx); err != nil {
-				return i + 1, err
+				return n, err
 			}
 		}
 	}
-	return len(files), nil
+	return n, nil
 }

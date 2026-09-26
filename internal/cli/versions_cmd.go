@@ -191,11 +191,11 @@ func versionsRmCmd() *cobra.Command {
 			if err != nil {
 				return opErr(err)
 			}
-			reportDelete(res)
+			rerr := reportDelete(res)
 			if flagJSON {
 				return printJSON(res)
 			}
-			return nil
+			return rerr
 		},
 	}
 	f := cmd.Flags()
@@ -257,11 +257,11 @@ func versionsPurgeCmd() *cobra.Command {
 			if err != nil {
 				return opErr(err)
 			}
-			reportDelete(res)
+			rerr := reportDelete(res)
 			if flagJSON {
 				return printJSON(res)
 			}
-			return nil
+			return rerr
 		},
 	}
 	f := cmd.Flags()

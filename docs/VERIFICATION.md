@@ -87,7 +87,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Add + test source | S3 (MinIO) | `source add` with endpoint/keys; `source test` dials; listed; mirrored as a profile | ✅ CLI-S3-01 | ✅ GUI-02 (editor → Test ✅ → Save → bucket root lists) | Win 11 x64 |
 | **Source-editor name auto-fill takes the full host** | shim world | every source type: a remote host "10.20.3.65" suggests the name "10.20.3.65" (never its first label "10"), a start directory turns it into "<host> - <dir>", "/" falls back to the bare host, the S3 endpoint fallback keeps the full hostname, the bucket and the local folder leaf still win for their types, and a hand-typed name is never overwritten | — | — (sweep: source-editor-autoname, SWEEP-VIS-01 — 662/662) | Win 11 x64 |
 | **Modal stack: a sub-view's cancel goes BACK, not out** | shim world | the directory browser opened from the source editor's Browse stacks on the editor; a New-folder prompt stacks a third level; Escape or Cancel on any level returns exactly to the view below with every field value intact (host, name) — never out through the parent; the admin panel returns under its cleanup windows, and the import dialog no longer double-shows after a nested prompt | — | — (sweep: source-editor-autoname + delete-window-uniform, SWEEP-VIS-01 — 669/669) | Win 11 x64 |
-| Add + test remote sources | SFTP/FTP/WebDAV | `sftp://`/`webdav://` URL shorthand + ftp flags; `source test` dials each | ✅ CLI-X-01 | ✅ GUI-03 (FTP: Test ✅ → Save → root lists) | Win 11 x64 |
+| Add + test remote sources | SFTP/SCP/FTP/WebDAV | `sftp://`/`scp://`/`webdav://` URL shorthand + ftp flags; `source test` dials each | ✅ CLI-X-01 | ✅ GUI-03 (FTP: Test ✅ → Save → root lists) | Win 11 x64 |
 | Source lifecycle: profile test + remove | S3 (MinIO) | add a temp source; `profile test` dials it (OK + bucket count); `source remove` drops it from BOTH source list and profile mirror | ✅ CLI-X-09 | — | Win 11 x64 |
 | Export + import sources | all | AES-256-GCM encrypted export (`--password`); ciphertext verified; import into a fresh store lists the same sources | ✅ CLI-X-08 | — | Win 11 x64 |
 | **Wrong-password import fails closed** | **all** | an encrypted export imported with the WRONG password: decrypt fails BEFORE any source is upserted (no partial import, no half-populated store); the correct password still imports cleanly afterwards | ✅ CLI-X-10 | — | Win 11 x64 |
@@ -244,11 +244,17 @@ switching; the same S3 source stays connected through it).
 | **Execute-time delete gate: a stale preview can never authorize the delete** | S3 (MinIO) | 49 objects previewed (under the L2 gate), 3 more land before Execute: the FRESH expansion crosses 50 and the delete without force REFUSES with nothing gone (the ladder re-checks at execute time — the count-then-act window cannot be abused); the fresh dry-run counts 53; --force then deletes exactly what exists | ✅ CLI-S3-44 | ✅ GUI-54 (leg 1: real grid + bridge refusal, ≥52 remain) | Win 11 x64 |
 | **Canceling a running delete stays scoped, countable, recoverable** | S3 (MinIO) | a 600-object delete canceled from the task registry mid-flight: the out-of-scope control prefix untouched (3/3 files), the scoped prefix left countable (≤ seeded), the task settles — never wedged — and a fresh delete finishes the job; a bogus CancelList on an unknown token resolves without wedging the list registry | — | ✅ GUI-54 (legs 2–3) | Win 11 x64 |
 | **mv/cp --no-clobber on every path — and the source survives the skip** | S3 (MinIO) | server-side S3→S3 copies and remote-engine uploads ignored --no-clobber, and mv deleted the source even when the upload was skipped; every path now pre-checks, prints the skip, moves nothing, keeps the source; a clobbered mv is recoverable byte-identical through versioning (versions ls → restore --version-id) | ✅ CLI-S3-45 | — | Win 11 x64 |
-| **Cross-engine delete scope: the out-of-scope prefix is never touched** | SFTP + WebDAV | per engine: a 3-file tree copied into a scoped prefix, rm -r --dry-run counts exactly the scoped files, --force removes them, the sibling keep/ prefix survives with its file readable, and a stat on the removed path errors honestly | ✅ CLI-X-13 | — | Win 11 x64 |
+| **Cross-engine delete scope: the out-of-scope prefix is never touched** | SFTP + SCP + FTP + WebDAV | per engine (sftp, scp, ftp, webdav): a 3-file tree copied into a scoped prefix, rm -r --dry-run counts exactly the scoped files, --force removes them, the sibling keep/ prefix survives with its file readable, and a stat on the removed path errors honestly | ✅ CLI-X-13 | — | Win 11 x64 |
 | **Renames refuse occupied targets — file, folder, remote** | S3 (MinIO) | F2 onto a name another object owns REFUSES with both sides byte-intact afterwards (file and folder; the guard checks both key forms plus a prefix walk — an unmarked folder still counts as occupied); a folder rename lands at parent/NEW-name with the old prefix fully gone, never nested inside it; a same-name rename is a clean no-op; remote sources get the same refusal — engine Rename semantics vary, so the target is Stat-checked first | — | ✅ GUI-55 (+ targeted repro: the real F2 flow, refusal toast, both trees intact) | Win 11 x64 |
 | **Editor discard: StopEdit(false) never pushes — and a stopped watcher stays stopped** | S3 (MinIO) | EditObject stages the object locally (the real OS open path); a tampered staged file discarded with upload=false leaves the object byte-original immediately AND past two watcher polls (the zombie-watcher regression: the discard goroutine used to outlive the session and push the discarded edits); StopEdit on an object that is not being edited refuses honestly | — | ✅ GUI-56 | Win 11 x64 |
 | **Local delete ladder: roots refuse, siblings survive, mixed reports honestly** | local disk | LocalDeletePreview and LocalRemove BOTH refuse filesystem roots (C:\) with the directory untouched; a scoped victim tree deletes exactly its own files while the sibling survives byte-identical; a mixed [missing, real] list deletes the real one and reports the missing one as an error — never silently | — | ✅ GUI-57 | Win 11 x64 |
 | **RemoveSource: the store forgets, the data stays** | FTP | removing a saved source deletes exactly the config/keyring/workspace records (ListSources empty afterwards) while the data itself survives — the CLI face still reads it through a fresh source; source removal is bookkeeping, never data deletion | — | ✅ GUI-58 | Win 11 x64 |
+| **cp/mv S3→local --no-clobber: the skip protects both ends** | S3 (MinIO) | downloading over an existing local file is skipped (a local truncate has no version history to recover from); mv no longer deletes the source object of a skipped download — the copy was refused, so the move may not happen; a fresh mv downloads and removes its source; a mixed recursive move takes only what actually moved | ✅ CLI-S3-46 | — | Win 11 x64 |
+| **cp/mv remote→local --no-clobber: the local file, the remote file AND the folder survive the skip** | SFTP | the same guarantees on the remote engines, plus the emptied-folder prune must not fire while a skipped file still lives in the source tree — recursive engine Remove would have taken the folder and the skipped file with it | ✅ CLI-X-14 | — | Win 11 x64 |
+| **Remote rename guard, driven through the bindings** | FTP | renaming a remote folder onto an existing sibling is refused with both intact (engine MOVE semantics overwrite or merge silently — the pre-rename Stat guard is the only defense); a same-name rename is a no-op; a free name lands | — | ✅ GUI-59 | Win 11 x64 |
+| **Editor explicit save pushes what is on disk — WORM keeps the locked original safe through it** | S3 (MinIO) | StopEdit(upload=true) re-checks the staged file at stop time (the watcher only notices changes on its 1.2 s poll — a save-and-close inside that window used to silently push nothing and lose the edit); the same save against a GOVERNANCE-retained object lands as a new version while the locked original survives in the timeline, restores byte-identical, and rm --versions stays refused — editing can never destroy locked bytes | — | ✅ GUI-60 | Win 11 x64 |
+| **Keep-current purge deletes exactly N-1 versions** | S3 (MinIO) | three seeded versions: DeleteSelectionKeepCurrent reports 2 deleted, the timeline holds exactly 1, and the survivor is the newest payload byte-identical — the irreversible pruning rung never takes more or fewer than reported | — | ✅ GUI-61 | Win 11 x64 |
+| **A delete canceled while still counting deletes nothing** | S3 (MinIO) via faultproxy | the count-then-act ladder's COUNT half is cancellable: a delete through a 1.5 s/chunk delayed source, canceled from the task registry in the count phase, leaves 30/30 objects alive (the act phase never ran), the out-of-scope sibling untouched, and the app healthy enough to finish the job on a direct re-run | — | ✅ GUI-62 | Win 11 x64 |
 
 ---
 
@@ -265,6 +271,12 @@ reason is written into the verification report:
   delete` halves still run). Against a provider that implements the API,
   the row passes fully — the SKIP is proof of a recorded provider gap,
   not a waived check.
+- **No TLS twin in the harness** — the e2e containers are plaintext
+  (SFTP :2222, FTP :2121, WebDAV :7070), so the `ftps://` and
+  `webdavs://` source types ride engines whose protocol cores are
+  verified through their plaintext twins but whose TLS dial has no
+  live row today; scp:// (the SFTP-engine shorthand) IS live-verified
+  (CLI-X-01/X-13).
 
 ## The release pipeline — no report, no release
 
@@ -295,29 +307,31 @@ release".
 ## Latest verification report
 
 Replaced on every run — this snapshot is from the destructive-surface
-sweep of **25 Sep 2026** (`node scripts/verify.mjs`, full matrix, on
-the tree of `3515740` plus this round's own changes) on Windows
-Server 2025 (x64), after the extreme-level verification round grew
-the matrix from 124 to 132 rows: execute-time delete-gate refusals
-(CLI-S3-44 + GUI-54 — a preview can go stale, the fresh expansion
-cannot authorize the delete), mid-flight cancellation of a 600-object
-delete with the task registry never wedged (GUI-54), rename refusals
-with both trees byte-intact — file, folder and remote (GUI-55; the
-row caught a double-slash bug that defeated the occupancy guard and
-an entirely unguarded remote path), the editor-discard zombie
-regression (GUI-56), the local delete ladder — roots refuse,
-siblings survive, mixed lists report honestly (GUI-57), RemoveSource
-as pure bookkeeping with the data surviving (GUI-58), per-engine
-cross-source delete scope (CLI-X-13) and mv --no-clobber
-recoverability through versioning (CLI-S3-45). GUI-30 was re-anchored
-to the modal stack: the version timeline now refreshes in place after
-a destroy, instead of reopening through the grid the restored
-timeline covers. The release evidence for beta.18 stays at
+sweep of **26 Sep 2026** (`node scripts/verify.mjs`, full matrix, on
+the tree of `acb4459` plus this round's own changes) on Windows
+Server 2025 (x64), after the fourth sweep round grew the matrix from
+132 to 138 rows across every source type: no-clobber downloads that
+protect the local file, the source object and the source folder —
+with a move that never deletes what it skipped and a folder prune
+that never fires while skipped files remain (CLI-S3-46, CLI-X-14),
+per-engine delete scope on all four live engines now including
+scp:// and FTP (CLI-X-01, CLI-X-13), the remote rename guard driven
+through the bindings (GUI-59), the editor's explicit save — which now
+pushes what is on disk, with WORM keeping the locked original safe
+and unpurgeable through the edit (GUI-60: the row caught a
+save-and-close that silently lost the edit, and a partially-failed
+purge that exited 0), the keep-current purge deleting exactly N-1
+versions with the newest surviving byte-identical (GUI-61), and a
+delete canceled while still counting deleting exactly nothing, proven
+through a latency-injected source (GUI-62). The cross battery is
+self-sufficient standalone, and the missing TLS twins (ftps://,
+webdavs://) are recorded as a harness gap in the SKIP policy below.
+The release evidence for beta.18 stays at
 [`docs/verification/v1.1.0-beta.18/windows-x64/REPORT.md`](verification/v1.1.0-beta.18/windows-x64/REPORT.md):
 
 ```
-full matrix (132 rows incl. the two sweep rows):
-  125 PASS · 7 SKIP · 0 FAIL — 1597 s
+full matrix (138 rows incl. the two sweep rows):
+  131 PASS · 7 SKIP · 0 FAIL — 1855 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)

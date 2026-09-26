@@ -1177,6 +1177,49 @@ async function cliS3() {
     return 'clobber recoverable byte-identical; no-clobber left both sides intact';
   });
 
+  await verify({ id: 'CLI-S3-46', area: 'transfers', action: 'cp/mv S3→local --no-clobber: a skip protects the local file AND the source object', ds: 'S3 (MinIO)', scenario: 'downloading over an existing local file with --no-clobber must skip — a local truncate has no version history to recover from; mv must then NOT delete the source object of a skipped download (the copy was refused, so the move may not happen); a fresh destination downloads and, for mv, removes its source; a mixed recursive move takes only what actually moved', face: 'CLI' }, async () => {
+    const P = `${B}/dl-nc`;
+    const d = path.join(ART, 'dl-nc');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    await cli(['rm', '-r', `${P}/`, '--force']);
+    await writeFile(path.join(d, 'exists.txt'), 'PRECIOUS local content\n');
+    await writeFile(path.join(ART, 'dl-obj.txt'), 'object payload\n');
+    await writeFile(path.join(ART, 'dl-late.txt'), 'late payload\n');
+    let r = await cli(['cp', path.join(ART, 'dl-obj.txt'), `${P}/exists.txt`]);
+    need(r.code === 0, `seed: ${r.out}${r.err}`);
+    // single cp over an existing local file: skipped, local bytes untouched
+    r = await cli(['cp', `${P}/exists.txt`, path.join(d, 'exists.txt'), '--no-clobber']);
+    need(r.code === 0 && /skip .*already exists/.test(r.out), `cp skip: ${r.out}${r.err}`);
+    need((await readFile(path.join(d, 'exists.txt'), 'utf8')) === 'PRECIOUS local content\n', 'the skipped cp overwrote the local file');
+    // single mv over an existing local file: skip AND the source object survives
+    r = await cli(['mv', `${P}/exists.txt`, path.join(d, 'exists.txt'), '--no-clobber']);
+    need(r.code === 0 && /skip .*already exists/.test(r.out), `mv skip: ${r.out}${r.err}`);
+    let s = await cli(['stat', `${P}/exists.txt`]);
+    need(s.code === 0 && /size:/.test(s.out), `mv deleted the source of a skipped download: exit ${s.code} ${s.out}${s.err}`);
+    // fresh destination: mv downloads AND removes the source
+    r = await cli(['mv', `${P}/exists.txt`, path.join(d, 'fresh.txt'), '--no-clobber']);
+    need(r.code === 0, `mv fresh: ${r.out}${r.err}`);
+    need((await readFile(path.join(d, 'fresh.txt'), 'utf8')) === 'object payload\n', 'mv fresh landed wrong bytes');
+    s = await cli(['stat', `${P}/exists.txt`]);
+    need(s.code !== 0, `mv fresh left the source behind: exit ${s.code} ${s.out}`);
+    // mixed recursive move: one target exists (skip keeps it + its source), one is fresh
+    await cli(['cp', path.join(ART, 'dl-obj.txt'), `${P}/mix-a.txt`]);
+    await cli(['cp', path.join(ART, 'dl-late.txt'), `${P}/mix-b.txt`]);
+    const t = path.join(d, 'tree');
+    await rm(t, { recursive: true, force: true });
+    await mkdir(t, { recursive: true });
+    await writeFile(path.join(t, 'mix-a.txt'), 'PRECIOUS tree content\n');
+    r = await cli(['mv', `${P}/`, t, '-r', '--no-clobber']);
+    need(r.code === 0, `mv tree: ${r.out}${r.err}`);
+    need((await readFile(path.join(t, 'mix-a.txt'), 'utf8')) === 'PRECIOUS tree content\n', 'the tree skip overwrote the local file');
+    need((await readFile(path.join(t, 'mix-b.txt'), 'utf8')) === 'late payload\n', 'the fresh tree file did not land');
+    const l = await cli(['ls', `${P}/`, '--recursive']);
+    need(/mix-a\.txt/.test(l.out) && !/mix-b\.txt/.test(l.out), `mv removed the wrong sources: ${l.out}`);
+    await cli(['rm', '-r', `${P}/`, '--force']);
+    return 'skips protected the local bytes; mv never deleted a skipped source; fresh moves complete';
+  });
+
 }
 
 // ============================================================
@@ -1192,12 +1235,30 @@ async function cliCross() {
     return;
   }
 
-  await verify({ id: 'CLI-X-01', area: 'sources', action: 'Add + test remote sources', ds: 'SFTP/FTP/WebDAV', scenario: 'sftp:// and webdav:// URL shorthand + ftp flags; source test dials each', face: 'CLI' }, async () => {
+  // The S3 battery seeds verifys3 + the bucket in a full run; recreate the
+  // profile here so the documented standalone unit (--only cross) is real
+  // (in a full run this resolves to a no-op and changes nothing downstream).
+  {
+    const srcs = await cli(['source', 'list']).catch(() => ({ out: '' }));
+    if (!srcs.out.includes('verifys3')) {
+      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+      need(r.code === 0, `prologue: verifys3 source add (cross): ${r.err}`);
+    }
+    await cli(['mb', `s3://${BUCKET}`]).catch(() => {});
+  }
+
+  await verify({ id: 'CLI-X-01', area: 'sources', action: 'Add + test remote sources', ds: 'SFTP/SCP/FTP/WebDAV', scenario: 'sftp://, scp:// and webdav:// URL shorthand + ftp flags; source test dials each', face: 'CLI' }, async () => {
     if (haveSftp) {
       const r = await cli(['source', 'add', 'xt', `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]);
       need(r.code === 0, `sftp add: ${r.err}`);
       const t = await cli(['source', 'test', 'xt']);
       need(t.code === 0, `sftp test: ${t.out}${t.err}`);
+    }
+    if (haveSftp) {
+      const r = await cli(['source', 'add', 'xs', `scp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]);
+      need(r.code === 0, `scp add: ${r.err}`);
+      const t = await cli(['source', 'test', 'xs']);
+      need(t.code === 0, `scp test: ${t.out}${t.err}`);
     }
     if (haveFtp) {
       const r = await cli(['source', 'add', 'xf', '--type', 'ftp', '--host', '127.0.0.1', '--port', String(FTP_PORT), '--username', E2E_USER, '--password', E2E_PASS]);
@@ -1211,7 +1272,7 @@ async function cliCross() {
       const t = await cli(['source', 'test', 'xw']);
       need(t.code === 0, `webdav test: ${t.out}${t.err}`);
     }
-    return [haveSftp && 'sftp', haveFtp && 'ftp', haveDav && 'webdav'].filter(Boolean).join('+') + ' tested';
+    return [haveSftp && 'sftp', haveSftp && 'scp', haveFtp && 'ftp', haveDav && 'webdav'].filter(Boolean).join('+') + ' tested';
   });
 
   // The user-facing flagship: MULTI-FILE COPY with an FTP data source.
@@ -1437,7 +1498,7 @@ async function cliCross() {
   });
 
   if (haveSftp || haveDav) {
-    await verify({ id: 'CLI-X-13', area: 'objects', action: 'Remote delete scope: SFTP + WebDAV', ds: 'SFTP/WebDAV', scenario: 'per live engine: seed victim/ + keep/ siblings; rm -r --dry-run counts exactly the victim tree; --force deletes it; the sibling and the parent stay browsable afterwards and the removed path stats as an honest error — deletion never crosses its prefix', face: 'CLI' }, async () => {
+    await verify({ id: 'CLI-X-13', area: 'objects', action: 'Remote delete scope: SFTP + SCP + FTP + WebDAV', ds: 'SFTP/SCP/FTP/WebDAV', scenario: 'per live engine: seed victim/ + keep/ siblings; rm -r --dry-run counts exactly the victim tree; --force deletes it; the sibling and the parent stay browsable afterwards and the removed path stats as an honest error — deletion never crosses its prefix', face: 'CLI' }, async () => {
       const legs = [];
       const leg = async (name, base) => {
         const d = path.join(ART, 'x13-tree');
@@ -1465,10 +1526,47 @@ async function cliCross() {
         legs.push(`${name}: dry-run ${total}, scoped, sibling + parent intact`);
       };
       if (haveSftp) await leg('sftp', `xt://${RUNID}`);
+      if (haveSftp) await leg('scp', `xs://${RUNID}/x13-scp`);
+      if (haveFtp) await leg('ftp', `xf://${RUNID}`);
       if (haveDav) await leg('webdav', `xw://${RUNID}`);
       return legs.join('; ');
     });
   }
+
+  await verify({ id: 'CLI-X-14', area: 'transfers', action: 'cp/mv remote→local --no-clobber: the skip protects the local file, the remote file, and the source folder', ds: 'SFTP', scenario: 'downloading from a remote engine over an existing local file must skip; mv must not remove the skipped remote file; and the emptied-folder prune must NOT fire while a skipped file still lives in the source tree — some engines Remove(dir) recursively and would take the skipped file with the folder', face: 'CLI' }, async () => {
+    if (!haveSftp) return skip('sftp engine down');
+    const base = `xt://${RUNID}/x14`;
+    const d = path.join(ART, 'x14-local');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    await writeFile(path.join(d, 'a.txt'), 'PRECIOUS local a\n');
+    await writeFile(path.join(ART, 'x14-a.txt'), 'remote a\n');
+    await writeFile(path.join(ART, 'x14-b.txt'), 'remote b\n');
+    await cli(['cp', path.join(ART, 'x14-a.txt'), `${base}/a.txt`]);
+    await cli(['cp', path.join(ART, 'x14-b.txt'), `${base}/b.txt`]);
+    // single cp over the existing local file: skip, local untouched
+    let r = await cli(['cp', `${base}/a.txt`, path.join(d, 'a.txt'), '--no-clobber']);
+    need(r.code === 0 && /skip .*already exists/.test(r.out), `cp skip: ${r.out}${r.err}`);
+    need((await readFile(path.join(d, 'a.txt'), 'utf8')) === 'PRECIOUS local a\n', 'the skipped cp overwrote the local file');
+    // single mv skip: the remote source survives
+    r = await cli(['mv', `${base}/a.txt`, path.join(d, 'a.txt'), '--no-clobber']);
+    need(r.code === 0 && /skip .*already exists/.test(r.out), `mv skip: ${r.out}${r.err}`);
+    let s = await cli(['stat', `${base}/a.txt`]);
+    need(s.code === 0 && /size:/.test(s.out), `mv deleted the remote source of a skipped download: exit ${s.code} ${s.out}${s.err}`);
+    // directory move with one skipped file: b.txt moves, a.txt stays, the folder survives the prune
+    const t = path.join(d, 'tree');
+    await rm(t, { recursive: true, force: true });
+    await mkdir(t, { recursive: true });
+    await writeFile(path.join(t, 'a.txt'), 'PRECIOUS tree a\n');
+    r = await cli(['mv', '-r', `${base}`, t, '--no-clobber']);
+    need(r.code === 0, `mv dir: ${r.out}${r.err}`);
+    need((await readFile(path.join(t, 'a.txt'), 'utf8')) === 'PRECIOUS tree a\n', 'the dir skip overwrote the local file');
+    need((await readFile(path.join(t, 'b.txt'), 'utf8')) === 'remote b\n', 'the fresh file did not land');
+    s = await cli(['ls', `${base}`]);
+    need(s.code === 0 && /a\.txt/.test(s.out) && !/b\.txt/.test(s.out), `the source folder was pruned or the wrong files removed: exit ${s.code} ${s.out}${s.err}`);
+    await cli(['rm', '-r', `${base}`, '--force']);
+    return 'remote skips kept the local file, the remote file and the folder';
+  });
 
 }
 
@@ -4352,6 +4450,161 @@ async function guiBattery() {
     need(rGone, 'the deletable batch-mate was not deleted');
     await rm(d, { recursive: true, force: true });
     return 'root refused on both rungs (C:\\ readable outside); exact scope; missing path honest';
+  });
+
+  await verify({ id: 'GUI-59', area: 'objects', action: 'Remote rename guard: an occupied name is refused, never merged into', ds: 'FTP', scenario: 'renaming a remote folder onto an existing sibling must be refused (engine MOVE semantics overwrite or merge silently — the pre-rename Stat guard is the only defense); renaming to its own name is a no-op; a free name lands — driven through the bridge bindings exactly as the grid calls them, on the engine whose MOVE is least defined', face: 'GUI' }, async () => {
+    if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
+    const F = FTPNAME;
+    const u = `rn-${RUNID}`; // the e2e FTP root persists across runs — run-unique names
+    await call('RemoteMkdir', F, `/${u}-a`);
+    await call('RemoteMkdir', F, `/${u}-b`);
+    let refused = null;
+    try { await call('RemoteRename', F, `/${u}-b`, `${u}-a`); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /already exists/i.test(refused), `the occupied rename went through: ${refused}`);
+    let a = null;
+    try { a = await call('RemoteStat', F, `/${u}-a`); } catch { /* need() reports */ }
+    need(a && a.isDir === true, `folder a was destroyed or merged into under the refused rename: ${JSON.stringify(a)}`);
+    let b = null;
+    try { b = await call('RemoteStat', F, `/${u}-b`); } catch { /* need() reports */ }
+    need(b && b.isDir === true, `folder b (the rename source) vanished: ${JSON.stringify(b)}`);
+    await call('RemoteRename', F, `/${u}-a`, `${u}-a`); // same name: a clean no-op
+    await call('RemoteRename', F, `/${u}-b`, `${u}-c`); // a free name lands
+    let c = null;
+    try { c = await call('RemoteStat', F, `/${u}-c`); } catch { /* need() reports */ }
+    need(c && c.isDir === true, `the free rename did not land: ${JSON.stringify(c)}`);
+    let bGone = false;
+    try { await call('RemoteStat', F, `/${u}-b`); } catch { bGone = true; }
+    need(bGone, 'the renamed-away folder b is still there');
+    const res = await call('RemoteRemove', F, [`/${u}-a`, `/${u}-c`]);
+    need(res && res.deleted === 2 && !(res.errors || []).length, `cleanup: ${JSON.stringify(res)}`);
+    return 'occupied rename refused (both folders intact); no-op clean; free rename landed';
+  });
+
+  await verify({ id: 'GUI-60', area: 'objects', action: 'Editor explicit save: StopEdit(true) pushes the staged bytes — and WORM keeps the locked original safe through it', ds: 'S3 (MinIO)', scenario: 'editing with auto-upload off and saving explicitly must upload exactly the staged bytes and close the session; the same save against an object under GOVERNANCE retention lands as a NEW version (a retained version blocks deletion, not new versions): the locked original survives the edit in the timeline, restores byte-identical, and rm --versions stays refused while the lock holds — an editor session can never destroy locked bytes; the lock is then cleared and the scratch bucket torn down', face: 'GUI' }, async () => {
+    const WB = `${BUCKET}-worm`, WK = 'edit-save.txt';
+    await s3(['rb', `s3://${WB}`, '--force']); // a failed earlier run may have left it (best effort)
+    let r = await s3(['mb', `s3://${WB}`, '--object-lock']);
+    need(r.code === 0, `mb --object-lock: ${r.out}${r.err}`);
+    const orig = 'worm original payload\n';
+    await writeFile(path.join(ART, 'worm-orig.txt'), orig);
+    r = await s3(['cp', path.join(ART, 'worm-orig.txt'), `s3://${WB}/${WK}`]);
+    need(r.code === 0, `worm seed: ${r.out}${r.err}`);
+    r = await s3(['lock', 'retention', `s3://${WB}/${WK}`, '--mode', 'GOVERNANCE', '--until', '+1h']);
+    need(r.code === 0, `lock retention: ${r.out}${r.err}`);
+    // leg 1 — explicit save pushes exactly the staged bytes
+    const K1 = 'verify-gui/edit-save.txt';
+    await writeFile(path.join(ART, 'edit-save.txt'), 'editor saved payload\n');
+    await s3(['cp', path.join(ART, 'edit-save.txt'), `s3://${BUCKET}/${K1}`]);
+    const info = await call('EditObject', BUCKET, K1, false);
+    need(info && info.local && !info.dirty, `EditInfo: ${JSON.stringify(info)}`);
+    await writeFile(info.local, 'editor saved payload — CHANGED\n');
+    await call('StopEdit', BUCKET, K1, true);
+    const back = path.join(ART, 'edit-save-back.txt');
+    await rm(back, { force: true });
+    await s3(['cp', `s3://${BUCKET}/${K1}`, back]);
+    need((await readFile(back, 'utf8')) === 'editor saved payload — CHANGED\n', 'the explicit save did not push the staged bytes');
+    let editing = (await call('EditingFiles')) || [];
+    need(!editing.some((e) => e.key === K1), 'the session outlived the explicit save');
+    // leg 2 — WORM: the save lands as a NEW version; the locked original
+    // survives it and cannot be purged while the lock holds
+    const winfo = await call('EditObject', WB, WK, false);
+    need(winfo && winfo.local, `worm EditInfo: ${JSON.stringify(winfo)}`);
+    await writeFile(winfo.local, 'worm tampered\n');
+    await call('StopEdit', WB, WK, true); // a retained version blocks deletion, not new versions
+    await rm(back, { force: true });
+    await s3(['cp', `s3://${WB}/${WK}`, back]);
+    need((await readFile(back, 'utf8')) === 'worm tampered\n', 'the explicit save on the WORM bucket did not land');
+    let j = await s3(['versions', 'ls', `s3://${WB}/${WK}`, '--json']);
+    const vids = [...j.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
+    need(vids.length >= 2, `the locked original vanished from the timeline (${vids.length} version(s)): ${j.out.slice(0, 120)}`);
+    r = await s3(['rm', '--versions', `s3://${WB}/${WK}`]);
+    need(r.code !== 0 && /WORM|protected|cannot be overwritten/i.test(r.out + r.err), `the retained version was purgeable: exit ${r.code} ${r.out}${r.err}`);
+    j = await s3(['versions', 'ls', `s3://${WB}/${WK}`, '--json']);
+    const left = [...j.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
+    need(left.includes(vids[vids.length - 1]), `the retained original vanished from the timeline: ${j.out.slice(0, 120)}`);
+    await rm(back, { force: true });
+    await s3(['cp', `s3://${WB}/${WK}`, back]);
+    need((await readFile(back, 'utf8')) === orig, 'the retained original bytes were lost through the edit');
+    editing = (await call('EditingFiles')) || [];
+    need(!editing.some((e) => e.key === WK), 'the worm session outlived the save');
+    // teardown — clear the lock, purge every version, drop the scratch bucket
+    r = await s3(['lock', 'retention', `s3://${WB}/${WK}`, '--clear', '--bypass-governance']);
+    need(r.code === 0, `clear retention: ${r.out}${r.err}`);
+    r = await s3(['rm', '--versions', `s3://${WB}/${WK}`, '--force']);
+    need(r.code === 0, `rm --versions: ${r.out}${r.err}`);
+    r = await s3(['rb', `s3://${WB}`, '--force']);
+    need(r.code === 0, `rb: ${r.out}${r.err}`);
+    await rm(winfo.local, { force: true });
+    return 'explicit save pushed the staged bytes; the locked original survived the WORM edit unpurgeable';
+  });
+
+  await verify({ id: 'GUI-61', area: 'deletion', action: 'Keep-current purge: every version but the newest is deleted, the newest survives byte-identical', ds: 'S3 (MinIO)', scenario: 'DeleteSelectionKeepCurrent is the destructive pruning rung (it deletes N-1 real versions irreversibly): three seeded versions must reduce to exactly one, the survivor must be the LATEST bytes, and the reported count must equal what actually disappeared — never more, never fewer', face: 'GUI' }, async () => {
+    const K = 'verify-gui/kc.txt';
+    await s3(['rm', '--versions', `s3://${BUCKET}/${K}`, '--force']); // pre-clean any residue
+    const vs = ['kc v1\n', 'kc v2\n', 'kc v3\n'];
+    for (let i = 0; i < vs.length; i++) {
+      await writeFile(path.join(ART, `kc-${i}.txt`), vs[i]);
+      const r = await s3(['cp', path.join(ART, `kc-${i}.txt`), `s3://${BUCKET}/${K}`]);
+      need(r.code === 0, `seed v${i + 1}: ${r.out}${r.err}`);
+    }
+    let j = await s3(['versions', 'ls', `s3://${BUCKET}/${K}`, '--json']);
+    let ids = [...j.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
+    need(ids.length === 3, `the timeline holds ${ids.length} version(s): ${j.out.slice(0, 120)}`);
+    const res = await call('DeleteSelectionKeepCurrent', BUCKET, [K], true);
+    need(res && res.deleted === 2 && !(res.errors || []).length, `keep-current: ${JSON.stringify(res)}`);
+    j = await s3(['versions', 'ls', `s3://${BUCKET}/${K}`, '--json']);
+    ids = [...j.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
+    need(ids.length === 1, `the survivor timeline holds ${ids.length} version(s): ${j.out.slice(0, 120)}`);
+    const back = path.join(ART, 'kc-back.txt');
+    await rm(back, { force: true });
+    await s3(['cp', `s3://${BUCKET}/${K}`, back]);
+    need((await readFile(back, 'utf8')) === 'kc v3\n', 'the purge kept the wrong version');
+    return '3 versions → 1; the survivor is the latest payload';
+  });
+
+  await verify({ id: 'GUI-62', area: 'deletion', action: 'Count-phase cancel: a delete killed while still counting deletes nothing', ds: 'S3 (MinIO) via faultproxy', scenario: 'the count-then-act ladder is only safe if the COUNT half is cancellable too: a delete fired through a delayed source, canceled from the task registry while still in the count phase, must delete exactly zero objects (the act phase never ran), an out-of-scope sibling stays untouched, and the app stays healthy enough to finish the job on a direct re-run', face: 'GUI' }, async () => {
+    await s3(['rm', '-r', `s3://${BUCKET}/verify-gui/countcancel/`, '--force']); // pre-clean
+    await s3(['rm', '-r', `s3://${BUCKET}/verify-gui/cc-keep/`, '--force']);
+    const d = path.join(ART, 'cc-seed');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    const N = 30;
+    for (let i = 0; i < N; i++) await writeFile(path.join(d, `f-${String(i).padStart(2, '0')}.txt`), `cc ${i}\n`);
+    let r = await s3(['cp', '-r', d, `s3://${BUCKET}/verify-gui/countcancel/`, '--json']);
+    need(r.code === 0 && r.out.includes(`"items": ${N}`), `seed: ${r.out}${r.err}`);
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `s3://${BUCKET}/verify-gui/cc-keep/w.txt`]);
+    const PPORT = 19310, PCTL = 19311;
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', '127.0.0.1:9000'], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      // the delayed source lives in the GUI store (GUICFG), not the CLI one
+      await call('SaveSource', { name: 'verify-slow', type: 's3', s3: { name: 'verify-slow', endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 1500 }) });
+      const deleting = call('SourceDeleteSelection', 'verify-slow', BUCKET, ['verify-gui/countcancel/'], true);
+      let id = null;
+      for (let i = 0; i < 400 && !id; i++) {
+        id = ((await call('RunningTasks')) || []).find((t) => t.kind === 'delete' && t.status === 'running' && t.phase === 'count')?.id;
+        if (!id) await sleep(25);
+      }
+      need(id, 'the delete never showed a running count phase');
+      call('CancelTask', id); // killed while counting — the act phase must never start
+      await deleting.catch(() => {});
+      await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 20000, 'the canceled count to settle');
+      let l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+      const left = l.out.split('\n').filter((x) => x.includes('countcancel/')).length;
+      need(left === N, `the count-phase cancel deleted objects anyway (${N - left} of ${N} gone)`);
+      need(l.out.split('\n').filter((x) => x.includes('cc-keep/')).length === 1, 'the out-of-scope sibling was touched');
+      // the app is still healthy: a direct delete finishes the job
+      await call('DeleteSelection', BUCKET, ['verify-gui/countcancel/', 'verify-gui/cc-keep/'], true);
+      l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+      need(!l.out.split('\n').some((x) => x.includes('countcancel/') || x.includes('cc-keep/')), `residue after the direct cleanup delete: ${l.out.slice(0, 120)}`);
+      await call('RemoveSource', 'verify-slow');
+      return `canceled in the count phase: ${N}/${N} objects alive; the direct re-run finished the job`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+    }
   });
 
   await verify({ id: 'GUI-58', area: 'sources', action: 'RemoveSource: the store forgets, the data survives', ds: 'FTP', scenario: 'removing a saved source must delete exactly the STORE entry — the engine data it pointed at stays intact, witnessed through the CLI face on its own connection; the GUI keeps browsing afterwards; where the FTP engine is absent the row records the gap', face: 'GUI' }, async () => {
