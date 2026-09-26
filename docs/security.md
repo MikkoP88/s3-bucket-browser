@@ -283,20 +283,24 @@ Additional rules:
   reputation. A self-signed certificate never clears the warning — it only
   proves tamper-proofing inside your own fleet. Swapping in a CA
   certificate is a matter of replacing the two secrets.
-- **Code signing (macOS).** Releases no longer ship macOS builds (the
-  CI-built dmgs proved non-functional and were withdrawn in
-  v1.1.0-beta.19), so the pipeline has no darwin artifacts to sign. The
-  tooling stays for local, at-your-own-risk builds:
-  `scripts/sign-macos.sh` signs an .app bundle and (with the repository
-  secrets configured — `MACOS_CERT_B64` / `MACOS_CERT_PASS`
-  (base64-encoded Developer ID Application P12) plus `APPLE_ID` /
-  `APPLE_PASSWORD` / `APPLE_TEAM_ID` for `notarytool`) signs,
-  notarizes and staples a dmg. Without a certificate it applies an
-  **ad-hoc signature** — bytes Gatekeeper can verify, but no
-  notarization, so macOS Sequoia reports a downloaded copy as
-  “damaged” (the one-time `xattr -dr com.apple.quarantine` remedy
-  applies). A configured certificate that fails to import, sign or
-  notarize fails the run.
+- **Code signing and notarization (macOS).** Local builds use an ad-hoc
+  signature. For distribution, apply a Developer ID Application signature,
+  submit the archive to Apple, and staple the accepted notarization ticket
+  to the app before creating the final ZIP. Follow the
+  [local notarization guide](macos-build.md#notarization-with-protected-apple-credentials).
+  Enter Apple account credentials interactively with `notarytool
+  store-credentials`, then authenticate using `--keychain-profile`.
+  Use a dedicated app-specific password, never the primary Apple account
+  password. Do not put passwords in command arguments, environment files,
+  scripts, logs, chat, or Git. Keep private signing keys in the Keychain;
+  this local workflow requires no certificate export. Signing exposes the
+  certificate's public publisher identity and Team ID, not the private key
+  or account password. Revoke an exposed app-specific password through the
+  Apple account; deleting its local Keychain entry alone is insufficient.
+  The release workflow currently does not publish macOS artifacts. Future
+  CI signing credentials must be restricted to trusted release jobs, never
+  PR or fork code. Notarization is separate from functional verification;
+  bypassing Gatekeeper is not a substitute.
 - **Provenance markers.** The source tree and every built binary carry
   the creator/license identity in two hidden layers (see
   `internal/provenance`): zero-width watermarks on comment lines of

@@ -238,7 +238,7 @@ execution still needs testing on an Intel Mac; compiling a slice does not
 verify its runtime compatibility. The configured deployment target is
 macOS 13.0, not a claim that every older OS version has been tested.
 
-See **[Mac build instructions (suomeksi)](docs/macos-build.md)** for setup,
+See **[Mac build instructions](docs/macos-build.md)** for setup,
 troubleshooting, verification results and the distinction between local
 signing and distributing a notarized application. macOS release artifacts
 remain disabled; this change provides a local source-build workflow.
@@ -268,7 +268,7 @@ Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windo
 ## Documentation
 
 - **[Usage guide](docs/usage.md)** — the full walkthrough with screenshots (same content as the in-app guide)
-- **[Mac build (suomeksi)](docs/macos-build.md)** — local toolchain, build and launch
+- **[Mac build](docs/macos-build.md)** — local toolchain, build and launch
 - **[CLI reference](docs/cli.md)** — every command, generated from the cobra tree
 - **[Security model](docs/security.md)** — keyring, Secure Storage, safety ladder, supply chain
 - **[Verification reports](docs/verification/)** — per-release evidence: the build, the OS, and the full action-verification matrix behind every tag
