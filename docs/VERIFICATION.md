@@ -306,26 +306,25 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot is from the brand-mark round of
-**26 Sep 2026** (standalone batteries, on the tree of `51b02b3` plus this
-round’s own changes) on Windows Server 2025 (x64): the new icon/logo
-(SVG master in build/icon.svg, derived PNG set, .ico/.icns containers,
-RT_GROUP_ICON id 3 embedded by `tools/versioninfo -icon`, NSIS installer
-icon, macOS CFBundleIconFile, Wails Options.Icon, favicon, empty-state
-mark, README logo) wired onto every surface the app ships. No new matrix
-rows — the round is covered by the existing GUI battery plus the visual
-sweep, and one real catch: the sweep’s own screenshot showed the logo
-missing from Help→About because the edit first landed only in the
-License dialog’s About tab (`aboutDialog` in main.js is a separate
-builder); fixed and re-shot. The release evidence for beta.18 stays at
-[`docs/verification/v1.1.0-beta.18/windows-x64/REPORT.md`](verification/v1.1.0-beta.18/windows-x64/REPORT.md):
+Replaced on every run — this snapshot is the release evidence for
+**v1.1.0-beta.19** (26 Sep 2026, `node scripts/verify.mjs --release
+v1.1.0-beta.19`, full matrix from a tag-stamped fresh build) on Windows
+Server 2025 (x64): the brand-mark round (one SVG master feeding the exe,
+installer, icns/plist and web surfaces; both About builders carry the
+logo) plus the macOS withdrawal — every darwin asset deleted from the
+existing releases, their SHA256SUMS regenerated without the dmgs, and
+the darwin job removed from the release workflow. No new matrix rows;
+the round rides on the existing 138-row gate. Full report at
+[`docs/verification/v1.1.0-beta.19/windows-x64/REPORT.md`](verification/v1.1.0-beta.19/windows-x64/REPORT.md):
 
 ```
-gui battery (62 rows, standalone):
-  60 PASS · 2 SKIP · 0 FAIL — 776 s
-  (the 2 SKIPs are the recorded MinIO provider gaps: the CORS and
-   website admin tabs behind refused APIs)
+full matrix (138 rows):
+  131 PASS · 7 SKIP · 0 FAIL — 1839 s
+  (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
+   SSE-S3, CORS put, website put and encryption put on the CLI, plus
+   the CORS and website admin tabs behind the same refused APIs)
   SWEEP-VIS-01  gui-visual   669/669 checks
+  SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
 ```
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
