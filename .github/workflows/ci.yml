@@ -153,8 +153,19 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      # MinIO is only distributed via quay.io now (Docker Hub deleted
+      # minio/minio, dl.min.io community binaries 410, bitnami/minio lost
+      # its free tags) and quay has refused ANONYMOUS pulls outright since
+      # 24 Sep 2026 — CI-wide docker exit 125 "unauthorized". A free quay.io
+      # robot account with pull scope fixes it permanently: set the
+      # QUAY_USERNAME + QUAY_TOKEN repo secrets and the login below fires;
+      # without them the anonymous pull still runs, for the day quay
+      # reopens.
       - name: Start MinIO
         run: |
+          if [ -n "${{ secrets.QUAY_USERNAME }}" ] && [ -n "${{ secrets.QUAY_TOKEN }}" ]; then
+            echo "${{ secrets.QUAY_TOKEN }}" | docker login quay.io -u "${{ secrets.QUAY_USERNAME }}" --password-stdin
+          fi
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
@@ -218,8 +229,14 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      # quay.io anonymous pulls are refused since 24 Sep 2026 — log in
+      # with the free robot account when the repo secrets exist (the
+      # e2e-minio job carries the full story).
       - name: Start MinIO + SFTP + FTP + WebDAV servers
         run: |
+          if [ -n "${{ secrets.QUAY_USERNAME }}" ] && [ -n "${{ secrets.QUAY_TOKEN }}" ]; then
+            echo "${{ secrets.QUAY_TOKEN }}" | docker login quay.io -u "${{ secrets.QUAY_USERNAME }}" --password-stdin
+          fi
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin \
             -e MINIO_ROOT_PASSWORD=minioadmin \
