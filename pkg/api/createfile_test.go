@@ -16,11 +16,11 @@ func TestComposeFileName(t *testing.T) {
 	}{
 		{"notes", "txt", "notes.txt"},
 		{"notes", "", "notes"},
-		{"notes", "   ", "notes"},   // blank extension = none
+		{"notes", "   ", "notes"},      // blank extension = none
 		{"notes", ".txt", "notes.txt"}, // dotted extension normalized
 		{"notes", " txt", "notes.txt"},
-		{"notes.txt", "txt", "notes.txt"},       // already typed it — no double append
-		{"NOTES.TXT", "txt", "NOTES.TXT"},       // match is case-insensitive
+		{"notes.txt", "txt", "notes.txt"}, // already typed it — no double append
+		{"NOTES.TXT", "txt", "NOTES.TXT"}, // match is case-insensitive
 		{"notes.txt", "TXT", "notes.txt"},
 		{"notes.md", "txt", "notes.md.txt"}, // different extension: appended
 		{"archive.tar", "gz", "archive.tar.gz"},
