@@ -196,6 +196,18 @@ func (a *App) StopEdit(bucket, key string, upload bool) error {
 	}
 	s.mu.Lock()
 	s.done = true
+	// The watcher only notices changes on its poll (1.2s cadence); an
+	// explicit save right after an edit must not depend on that timing.
+	// Re-check the staged file against the last state the app knew, so
+	// "save and close" pushes what is on disk while an untouched file
+	// still costs no upload (and no extra object version).
+	if upload {
+		if st, err := os.Stat(s.Local); err == nil {
+			if st.Size() != s.lastSize || st.ModTime().UnixMilli() != s.lastMod {
+				s.dirty = true
+			}
+		}
+	}
 	dirty := s.dirty
 	s.mu.Unlock()
 	if upload && dirty {

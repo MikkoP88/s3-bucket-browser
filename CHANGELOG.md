@@ -666,6 +666,37 @@ follow [Semantic Versioning](https://semver.org/).
   destination, reports the skip, moves nothing, and the source is only
   ever removed after a real transfer.
 
+- **Downloads under --no-clobber no longer truncate local files — and a
+  skipped move keeps its source.** S3→local and remote→local downloads
+  over an existing local file wrote the new bytes over it (a local file
+  has no version history to recover from); mv then deleted the source
+  even though the download was skipped — the copy was refused and the
+  move still happened — and a directory move pruned the emptied source
+  folder recursively, taking the skipped files with it (the return
+  count that gated the prune counted skips as copies; the verbose log
+  also wrote to a closed file handle). Every download path now
+  pre-checks the destination, reports the skip, moves nothing, and a
+  source is only ever removed after a real transfer.
+
+- **"Save and close" now pushes the edit that is on disk.** StopEdit
+  with upload=true trusted the watcher's dirty flag, which updates on
+  a 1.2 s poll — saving and closing inside that window silently pushed
+  nothing and lost the edit. The stop path now re-checks the staged
+  file against the last state the app knew: an explicit save pushes
+  what is on disk, an untouched file still costs no upload (and no
+  extra object version), and a save against a WORM-locked object
+  lands as a new version with the retained original intact and
+  unpurgeable — an editor session can never destroy locked bytes.
+
+- **A partially-failed delete no longer exits 0.** rm, rm --versions,
+  versions rm/purge and the move-pruning paths printed the per-object
+  errors but still exited 0 whenever some deletions failed — the
+  classic case is a WORM-retained version refusing the purge while
+  its sibling versions delete, so a scripted
+  `s3b rm --versions ... && next-step` would read success with the
+  locked bytes still in place. Batch deletes now exit 1 with an
+  "N deletion(s) failed" summary whenever anything survived.
+
 ### Added
 
 - **Round 3 of extreme-level verification: the destructive surface
@@ -685,6 +716,24 @@ follow [Semantic Versioning](https://semver.org/).
   proves the version timeline refreshes in place after a destroy,
   instead of reopening through the grid the restored timeline covers.
 
+
+- **Round 4 of extreme-level verification: the download side and the
+  remaining source types.** The matrix grew from 132 to 138 rows:
+  no-clobber download guarantees on S3→local and remote→local — the
+  local file, the source object/file and the source folder all survive
+  a skip (CLI-S3-46, CLI-X-14); per-engine delete scope now covers
+  scp:// and FTP alongside SFTP and WebDAV (CLI-X-13); the remote
+  rename guard is proven through the bridge bindings on the FTP
+  engine (GUI-59); the editor's explicit save pushes what is on disk
+  and is refused by GOVERNANCE retention with the staged file kept as
+  the recovery copy (GUI-60 — the row caught the lost-save bug); the
+  keep-current purge deletes exactly N-1 versions with the newest
+  surviving byte-identical (GUI-61); and a delete canceled while
+  still in the count phase deletes exactly nothing, proven through a
+  latency-injected source (GUI-62). The cross battery is now
+  self-sufficient standalone (--only cross recreates the verifys3
+  profile a full run would have seeded), and the scp:// shorthand is
+  part of the permanently verified source set (CLI-X-01).
 
 ## [1.1.0-beta.17] — 2026-09-21
 

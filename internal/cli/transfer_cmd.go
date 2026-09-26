@@ -263,40 +263,61 @@ func downloadPath(ctx context.Context, c *s3client.Client, src, dst string, opts
 		return 0, err
 	}
 
-	downloadOne := func(key, local string) error {
+	// ok=false means "skipped under --no-clobber": nothing was written, so
+	// a move must NOT delete the source object of a skipped download.
+	downloadOne := func(key, local string) (ok bool, err error) {
 		if opts.DryRun {
 			fmt.Printf("download s3://%s/%s -> %s\n", u.Bucket, key, local)
-			return nil
+			return true, nil
+		}
+		// --no-clobber: never overwrite an existing local file (the
+		// download would truncate it silently — local disks have no
+		// version history to recover from)
+		if opts.NoClobber {
+			if _, err := os.Stat(local); err == nil {
+				if !flagJSON {
+					rprintf("skip %s — already exists\n", local)
+				}
+				return false, nil
+			}
 		}
 		if err := transfer.DownloadFile(ctx, c.S3, u.Bucket, key, local, transfer.DownloadOptions{}); err != nil {
-			return fmt.Errorf("%s: %w", key, err)
+			return false, fmt.Errorf("%s: %w", key, err)
 		}
 		if flagVerbose {
 			col.dim.Printf("down %s\n", local)
 		}
-		return nil
+		return true, nil
 	}
 
 	if u.IsPrefix || opts.Recursive {
 		prefix := dirPrefix(u)
 		count := 0
-		var keys []string
+		var keys []string // only really-downloaded keys: mv may remove these
 		err = listing.Walk(ctx, c.S3, u.Bucket, prefix, func(o s3types.Object) error {
 			key := aws.ToString(o.Key)
 			if strings.HasSuffix(key, "/") {
 				return nil // folder markers
 			}
 			rel := strings.TrimPrefix(key, prefix)
-			count++
-			keys = append(keys, key)
-			return downloadOne(key, filepath.Join(dst, filepath.FromSlash(rel)))
+			ok, err := downloadOne(key, filepath.Join(dst, filepath.FromSlash(rel)))
+			if err != nil {
+				return err
+			}
+			if ok {
+				count++
+				keys = append(keys, key)
+			}
+			return nil
 		})
 		if err != nil {
-			return count - 1, err
+			return count, err
 		}
 		if opts.Move && !opts.DryRun && len(keys) > 0 {
 			res, err := transfer.DeleteKeys(ctx, c.S3, u.Bucket, keys)
-			reportDelete(res)
+			if rerr := reportDelete(res); rerr != nil {
+				return count, rerr
+			}
 			if err != nil {
 				return count, err
 			}
@@ -308,12 +329,18 @@ func downloadPath(ctx context.Context, c *s3client.Client, src, dst string, opts
 	if isDirPath(dst) {
 		local = filepath.Join(dst, path.Base(u.Key))
 	}
-	if err := downloadOne(u.Key, local); err != nil {
+	ok, err := downloadOne(u.Key, local)
+	if err != nil {
 		return 0, err
+	}
+	if !ok {
+		return 0, nil // skipped under --no-clobber: nothing moved
 	}
 	if opts.Move && !opts.DryRun {
 		res, err := transfer.DeleteKeys(ctx, c.S3, u.Bucket, []string{u.Key})
-		reportDelete(res)
+		if rerr := reportDelete(res); rerr != nil {
+			return 1, rerr
+		}
 		if err != nil {
 			return 1, err
 		}
@@ -377,7 +404,9 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 		}
 		if opts.Move && !opts.DryRun && len(keys) > 0 {
 			res, err := transfer.DeleteKeys(ctx, c.S3, su.Bucket, keys)
-			reportDelete(res)
+			if rerr := reportDelete(res); rerr != nil {
+				return count, rerr
+			}
 			if err != nil {
 				return count, err
 			}
@@ -401,7 +430,9 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 	}
 	if opts.Move && !opts.DryRun {
 		res, err := transfer.DeleteKeys(ctx, c.S3, su.Bucket, []string{su.Key})
-		reportDelete(res)
+		if rerr := reportDelete(res); rerr != nil {
+			return 1, rerr
+		}
 		if err != nil {
 			return 1, err
 		}
@@ -444,8 +475,7 @@ func rmCmd() *cobra.Command {
 				if err != nil {
 					return opErr(err)
 				}
-				reportDelete(res)
-				return nil
+				return reportDelete(res)
 			}
 
 			// Prefix (folder) delete: L1 gates.
@@ -480,11 +510,11 @@ func rmCmd() *cobra.Command {
 			if err != nil {
 				return opErr(err)
 			}
-			reportDelete(res)
+			rerr := reportDelete(res)
 			if flagJSON {
 				return printJSON(res)
 			}
-			return nil
+			return rerr
 		},
 	}
 	f := cmd.Flags()
@@ -509,11 +539,11 @@ func runRmVersions(ctx context.Context, c *s3client.Client, u s3URI, recursive, 
 		if err != nil {
 			return opErr(err)
 		}
-		reportDelete(res)
+		rerr := reportDelete(res)
 		if flagJSON {
 			return printJSON(res)
 		}
-		return nil
+		return rerr
 	}
 	if !recursive {
 		return usageErr("refusing to purge versions under %q without --recursive", u.Key)
@@ -541,11 +571,11 @@ func runRmVersions(ctx context.Context, c *s3client.Client, u s3URI, recursive, 
 	if err != nil {
 		return opErr(err)
 	}
-	reportDelete(res)
+	rerr := reportDelete(res)
 	if flagJSON {
 		return printJSON(res)
 	}
-	return nil
+	return rerr
 }
 
 func syncCmd() *cobra.Command {

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/bucketops"
@@ -125,8 +126,10 @@ func mkdirCmd() *cobra.Command {
 	}
 }
 
-// reportDelete prints the outcome of a batch delete (human mode).
-func reportDelete(res transfer.DeleteResult) {
+// reportDelete prints the outcome of a batch delete (human mode) and
+// reports partial failure: a delete that left survivors must never exit
+// 0 — a scripted purge would read success and act on it.
+func reportDelete(res transfer.DeleteResult) error {
 	if len(res.Errors) > 0 {
 		for _, e := range res.Errors {
 			col.errf.Printf("  error: %s\n", e)
@@ -135,4 +138,8 @@ func reportDelete(res transfer.DeleteResult) {
 	if !flagJSON {
 		col.ok.Printf("deleted %d object(s)\n", res.Deleted)
 	}
+	if len(res.Errors) > 0 {
+		return exitError{exitOpFail, fmt.Errorf("%d deletion(s) failed (errors above)", len(res.Errors))}
+	}
+	return nil
 }
