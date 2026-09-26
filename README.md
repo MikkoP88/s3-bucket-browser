@@ -53,8 +53,8 @@ arguments opens the desktop app; with arguments it is the CLI).
 through v1.1.0-beta.18 shipped non-functional apps and have been
 withdrawn from every release; the build pipeline no longer produces
 them. macOS remains build-from-source only — see the experimental
-recipe in [Quickstart (build from
-source)](#quickstart-build-from-source) — with no support guarantees
+recipe in [Build from source](#build-from-source) — with no
+support guarantees
 while the project’s verification fleet is Windows/Linux-only.
 
 - **To run**: the portable editions need no install and no admin rights —
@@ -66,14 +66,14 @@ while the project’s verification fleet is Windows/Linux-only.
   vanilla JS/CSS embedded via `go:embed` (no npm install, no bundler).
   Linux GUI builds additionally need `libgtk-3-dev` and
   `libwebkit2gtk-4.1-dev`. Per-OS recipes:
-  [Quickstart (build from source)](#quickstart-build-from-source);
+  [Build from source](#build-from-source);
   developer workflows live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quickstart (GUI)
 
 Grab a [release build](#install) or compile your own — every OS recipe is
-in [Quickstart (build from source)](#quickstart-build-from-source).
-Then run the binary with no arguments:
+in [Build from source](#build-from-source). Then run the binary with no
+arguments:
 
 ```bash
 ./s3b          # s3b.exe on Windows — no arguments opens the desktop app
@@ -97,12 +97,8 @@ Then run the binary with no arguments:
 
 ## Quickstart (CLI)
 
-The CLI ships in the same binary — one line from any checkout (GUI and
-server variants: [Quickstart (build from source)](#quickstart-build-from-source)):
-```bash
-go build -o s3b ./cmd/s3b   # CLI-only works in any build; add -tags
-                             # production if you want the GUI too
-```
+The CLI ships in the same binary — run `s3b` with arguments
+([Build from source](#build-from-source) for the binary itself):
 
 ```bash
 # Connect to any S3 provider (AWS, MinIO, Wasabi, R2, ...) — credentials
@@ -173,7 +169,7 @@ Every command takes `--json` for machine-readable output, `--profile` to pick a 
 
 **Safety ladder**: destructive operations count first and act second. Prefix deletes over 50 objects require `--force`, removing non-empty buckets requires `--force`, and the GUI routes every delete through the pre-counting Delete Window — with an optional typed `delete` gate in Settings for extra friction. Enabling object lock is permanent; COMPLIANCE retention cannot be shortened or removed.
 
-## Quickstart (build from source)
+## Build from source
 
 Everything below builds from a plain checkout: **Go 1.26+ and git only** —
 the frontend is vanilla JS/CSS embedded via `go:embed` (no npm install, no
