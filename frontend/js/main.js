@@ -3691,7 +3691,8 @@ function aboutDialog() {
       el('img', { class: 'about-logo', src: 'assets/logo.svg', alt: 's3b', draggable: 'false' }),
       el('div', { class: 'kv' },
       el('div', { class: 'k', text: 's3b' }),
-      el('div', { class: 'v mono', text: `v${v || '?'}` }),
+      // strip a tag’s leading v so every injection style renders "v1.2.3"
+      el('div', { class: 'v mono', text: 'v' + String(v || '?').replace(/^v/, '') }),
       el('div', { class: 'k', text: t('menu.aboutPublisher') }),
       el('div', { class: 'v', text: 'MikkoP88' }),
       el('div', { class: 'k', text: t('menu.aboutLicense') }),
