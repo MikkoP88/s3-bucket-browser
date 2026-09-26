@@ -31,7 +31,7 @@ import (
 // concurrent use (one data connection at a time).
 type FTP struct {
 	c    *ftp.ServerConn
-	root string // absolute remote path of the source root (no trailing slash)
+	root string         // absolute remote path of the source root (no trailing slash)
 	src  profile.Source // redial template (see withRetry)
 }
 
