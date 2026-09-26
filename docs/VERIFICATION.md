@@ -307,24 +307,28 @@ release".
 ## Latest verification report
 
 Replaced on every run — this snapshot is the release evidence for
-**v1.1.0-beta.19** (26 Sep 2026, `node scripts/verify.mjs --release
-v1.1.0-beta.19`, full matrix from a tag-stamped fresh build) on Windows
-Server 2025 (x64): the brand-mark round (one SVG master feeding the exe,
-installer, icns/plist and web surfaces; both About builders carry the
-logo) plus the macOS withdrawal — every darwin asset deleted from the
-existing releases, their SHA256SUMS regenerated without the dmgs, and
-the darwin job removed from the release workflow. No new matrix rows;
+**v1.1.0-beta.20** (26 Sep 2026, `node scripts/verify.mjs --release
+v1.1.0-beta.20`, full matrix from a tag-stamped fresh build) on Windows
+Server 2025 (x64): the brand-master adoption round — the author’s
+draw.io vector export (`build/icon.svg`) taken verbatim as the single
+source of truth, with every derived asset regenerated from it (PNG set,
+.ico/.icns containers, the exe’s RT_GROUP_ICON id 3, favicon,
+empty-state mark, README logo) — plus the comprehensive macOS/Xcode
+build guide in the README (toolchain, Gatekeeper quarantine, universal
+binaries, Developer ID signing + notarization). No new matrix rows;
 the round rides on the existing 138-row gate. Full report at
-[`docs/verification/v1.1.0-beta.19/windows-x64/REPORT.md`](verification/v1.1.0-beta.19/windows-x64/REPORT.md):
+[`docs/verification/v1.1.0-beta.20/windows-x64/REPORT.md`](verification/v1.1.0-beta.20/windows-x64/REPORT.md):
 
 ```
 full matrix (138 rows):
-  131 PASS · 7 SKIP · 0 FAIL — 1839 s
+  131 PASS · 7 SKIP · 0 FAIL — 2072 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
   SWEEP-VIS-01  gui-visual   669/669 checks
-  SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
+  SWEEP-LIVE-01 gui-v3live   142 checks, no page errors (the one
+   transparent retry the harness allows — first attempt hit a
+   clipboard-write flake)
 ```
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
