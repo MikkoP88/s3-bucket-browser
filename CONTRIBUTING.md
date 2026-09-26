@@ -57,6 +57,11 @@ builds the linux/windows artifacts and the SBOM from the tagged
 commit, signs the Windows binaries, and attaches everything to a GitHub
 release.
 
+For manual macOS distribution, follow the [signing and notarization guide](docs/macos-build.md#notarization-with-protected-apple-credentials).
+It uses interactive credential entry and a local Keychain profile; never
+commit Apple account credentials or private signing keys. This workflow
+does not enable automatic macOS release uploads.
+
 The action-verification gate (the full matrix in
 [docs/VERIFICATION.md](docs/VERIFICATION.md)) needs the live engine
 containers and a browser, so it runs on the release machine as a **pre-tag
