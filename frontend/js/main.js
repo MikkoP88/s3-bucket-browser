@@ -3682,11 +3682,14 @@ function mountMenubar() {
   $('menubar').replaceChildren(mb.root);
 }
 
-// aboutDialog: minimal About box — name, version, publisher, license, URL.
+// aboutDialog: minimal About box — brand mark, name, version, publisher,
+// license, URL. Same about-panel treatment as the License dialog’s About tab.
 function aboutDialog() {
-  const body = el('div', { class: 'kv' });
+  const body = el('div', { class: 'about-panel' });
   const draw = (v) => {
     body.replaceChildren(
+      el('img', { class: 'about-logo', src: 'assets/logo.svg', alt: 's3b', draggable: 'false' }),
+      el('div', { class: 'kv' },
       el('div', { class: 'k', text: 's3b' }),
       el('div', { class: 'v mono', text: `v${v || '?'}` }),
       el('div', { class: 'k', text: t('menu.aboutPublisher') }),
@@ -3695,6 +3698,7 @@ function aboutDialog() {
       el('div', { class: 'v', text: licenseLine() }),
       el('div', { class: 'k', text: t('menu.aboutUrl') }),
       el('div', { class: 'v mono', text: LICENSE.repo }),
+      ),
     );
   };
   draw('');

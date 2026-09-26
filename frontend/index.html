@@ -18,6 +18,7 @@
       } catch (e) { /* storage unavailable — initTheme() decides */ }
     })();
   </script>
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
   <link rel="stylesheet" href="css/app.css">
 </head>
 <body data-file-drop-target>
@@ -69,7 +70,7 @@
           <div class="grid-canvas" id="grid-canvas"></div>
         </div>
         <div class="empty-state hidden" id="empty-state">
-          <div class="empty-icon">&#128193;</div>
+          <img class="empty-icon" src="assets/logo.svg" alt="">
           <div class="empty-title" id="empty-title"></div>
           <div class="empty-sub" id="empty-sub"></div>
           <div class="empty-actions" id="empty-actions"></div>

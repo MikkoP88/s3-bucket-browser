@@ -602,6 +602,27 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A brand mark, everywhere the app shows itself.** One vector master
+  (build/icon.svg — blue folder, gray back panel and tab, darker fold
+  shadows) now feeds every surface the app presents: Windows exes embed
+  a 7-image icon through the versioninfo tool's new -icon flag
+  (RT_GROUP_ICON lands at resource id 3, the slot the Wails window shell
+  loads, so the taskbar, Alt-Tab and the window corner all match), the
+  NSIS installer and uninstaller carry build/icon.ico, macOS bundles
+  carry AppIcon.icns through CFBundleIconFile, Linux windows get the
+  mark via Options.Icon, and the frontend serves assets/logo.svg as the
+  favicon, the empty-state mark and the About-box logo; the README leads
+  with it. Derived assets are deterministic: scripts/gen-icons.mjs
+  rasterizes the master through headless Chromium into build/iconset,
+  and tools/appicon (stdlib-only, unit-tested) assembles build/icon.ico
+  (DIB32 below 64px for legacy shell surfaces, PNG above) and
+  build/AppIcon.icns from that set — the committed binaries change only
+  when the artwork does. The master itself was traced from the supplied
+  artwork and validates at 99.3% pixel-class agreement against the
+  source raster.
+
 ### Fixed
 - **Cancel on a sub-view now goes back, not out.** Cancelling the
   start-directory browser while adding a data source closed the

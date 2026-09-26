@@ -2539,16 +2539,19 @@ export function licenseDialog() {
   const licenseName = () => extLink(LICENSE.url, `${LICENSE.name} ${LICENSE.version}`);
 
   const partitions = {
-    about: () => el('div', { class: 'kv' },
-      el('div', { class: 'k', text: 's3b' }),
-      // strip a tag's leading v so every injection style renders "v1.2.3"
-      el('div', { class: 'v mono', text: 'v' + String(version || '?').replace(/^v/, '') }),
-      el('div', { class: 'k', text: t('menu.aboutPublisher') }),
-      el('div', { class: 'v', text: 'MikkoP88' }),
-      el('div', { class: 'k', text: t('menu.aboutLicense') }),
-      el('div', { class: 'v' }, licenseName()),
-      el('div', { class: 'k', text: t('menu.aboutUrl') }),
-      el('div', { class: 'v mono' }, extLink(LICENSE.repo, LICENSE.repo)),
+    about: () => el('div', { class: 'about-panel' },
+      el('img', { class: 'about-logo', src: 'assets/logo.svg', alt: 's3b', draggable: 'false' }),
+      el('div', { class: 'kv' },
+        el('div', { class: 'k', text: 's3b' }),
+        // strip a tag's leading v so every injection style renders "v1.2.3"
+        el('div', { class: 'v mono', text: 'v' + String(version || '?').replace(/^v/, '') }),
+        el('div', { class: 'k', text: t('menu.aboutPublisher') }),
+        el('div', { class: 'v', text: 'MikkoP88' }),
+        el('div', { class: 'k', text: t('menu.aboutLicense') }),
+        el('div', { class: 'v' }, licenseName()),
+        el('div', { class: 'k', text: t('menu.aboutUrl') }),
+        el('div', { class: 'v mono' }, extLink(LICENSE.repo, LICENSE.repo)),
+      ),
     ),
     license: () => el('div', { class: 'guide' },
       el('div', { class: 'guide-item' },

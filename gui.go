@@ -30,6 +30,14 @@ import (
 //go:embed all:frontend
 var frontendFS embed.FS
 
+// windowIcon is the brand mark handed to Wails: on Linux it becomes the
+// window icon (via Options.Icon); on Windows it is only a fallback — the
+// real icon loads from the exe's RT_GROUP_ICON resource id 3, which
+// tools/versioninfo -icon embeds at build time.
+//
+//go:embed build/iconset/icon_256.png
+var windowIcon []byte
+
 // popoutPrefix namespaces the native popout window names ("popout:<id>") so
 // they can never collide with the main window.
 const popoutPrefix = "popout:"
@@ -114,6 +122,7 @@ func Run(version string) error {
 	}
 	app3 := application.New(application.Options{
 		Name:   "S3 Bucket Browser",
+		Icon:   windowIcon,
 		Assets: application.AssetOptions{Handler: http.FileServer(http.FS(assets))},
 		Services: []application.Service{
 			// *api.App binds every exported method; the lifecycle service

@@ -94,7 +94,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist/pkg dist/pkg-arm
-          env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch amd64
+          env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch amd64 -icon build/icon.ico
           go build -tags production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg/
@@ -105,7 +105,7 @@ jobs:
       - name: Build windows-arm64
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch arm64
+          env -u GOOS -u GOARCH go run ./tools/versioninfo -version "${VERSION}" -arch arm64 -icon build/icon.ico
           go build -tags production -ldflags "-s -w -H windowsgui -X main.version=${VERSION}" -o dist/pkg-arm/s3b.exe ./cmd/s3b
           rm -f cmd/s3b/*.syso
           cp LICENSE README.md dist/pkg-arm/
@@ -210,8 +210,10 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           APP="dist/S3 Bucket Browser.app"
-          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           go build -tags production -ldflags "-s -w -X main.version=${VERSION}" -o "$APP/Contents/MacOS/s3b" ./cmd/s3b
+          # Brand mark: Info.plist's CFBundleIconFile points at this copy.
+          cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
           sed -e "s/__VERSION__/${VERSION}/g" -e "s/__MINOS__/${MACOS_MIN}/g" \
             scripts/installer/Info.plist > "$APP/Contents/Info.plist"
         env:

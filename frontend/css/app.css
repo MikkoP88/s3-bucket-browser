@@ -314,7 +314,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   gap: 8px; background: var(--panel); text-align: center; padding: 20px;
   animation: fade-in .18s ease-out;
 }
-.empty-icon { font-size: 44px; }
+.empty-icon { width: 46px; height: auto; opacity: .9; user-select: none; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .empty-title { font-size: 16px; font-weight: 600; }
 .empty-sub { color: var(--text-dim); max-width: 460px; white-space: pre-line; overflow-wrap: anywhere; }
@@ -596,6 +596,10 @@ body.popout-win .popout .modal-head { display: none; }
 body.popout-win .pop-grip { display: none; }
 
 .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; font-size: 12.5px; }
+/* About box: brand mark above the identity grid */
+.about-panel { display: flex; flex-direction: column; align-items: center; }
+.about-logo { width: 64px; height: auto; margin-bottom: 14px; user-select: none; }
+.about-panel .kv { width: 100%; }
 .kv .k { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
 .kv .v { overflow-wrap: anywhere; }
 

@@ -14,9 +14,15 @@ go build -tags production -o s3b ./cmd/s3b && ./s3b   # GUI (no args) + CLI (any
 go build -tags production,gtk3 -o s3b ./cmd/s3b  # Linux: GTK3/webkit2gtk 4.1 (Ubuntu 24.04)
 go build -tags s3b_headless -o s3b ./cmd/s3b   # pure-Go CLI, no GTK deps (Linux CI)
 go run ./tools/gendocs                    # regenerate docs/cli.md
+node scripts/gen-icons.mjs             # re-derive build/iconset + frontend assets from build/icon.svg
+go run ./tools/appicon                # re-assemble build/icon.ico + build/AppIcon.icns
 ```
 
 Go 1.26+. The frontend is vanilla JS/CSS (no npm install, no bundler —
+Brand assets: `build/icon.svg` is the master mark; the PNG set, .ico
+and .icns under `build/` are derived deterministically (the two commands
+above) — regenerate and commit them together when the master changes.
+
 embedded via `go:embed`). Windows and macOS build out of the box; Linux
 GUI builds need webkit2gtk (`sudo apt install libgtk-3-0 libwebkit2gtk-4.1-dev`).
 
