@@ -4,7 +4,7 @@
 
 **A Windows-Explorer-style desktop app + CLI for S3-compatible cloud storage and remote file servers — S3 buckets and objects, SFTP/SCP, FTP/FTPS, WebDAV and local folders — with first-class versioning, bucket administration and security.**
 
-> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.14).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
+> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.19).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
 
 ![Main window](docs/screenshots/main-view.png)
 
@@ -41,7 +41,6 @@ arguments opens the desktop app; with arguments it is the CLI).
 | Platform | Builds | Webview / runtime needed |
 |---|---|---|
 | **Windows 10/11** | amd64, arm64 | Microsoft Edge WebView2 (preinstalled on current Windows 10/11; a machine without it needs the free Evergreen runtime from Microsoft first) |
-| **macOS 12 Monterey or later** (up to macOS 26 Tahoe) | amd64 (Intel), arm64 (Apple Silicon) | System WebKit — nothing to install |
 | **Linux desktop** | amd64 | GTK3 + WebKitGTK 4.1 (what Ubuntu 24.04+, Mint and current Fedora ship) |
 | **Linux servers / arm64** | amd64, arm64 | none — the `-tags s3b_headless` build is a pure-Go CLI with no GUI libraries |
 | **Any OS, browser-driven** | `-tags server` | none on the host — the same stack runs windowless and serves the UI over HTTP |
@@ -50,34 +49,17 @@ arguments opens the desktop app; with arguments it is the CLI).
 - The application is primarily developed and tested in **Windows environments**.  
 - Verification focuses on **application functionality**, not full OS‑level compatibility across all distributions.
 
-The macOS floor is real, not aspirational: the release binaries carry a
-pinned 12.0 deployment target (the oldest macOS the Go 1.26 runtime itself
-runs on) and the release pipeline verifies it (`vtool`) before shipping.
-Releases up to and including **v1.1.0-beta.13** were built without that
-pin and accidentally required macOS 26 — if one of those told you "This
-version cannot be used with this version of macOS", take v1.1.0-beta.14
-
-**First launch on macOS (“damaged and can’t be opened”):** that dialog is
-Gatekeeper, not a broken download — macOS 15 Sequoia stopped offering
-“Open Anyway” for apps Apple has not notarized, and it words the refusal
-as damage. Un-notarized builds need one Terminal command after dragging
-the app to `/Applications` (copy-paste as-is):
-
-```bash
-xattr -dr com.apple.quarantine "/Applications/S3 Bucket Browser.app"
-```
-
-This clears the download quarantine flag only; verify the download
-itself against `SHA256SUMS` as always. Once the release pipeline is
-configured with a Developer ID certificate (see
-[docs/security.md](docs/security.md)), notarized releases open without
-any step.
-or later.
+**macOS: no release builds.** The dmg images the releases carried
+through v1.1.0-beta.18 shipped non-functional apps and have been
+withdrawn from every release; the build pipeline no longer produces
+them. macOS remains build-from-source only — see the experimental
+recipe in [Quickstart (build from
+source)](#quickstart-build-from-source) — with no support guarantees
+while the project’s verification fleet is Windows/Linux-only.
 
 - **To run**: the portable editions need no install and no admin rights —
   releases ship an NSIS installer (machine-wide, elevated) and portable
-  zip (Windows), a DMG (macOS), and tarballs plus portable tarballs
-  (Linux). Secrets use the OS keychain (Windows
+  zip (Windows), and tarballs plus portable tarballs (Linux). Secrets use the OS keychain (Windows
   Credential Manager, macOS Keychain, Linux SecretService); keyring-less
   hosts fall back to a `0600` file.
 - **To build from source**: Go **1.26+** and git only — the frontend is
@@ -235,8 +217,11 @@ own, or the About box shows "vv1.2.3".)
 
 ### macOS 12+ (Intel or Apple Silicon)
 
-No Xcode project — the app is pure Go + cgo, so Xcode (or just its Command
-Line Tools) only supplies the compiler toolchain:
+**Experimental, and not shipped in releases** — the CI-built dmgs proved
+non-functional and are withdrawn (see the note under Supported operating
+systems & requirements); this recipe is build-at-your-own-risk. No Xcode
+project — the app is pure Go + cgo, so Xcode (or just its Command Line
+Tools) only supplies the compiler toolchain:
 
 ```bash
 xcode-select --install   # if full Xcode isn't installed
@@ -258,7 +243,8 @@ bash scripts/sign-macos.sh app "$APP"   # ad-hoc sign — required even locally
 
 The deployment-target flags are not optional: without them the Xcode 26
 clang defaults to the SDK version and the binary refuses to launch on
-every older macOS (the beta.13 defect noted above). Check the result with
+every older macOS (releases before v1.1.0-beta.14 shipped exactly that
+defect). Check the result with
 `vtool -show-build "$APP/Contents/MacOS/s3b"` (must say 12.0). Both
 architectures build on an Apple Silicon Mac — add `GOARCH=amd64` for the
 Intel variant. To ship a dmg:
@@ -285,7 +271,7 @@ go build -tags server -o s3b ./cmd/s3b && ./s3b
 
 ## Install
 
-Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), standalone zips/tarballs for Windows/Linux, and macOS dmg images — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
+Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows/Linux — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
 
 ## Documentation
 
@@ -302,7 +288,7 @@ Because none of the existing ones do it all:
 
 | | S3 Bucket Browser | S3 Browser (CS) | Cyberduck | MSP360 | AWS Console |
 |---|---|---|---|---|---|
-| Windows / macOS / Linux | yes | / – | / – | / – | browser |
+| Windows / Linux | yes | / – | / – | / – | browser |
 | Source-available (PolyForm Internal Use) | yes | no | GPL | no | – |
 | Explorer-style multi-select, drag & drop | yes (core goal) | partial | partial | partial | no |
 | Versioning management (restore, purge, force-empty versioned buckets) | first-class | partial | partial | partial | clunky |

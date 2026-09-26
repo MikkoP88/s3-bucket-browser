@@ -50,7 +50,7 @@ against a local MinIO — it never touches your real profile store.
 
 Releases are tag-driven: pushing a `v*` tag runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which
-builds the linux/windows/darwin artifacts and the SBOM from the tagged
+builds the linux/windows artifacts and the SBOM from the tagged
 commit, signs the Windows binaries, and attaches everything to a GitHub
 release.
 
