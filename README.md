@@ -53,9 +53,9 @@ arguments opens the desktop app; with arguments it is the CLI).
 through v1.1.0-beta.18 shipped non-functional apps and have been
 withdrawn from every release; the build pipeline no longer produces
 them. macOS remains build-from-source only — see the experimental
-recipe in [Build from source](#build-from-source) — with no
-support guarantees
-while the project’s verification fleet is Windows/Linux-only.
+recipe in [Build from source → macOS](#macos-12-intel-or-apple-silicon)
+— with no support guarantees while the project’s verification fleet
+is Windows/Linux-only.
 
 - **To run**: the portable editions need no install and no admin rights —
   releases ship an NSIS installer (machine-wide, elevated) and portable
@@ -214,14 +214,42 @@ own, or the About box shows "vv1.2.3".)
 ### macOS 12+ (Intel or Apple Silicon)
 
 **Experimental, and not shipped in releases** — the CI-built dmgs proved
-non-functional and are withdrawn (see the note under Supported operating
-systems & requirements); this recipe is build-at-your-own-risk. No Xcode
-project — the app is pure Go + cgo, so Xcode (or just its Command Line
-Tools) only supplies the compiler toolchain:
+non-functional and are withdrawn (see the note under
+[Supported operating systems & requirements](#supported-operating-systems--requirements)),
+so building it yourself is the only way to run s3b on a Mac today; this
+recipe is build-at-your-own-risk. Everything below runs in Terminal on
+the Mac itself.
+
+#### Why the Mac itself is required (no cross-compiling)
+
+The desktop window on macOS is Wails v3’s darwin frontend, which is
+**cgo**: Objective-C compiled by Apple’s clang against the macOS SDK
+(Cocoa + WebKit). That toolchain exists only on a Mac, so — unlike the
+Windows and Linux builds, which cross-compile from anywhere — the macOS
+GUI cannot be built on another OS: with `CGO_ENABLED=0` the Go compiler
+cannot resolve the platform symbols (`undefined: macosApp`), and cgo
+from Windows or Linux fails at `clang not found`. There is no Xcode
+project to open, though — the app is pure Go + cgo, and Xcode only
+supplies the compiler toolchain. Full Xcode is not required; its
+Command Line Tools are enough.
+
+#### 1) Toolchain — Xcode Command Line Tools + Go 1.26+
 
 ```bash
-xcode-select --install   # if full Xcode isn't installed
+xcode-select --install     # Apple clang + macOS SDK (a ~1.5 GB install)
+clang --version            # verify: "Apple clang ..."
+go version                 # needs 1.26+ (brew install go, or go.dev/dl)
+```
 
+Full Xcode (from the App Store) works too — after installing it, run
+`sudo xcodebuild -license accept` and
+`xcode-select -s /Applications/Xcode.app/Contents/Developer`. git
+ships with the Command Line Tools; the frontend is vanilla JS/CSS
+embedded via `go:embed`, so there is no npm or node step.
+
+#### 2) Build the .app bundle
+
+```bash
 VERSION="$(git describe --tags --always --dirty)"
 APP="dist/S3 Bucket Browser.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -240,12 +268,97 @@ bash scripts/sign-macos.sh app "$APP"   # ad-hoc sign — required even locally
 The deployment-target flags are not optional: without them the Xcode 26
 clang defaults to the SDK version and the binary refuses to launch on
 every older macOS (releases before v1.1.0-beta.14 shipped exactly that
-defect). Check the result with
-`vtool -show-build "$APP/Contents/MacOS/s3b"` (must say 12.0). Both
-architectures build on an Apple Silicon Mac — add `GOARCH=amd64` for the
-Intel variant. To ship a dmg:
-`hdiutil create -volname "S3 Bucket Browser" -srcfolder "$APP" -ov -format UDZO dist/s3b.dmg`
-then `bash scripts/sign-macos.sh dmg dist/s3b.dmg`.
+defect). The ad-hoc signature is not cosmetic either — Apple Silicon
+refuses to execute an arm64 binary with no signature at all. Verify
+what you built:
+
+```bash
+vtool -show-build "$APP/Contents/MacOS/s3b"   # "minos" must say 12.0
+codesign --verify --strict --verbose=2 "$APP"
+"$APP/Contents/MacOS/s3b" version              # prints the stamped version
+open "$APP"                                    # first launch
+```
+
+#### 3) First launch & Gatekeeper
+
+An app built on your own Mac is not quarantined — `open` just works.
+The infamous “damaged and can’t be opened” dialog only greets an
+*un-notarized* build that was **downloaded** (a zip or dmg fetched by
+a browser or Mail): that is Gatekeeper, not corruption, and macOS 15
+Sequoia no longer offers “Open Anyway” for apps Apple has not
+notarized. After dragging such an app into /Applications, clear the
+quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/S3 Bucket Browser.app"
+```
+
+#### 4) Universal binary (optional)
+
+Both architectures build on an Apple Silicon Mac. To ship one .app
+that runs natively everywhere, build each slice and merge them with
+lipo — then sign the merged bundle, since the signature covers the
+binary:
+
+```bash
+for ARCH in arm64 amd64; do
+  GOARCH=$ARCH CGO_ENABLED=1 \
+  CGO_CFLAGS="-mmacosx-version-min=12.0" \
+  CGO_LDFLAGS="-mmacosx-version-min=12.0 -framework UniformTypeIdentifiers" \
+  MACOSX_DEPLOYMENT_TARGET=12.0 \
+  go build -tags production -ldflags "-s -w -X main.version=${VERSION#v}" \
+    -o "$APP/Contents/MacOS/s3b-$ARCH" ./cmd/s3b
+done
+lipo -create -output "$APP/Contents/MacOS/s3b" \
+  "$APP/Contents/MacOS/s3b-arm64" "$APP/Contents/MacOS/s3b-amd64"
+rm "$APP/Contents/MacOS/s3b-arm64" "$APP/Contents/MacOS/s3b-amd64"
+bash scripts/sign-macos.sh app "$APP"
+```
+
+#### 5) Pack a dmg
+
+```bash
+hdiutil create -volname "S3 Bucket Browser" -srcfolder "$APP" -ov \
+  -format UDZO dist/s3b.dmg
+bash scripts/sign-macos.sh dmg dist/s3b.dmg
+```
+
+#### 6) Distributing to others — real signing + notarization
+
+Ad-hoc signing is fine for your own machines. To hand the dmg to other
+people with no quarantine step at the far end, you need an Apple
+Developer Program membership (US$99/yr) and a **Developer ID
+Application** certificate. `scripts/sign-macos.sh` automates the whole
+chain — sign, notarize, staple — once the five credentials are
+exported, locally or in CI:
+
+```bash
+export MACOS_CERT_B64="$(base64 -i certificate.p12 | tr -d '\n')"
+export MACOS_CERT_PASS="p12-passphrase"        # "" if none
+export APPLE_ID="you@example.com"
+export APPLE_PASSWORD="app-specific password"  # appleid.apple.com → Sign-In
+export APPLE_TEAM_ID="10-char team ID"         # developer.apple.com → Membership
+bash scripts/sign-macos.sh app "$APP"
+bash scripts/sign-macos.sh dmg dist/s3b.dmg
+spctl -a -t exec --verbose "$APP"              # "accepted" once notarized
+```
+
+This is the missing piece that made the CI dmgs non-functional —
+their ad-hoc signatures left downloaded copies flagged “damaged” — and
+the release pipeline is ready to produce signed, notarized dmgs the
+day those secrets are configured.
+
+#### No Xcode, no GUI: the headless CLI on macOS
+
+The CLI (`-tags s3b_headless`) is pure Go with no cgo — it builds on a
+Mac with no Xcode at all, and being pure Go it even cross-compiles *to*
+macOS from Windows or Linux:
+
+```bash
+go build -tags s3b_headless -o s3b ./cmd/s3b                    # on the Mac
+GOOS=darwin GOARCH=arm64 go build -tags s3b_headless \
+  -o s3b-darwin-arm64 ./cmd/s3b                                 # from any OS
+```
 
 ### Linux servers / any OS (headless CLI)
 
