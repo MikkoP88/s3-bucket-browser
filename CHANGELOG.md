@@ -600,7 +600,7 @@ follow [Semantic Versioning](https://semver.org/).
   opposite it on the right (the compact small-text button that used to
   float above the list is gone), with the hidden-row count beside it.
 
-## [Unreleased]
+## [1.1.0-beta.19] — 2026-09-26
 
 ### Added
 
@@ -622,6 +622,29 @@ follow [Semantic Versioning](https://semver.org/).
   when the artwork does. The master itself was traced from the supplied
   artwork and validates at 99.3% pixel-class agreement against the
   source raster.
+
+### Removed
+
+- **macOS builds — withdrawn from every release and from the pipeline.**
+  The dmg images the releases shipped through v1.1.0-beta.18 carried
+  non-functional apps: every darwin asset is deleted from the existing
+  releases (each SHA256SUMS regenerated without them) and the darwin
+  job is gone from the release workflow — v1.1.0-beta.19 onward ships
+  Windows and Linux only. macOS stays build-from-source (the README
+  keeps the recipe, marked experimental), with no support guarantees
+  while the verification fleet has no Mac.
+
+### Changed
+
+- **README: one Quickstart build guide for every OS.** The build
+  instructions that lived inline in Quickstart (GUI) moved into a
+  dedicated Quickstart (build from source) section with a real recipe
+  per platform — Linux desktop GUI (gtk3/webkit2gtk 4.1), Windows
+  (plain + release-style with the icon-bearing versioninfo syso),
+  macOS (local recipe), the headless CLI and the windowless
+  browser-driven build — each mirroring what the release workflow
+  actually does; Quickstart (GUI)/(CLI), the requirements bullet and
+  docs/usage.md’s build link all point at it.
 
 ### Fixed
 - **Cancel on a sub-view now goes back, not out.** Cancelling the
