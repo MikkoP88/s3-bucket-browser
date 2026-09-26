@@ -83,27 +83,18 @@ or later.
 - **To build from source**: Go **1.26+** and git only — the frontend is
   vanilla JS/CSS embedded via `go:embed` (no npm install, no bundler).
   Linux GUI builds additionally need `libgtk-3-dev` and
-  `libwebkit2gtk-4.1-dev`; see [CONTRIBUTING.md](CONTRIBUTING.md).
+  `libwebkit2gtk-4.1-dev`. Per-OS recipes:
+  [Quickstart (build from source)](#quickstart-build-from-source);
+  developer workflows live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quickstart (GUI)
 
-**Use the provided release builds or compile your own from source:**
-```bash
-# `production` strips Wails v3's devtools — the GUI is the default build
-go build -tags production -o s3b ./cmd/s3b && ./s3b   # no arguments -> desktop app
-# Ubuntu 24.04+ ships webkit2gtk 4.1, not the GTK4 webkit Wails v3 defaults
-# to — build the GTK3 frontend there:
-# go build -tags production,gtk3 -o s3b ./cmd/s3b
-# Windows: link with the GUI subsystem for a native, console-flash-free
-# launch (the CLI still prints normally — it re-attaches the parent
-# terminal on demand; release builds use exactly this):
-# go build -tags production -ldflags "-H windowsgui" -o s3b.exe ./cmd/s3b
-```
-
-Headless Linux servers can build a pure-Go CLI without GTK dependencies:
+Grab a [release build](#install) or compile your own — every OS recipe is
+in [Quickstart (build from source)](#quickstart-build-from-source).
+Then run the binary with no arguments:
 
 ```bash
-go build -tags s3b_headless -o s3b ./cmd/s3b
+./s3b          # s3b.exe on Windows — no arguments opens the desktop app
 ```
 
 - **Data sources**: color-coded connections in one sidebar hierarchy — S3 sources (account-wide, or bucket-scoped via `--bucket` / `s3b source add s3://bucket`), SFTP/SCP, FTP/FTPS servers, WebDAV/WebDAVs shares and local folders, all browsable with the same Explorer UI. **Import credentials** from files or KMS/secrets services — with a live bucket-count test; the very first import, straight from the welcome screen, opens the imported bucket's content.
@@ -124,7 +115,8 @@ go build -tags s3b_headless -o s3b ./cmd/s3b
 
 ## Quickstart (CLI)
 
-**Use the provided release builds or compile your own from source:**
+The CLI ships in the same binary — one line from any checkout (GUI and
+server variants: [Quickstart (build from source)](#quickstart-build-from-source)):
 ```bash
 go build -o s3b ./cmd/s3b   # CLI-only works in any build; add -tags
                              # production if you want the GUI too
@@ -198,6 +190,98 @@ s3b lock legalhold s3://b/report.pdf --on
 Every command takes `--json` for machine-readable output, `--profile` to pick a connection, and `--verbose` for per-item detail. Shell completions: `s3b completion bash|zsh|fish|powershell`. Exit codes: `0` OK, `1` operation failure, `2` usage/config error, `3` unexpected.
 
 **Safety ladder**: destructive operations count first and act second. Prefix deletes over 50 objects require `--force`, removing non-empty buckets requires `--force`, and the GUI routes every delete through the pre-counting Delete Window — with an optional typed `delete` gate in Settings for extra friction. Enabling object lock is permanent; COMPLIANCE retention cannot be shortened or removed.
+
+## Quickstart (build from source)
+
+Everything below builds from a plain checkout: **Go 1.26+ and git only** —
+the frontend is vanilla JS/CSS embedded via `go:embed` (no npm install, no
+bundler) and the brand assets (`build/`) are committed. The `production`
+tag strips Wails v3's devtools; stamp the version any build reports with
+`-ldflags "-X main.version=$(git describe --tags --always)"`.
+
+### Linux (desktop GUI)
+
+```bash
+# Ubuntu 24.04+/Debian/Mint — GTK3 + WebKitGTK 4.1, the webkit Wails v3's
+# gtk3 tag builds against (its GTK4 default needs webkitgtk-6.0)
+sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+# current Fedora: sudo dnf install gtk3-devel webkit2gtk4.1-devel
+go build -tags production,gtk3 -o s3b ./cmd/s3b && ./s3b
+```
+
+### Windows 10/11 (amd64 or arm64)
+
+Plain dev build — works out of the box, no icon or version stamp:
+
+```bash
+go build -tags production -o s3b.exe ./cmd/s3b
+```
+
+Release-style build — GUI subsystem (native, console-flash-free launch;
+the CLI still prints normally — it re-attaches the parent terminal on
+demand) plus the version stamp and the brand icon embedded as the exe's
+RT_GROUP_ICON resource, which is what the taskbar, Alt-Tab and the NSIS
+installer show:
+
+```bash
+VER="$(git describe --tags --always)"
+go run ./tools/versioninfo -version "${VER#v}" -arch amd64 -icon build/icon.ico
+go build -tags production -ldflags "-s -w -X main.version=${VER#v} -H windowsgui" -o s3b.exe ./cmd/s3b
+rm -f cmd/s3b/*.syso   # stale syso poisons the next build of the other arch
+```
+
+(arm64: `-arch arm64`. Strip the tag's leading `v` — the UI prefixes its
+own, or the About box shows "vv1.2.3".)
+
+### macOS 12+ (Intel or Apple Silicon)
+
+No Xcode project — the app is pure Go + cgo, so Xcode (or just its Command
+Line Tools) only supplies the compiler toolchain:
+
+```bash
+xcode-select --install   # if full Xcode isn't installed
+
+VERSION="$(git describe --tags --always --dirty)"
+APP="dist/S3 Bucket Browser.app"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+CGO_ENABLED=1 \
+CGO_CFLAGS="-mmacosx-version-min=12.0" \
+CGO_LDFLAGS="-mmacosx-version-min=12.0 -framework UniformTypeIdentifiers" \
+MACOSX_DEPLOYMENT_TARGET=12.0 \
+go build -tags production -ldflags "-s -w -X main.version=${VERSION#v}" \
+  -o "$APP/Contents/MacOS/s3b" ./cmd/s3b
+cp build/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+sed -e "s/__VERSION__/${VERSION#v}/g" -e "s/__MINOS__/12.0/g" \
+  scripts/installer/Info.plist > "$APP/Contents/Info.plist"
+bash scripts/sign-macos.sh app "$APP"   # ad-hoc sign — required even locally
+```
+
+The deployment-target flags are not optional: without them the Xcode 26
+clang defaults to the SDK version and the binary refuses to launch on
+every older macOS (the beta.13 defect noted above). Check the result with
+`vtool -show-build "$APP/Contents/MacOS/s3b"` (must say 12.0). Both
+architectures build on an Apple Silicon Mac — add `GOARCH=amd64` for the
+Intel variant. To ship a dmg:
+`hdiutil create -volname "S3 Bucket Browser" -srcfolder "$APP" -ov -format UDZO dist/s3b.dmg`
+then `bash scripts/sign-macos.sh dmg dist/s3b.dmg`.
+
+### Linux servers / any OS (headless CLI)
+
+Pure-Go CLI with no GUI libraries — for servers, arm64 boards and
+keyring-less hosts:
+
+```bash
+go build -tags s3b_headless -o s3b ./cmd/s3b
+```
+
+### Any OS (browser-driven, windowless)
+
+The same stack without a window: the app serves its UI over HTTP —
+run it and open the URL it logs.
+
+```bash
+go build -tags server -o s3b ./cmd/s3b && ./s3b
+```
 
 ## Install
 
