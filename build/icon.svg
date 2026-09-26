@@ -1,27 +1,9 @@
-<!-- S3 Bucket Browser brand mark: blue folder, gray back panel and
-     tab, darker fold shadows (54x46 viewBox). Source of truth for every
-     derived asset: PNG set via scripts/gen-icons.mjs, build/icon.ico and
-     build/AppIcon.icns via tools/appicon. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 54 46">
-  <title>S3 Bucket Browser</title>
-  <!-- Gray back panel with tab: flat tab top, ONE straight hinge slope
-       (the traced master carried pixel staircases here), beveled corners. -->
-  <path fill="#666666" stroke="#666666" stroke-width="1" stroke-linejoin="round"
-        d="M5 0.5 L24 0.5 L34 7 L51 7 L54 9 L54 42 L1 42 L1 3 Z"/>
-  <!-- Blue front face: top edge tucks under the tab, folds down the
-       parallel slope to the main edge; beveled top-right and spine. -->
-  <path fill="#468fd2" stroke="#468fd2" stroke-width="1" stroke-linejoin="round"
-        d="M1 4 L20 4 L29.2 10 L47 10 L47 11 L49 11 L51 14 L51 42 L50 42 L50 45 L1 45 Z"/>
-  <clipPath id="face">
-    <path d="M1 4 L20 4 L29.2 10 L47 10 L47 11 L49 11 L51 14 L51 42 L50 42 L50 45 L1 45 Z"/>
-  </clipPath>
-  <!-- Fold shadows: smooth curves, round caps - crease along the hinge
-       (starting clear of the rounded corner), shade under the top edge
-       and beside the spine. -->
-  <g clip-path="url(#face)" fill="none" stroke="#547ea6" stroke-width="1.3"
-     stroke-linecap="round" stroke-linejoin="round">
-    <path d="M21.4 4.6 Q24.6 7 27.7 8.7"/>
-    <path d="M31.2 10.7 L46.2 10.7 Q48.4 10.9 49.3 12.6"/>
-    <path d="M50.4 14.9 L50.4 41.7"/>
-  </g>
-</svg>
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- S3 Bucket Browser brand mark: draw.io vector export supplied by the
+     author 2026-09-26 (gray back layer + blue front layer, each a tab, a
+     fold wedge and a rounded panel, offset by a consistent 3D depth step).
+     Adopted VERBATIM - resample for any size, NEVER alter the shapes.
+     Source of truth for every derived asset: PNG set via
+     scripts/gen-icons.mjs, build/icon.ico and build/AppIcon.icns via
+     tools/appicon. -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" width="54px" height="46px" viewBox="-0.5 -0.5 54 46"><defs/><g><g data-cell-id="0"><g data-cell-id="1"><g data-cell-id="7gOwz054J0UZoAEVtDrj-1"><g><path d="M 24 0 L 44 13.25 L 24 26.5 Z" fill="#666666" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-2"><g><rect x="4" y="16.5" width="50" height="25" fill="#666666" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-3"><g><rect x="4" y="6.5" width="50" height="35" rx="5.25" ry="5.25" fill="#666666" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-4"><g><rect x="4" y="6.5" width="20" height="30" fill="#666666" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-5"><g><rect x="4" y="0" width="20" height="30" fill="#666666" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-6"><g><path d="M 23.86 0.21 L 24.44 17.82" fill="none" stroke="#666666" stroke-miterlimit="10" pointer-events="stroke"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-7"><g><path d="M 20 3.25 L 40 16.5 L 20 29.75 Z" fill="#468fd2" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-8"><g><rect x="0" y="19.75" width="50" height="25" fill="#468fd2" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-9"><g><rect x="0" y="9.75" width="50" height="35" rx="5.25" ry="5.25" fill="#468fd2" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-10"><g><rect x="0" y="9.75" width="20" height="30" fill="#468fd2" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-11"><g><rect x="0" y="3.25" width="20" height="30" fill="#468fd2" stroke="none" pointer-events="all"/></g></g><g data-cell-id="7gOwz054J0UZoAEVtDrj-12"><g><path d="M 19.86 3.46 L 20.44 21.07" fill="none" stroke="#468fd2" stroke-miterlimit="10" pointer-events="stroke"/></g></g></g></g></g></svg>
