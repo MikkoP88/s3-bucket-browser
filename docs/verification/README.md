@@ -12,6 +12,7 @@ report in the release notes.
 
 | Release | OS | Date (UTC) | Result | Checks | Report |
 |---|---|---|---|---|---|
+| [v1.1.0-beta.20](v1.1.0-beta.20/) | windows-x64 | 2026-09-26 | PASS | 131 PASS · 7 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.20/windows-x64/REPORT.md) |
 | [v1.1.0-beta.19](v1.1.0-beta.19/) | windows-x64 | 2026-09-26 | PASS | 131 PASS · 7 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.19/windows-x64/REPORT.md) |
 | [v1.1.0-beta.18](v1.1.0-beta.18/) | windows-x64 | 2026-09-23 | PASS | 117 PASS · 7 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.18/windows-x64/REPORT.md) |
 | [v1.1.0-beta.17](v1.1.0-beta.17/) | windows-x64 | 2026-09-20 | PASS | 92 PASS · 2 SKIP · 0 FAIL | [REPORT.md](v1.1.0-beta.17/windows-x64/REPORT.md) |
