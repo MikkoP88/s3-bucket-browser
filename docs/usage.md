@@ -23,7 +23,7 @@ Table of contents
 ## 1. Getting started
 
 Install the [release artifact](../../releases) for your platform (or
-[build from source](../README.md#quickstart-gui)) and start it: `s3b`
+[build from source](../README.md#quickstart-build-from-source)) and start it: `s3b`
 with no arguments opens the desktop app, `s3b <args>` is the CLI —
 one binary, same engine.
 
