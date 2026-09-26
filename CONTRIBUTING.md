@@ -18,26 +18,29 @@ node scripts/gen-icons.mjs             # re-derive build/iconset + frontend asse
 go run ./tools/appicon                # re-assemble build/icon.ico + build/AppIcon.icns
 ```
 
-Go 1.26+. The frontend is vanilla JS/CSS (no npm install, no bundler —
-Brand assets: `build/icon.svg` is the master mark; the PNG set, .ico
-and .icns under `build/` are derived deterministically (the two commands
-above) — regenerate and commit them together when the master changes.
+Go 1.26+. The frontend is vanilla JS/CSS embedded via `go:embed`
+(no npm install or bundler). Brand assets: `build/icon.svg` is the master
+mark; regenerate and commit the PNG set, .ico and .icns together when it
+changes.
 
-embedded via `go:embed`). Windows and macOS build out of the box; Linux
-GUI builds need webkit2gtk (`sudo apt install libgtk-3-0 libwebkit2gtk-4.1-dev`).
+On macOS, install Go and Xcode or Command Line Tools, then run `make mac`
+and `open "dist/S3 Bucket Browser.app"`. `make mac-universal` builds both
+architectures. See [the Mac build guide](docs/macos-build.md) for setup and
+verification. `make build` produces the standalone host binary and applies
+the Mac compiler flags too. GUI builds need cgo and Apple's SDK; there is
+no Xcode project. `make build-all` is a collection of platform recipes,
+not a portable cross-compiler: Linux GUI compilation requires a Linux
+GTK/WebKit toolchain and macOS requires Apple's toolchain.
 
-macOS builds: pin the deployment target to **12.0** (`make build-all` and
-CI do this for you — `MACOSX_DEPLOYMENT_TARGET=12.0` plus
-`-mmacosx-version-min=12.0` in `CGO_CFLAGS`/`CGO_LDFLAGS`). A plain
-`go build` on a macOS 26 / Xcode 26 machine silently targets macOS 26,
-and the binary then refuses to launch on older macOS. 12.0 is Go 1.26's
-own darwin floor — do not set it lower.
+Linux GUI builds need GTK3/WebKitGTK 4.1 development packages
+(`sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev`).
 
 ## Before you push
 
 ```bash
-gofmt -l . && go vet ./...
-CGO_ENABLED=0 go test ./...       # hermetic: no network, no keyring, no S3
+gofmt -l .
+make test                       # host GUI flags + race detector
+CGO_ENABLED=0 go test -tags s3b_headless ./... # CLI/core without GUI libraries
 ./scripts/js-check.sh              # frontend logic tests
 ```
 

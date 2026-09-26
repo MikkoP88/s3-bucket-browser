@@ -63,7 +63,8 @@ func TestRemoteUrlsForms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[0] != "file:///"+strings.ReplaceAll(root, "\\", "/")+"/readme.md" {
+	// Unix roots already start with /; Windows drive paths do not.
+	if got[0] != "file:///"+strings.TrimLeft(strings.ReplaceAll(root, "\\", "/"), "/")+"/readme.md" {
 		t.Errorf("file url = %q", got[0])
 	}
 
