@@ -1,6 +1,10 @@
 // versioninfo generates a Windows COFF resource object (.syso) carrying the
 // RT_VERSION (VERSIONINFO) resource for the s3b executable: CompanyName,
-// ProductName, FileVersion, LegalCopyright and friends.
+// ProductName, FileVersion, LegalCopyright and friends. With -icon it also
+// embeds every image of an .ico file as RT_ICON resources plus an
+// RT_GROUP_ICON directory at resource id 3 — the id the Wails v3 window
+// shell loads the window icon from (NewIconFromResource(module, 3)), so the
+// taskbar, Alt-Tab and the window corner all show the brand mark.
 //
 // Plain `go build` picks up any *.syso in the package directory, so CI and
 // the release pipeline run this tool into cmd/s3b/ right before the Windows
@@ -10,7 +14,7 @@
 //
 // Usage:
 //
-//	go run ./tools/versioninfo -version 1.2.3 -arch amd64 -o cmd/s3b/versioninfo_windows_amd64.syso
+//	go run ./tools/versioninfo -version 1.2.3 -arch amd64 -icon build/icon.ico -o cmd/s3b/versioninfo_windows_amd64.syso
 //
 // The output is deterministic: same inputs, same bytes (TimeDateStamp 0).
 package main
@@ -23,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -57,6 +62,7 @@ var machines = map[string]machineInfo{
 func main() {
 	version := flag.String("version", "0.0.0-dev", "version string: major.minor.patch[.build]")
 	arch := flag.String("arch", runtime.GOARCH, "target architecture: amd64, arm64, 386")
+	icon := flag.String("icon", "", "optional .ico whose images are embedded as RT_ICON resources plus an RT_GROUP_ICON at resource id 3")
 	out := flag.String("o", "", "output path (default cmd/s3b/versioninfo_windows_<arch>.syso)")
 	flag.Parse()
 
@@ -69,11 +75,34 @@ func main() {
 		path = filepath.Join("cmd", "s3b", fmt.Sprintf("versioninfo_windows_%s.syso", *arch))
 	}
 	major, minor, patch, build := parseVersion(*version)
-	blob := versionInfoBlob(major, minor, patch, build, *version)
-	if err := os.WriteFile(path, buildSyso(mi, blob), 0o644); err != nil {
+	resources := []resource{{rtype: rtVersion, name: 1, lang: stringTableLangID,
+		data: versionInfoBlob(major, minor, patch, build, *version)}}
+	icons := 0
+	if *icon != "" {
+		icoBytes, err := os.ReadFile(*icon)
+		if err != nil {
+			die("read %s: %v", *icon, err)
+		}
+		imgs, err := parseICO(icoBytes)
+		if err != nil {
+			die("%s: %v", *icon, err)
+		}
+		for i, m := range imgs {
+			resources = append(resources, resource{rtype: rtIcon, name: firstIconID + uint16(i),
+				lang: stringTableLangID, data: m.data})
+		}
+		resources = append(resources, resource{rtype: rtGroupIcon, name: groupIconID,
+			lang: stringTableLangID, data: groupIconBlob(imgs, firstIconID)})
+		icons = len(imgs)
+	}
+	if err := os.WriteFile(path, buildSyso(mi, resources), 0o644); err != nil {
 		die("write %s: %v", path, err)
 	}
-	fmt.Printf("wrote %s (version %s, arch %s)\n", path, *version, *arch)
+	if icons > 0 {
+		fmt.Printf("wrote %s (version %s, arch %s, %d icon images)\n", path, *version, *arch, icons)
+	} else {
+		fmt.Printf("wrote %s (version %s, arch %s)\n", path, *version, *arch)
+	}
 }
 
 func die(format string, args ...any) {
@@ -114,43 +143,117 @@ type block struct {
 	children    []block // for container blocks
 }
 
-func buildSyso(mi machineInfo, blob []byte) []byte {
-	// Resource directory ($01): root -> RT_VERSION -> resource id 1 -> lang.
-	// The data entry's OffsetToData is a placeholder 0 with a relocation on
-	// it: cmd/link's addpersrc rewrites it to RVA(.rsrc) + addend + len($01)
-	// — i.e. exactly where $02 lands in the merged section.
-	const (
-		dir2Off  = 0x18
-		dir3Off  = 0x30
-		entryOff = 0x48
-	)
-	d1 := make([]byte, 0x58)
-	le := binary.LittleEndian
-	// root directory: 1 id entry
-	le.PutUint16(d1[12:], 0)                  // NumberOfNamedEntries
-	le.PutUint16(d1[14:], 1)                  // NumberOfIdEntries
-	le.PutUint32(d1[16:], 16)                 // RT_VERSION
-	le.PutUint32(d1[20:], 0x80000000|dir2Off) // -> dir2
-	// dir2: 1 id entry
-	le.PutUint16(d1[dir2Off+12:], 0)
-	le.PutUint16(d1[dir2Off+14:], 1)
-	le.PutUint32(d1[dir2Off+16:], 1) // resource id 1
-	le.PutUint32(d1[dir2Off+20:], 0x80000000|dir3Off)
-	// dir3: 1 id entry (language)
-	le.PutUint16(d1[dir3Off+12:], 0)
-	le.PutUint16(d1[dir3Off+14:], 1)
-	le.PutUint32(d1[dir3Off+16:], stringTableLangID)
-	le.PutUint32(d1[dir3Off+20:], entryOff) // data entry (no dir flag)
-	// data entry; OffsetToData is patched by the linker via the relocation
-	le.PutUint32(d1[entryOff:], 0)
-	le.PutUint32(d1[entryOff+4:], uint32(len(blob)))
-	le.PutUint32(d1[entryOff+8:], 0)  // code page
-	le.PutUint32(d1[entryOff+12:], 0) // reserved
+// resource is one leaf of the .rsrc tree: a (type, name, language) triple
+// pointing at a payload stored in $02.
+type resource struct {
+	rtype uint16 // RT_* id
+	name  uint16 // resource id within the type
+	lang  uint16 // language id
+	data  []byte // payload, copied verbatim into $02
+}
 
+const (
+	rtIcon      = 3  // RT_ICON (single image)
+	rtGroupIcon = 14 // RT_GROUP_ICON (directory over RT_ICON entries)
+	rtVersion   = 16 // RT_VERSION
+	groupIconID = 3  // Wails v3 loads the window icon from group resource id 3
+	firstIconID = 4  // member icon ids: version keeps 1, the group keeps 3
+)
+
+func buildSyso(mi machineInfo, resources []resource) []byte {
+	// Directory entries must be sorted by id within every level.
+	sort.Slice(resources, func(i, j int) bool {
+		if resources[i].rtype != resources[j].rtype {
+			return resources[i].rtype < resources[j].rtype
+		}
+		if resources[i].name != resources[j].name {
+			return resources[i].name < resources[j].name
+		}
+		return resources[i].lang < resources[j].lang
+	})
+
+	// $02 holds every payload concatenated in sorted order; the offset of
+	// each payload becomes the addend for its data entry. cmd/link's
+	// addpersrc rewrites every relocated dword to RVA(.rsrc) + addend +
+	// len($01), i.e. exactly where each payload lands in the merged section.
+	var data bytes.Buffer
+	offsets := make([]uint32, len(resources))
+	for i, r := range resources {
+		offsets[i] = uint32(data.Len())
+		data.Write(r.data)
+	}
+
+	// $01 layout: root directory, one directory per type (ascending), one
+	// language directory per resource, then the data entries. All entries
+	// are id-based, so NumberOfNamedEntries is 0 everywhere.
+	var types []uint16
+	counts := map[uint16]int{}
+	for i, r := range resources {
+		if i == 0 || r.rtype != resources[i-1].rtype {
+			types = append(types, r.rtype)
+		}
+		counts[r.rtype]++
+	}
+	cur := uint32(16 + 8*len(types))
+	typeDirOff := make([]uint32, len(types))
+	for j, t := range types {
+		typeDirOff[j] = cur
+		cur += uint32(16 + 8*counts[t])
+	}
+	langDirOff := make([]uint32, len(resources))
+	for i := range resources {
+		langDirOff[i] = cur
+		cur += 16 + 8
+	}
+	entryOff := make([]uint32, len(resources))
+	for i := range resources {
+		entryOff[i] = cur
+		cur += 16
+	}
+
+	d1 := make([]byte, cur)
+	dir := func(off uint32, n int) {
+		le.PutUint16(d1[off+12:], 0) // NumberOfNamedEntries
+		le.PutUint16(d1[off+14:], uint16(n))
+	}
+	// root: one entry per type, ascending type id
+	dir(0, len(types))
+	for j, t := range types {
+		le.PutUint32(d1[16+8*j:], uint32(t))
+		le.PutUint32(d1[16+8*j+4:], 0x80000000|typeDirOff[j])
+	}
+	// type directories: one entry per resource name, ascending within type
+	ti, slot := 0, 0
+	for i, r := range resources {
+		if i > 0 && r.rtype != resources[i-1].rtype {
+			ti++
+			slot = 0
+			dir(typeDirOff[ti], counts[r.rtype])
+		} else if i == 0 {
+			dir(typeDirOff[0], counts[r.rtype])
+		}
+		e := typeDirOff[ti] + uint32(16+8*slot)
+		le.PutUint32(d1[e:], uint32(r.name))
+		le.PutUint32(d1[e+4:], 0x80000000|langDirOff[i])
+		slot++
+	}
+	// language directories and data entries
+	for i, r := range resources {
+		dir(langDirOff[i], 1)
+		le.PutUint32(d1[langDirOff[i]+16:], uint32(r.lang))
+		le.PutUint32(d1[langDirOff[i]+20:], entryOff[i]) // no dir flag
+		le.PutUint32(d1[entryOff[i]:], offsets[i])       // addend; linker patches
+		le.PutUint32(d1[entryOff[i]+4:], uint32(len(r.data)))
+		// code page and reserved stay 0
+	}
+
+	relocs := make([]coffReloc, len(resources))
+	for i := range resources {
+		relocs[i] = coffReloc{off: entryOff[i], symIdx: 1, typ: mi.reloc}
+	}
 	return coff(mi, [2]section{
-		{name: ".rsrc$01", data: d1,
-			relocs: []coffReloc{{off: entryOff, symIdx: 1, typ: mi.reloc}}},
-		{name: ".rsrc$02", data: blob},
+		{name: ".rsrc$01", data: d1, relocs: relocs},
+		{name: ".rsrc$02", data: data.Bytes()},
 	})
 }
 
@@ -368,4 +471,73 @@ func offsetOfRelocs(secs []section) int {
 		n += 10 * len(s.relocs)
 	}
 	return n
+}
+
+// ---------------- .ico parsing ----------------
+
+// icoImage is one image of an .ico file: the directory-entry fields the
+// RT_GROUP_ICON needs, plus the raw payload (DIB or PNG) for RT_ICON.
+type icoImage struct {
+	width, height byte // pixels; 0 encodes 256
+	planes, bits  uint16
+	data          []byte
+}
+
+// parseICO validates and splits an .ico into its images, preserving file
+// order (which build/icon.ico keeps ascending by size).
+func parseICO(b []byte) ([]icoImage, error) {
+	if len(b) < 6 {
+		return nil, fmt.Errorf("ico: %d bytes, shorter than the 6-byte header", len(b))
+	}
+	if le.Uint16(b[0:]) != 0 {
+		return nil, fmt.Errorf("ico: reserved field = %d, want 0", le.Uint16(b[0:]))
+	}
+	if le.Uint16(b[2:]) != 1 {
+		return nil, fmt.Errorf("ico: type = %d, want 1 (icon)", le.Uint16(b[2:]))
+	}
+	n := int(le.Uint16(b[4:]))
+	if n == 0 {
+		return nil, fmt.Errorf("ico: contains no images")
+	}
+	imgs := make([]icoImage, 0, n)
+	for i := 0; i < n; i++ {
+		e := 6 + 16*i
+		if e+16 > len(b) {
+			return nil, fmt.Errorf("ico: entry %d directory out of bounds", i)
+		}
+		size := le.Uint32(b[e+8:])
+		off := le.Uint32(b[e+12:])
+		if uint64(off)+uint64(size) > uint64(len(b)) {
+			return nil, fmt.Errorf("ico: entry %d payload [%d:%d] out of bounds (len %d)", i, off, off+size, len(b))
+		}
+		imgs = append(imgs, icoImage{
+			width:  b[e],
+			height: b[e+1],
+			planes: le.Uint16(b[e+4:]),
+			bits:   le.Uint16(b[e+6:]),
+			data:   b[off : off+size],
+		})
+	}
+	return imgs, nil
+}
+
+// groupIconBlob builds the RT_GROUP_ICON payload: the .ico directory with
+// every image offset replaced by the RT_ICON resource id that now carries
+// the image. LoadImage walks this to pick the best size.
+func groupIconBlob(imgs []icoImage, firstID uint16) []byte {
+	var buf bytes.Buffer
+	var hdr [6]byte
+	le.PutUint16(hdr[2:], 1) // type: icon
+	le.PutUint16(hdr[4:], uint16(len(imgs)))
+	buf.Write(hdr[:])
+	for i, m := range imgs {
+		var e [14]byte
+		e[0], e[1] = m.width, m.height
+		le.PutUint16(e[4:], m.planes)
+		le.PutUint16(e[6:], m.bits)
+		le.PutUint32(e[8:], uint32(len(m.data)))
+		le.PutUint16(e[12:], firstID+uint16(i))
+		buf.Write(e[:])
+	}
+	return buf.Bytes()
 }

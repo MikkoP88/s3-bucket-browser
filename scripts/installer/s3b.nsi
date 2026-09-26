@@ -30,6 +30,10 @@ Unicode true
 !endif
 
 Name "S3 Bucket Browser"
+; Brand mark on the installer and uninstaller executables (build/icon.ico
+; is assembled from the SVG master by tools/appicon).
+Icon "${ROOT}/build/icon.ico"
+UninstallIcon "${ROOT}/build/icon.ico"
 OutFile "${OUT}"
 InstallDir "$PROGRAMFILES64\S3 Bucket Browser"
 ; Upgrade in place: remember the previous install dir.

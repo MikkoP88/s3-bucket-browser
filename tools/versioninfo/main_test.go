@@ -53,7 +53,7 @@ func TestBuildSysoStructure(t *testing.T) {
 	for arch, mi := range machines {
 		t.Run(arch, func(t *testing.T) {
 			le := binary.LittleEndian
-			obj := buildSyso(mi, blob)
+			obj := buildSyso(mi, []resource{{rtype: rtVersion, name: 1, lang: stringTableLangID, data: blob}})
 
 			// COFF header
 			if got := le.Uint16(obj[0:]); got != mi.machine {
@@ -170,7 +170,7 @@ func TestBuildSysoStructure(t *testing.T) {
 			}
 
 			// Determinism
-			if again := buildSyso(mi, blob); !bytes.Equal(obj, again) {
+			if again := buildSyso(mi, []resource{{rtype: rtVersion, name: 1, lang: stringTableLangID, data: blob}}); !bytes.Equal(obj, again) {
 				t.Fatal("buildSyso not deterministic")
 			}
 		})
@@ -221,5 +221,153 @@ func TestVersionInfoBlob(t *testing.T) {
 	// Translation var: 0x0409 + 0x04B0, little-endian.
 	if !bytes.Contains(blob, []byte{0x09, 0x04, 0xB0, 0x04}) {
 		t.Error("blob missing Translation var 0409/04B0")
+	}
+}
+
+// fakeICO assembles a minimal two-image .ico for parser tests.
+func fakeICO() []byte {
+	le := binary.LittleEndian
+	img1 := []byte{0x89, 'P', 'N', 'G', 1, 2, 3}
+	img2 := []byte{0xAA, 0xBB}
+	buf := make([]byte, 6+2*16)
+	le.PutUint16(buf[2:], 1)
+	le.PutUint16(buf[4:], 2)
+	e := buf[6:]
+	e[0], e[1] = 16, 16
+	le.PutUint16(e[4:], 1)
+	le.PutUint16(e[6:], 32)
+	le.PutUint32(e[8:], uint32(len(img1)))
+	le.PutUint32(e[12:], uint32(6+2*16))
+	e = buf[6+16:]
+	e[0], e[1] = 0, 0 // 256
+	le.PutUint16(e[4:], 1)
+	le.PutUint16(e[6:], 32)
+	le.PutUint32(e[8:], uint32(len(img2)))
+	le.PutUint32(e[12:], uint32(6+2*16+len(img1)))
+	return append(buf, append(append([]byte{}, img1...), img2...)...)
+}
+
+func TestParseICO(t *testing.T) {
+	le := binary.LittleEndian
+	imgs, err := parseICO(fakeICO())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imgs) != 2 {
+		t.Fatalf("images = %d, want 2", len(imgs))
+	}
+	if imgs[0].width != 16 || imgs[0].height != 16 || imgs[0].bits != 32 {
+		t.Fatalf("image 0 fields = %d/%d/%d, want 16/16/32", imgs[0].width, imgs[0].height, imgs[0].bits)
+	}
+	if imgs[1].width != 0 || imgs[1].height != 0 {
+		t.Fatalf("image 1 size = %d/%d, want 0/0 (256)", imgs[1].width, imgs[1].height)
+	}
+	if !bytes.Equal(imgs[0].data, []byte{0x89, 'P', 'N', 'G', 1, 2, 3}) || !bytes.Equal(imgs[1].data, []byte{0xAA, 0xBB}) {
+		t.Fatal("payloads not split at the directory offsets")
+	}
+
+	mk := func(mut func([]byte)) []byte {
+		b := fakeICO()
+		mut(b)
+		return b
+	}
+	bad := []struct {
+		name string
+		b    []byte
+	}{
+		{"cursor type", mk(func(b []byte) { le.PutUint16(b[2:], 2) })},
+		{"nonzero reserved", mk(func(b []byte) { le.PutUint16(b[0:], 7) })},
+		{"no images", mk(func(b []byte) { le.PutUint16(b[4:], 0) })},
+		{"payload out of bounds", mk(func(b []byte) { le.PutUint32(b[6+8:], 1<<20) })},
+		{"truncated", fakeICO()[:10]},
+	}
+	for _, c := range bad {
+		if _, err := parseICO(c.b); err == nil {
+			t.Errorf("%s: parseICO accepted a corrupt file", c.name)
+		}
+	}
+	if _, err := parseICO([]byte{1, 2}); err == nil {
+		t.Error("parseICO accepted a 2-byte file")
+	}
+}
+
+func TestGroupIconBlob(t *testing.T) {
+	le := binary.LittleEndian
+	imgs, _ := parseICO(fakeICO())
+	g := groupIconBlob(imgs, firstIconID)
+	if le.Uint16(g[2:]) != 1 || le.Uint16(g[4:]) != 2 {
+		t.Fatalf("type/count = %d/%d, want 1/2", le.Uint16(g[2:]), le.Uint16(g[4:]))
+	}
+	e0, e1 := g[6:20], g[20:34]
+	if e0[0] != 16 || e0[1] != 16 || e1[0] != 0 || e1[1] != 0 {
+		t.Fatal("size fields not carried over")
+	}
+	if le.Uint32(e0[8:]) != 7 || le.Uint32(e1[8:]) != 2 {
+		t.Fatal("dwBytesInRes not carried over")
+	}
+	if id := le.Uint16(e0[12:]); id != firstIconID {
+		t.Fatalf("entry 0 nID = %d, want %d", id, firstIconID)
+	}
+	if id := le.Uint16(e1[12:]); id != firstIconID+1 {
+		t.Fatalf("entry 1 nID = %d, want %d", id, firstIconID+1)
+	}
+}
+
+func TestBuildSysoWithIcon(t *testing.T) {
+	le := binary.LittleEndian
+	imgs, _ := parseICO(fakeICO())
+	res := []resource{{rtype: rtVersion, name: 1, lang: stringTableLangID, data: []byte("VER")}}
+	for i, m := range imgs {
+		res = append(res, resource{rtype: rtIcon, name: firstIconID + uint16(i), lang: stringTableLangID, data: m.data})
+	}
+	res = append(res, resource{rtype: rtGroupIcon, name: groupIconID, lang: stringTableLangID, data: groupIconBlob(imgs, firstIconID)})
+	obj := buildSyso(machines["amd64"], res)
+
+	_, d1 := sectionFrom(t, obj, 0)
+	_, d2 := sectionFrom(t, obj, 1)
+
+	// Root: three type entries in ascending id order: 3 (RT_ICON),
+	// 14 (RT_GROUP_ICON), 16 (RT_VERSION).
+	if got := le.Uint16(d1[14:]); got != 3 {
+		t.Fatalf("root id entries = %d, want 3", got)
+	}
+	if ids := []uint16{uint16(le.Uint32(d1[16:]) & 0xffff), uint16(le.Uint32(d1[24:]) & 0xffff), uint16(le.Uint32(d1[32:]) & 0xffff)}; ids[0] != rtIcon || ids[1] != rtGroupIcon || ids[2] != rtVersion {
+		t.Fatalf("root type ids = %v, want [%d %d %d]", ids, rtIcon, rtGroupIcon, rtVersion)
+	}
+	iconDir := le.Uint32(d1[20:]) &^ 0x80000000
+	groupDir := le.Uint32(d1[28:]) &^ 0x80000000
+
+	// RT_ICON directory: names 4 and 5 ascending.
+	if got := le.Uint16(d1[iconDir+14:]); got != 2 {
+		t.Fatalf("RT_ICON entries = %d, want 2", got)
+	}
+	if n := le.Uint32(d1[iconDir+16:]); n != firstIconID {
+		t.Fatalf("RT_ICON name[0] = %d, want %d", n, firstIconID)
+	}
+	if n := le.Uint32(d1[iconDir+24:]); n != firstIconID+1 {
+		t.Fatalf("RT_ICON name[1] = %d, want %d", n, firstIconID+1)
+	}
+
+	// Walk one full path: RT_GROUP_ICON dir -> group id 3 -> lang -> data
+	// entry -> payload must be the groupIconBlob bytes.
+	if n := le.Uint32(d1[groupDir+16:]); n != groupIconID {
+		t.Fatalf("group name = %d, want %d", n, groupIconID)
+	}
+	langDir := le.Uint32(d1[groupDir+20:]) &^ 0x80000000
+	entry := le.Uint32(d1[langDir+20:])
+	size := le.Uint32(d1[entry+4:])
+	off := le.Uint32(d1[entry:]) // addend = offset within $02
+	if !bytes.Equal(d2[off:off+size], groupIconBlob(imgs, firstIconID)) {
+		t.Fatal("group payload bytes mismatch")
+	}
+
+	// Every resource gets exactly one relocation on its OffsetToData.
+	h1 := obj[20:60]
+	if got := le.Uint16(h1[32:]); got != uint16(len(res)) {
+		t.Fatalf("$01 NumberOfRelocations = %d, want %d", got, len(res))
+	}
+
+	if again := buildSyso(machines["amd64"], res); !bytes.Equal(obj, again) {
+		t.Fatal("buildSyso not deterministic")
 	}
 }

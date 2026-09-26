@@ -306,37 +306,26 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot is from the destructive-surface
-sweep of **26 Sep 2026** (`node scripts/verify.mjs`, full matrix, on
-the tree of `acb4459` plus this round's own changes) on Windows
-Server 2025 (x64), after the fourth sweep round grew the matrix from
-132 to 138 rows across every source type: no-clobber downloads that
-protect the local file, the source object and the source folder —
-with a move that never deletes what it skipped and a folder prune
-that never fires while skipped files remain (CLI-S3-46, CLI-X-14),
-per-engine delete scope on all four live engines now including
-scp:// and FTP (CLI-X-01, CLI-X-13), the remote rename guard driven
-through the bindings (GUI-59), the editor's explicit save — which now
-pushes what is on disk, with WORM keeping the locked original safe
-and unpurgeable through the edit (GUI-60: the row caught a
-save-and-close that silently lost the edit, and a partially-failed
-purge that exited 0), the keep-current purge deleting exactly N-1
-versions with the newest surviving byte-identical (GUI-61), and a
-delete canceled while still counting deleting exactly nothing, proven
-through a latency-injected source (GUI-62). The cross battery is
-self-sufficient standalone, and the missing TLS twins (ftps://,
-webdavs://) are recorded as a harness gap in the SKIP policy below.
-The release evidence for beta.18 stays at
+Replaced on every run — this snapshot is from the brand-mark round of
+**26 Sep 2026** (standalone batteries, on the tree of `51b02b3` plus this
+round’s own changes) on Windows Server 2025 (x64): the new icon/logo
+(SVG master in build/icon.svg, derived PNG set, .ico/.icns containers,
+RT_GROUP_ICON id 3 embedded by `tools/versioninfo -icon`, NSIS installer
+icon, macOS CFBundleIconFile, Wails Options.Icon, favicon, empty-state
+mark, README logo) wired onto every surface the app ships. No new matrix
+rows — the round is covered by the existing GUI battery plus the visual
+sweep, and one real catch: the sweep’s own screenshot showed the logo
+missing from Help→About because the edit first landed only in the
+License dialog’s About tab (`aboutDialog` in main.js is a separate
+builder); fixed and re-shot. The release evidence for beta.18 stays at
 [`docs/verification/v1.1.0-beta.18/windows-x64/REPORT.md`](verification/v1.1.0-beta.18/windows-x64/REPORT.md):
 
 ```
-full matrix (138 rows incl. the two sweep rows):
-  131 PASS · 7 SKIP · 0 FAIL — 1855 s
-  (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
-   SSE-S3, CORS put, website put and encryption put on the CLI, plus
-   the CORS and website admin tabs behind the same refused APIs)
+gui battery (62 rows, standalone):
+  60 PASS · 2 SKIP · 0 FAIL — 776 s
+  (the 2 SKIPs are the recorded MinIO provider gaps: the CORS and
+   website admin tabs behind refused APIs)
   SWEEP-VIS-01  gui-visual   669/669 checks
-  SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
 ```
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
