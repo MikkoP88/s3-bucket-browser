@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,7 +55,9 @@ func TestRemoteUrlsForms(t *testing.T) {
 		t.Errorf("webdavs url = %q", got[0])
 	}
 
-	// local-root source: file:/// with forward slashes
+	// local-root source: file:/// with forward slashes — the expected form
+	// mirrors fileUrl's contract (C:/x → file:///C:/x, Unix /tmp/x →
+	// file:///tmp/x), so the assertion holds on every platform.
 	lab, root := localSource(t, "lab")
 	if err := a.SaveSource(lab); err != nil {
 		t.Fatal(err)
@@ -63,7 +66,7 @@ func TestRemoteUrlsForms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got[0] != "file:///"+strings.ReplaceAll(root, "\\", "/")+"/readme.md" {
+	if got[0] != "file:///"+strings.TrimLeft(filepath.ToSlash(root), "/")+"/readme.md" {
 		t.Errorf("file url = %q", got[0])
 	}
 
