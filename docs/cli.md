@@ -1926,7 +1926,8 @@ Show the activity log (GUI events: transfers, deletes, doctor runs)
 
 Prints the persisted activity log (events.jsonl in the config dir) —
 the same lines the GUI log drawer shows, kept across sessions.
---follow keeps watching for new lines.
+File logging is off by default; turn on Save logs to file in Settings
+to persist events. --follow keeps watching for new lines.
 
 ```
 s3b log [flags]

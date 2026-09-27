@@ -1,6 +1,7 @@
-// log_cmd.go: `s3b log` — the M10.5 CLI face of the activity log. The GUI
-// appends every drawer line to events.jsonl under the config dir; this
-// command tails it with level/scope filters and an optional follow mode.
+// log_cmd.go: `s3b log` — the M10.5 CLI face of the activity log. When
+// Settings → Save logs to file is on (off by default), the GUI appends
+// every drawer line to events.jsonl under the config dir; this command
+// tails it with level/scope filters and an optional follow mode.
 package cli
 
 import (
@@ -27,7 +28,8 @@ func logCmd() *cobra.Command {
 		Short: "Show the activity log (GUI events: transfers, deletes, doctor runs)",
 		Long: "Prints the persisted activity log (events.jsonl in the config dir) —\n" +
 			"the same lines the GUI log drawer shows, kept across sessions.\n" +
-			"--follow keeps watching for new lines.",
+			"File logging is off by default; turn on Save logs to file in Settings\n" +
+			"to persist events. --follow keeps watching for new lines.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if level != "" && level != "info" && level != "warn" && level != "error" {
@@ -48,7 +50,11 @@ func logCmd() *cobra.Command {
 			}
 			if !follow {
 				if len(entries) == 0 {
-					col.dim.Println("(no events yet — GUI activity lands here)")
+					if !eventlog.FileLoggingOn() {
+						col.dim.Println("(file logging is off — enable Save logs to file in Settings)")
+					} else {
+						col.dim.Println("(no events yet — GUI activity lands here)")
+					}
 				}
 				return nil
 			}

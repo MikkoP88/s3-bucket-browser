@@ -29,7 +29,7 @@ const (
 // Log file modes (Settings dialog, persisted via eventlog.SaveSettings).
 const (
 	LogModeDefault = "default" // events.jsonl beside profiles.json
-	LogModeOff     = "off"     // no file logging
+	LogModeOff     = "off"     // no file logging — the default until enabled
 	LogModeCustom  = "custom"  // the user-picked folder
 )
 
@@ -59,11 +59,12 @@ var LogScopes = []string{
 	"share", "sources", "transfer", "upload", "versions",
 }
 
-// GetLogSettings returns the current log-file preference.
+// GetLogSettings returns the current log-file preference. A never-saved
+// preference ("" — fresh install) reports off: file logging is opt-in.
 func (a *App) GetLogSettings() LogSettings {
 	s := eventlog.LoadSettings()
 	if s.Mode == "" {
-		s.Mode = LogModeDefault
+		s.Mode = LogModeOff
 	}
 	return LogSettings{
 		Mode: s.Mode, Dir: s.Dir, Levels: s.Levels, Scopes: s.Scopes, Sources: s.Sources,
@@ -98,7 +99,7 @@ func (a *App) logSourceOptions() []string {
 // against the current options.
 func (a *App) SetLogSettings(mode, dir string, levels, scopes, sources []string) (LogSettings, error) {
 	if mode == "" {
-		mode = LogModeDefault
+		mode = LogModeOff // "" is the never-saved zero value — the off default
 	}
 	switch mode {
 	case LogModeDefault, LogModeOff:

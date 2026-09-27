@@ -17,6 +17,12 @@ func eventEnv(t *testing.T) string {
 
 func TestAppendTailFilters(t *testing.T) {
 	eventEnv(t)
+	if err := SaveSettings(Settings{Mode: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if !FileLoggingOn() {
+		t.Fatal("default mode did not enable the sink")
+	}
 	Append("info", "transfer", "", "copied a.txt")
 	Append("error", "delete", "", "rm failed: boom")
 	Append("warn", "transfer", "", "throttled")
@@ -62,7 +68,7 @@ func TestSourceFilterAndRegistry(t *testing.T) {
 
 	// a source filter keeps only the named sources' lines — unsourced
 	// lines are rejected while the filter is set, like the drawer
-	if err := SaveSettings(Settings{Sources: []string{"team-files"}}); err != nil {
+	if err := SaveSettings(Settings{Mode: "default", Sources: []string{"team-files"}}); err != nil {
 		t.Fatal(err)
 	}
 	Append("info", "delete", "team-files", "deleted 3 object(s)")
@@ -84,8 +90,8 @@ func TestSourceFilterAndRegistry(t *testing.T) {
 		t.Fatalf("unsourced lines must not register: %v", seen)
 	}
 
-	// empty filter = everything again, sources included
-	if err := SaveSettings(Settings{}); err != nil {
+	// empty filter = everything again, sources included (mode stays on)
+	if err := SaveSettings(Settings{Mode: "default"}); err != nil {
 		t.Fatal(err)
 	}
 	Append("warn", "doctor", "team-files", "check passed")
@@ -107,6 +113,16 @@ func TestSourceFilterAndRegistry(t *testing.T) {
 
 func TestSettingsOffAndCustom(t *testing.T) {
 	cfg := eventEnv(t)
+
+	// fresh install (no settings file yet): the zero value is off — file
+	// logging is opt-in, so nothing is written before the user asks
+	if FileLoggingOn() {
+		t.Fatal("zero-value settings enabled file logging")
+	}
+	Append("info", "test", "", "zero value must not land")
+	if _, err := os.Stat(filepath.Join(cfg, "events.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("zero-value settings still wrote the default log")
+	}
 
 	// off: nothing is written anywhere
 	if err := SaveSettings(Settings{Mode: "off"}); err != nil {
@@ -146,17 +162,29 @@ func TestSettingsOffAndCustom(t *testing.T) {
 		t.Fatal("custom-without-dir did not fall back to the default log")
 	}
 
-	// a torn settings file reads as the default mode
+	// a torn settings file reads as off — it must never silently
+	// re-enable logging
 	if err := os.WriteFile(filepath.Join(cfg, "logsettings.json"), []byte("{torn"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if s := LoadSettings(); s.Mode != "" || s.Dir != "" {
 		t.Fatalf("torn settings not ignored: %+v", s)
 	}
+	if FileLoggingOn() {
+		t.Fatal("torn settings file re-enabled file logging")
+	}
+	os.Remove(filepath.Join(cfg, "events.jsonl"))
+	Append("info", "test", "", "torn write must not land")
+	if _, err := os.Stat(filepath.Join(cfg, "events.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("torn settings still wrote the default log")
+	}
 }
 
 func TestRotationKeepsNewestHalf(t *testing.T) {
 	eventEnv(t)
+	if err := SaveSettings(Settings{Mode: "default"}); err != nil {
+		t.Fatal(err)
+	}
 	// Blow past the cap with fat messages, then verify the log shrank and
 	// the newest lines survived.
 	filler := strings.Repeat("x", 512)

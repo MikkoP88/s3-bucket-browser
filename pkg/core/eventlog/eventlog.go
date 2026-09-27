@@ -1,6 +1,7 @@
 // Package eventlog persists the app activity log as JSON lines under the
 // config dir (events.jsonl): the same lines the GUI log drawer shows, kept
-// across sessions so `s3b log` can tail them (CLI parity).
+// across sessions so `s3b log` can tail them (CLI parity). Persisting is
+// opt-in — off until Save logs to file is enabled in Settings.
 // The file is capped; when it outgrows the cap the oldest half of the lines
 // is dropped (a log, not an audit trail — safety-ladder gates stay in S3).
 package eventlog
@@ -43,8 +44,10 @@ func Path() (string, error) {
 
 // Settings is the persisted save-logs-to-file preference (logsettings.json
 // in the config dir, written by the GUI Settings dialog). Mode:
-// "" / "default" = events.jsonl beside profiles.json (what `s3b log`
-// tails), "off" = no file logging, "custom" = the user-picked Dir.
+// "default" = events.jsonl beside profiles.json (what `s3b log` tails),
+// "off" = no file logging, "custom" = the user-picked Dir. The zero value
+// ("", from a fresh install or a torn settings file) is OFF — file logging
+// is opt-in.
 // Levels/Scopes/Sources filter what is WRITTEN to the file (empty =
 // everything). They are deliberately independent of the in-app log
 // drawer, which filters client-side on its own controls — file logging
@@ -65,9 +68,9 @@ func settingsPath() (string, error) {
 	return filepath.Join(dir, "logsettings.json"), nil
 }
 
-// LoadSettings reads the preference; the zero value (default mode) is
-// returned when the file is missing or unreadable — logging must never
-// be taken down by a torn settings file.
+// LoadSettings reads the preference; the zero value (mode "" = off) is
+// returned when the file is missing or unreadable — a torn settings file
+// must never silently re-enable logging the user never asked for.
 func LoadSettings() Settings {
 	p, err := settingsPath()
 	if err != nil {
@@ -104,8 +107,23 @@ func sinkPath() (string, bool) {
 	return sinkPathFrom(LoadSettings())
 }
 
+// FileLoggingOn reports whether the events.jsonl sink is active — the
+// single answer to "is anything being written?" for callers that only
+// need the fact, not the path.
+func FileLoggingOn() bool {
+	_, ok := sinkPath()
+	return ok
+}
+
+// sinkPathFrom is an allowlist, deliberately: file logging is opt-in, so
+// "" (the zero value — fresh install or torn settings file) and any
+// unrecognized mode resolve to off instead of guessing a location.
+// "custom" without a Dir keeps the historical fallback to the default
+// spot beside profiles.json.
 func sinkPathFrom(s Settings) (string, bool) {
-	if s.Mode == "off" {
+	switch s.Mode {
+	case "default", "custom":
+	default: // "off", the zero value "", anything unrecognized
 		return "", false
 	}
 	if s.Mode == "custom" && s.Dir != "" {

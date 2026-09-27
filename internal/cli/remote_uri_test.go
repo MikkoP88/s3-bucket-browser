@@ -209,10 +209,14 @@ func TestSourceURIUnknownName(t *testing.T) {
 
 func TestLogCommand(t *testing.T) {
 	cliEnv(t)
-	// The event log is populated through the shared package; simulate GUI
-	// activity by appending directly, then read via the command.
+	// File logging is off by default — the empty-log read above prints the
+	// enable hint. Turn the sink on, then simulate GUI activity by
+	// appending directly through the shared package and read via the command.
 	if code := Execute([]string{"log"}); code != 0 {
 		t.Fatalf("log empty: exit %d", code)
+	}
+	if err := eventlog.SaveSettings(eventlog.Settings{Mode: "default"}); err != nil {
+		t.Fatal(err)
 	}
 	appendTestEvent(t, "info", "transfer", "copied a.txt")
 	appendTestEvent(t, "error", "delete", "boom")
