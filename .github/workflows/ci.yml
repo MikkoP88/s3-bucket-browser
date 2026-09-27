@@ -109,30 +109,20 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           BUILD_TAGS: ${{ matrix.tags != '' && format('-tags {0}', matrix.tags) || '' }}
-          # darwin cross-arch (amd64 on arm64 runners) disables cgo by
-          # default, but Wails' darwin frontend is cgo — force it on. The
-          # macOS 26 SDK also no longer auto-links UniformTypeIdentifiers
-          # (Wails' dialog filters use UTType), so link the framework
-          # explicitly. -mmacosx-version-min pins the deployment target for
-          # BOTH the cgo compile and the external link — Xcode 26's clang
-          # otherwise defaults it to the SDK version (26.0), and every Mac
-          # below that refuses to launch the binary. 12.0 = Go 1.26's own
-          # darwin floor; keep it in sync with release.yml (MACOS_MIN) and
-          # the README. Empty string elsewhere = unset = Go's native
-          # defaults.
+          # macOS GUI uses cgo, also when building the other architecture.
+          # Keep the deployment target aligned with scripts/build-macos.sh;
+          # 13.0 accommodates both Go 1.26 and Go 1.27.
           CGO_ENABLED: ${{ matrix.goos == 'darwin' && '1' || '' }}
-          CGO_CFLAGS: ${{ matrix.goos == 'darwin' && '-mmacosx-version-min=12.0' || '' }}
-          CGO_LDFLAGS: ${{ matrix.goos == 'darwin' && '-mmacosx-version-min=12.0 -framework UniformTypeIdentifiers' || '' }}
+          CGO_CFLAGS: ${{ matrix.goos == 'darwin' && '-mmacosx-version-min=13.0' || '' }}
+          CGO_LDFLAGS: ${{ matrix.goos == 'darwin' && '-mmacosx-version-min=13.0 -framework UniformTypeIdentifiers' || '' }}
 
-      # Same gate as the release workflow: the darwin binary must carry
-      # the documented minimum, not whatever the runner's clang defaulted
-      # to this week.
+      # Verify the documented minimum in the actual Mach-O artifact.
       - name: Verify darwin minimum-system-version
         if: matrix.goos == 'darwin'
         run: |
           vtool -show-build "dist/${{ matrix.artifact }}"
-          vtool -show-build "dist/${{ matrix.artifact }}" | grep -Eq "(minos|version) 12.0$" || {
-            echo "::error::darwin binary minimum is not macOS 12.0 — the toolchain default leaked into the artifact"
+          vtool -show-build "dist/${{ matrix.artifact }}" | grep -Eq "(minos|version) 13.0$" || {
+            echo "::error::darwin binary minimum is not macOS 13.0 — the toolchain default leaked into the artifact"
             exit 1
           }
 
@@ -140,6 +130,25 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
+
+  mac-local-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+      # Exercise the documented local commands, not only raw go build.
+      - name: Build local binary and app bundle
+        run: |
+          make build
+          make mac
+          bin/s3b version
+          "dist/S3 Bucket Browser.app/Contents/MacOS/s3b" version
+          codesign --verify --strict --verbose=2 "dist/S3 Bucket Browser.app"
+      - name: Test on macOS
+        run: make test
 
   e2e-minio:
     runs-on: ubuntu-latest
