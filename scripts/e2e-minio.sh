@@ -2,9 +2,10 @@
 # End-to-end test of the s3b CLI against a running MinIO on localhost:9000.
 #
 # Prerequisite: MinIO listening on localhost:9000 with minioadmin/minioadmin
-# credentials (see the e2e-minio CI job, or:
-#   docker run -d -p 9000:9000 -e MINIO_ROOT_USER=minioadmin \
-#     -e MINIO_ROOT_PASSWORD=minioadmin quay.io/minio/minio:latest server /data)
+# credentials — `bash scripts/start-minio.sh` downloads the pinned
+# GitHub-release binary and starts it (quay.io refuses anonymous pulls
+# since 24 Sep 2026; on Windows add S3B_MINIO_OS_ARCH=windows-amd64
+# S3B_MINIO_DIR=<dir>).
 #
 # The test never touches the user's profile store: S3B_CONFIG is pointed at a
 # throwaway directory for the whole run.

@@ -5,9 +5,9 @@
 # source tree at the destination: same relative paths, same sizes, and
 # (per round-trip cell) the same bytes.
 #
-# Servers (see the e2e-cross CI job, or locally:
-#   docker run -d -p 9000:9000 -e MINIO_ROOT_USER=minioadmin \
-#     -e MINIO_ROOT_PASSWORD=minioadmin quay.io/minio/minio:latest server /data
+# Servers (see the e2e-cross CI job, or locally: MinIO via
+#   `bash scripts/start-minio.sh` (pinned GitHub-release binary; quay.io
+#   refuses anonymous pulls since 24 Sep 2026), plus
 #   docker run -d -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100:upload
 #   docker run -d -p 2121:21 -p 21000-21002:21000-21002 \
 #     -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
