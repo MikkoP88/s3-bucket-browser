@@ -4,6 +4,269 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [1.1.0-beta.21] — 2026-09-27
+
+### Fixed
+
+- **A data source never repeats its own identity in its own paths.**
+  Every path surface now renders the canonical hierarchy
+  `<source>://<content>`: a bucket-scoped S3 source's name already IS
+  the bucket, so the bucket never appears again after `://` (the
+  reported `testijotain://testijotain/…` doubling is gone), and the
+  scoped root crumb stays inside the source's contents — the account
+  bucket list is unreachable from a single data source, by design.
+  Legacy account-wide sources keep the bucket as their first content
+  segment, and a path copied under the old doubled rendering still
+  navigates (parsePath folds an exact-case repeated bucket away). One
+  scope-aware composer feeds the navbar path bar, breadcrumbs,
+  properties windows, transfer labels, the dual-pane crumb and the
+  directory picker; remote sources render the same hierarchy with no
+  host or port leak. The CLI refuses `NAME://` browsing with s3://
+  guidance while cp/mv accept scoped operands as content-only
+  (CLI-S3-48, GUI-85, GUI-86).
+
+- **External links can no longer hijack the webview.** A middle-click
+  or new-tab gesture on an external link now routes to the OS browser
+  (with a window.open fallback), and the context menu is suppressed on
+  external links — no gesture can swap the app out for an external
+  page inside the webview.
+
+- **Aborted FTP uploads no longer strand remote staging.** After a
+  torn data connection the pooled control channel desyncs, and the
+  discard path used to mistake a poisoned listing verdict for "no such
+  file" without ever issuing DELE — leaving the staged partial
+  behind. Suspect verdicts are now wrapped as unreliable (with
+  redial), the miss verdict must be earned with a SIZE probe, and the
+  discard retries on a fresh connection; wire-proven end to end
+  (GUI-71). Remote stage names also lost their leading dot
+  (`s3b-part-` prefix), so a stranded stage is visible to users, and
+  transfers re-read size after staging.
+
+- **ClearObjectRetention requests governance bypass** — MinIO rejects
+  the clear with "Object is WORM protected" otherwise.
+
+- **The License window's version row can no longer stick at `v?`.** A
+  freshly opened license popout could render before the Wails
+  bindings land, and the swallowed version-fetch rejection left the
+  About row empty for the window's whole life. The fetch now retries
+  (bounded) until the binding answers.
+
+### Added
+
+- **macOS builds are supported and documented.** A dedicated build
+  path (`scripts/build-macos.sh`, `docs/macos-build.md`) takes a local
+  macOS build from the Xcode toolchain through notarization, with CI
+  wired to match; the README slims to pointers (PR #1).
+
+- **The verification matrix grew from 138 to 169 rows** across five
+  critical-action rounds: every data-affecting action (deletes,
+  edits, cancels, overwrites, purges, conversions, moves) swept
+  across all five source types on both faces; sync download
+  `--delete` aiming only at the extra local file; count-phase purge
+  cancel; remote-delete interruption cells (cancel and wire-death
+  with honest partial counters, RemoveSource mid-loop, engine healing
+  after wire-death, keyring hygiene around battery wipes); the
+  cross-source engine under wire-death (no partial ever sits at the
+  final name); the editor concurrent-change race on a versioned
+  bucket (last-writer-wins, the loser recoverable); and the canonical
+  path-hierarchy rows. CI now logs in to quay.io for the MinIO
+  fixtures (anonymous pulls are refused upstream).
+
+## [1.1.0-beta.20] — 2026-09-26
+
+### Changed
+
+- **The icon master is the author's draw.io original, verbatim.**
+  beta.19's brand-mark redraw smoothed the folder's edges with
+  computed curves; the author's actual draw.io master — one straight
+  hinge slope per edge — replaces the approximation, and every surface
+  (the exe icon, popouts, About box) re-renders from the adopted
+  vector.
+
+- **README restructured for builders.** The build guide is renamed
+  "Build from source" and the CLI quickstart becomes usage-only; the
+  macOS path is documented end to end — Xcode toolchain through
+  notarization.
+
+## [1.1.0-beta.19] — 2026-09-26
+
+### Added
+
+- **A brand mark, everywhere the app shows itself.** One vector master
+  (build/icon.svg — blue folder, gray back panel and tab, darker fold
+  shadows) now feeds every surface the app presents: Windows exes embed
+  a 7-image icon through the versioninfo tool's new -icon flag
+  (RT_GROUP_ICON lands at resource id 3, the slot the Wails window shell
+  loads, so the taskbar, Alt-Tab and the window corner all match), the
+  NSIS installer and uninstaller carry build/icon.ico, macOS bundles
+  carry AppIcon.icns through CFBundleIconFile, Linux windows get the
+  mark via Options.Icon, and the frontend serves assets/logo.svg as the
+  favicon, the empty-state mark and the About-box logo; the README leads
+  with it. Derived assets are deterministic: scripts/gen-icons.mjs
+  rasterizes the master through headless Chromium into build/iconset,
+  and tools/appicon (stdlib-only, unit-tested) assembles build/icon.ico
+  (DIB32 below 64px for legacy shell surfaces, PNG above) and
+  build/AppIcon.icns from that set — the committed binaries change only
+  when the artwork does. The master itself was traced from the supplied
+  artwork and validates at 99.3% pixel-class agreement against the
+  source raster.
+
+### Removed
+
+- **macOS builds — withdrawn from every release and from the pipeline.**
+  The dmg images the releases shipped through v1.1.0-beta.18 carried
+  non-functional apps: every darwin asset is deleted from the existing
+  releases (each SHA256SUMS regenerated without them) and the darwin
+  job is gone from the release workflow — v1.1.0-beta.19 onward ships
+  Windows and Linux only. macOS stays build-from-source (the README
+  keeps the recipe, marked experimental), with no support guarantees
+  while the verification fleet has no Mac.
+
+### Changed
+
+- **README: one Quickstart build guide for every OS.** The build
+  instructions that lived inline in Quickstart (GUI) moved into a
+  dedicated Quickstart (build from source) section with a real recipe
+  per platform — Linux desktop GUI (gtk3/webkit2gtk 4.1), Windows
+  (plain + release-style with the icon-bearing versioninfo syso),
+  macOS (local recipe), the headless CLI and the windowless
+  browser-driven build — each mirroring what the release workflow
+  actually does; Quickstart (GUI)/(CLI), the requirements bullet and
+  docs/usage.md’s build link all point at it.
+
+### Fixed
+- **Cancel on a sub-view now goes back, not out.** Cancelling the
+  start-directory browser while adding a data source closed the
+  whole editor with it — the dialog framework had a single shared
+  slot, so a sub-dialog replaced its parent and the parent was gone
+  when the child closed (Escape was worse: both dialogs' handlers
+  were live, so one press wiped both; the parent's handlers also
+  leaked). Modals are now a stack: only the top one answers Escape,
+  Tab and the backdrop; the parent is parked with every field value
+  intact and returns exactly as it was when the child closes —
+  Browse → Cancel (or Escape) lands back in the editor, the
+  browser's New-folder prompt stacks a third level and returns to
+  the browser, the admin panel survives its cleanup windows, the
+  settings sheet survives its Reset confirm, and the import dialog
+  no longer re-shows itself after a nested prompt (the old
+  workaround double-stacked it).
+
+
+- **Add-data-source name auto-fill no longer truncates.** A remote
+  host shrank to its first label — "10.20.3.65" suggested the name
+  "10" — and a start directory replaced the host entirely with the
+  directory's last segment. The suggestion now carries the full host,
+  and once a start directory is set, "<host> - <start directory>"
+  ("10.20.3.65 - /var/media/clips"); the S3 endpoint fallback likewise
+  keeps the full hostname instead of its first label. The name filter
+  was relaxed to match — it repurposed every space and slash into
+  dashes, which would have made that format impossible — safe because
+  names are display-only (IDs key the keyring and workspaces). The
+  suggestion also tracks the fields as they are typed (not only on
+  blur, matching the Browse buttons) and clears when the fields it
+  described are emptied; a hand-typed name still always wins.
+
+- **A rename can no longer clobber what already owns the target name.**
+  F2 onto an existing name used to merge silently: the file rename
+  overwrote the target object, and a folder rename copied its contents
+  INTO the target folder and then deleted the source — two trees
+  quietly becoming one. The occupancy guard that was supposed to stop
+  this probed a double-slash key ("name//") and so found nothing, and
+  remote sources (SFTP/SCP/FTP/WebDAV) had no guard at all. Now every
+  rename — file or folder, S3 or remote — refuses when the target
+  exists in ANY form (the file key, the folder marker, or anything
+  beneath the prefix: a folder with no marker still counts as
+  occupied), a folder rename lands beside its parent under the new
+  name, and a same-name rename is a no-op. Remote renames Stat the
+  target first — engine Rename semantics vary (SFTP overwrites files
+  silently, WebDAV MOVE merges by server policy).
+
+- **A stopped editor session stays stopped.** Discarding an edit
+  (StopEdit with upload=false) ended the session, but the watcher
+  goroutine could outlive it and keep pushing the discarded local
+  changes to the object on its next poll — a discard that un-did
+  itself about a second later. The watcher now re-checks the session
+  state on every tick and exits with it: what the user throws away
+  stays thrown away.
+
+- **--no-clobber now means no clobber on every copy path.** Server-side
+  S3→S3 copies and remote-engine uploads (SFTP/WebDAV/FTP → S3) ignored
+  the flag outright; worse, mv deleted the source file after a SKIPPED
+  upload — the copy was refused and the move still happened — and a
+  directory move pruned the emptied source folder recursively even
+  when skipped files were still in it. Every path now pre-checks the
+  destination, reports the skip, moves nothing, and the source is only
+  ever removed after a real transfer.
+
+- **Downloads under --no-clobber no longer truncate local files — and a
+  skipped move keeps its source.** S3→local and remote→local downloads
+  over an existing local file wrote the new bytes over it (a local file
+  has no version history to recover from); mv then deleted the source
+  even though the download was skipped — the copy was refused and the
+  move still happened — and a directory move pruned the emptied source
+  folder recursively, taking the skipped files with it (the return
+  count that gated the prune counted skips as copies; the verbose log
+  also wrote to a closed file handle). Every download path now
+  pre-checks the destination, reports the skip, moves nothing, and a
+  source is only ever removed after a real transfer.
+
+- **"Save and close" now pushes the edit that is on disk.** StopEdit
+  with upload=true trusted the watcher's dirty flag, which updates on
+  a 1.2 s poll — saving and closing inside that window silently pushed
+  nothing and lost the edit. The stop path now re-checks the staged
+  file against the last state the app knew: an explicit save pushes
+  what is on disk, an untouched file still costs no upload (and no
+  extra object version), and a save against a WORM-locked object
+  lands as a new version with the retained original intact and
+  unpurgeable — an editor session can never destroy locked bytes.
+
+- **A partially-failed delete no longer exits 0.** rm, rm --versions,
+  versions rm/purge and the move-pruning paths printed the per-object
+  errors but still exited 0 whenever some deletions failed — the
+  classic case is a WORM-retained version refusing the purge while
+  its sibling versions delete, so a scripted
+  `s3b rm --versions ... && next-step` would read success with the
+  locked bytes still in place. Batch deletes now exit 1 with an
+  "N deletion(s) failed" summary whenever anything survived.
+
+### Added
+
+- **Round 3 of extreme-level verification: the destructive surface
+  under proof.** The matrix grew from 124 to 132 rows across S3, SFTP,
+  WebDAV, FTP and the local disk, CLI and GUI: the execute-time delete
+  gate (a preview can go stale — 49 objects previewed, 3 more land
+  before Execute, and the fresh expansion refuses without force,
+  deleting nothing), canceling a 600-object delete mid-flight (the
+  out-of-scope prefix untouched, the scoped one countable, the task
+  registry never wedged, the job finishable afterwards), rename
+  refusals (file, folder and remote; both trees byte-intact after),
+  the editor-discard zombie regression, the local delete ladder
+  (filesystem roots refuse; siblings survive; mixed lists report
+  honestly), RemoveSource as pure bookkeeping (the data survives the
+  removal), and per-engine cross-source delete scope. The sweep also
+  caught a row the modal-stack change had made stale: GUI-30 now
+  proves the version timeline refreshes in place after a destroy,
+  instead of reopening through the grid the restored timeline covers.
+
+
+- **Round 4 of extreme-level verification: the download side and the
+  remaining source types.** The matrix grew from 132 to 138 rows:
+  no-clobber download guarantees on S3→local and remote→local — the
+  local file, the source object/file and the source folder all survive
+  a skip (CLI-S3-46, CLI-X-14); per-engine delete scope now covers
+  scp:// and FTP alongside SFTP and WebDAV (CLI-X-13); the remote
+  rename guard is proven through the bridge bindings on the FTP
+  engine (GUI-59); the editor's explicit save pushes what is on disk
+  and is refused by GOVERNANCE retention with the staged file kept as
+  the recovery copy (GUI-60 — the row caught the lost-save bug); the
+  keep-current purge deletes exactly N-1 versions with the newest
+  surviving byte-identical (GUI-61); and a delete canceled while
+  still in the count phase deletes exactly nothing, proven through a
+  latency-injected source (GUI-62). The cross battery is now
+  self-sufficient standalone (--only cross recreates the verifys3
+  profile a full run would have seeded), and the scp:// shorthand is
+  part of the permanently verified source set (CLI-X-01).
+
 ## [1.1.0-beta.18] — 2026-09-24
 
 ### Added
@@ -599,185 +862,6 @@ follow [Semantic Versioning](https://semver.org/).
   bottom bar — the same button styling as the Clear button sitting
   opposite it on the right (the compact small-text button that used to
   float above the list is gone), with the hidden-row count beside it.
-
-## [1.1.0-beta.19] — 2026-09-26
-
-### Added
-
-- **A brand mark, everywhere the app shows itself.** One vector master
-  (build/icon.svg — blue folder, gray back panel and tab, darker fold
-  shadows) now feeds every surface the app presents: Windows exes embed
-  a 7-image icon through the versioninfo tool's new -icon flag
-  (RT_GROUP_ICON lands at resource id 3, the slot the Wails window shell
-  loads, so the taskbar, Alt-Tab and the window corner all match), the
-  NSIS installer and uninstaller carry build/icon.ico, macOS bundles
-  carry AppIcon.icns through CFBundleIconFile, Linux windows get the
-  mark via Options.Icon, and the frontend serves assets/logo.svg as the
-  favicon, the empty-state mark and the About-box logo; the README leads
-  with it. Derived assets are deterministic: scripts/gen-icons.mjs
-  rasterizes the master through headless Chromium into build/iconset,
-  and tools/appicon (stdlib-only, unit-tested) assembles build/icon.ico
-  (DIB32 below 64px for legacy shell surfaces, PNG above) and
-  build/AppIcon.icns from that set — the committed binaries change only
-  when the artwork does. The master itself was traced from the supplied
-  artwork and validates at 99.3% pixel-class agreement against the
-  source raster.
-
-### Removed
-
-- **macOS builds — withdrawn from every release and from the pipeline.**
-  The dmg images the releases shipped through v1.1.0-beta.18 carried
-  non-functional apps: every darwin asset is deleted from the existing
-  releases (each SHA256SUMS regenerated without them) and the darwin
-  job is gone from the release workflow — v1.1.0-beta.19 onward ships
-  Windows and Linux only. macOS stays build-from-source (the README
-  keeps the recipe, marked experimental), with no support guarantees
-  while the verification fleet has no Mac.
-
-### Changed
-
-- **README: one Quickstart build guide for every OS.** The build
-  instructions that lived inline in Quickstart (GUI) moved into a
-  dedicated Quickstart (build from source) section with a real recipe
-  per platform — Linux desktop GUI (gtk3/webkit2gtk 4.1), Windows
-  (plain + release-style with the icon-bearing versioninfo syso),
-  macOS (local recipe), the headless CLI and the windowless
-  browser-driven build — each mirroring what the release workflow
-  actually does; Quickstart (GUI)/(CLI), the requirements bullet and
-  docs/usage.md’s build link all point at it.
-
-### Fixed
-- **Cancel on a sub-view now goes back, not out.** Cancelling the
-  start-directory browser while adding a data source closed the
-  whole editor with it — the dialog framework had a single shared
-  slot, so a sub-dialog replaced its parent and the parent was gone
-  when the child closed (Escape was worse: both dialogs' handlers
-  were live, so one press wiped both; the parent's handlers also
-  leaked). Modals are now a stack: only the top one answers Escape,
-  Tab and the backdrop; the parent is parked with every field value
-  intact and returns exactly as it was when the child closes —
-  Browse → Cancel (or Escape) lands back in the editor, the
-  browser's New-folder prompt stacks a third level and returns to
-  the browser, the admin panel survives its cleanup windows, the
-  settings sheet survives its Reset confirm, and the import dialog
-  no longer re-shows itself after a nested prompt (the old
-  workaround double-stacked it).
-
-
-- **Add-data-source name auto-fill no longer truncates.** A remote
-  host shrank to its first label — "10.20.3.65" suggested the name
-  "10" — and a start directory replaced the host entirely with the
-  directory's last segment. The suggestion now carries the full host,
-  and once a start directory is set, "<host> - <start directory>"
-  ("10.20.3.65 - /var/media/clips"); the S3 endpoint fallback likewise
-  keeps the full hostname instead of its first label. The name filter
-  was relaxed to match — it repurposed every space and slash into
-  dashes, which would have made that format impossible — safe because
-  names are display-only (IDs key the keyring and workspaces). The
-  suggestion also tracks the fields as they are typed (not only on
-  blur, matching the Browse buttons) and clears when the fields it
-  described are emptied; a hand-typed name still always wins.
-
-- **A rename can no longer clobber what already owns the target name.**
-  F2 onto an existing name used to merge silently: the file rename
-  overwrote the target object, and a folder rename copied its contents
-  INTO the target folder and then deleted the source — two trees
-  quietly becoming one. The occupancy guard that was supposed to stop
-  this probed a double-slash key ("name//") and so found nothing, and
-  remote sources (SFTP/SCP/FTP/WebDAV) had no guard at all. Now every
-  rename — file or folder, S3 or remote — refuses when the target
-  exists in ANY form (the file key, the folder marker, or anything
-  beneath the prefix: a folder with no marker still counts as
-  occupied), a folder rename lands beside its parent under the new
-  name, and a same-name rename is a no-op. Remote renames Stat the
-  target first — engine Rename semantics vary (SFTP overwrites files
-  silently, WebDAV MOVE merges by server policy).
-
-- **A stopped editor session stays stopped.** Discarding an edit
-  (StopEdit with upload=false) ended the session, but the watcher
-  goroutine could outlive it and keep pushing the discarded local
-  changes to the object on its next poll — a discard that un-did
-  itself about a second later. The watcher now re-checks the session
-  state on every tick and exits with it: what the user throws away
-  stays thrown away.
-
-- **--no-clobber now means no clobber on every copy path.** Server-side
-  S3→S3 copies and remote-engine uploads (SFTP/WebDAV/FTP → S3) ignored
-  the flag outright; worse, mv deleted the source file after a SKIPPED
-  upload — the copy was refused and the move still happened — and a
-  directory move pruned the emptied source folder recursively even
-  when skipped files were still in it. Every path now pre-checks the
-  destination, reports the skip, moves nothing, and the source is only
-  ever removed after a real transfer.
-
-- **Downloads under --no-clobber no longer truncate local files — and a
-  skipped move keeps its source.** S3→local and remote→local downloads
-  over an existing local file wrote the new bytes over it (a local file
-  has no version history to recover from); mv then deleted the source
-  even though the download was skipped — the copy was refused and the
-  move still happened — and a directory move pruned the emptied source
-  folder recursively, taking the skipped files with it (the return
-  count that gated the prune counted skips as copies; the verbose log
-  also wrote to a closed file handle). Every download path now
-  pre-checks the destination, reports the skip, moves nothing, and a
-  source is only ever removed after a real transfer.
-
-- **"Save and close" now pushes the edit that is on disk.** StopEdit
-  with upload=true trusted the watcher's dirty flag, which updates on
-  a 1.2 s poll — saving and closing inside that window silently pushed
-  nothing and lost the edit. The stop path now re-checks the staged
-  file against the last state the app knew: an explicit save pushes
-  what is on disk, an untouched file still costs no upload (and no
-  extra object version), and a save against a WORM-locked object
-  lands as a new version with the retained original intact and
-  unpurgeable — an editor session can never destroy locked bytes.
-
-- **A partially-failed delete no longer exits 0.** rm, rm --versions,
-  versions rm/purge and the move-pruning paths printed the per-object
-  errors but still exited 0 whenever some deletions failed — the
-  classic case is a WORM-retained version refusing the purge while
-  its sibling versions delete, so a scripted
-  `s3b rm --versions ... && next-step` would read success with the
-  locked bytes still in place. Batch deletes now exit 1 with an
-  "N deletion(s) failed" summary whenever anything survived.
-
-### Added
-
-- **Round 3 of extreme-level verification: the destructive surface
-  under proof.** The matrix grew from 124 to 132 rows across S3, SFTP,
-  WebDAV, FTP and the local disk, CLI and GUI: the execute-time delete
-  gate (a preview can go stale — 49 objects previewed, 3 more land
-  before Execute, and the fresh expansion refuses without force,
-  deleting nothing), canceling a 600-object delete mid-flight (the
-  out-of-scope prefix untouched, the scoped one countable, the task
-  registry never wedged, the job finishable afterwards), rename
-  refusals (file, folder and remote; both trees byte-intact after),
-  the editor-discard zombie regression, the local delete ladder
-  (filesystem roots refuse; siblings survive; mixed lists report
-  honestly), RemoveSource as pure bookkeeping (the data survives the
-  removal), and per-engine cross-source delete scope. The sweep also
-  caught a row the modal-stack change had made stale: GUI-30 now
-  proves the version timeline refreshes in place after a destroy,
-  instead of reopening through the grid the restored timeline covers.
-
-
-- **Round 4 of extreme-level verification: the download side and the
-  remaining source types.** The matrix grew from 132 to 138 rows:
-  no-clobber download guarantees on S3→local and remote→local — the
-  local file, the source object/file and the source folder all survive
-  a skip (CLI-S3-46, CLI-X-14); per-engine delete scope now covers
-  scp:// and FTP alongside SFTP and WebDAV (CLI-X-13); the remote
-  rename guard is proven through the bridge bindings on the FTP
-  engine (GUI-59); the editor's explicit save pushes what is on disk
-  and is refused by GOVERNANCE retention with the staged file kept as
-  the recovery copy (GUI-60 — the row caught the lost-save bug); the
-  keep-current purge deletes exactly N-1 versions with the newest
-  surviving byte-identical (GUI-61); and a delete canceled while
-  still in the count phase deletes exactly nothing, proven through a
-  latency-injected source (GUI-62). The cross battery is now
-  self-sufficient standalone (--only cross recreates the verifys3
-  profile a full run would have seeded), and the scp:// shorthand is
-  part of the permanently verified source set (CLI-X-01).
 
 ## [1.1.0-beta.17] — 2026-09-21
 
