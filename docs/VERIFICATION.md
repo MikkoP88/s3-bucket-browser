@@ -306,65 +306,61 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot is the **critical-actions
-extreme-verification round** (27 Sep 2026, `node scripts/verify.mjs` on
-Windows Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): a
-codebase-wide sweep of every action that can affect data — deletes,
-edits, cancels, overwrites, purges, conversions, moves — across all five
-source types (S3/MinIO, SFTP/SCP, FTP/FTPS, WebDAV(S), local) on both
-faces, growing the matrix from 138 to 149 rows with 11 new extreme rows
-and hardening the holes the sweep surfaced. Release evidence for
-v1.1.0-beta.20 stays at
+Replaced on every run — this snapshot is the **round-2
+critical-actions sweep** (27 Sep 2026, `node scripts/verify.mjs` on
+Windows Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): a fresh
+mutation-surface audit — every App method, CLI command and dialog call
+site that can alter data, diffed against the row inventory — which
+confirmed the round-1 matrix and added the three rows the diff exposed,
+growing it from 149 to 152 rows. Release evidence for v1.1.0-beta.20
+stays at
 [`docs/verification/v1.1.0-beta.20/windows-x64/REPORT.md`](verification/v1.1.0-beta.20/windows-x64/REPORT.md).
 
 ```
-full matrix (149 rows):
-  142 PASS · 7 SKIP · 0 FAIL — 2346 s
+full matrix (152 rows):
+  145 PASS · 7 SKIP · 0 FAIL — 2401 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
   SWEEP-VIS-01  gui-visual   669/669 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
   standalone units, same tree:
-  --only gui          69 PASS · 2 SKIP · 0 FAIL — 1074 s
-  --only resilience    7 PASS · 0 SKIP · 0 FAIL —   76 s
+  --only s3                        42 PASS · 5 SKIP · 0 FAIL —  520 s
+  --only gui --row GUI-72,GUI-73    6 PASS · 0 SKIP · 0 FAIL —   97 s
 ```
 
 The round in brief:
 
-- **FTP transfer discard stranded remote staging** — the round's real
-  product bug. An aborted upload left the pooled control channel
-  desynced; the discard path then concluded "no such file" without ever
-  issuing DELE, and the partial stage stayed on the server. Fixed in
-  `pkg/core/remotefs/ftp.go` + `pkg/api/xfer.go`: suspect-channel
-  verdicts carry an `errFTPEntryUnreliable` sentinel that forces a
-  redial, a SIZE probe earns the basename-miss verdict
-  listing-independently, and the discard retries three times (400 ms
-  apart, 30 s per attempt). GUI-71's wire proof: partial stage
-  uploaded, DELE on a fresh connection the same second, then the full
-  upload + atomic RENAME on the retry.
-- The 11 new rows: CLI-X-15 remote mkdir honesty (parents created,
-  occupied names refused); CLI-RES-07 a torn download never truncates a
-  pre-existing local file; GUI-63 delete-bucket ladder; GUI-64 cancel
-  mid-download; GUI-65 remote delete ladder over FTP; GUI-66 canceled
-  creates leave nothing behind; GUI-67 purge dialog (markers restore a
-  buried object, noncurrent collapses every key to its current, >50
-  typed escalation — 770 markers armed in the passing full run);
-  GUI-68 storage-class dialog with the typed convert gate; GUI-69
-  object lock defeats the GUI's permanent delete; GUI-70 policy editor
-  round-trip with a CLI oracle; GUI-71 cut/paste move whose cancel
-  strands nothing on either side.
-- Standing rows now cover the sweep's earlier finds: download
-  stage-and-commit, the WORM-clear bypass, transfer size re-read, FTP
-  list guards, engine-driven removeDir, remote stage-name visibility.
-- Harness self-sufficiency: `--only resilience` and `--row <id>` triage
-  runs seed their own sources and buckets instead of assuming the S3
-  battery ran first, and GUI-67's CLI oracle pins `--profile verifys3`
-  — a profile-less call went blind once five profiles shared the store
-  while the purge itself had worked (the engine's version walk past the
-  1000-entry page boundary was separately proven by CLI probe: 1055
-  versions + 5 markers, count 5/5, purge 5/5, every buried object
-  restored).
+- The mutation-surface diff cleared every suspect it examined:
+  drag-out is copy-only loopback streaming (never a delete path), mv
+  clobber semantics were already pinned by CLI-S3-45/46, remote
+  delete/mkdir/rename by CLI-X-13/15 + GUI-65/66/59, and the
+  PAB/lifecycle/encryption admin tabs sit behind the same refused
+  MinIO APIs already recorded as provider gaps.
+- The three real holes, now pinned. **CLI-S3-47** — sync's download
+  direction points `--delete` at the LOCAL tree, the side with no
+  version history to recover from: repair is byte-exact, a local-only
+  file survives a plain sync, `--dry-run` plans the removal without
+  touching disk, the real `--delete` removes exactly that one file
+  while every synced file and an out-of-scope sibling directory stay
+  intact, and both-s3:// / both-local operand pairs are refused as
+  usage errors. **GUI-72** — a PERMANENT destroy (no markers, no undo)
+  canceled while still in its COUNT phase destroys exactly zero of 90
+  seeded versions, the task reports `canceled` — never done — and the
+  app stays healthy enough to finish the destroy exactly on a direct
+  re-run while an out-of-scope sibling survives. **GUI-73** — the
+  admin Lock tab: a wrong typed word fires nothing, the provider's
+  refusal to arm object lock post-creation surfaces as an error toast
+  while the bucket stays writable, and a saved GOVERNANCE 1-day
+  default rule arms WORM on a NEW object that defeats the GUI
+  permanent delete until Clear releases it and the destroy lands.
+- Round 1's find re-proven in this run: the FTP transfer discard
+  stranding fix (`pkg/core/remotefs/ftp.go` + `pkg/api/xfer.go`) and
+  its 11 extreme rows — the ladder from GUI-63's delete-bucket typed
+  escalation to GUI-71's cancel-strands-nothing move.
+- Harness self-sufficiency carried forward: `--only <cat>` and
+  `--row <id>` triage runs seed their own sources and buckets, and
+  every GUI-battery CLI oracle pins `--profile verifys3`.
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
 plus `testartifacts/verification/verification.json` for the machine copy
