@@ -23,6 +23,12 @@ import { settingsDialog } from './settings.js';
 const $ = (id) => document.getElementById(id);
 
 const grid = new Grid();
+// Read-only handle for verification + debugging (commands.js exposes
+// __s3bCmdState the same way): the virtualized grid renders only the
+// visible window, so DOM queries cannot see rows beyond it — __s3bGrid
+// exposes the logical list (rows) and scrollTo() so external tooling can
+// observe and reveal any row without reaching into grid internals.
+window.__s3bGrid = grid;
 const localPane = new LocalPane();
 const tree = new Tree({
   onNavigate: (loc) => nav.to(loc),

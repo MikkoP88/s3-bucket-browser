@@ -15,6 +15,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -380,12 +381,24 @@ func (a *App) planS3Item(ctx context.Context, p *xferPlan, addDir func(int, stri
 		if key == "" {
 			return fmt.Errorf("invalid S3 item key %q", it.Key)
 		}
+		size := it.Size
+		if size <= 0 {
+			// Clipboard-cut paste items carry no size (only keys survive
+			// the clipboard) — read it back so the progress totals and the
+			// transfer log tell the truth. Directory items re-read sizes
+			// through their walk below; this is the single-file twin.
+			head, err := side.client.S3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(it.Bucket), Key: aws.String(key)})
+			if err != nil {
+				return err
+			}
+			size = aws.ToInt64(head.ContentLength)
+		}
 		p.files = append(p.files, xferFile{
 			item: idx, srcKind: "s3", client: side.client,
 			bucket: it.Bucket, srcPath: key,
-			dstPath: xferDstJoin(dst, leafName(key), ""), size: it.Size,
+			dstPath: xferDstJoin(dst, leafName(key), ""), size: size,
 		})
-		p.total += it.Size
+		p.total += size
 		p.dels = append(p.dels, xferItemDel{item: idx, kind: "s3", client: side.client, bucket: it.Bucket, keys: []string{it.Key}})
 		return nil
 	}
@@ -442,11 +455,22 @@ func (a *App) planRemoteItem(ctx context.Context, p *xferPlan, addDir func(int, 
 	trimmed := strings.TrimSuffix(rootP, "/")
 	base := leafName(trimmed)
 	if !it.IsDir {
+		size := it.Size
+		if size <= 0 {
+			// Same re-read as the S3 side: clipboard-cut items carry keys
+			// only, so the single-file path stats the engine for the real
+			// size instead of planning a zero-byte total.
+			st, err := side.fs.Stat(ctx, trimmed)
+			if err != nil {
+				return err
+			}
+			size = st.Size
+		}
 		p.files = append(p.files, xferFile{
 			item: idx, srcKind: "remote", srcLock: side.lockID, fs: side.fs,
-			srcPath: trimmed, dstPath: xferDstJoin(dst, base, ""), size: it.Size,
+			srcPath: trimmed, dstPath: xferDstJoin(dst, base, ""), size: size,
 		})
-		p.total += it.Size
+		p.total += size
 		p.dels = append(p.dels, xferItemDel{
 			item: idx, kind: "remote", fs: side.fs, lockID: side.lockID,
 			files: []string{trimmed},
@@ -797,7 +821,12 @@ func (a *App) xferViaTemp(ctx context.Context, r io.ReadCloser, size int64, f *x
 }
 
 // xferRemoteCreate writes one file on a remote destination, creating the
-// parent directory once per job (madeDirs cache).
+// parent directory once per job (madeDirs cache). The payload is staged to
+// a temp sibling (s3b-part- prefix) and swapped into place on success, so a
+// canceled or failed write can never leave a partial at the final name —
+// remote engines have no version history to recover a truncated file from.
+// The dest-side lock serializes jobs into one engine, so the fixed temp
+// name cannot collide between concurrent writers.
 func (a *App) xferRemoteCreate(ctx context.Context, dst xferDestSide, p string, r io.Reader, size int64, fn transfer.ProgressFn, maxBPS int64, madeDirs map[string]bool) error {
 	if dir := strings.TrimSuffix(path.Dir(p), "/"); dir != "" && dir != "." && !madeDirs[dir] {
 		if err := dst.fs.MkdirAll(ctx, dir); err != nil {
@@ -805,21 +834,66 @@ func (a *App) xferRemoteCreate(ctx context.Context, dst xferDestSide, p string, 
 		}
 		madeDirs[dir] = true
 	}
-	return dst.fs.Create(ctx, p, transfer.NewProgressReader(r, fn, size, maxBPS))
+	dir, base := path.Split(p)
+	// No leading dot in the stage name: FTP servers hide dotfiles from
+	// LIST, and an invisible stage is unremovable — the discard Remove
+	// below stats through the same listing, aborts with "no such file",
+	// and strands the partial forever (it also blocks RMDIR of the parent,
+	// since the server counts what listings don't show). SFTP and WebDAV
+	// list dotfiles anyway, and S3 destinations don't take this path, so
+	// the rename only changes what vsftpd-class servers can see — making
+	// the stage visible everywhere is what makes it cleanable everywhere.
+	tmp := path.Join(dir, "s3b-part-"+base)
+	// Discarding the stage must survive the task's own cancellation: an
+	// engine that honors a canceled context (WebDAV's HTTP requests fail
+	// outright, before a byte is sent) would refuse the cleanup Remove and
+	// strand the staging file on the server. WithoutCancel keeps the
+	// request's values while dropping the done channel; the timeout bounds
+	// a hung connection. A single shot is not enough either — the aborted
+	// write can poison the very connection the discard rides (a desynced
+	// FTP control channel reading the dead command's stale reply), so a
+	// short retry window also covers engines without self-healing probes:
+	// a canceled write must never strand its stage on the server.
+	discard := func(name string) {
+		for attempt := 0; ; attempt++ {
+			dctx, dcancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			err := dst.fs.Remove(dctx, name)
+			dcancel()
+			if err == nil || errors.Is(err, fs.ErrNotExist) || attempt >= 2 {
+				return
+			}
+			select {
+			case <-time.After(400 * time.Millisecond):
+			case <-ctx.Done():
+			}
+		}
+	}
+	if err := dst.fs.Create(ctx, tmp, transfer.NewProgressReader(r, fn, size, maxBPS)); err != nil {
+		discard(tmp) // a half-written stage file is garbage, never data
+		return err
+	}
+	// Engines' Rename overwrites (posix-rename / MOVE Overwrite:T / RNTO);
+	// servers that refuse an overwrite target get the explicit two-step.
+	if err := dst.fs.Rename(ctx, tmp, p); err != nil {
+		if rmErr := dst.fs.Remove(ctx, p); rmErr == nil {
+			if err = dst.fs.Rename(ctx, tmp, p); err == nil {
+				return nil
+			}
+		}
+		discard(tmp)
+		return fmt.Errorf("commit %s: %w", p, err)
+	}
+	return nil
 }
 
-// xferLocalCreate writes one file on the local destination.
+// xferLocalCreate writes one file on the local destination, staged through
+// transfer.StageAndCommit: a canceled or failed copy can never truncate a
+// pre-existing file at p and never leaves a partial at the final name.
 func xferLocalCreate(p string, r io.Reader, size int64, fn transfer.ProgressFn, maxBPS int64) error {
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	return transfer.StageAndCommit(p, func(f *os.File) error {
+		_, err := io.Copy(f, transfer.NewProgressReader(r, fn, size, maxBPS))
 		return err
-	}
-	f, err := os.Create(p)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = io.Copy(f, transfer.NewProgressReader(r, fn, size, maxBPS))
-	return err
+	})
 }
 
 // xferDestExists reports whether a destination path is taken.
