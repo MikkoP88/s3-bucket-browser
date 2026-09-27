@@ -4764,6 +4764,11 @@ async function guiBattery() {
     // exercise the DOM fallback), which is how an empty window shipped
     await page.goto(`http://127.0.0.1:${GUI_PORT}/?popout=license`);
     await waitFor(async () => await evalPage(() => !!document.querySelector('.tabstrip .tab.active')), 8000, 'license popout tabs');
+    // the About version row fills asynchronously (GetVersion over the
+    // bridge) — a freshly loaded popout page can even render before the
+    // bindings land, in which case the app retries — so wait for the row
+    // instead of racing it
+    await waitFor(async () => /^v\d/.test(await evalPage(() => (document.querySelector('.tabbody .v.mono') || {}).textContent || '')), 15000, 'license version row');
     const shape = await evalPage(() => ({
       dead: document.body.textContent.includes('Unknown popout'),
       tabs: Array.from(document.querySelectorAll('.tabstrip .tab')).map((t) => t.dataset.tab),
