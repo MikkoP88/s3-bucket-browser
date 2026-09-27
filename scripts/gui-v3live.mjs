@@ -385,20 +385,14 @@ async function runDeleteWindow(mode = '') {
   await shot(mode ? `delete-window-${mode}` : 'delete-window-marker');
   await clickFooter(/^delete$/i);
 }
+// crumbRoot clicks the SOURCE crumb (the first breadcrumb). Under the
+// canonical <source>://<content> hierarchy that lands on the source's
+// content root: for the bucket-scoped fault source the source name IS
+// the bucket, so this is the bucket's object root — the bucket never
+// gets a crumb of its own and the bucket list is unreachable by design;
+// for a remote engine it is the server root.
 async function crumbRoot() {
   await evalPage(() => document.querySelector('#breadcrumb .crumb')?.click());
-  await sleep(120);
-}
-// bucketRoot clicks the BUCKET crumb (the one labeled with the bucket name)
-// — crumbRoot clicks the SOURCE crumb, which lands on the bucket LIST
-// (ListBuckets), not the bucket's object root. The fault lab asserts on
-// bucket-root rows, so it must navigate here.
-async function bucketRoot() {
-  await evalPage((b) => {
-    const c = Array.from(document.querySelectorAll('#breadcrumb .crumb'))
-      .find((x) => x.textContent.trim() === b);
-    c?.click();
-  }, BUCKET);
   await sleep(120);
 }
 async function treeOpen(label) {
@@ -1285,7 +1279,7 @@ async function walk() {
         // paced transfer (assert ≥3s below) while chunks keep resetting
         // the 30s no-progress watchdog — alive, just slow.
         await setMode({ mode: 'throttle', bps: 8192 });
-        await bucketRoot();
+        await crumbRoot();
         await waitFor(async () => (await rowKeys()).includes(`${SLOW}/`), 30000, 'throttled root listing');
         const t0 = Date.now();
         await dblClickRow(`${SLOW}/`);
@@ -1299,7 +1293,7 @@ async function walk() {
 
       await step('reset (RST mid-session): classified error + Retry recovers', async () => {
         await setMode({ mode: 'reset' });
-        await bucketRoot();
+        await crumbRoot();
         const st = await waitFor(errState, 30000, 'reset error state');
         await ok(`reset → "${st.title}" + Retry (${st.sub.slice(0, 60)}…)`,
           /could not load/i.test(st.title) && st.retry);

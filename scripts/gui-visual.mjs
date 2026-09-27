@@ -1506,7 +1506,13 @@ await step('tree-single-bucket-first-click', async () => {
   // hetzner's four buckets and the assertion below fails.
   await clickTree('nightly');
   await waitFor(async () => (await rowKeys()).includes('hello.txt'), 6000, 'first-click contents');
-  await ok('first click opens bucket contents', (await txt('#breadcrumb')).includes('db-dumps'));
+  // canonical hierarchy: a scoped source's name IS the bucket, so the
+  // breadcrumb at the content root is exactly the source — one crumb,
+  // and the bucket name never repeats after ://
+  await ok('first click opens bucket contents', evalPage(() => {
+    const crumbs = Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => (c.textContent || '').trim());
+    return crumbs.length === 1 && crumbs[0] === 'nightly';
+  }));
 });
 
 await step('tree-bucket-scoped-source', async () => {
@@ -1531,7 +1537,13 @@ await step('tree-bucket-scoped-source', async () => {
   // clicking the source node opens the bucket contents, not the buckets view
   await clickTree('website-prod');
   await waitFor(async () => (await rowKeys()).includes('index.html'), 6000, 'bucket-scoped navigate');
-  await ok('click opens bucket contents directly', (await txt('#breadcrumb')).includes('www-assets'));
+  // canonical hierarchy: the breadcrumb is the source alone — the
+  // bucket never repeats after :// and the buckets view is unreachable
+  // from a single data source
+  await ok('click opens bucket contents directly', evalPage(() => {
+    const crumbs = Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => (c.textContent || '').trim());
+    return crumbs.length === 1 && crumbs[0] === 'website-prod';
+  }));
   await ok('bucket-scoped source row highlighted', evalPage(() => Array.from(document.querySelectorAll('#tree .tnode'))
     .some((r) => r.classList.contains('sel') && r.querySelector('.tlabel')?.textContent === 'website-prod')));
   // bucket-scoped context menu: full bucket feature set + source management
