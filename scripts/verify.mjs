@@ -5896,6 +5896,381 @@ async function guiBattery() {
     await clearFilter();
     return 'typed gate inert on a wrong word; the refused enable surfaced honestly; the saved default rule armed WORM on a new object and defeated the GUI permanent destroy';
   });
+  await verify({ id: 'GUI-74', area: 'deletion', action: 'SFTP mutations on the GUI face: the clobber guard, and the delete ladder', ds: 'SFTP', scenario: 'SFTP posix-rename OVERWRITES a standing file silently — the app-level refuse-not-clobber guard is the only thing between a rename and destroyed bytes: renaming onto an occupied name must be refused with BOTH files byte-intact, a free name lands; the delete ladder then behaves like every engine — root refused, the pre-counted window Cancel keeps every byte, execute removes exactly the selected subtree while the sibling and parent survive — every oracle re-checked through the CLI face on its own connection', face: 'GUI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const S = 'verify-s74', u = `s74-${RUNID}`;
+    await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+    // the bridge resolves sources from the GUI store, the CLI from its own — both need this source
+    await call('SaveSource', { name: S, type: 'sftp', host: '127.0.0.1', port: SFTP_PORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
+    const seed = path.join(ART, 's74.txt');
+    await writeFile(seed, `s74 payload ${RUNID}\n`);
+    const A = path.join(ART, 's74-a.txt'), B = path.join(ART, 's74-b.txt');
+    await writeFile(A, 'A original — precious\n');
+    await writeFile(B, 'B original — precious\n');
+    for (const p of ['sub/one.txt', 'sub/two.txt', 'sib.txt']) {
+      const r = await cli(['cp', seed, `${S}://${u}/${p}`]);
+      need(r.code === 0, `seed ${p}: ${r.out}${r.err}`);
+    }
+    for (const [f, src] of [['a.txt', A], ['b.txt', B]]) {
+      const r = await cli(['cp', src, `${S}://${u}/${f}`]);
+      need(r.code === 0, `seed ${f}: ${r.out}${r.err}`);
+    }
+    // rung 1 — the clobber guard: SFTP would overwrite b.txt in place
+    let refused = false;
+    try { await call('RemoteRename', S, `${u}/a.txt`, 'b.txt'); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /already exists/i.test(refused), `the occupied rename went through on SFTP: ${refused}`);
+    const back = path.join(ART, 's74-back.txt');
+    for (const [f, want] of [['a.txt', 'A original — precious\n'], ['b.txt', 'B original — precious\n']]) {
+      await rm(back, { force: true });
+      const r = await cli(['cp', `${S}://${u}/${f}`, back]);
+      need(r.code === 0 && (await readFile(back, 'utf8')) === want, `${f} bytes disturbed by the refused rename: ${r.out}${r.err}`);
+    }
+    // a free name lands cleanly
+    await call('RemoteRename', S, `${u}/a.txt`, 'c.txt');
+    await rm(back, { force: true });
+    const rc = await cli(['cp', `${S}://${u}/c.txt`, back]);
+    need(rc.code === 0 && (await readFile(back, 'utf8')) === 'A original — precious\n', `the landed rename lost bytes: ${rc.out}${rc.err}`);
+    // rung 2 — the delete ladder through the real UI
+    const pv = await call('RemoteDeletePreview', S, ['/']);
+    need(pv && (pv.errors || []).some((e) => /root/i.test(String(e))) && !pv.files && !pv.folders,
+      `the source root was not refused: ${JSON.stringify(pv)}`);
+    await page.reload(); // boot re-reads sources — a bridge SaveSource never reaches the page's tree
+    await sleep(1200);
+    await treeOpen(S);
+    await sweepOverlays();
+    await waitFor(async () => {
+      await refresh();
+      return (await txt('#breadcrumb')).trim().endsWith(S);
+    }, 25000, `the view on the ${S} root`);
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k === u);
+    }, 50000, `this run's ${u}/ seed folder`);
+    await enterFolderByChild(u, 'sub');
+    await enterFolderByChild('sub', 'one.txt'); // INTO sub — this is the file-level ladder
+    await rightClickRow('one.txt');
+    await ctxItem(/^delete/i);
+    await waitFor(async () => /1 (object|file)/i.test(await modalText()), 8000, 'the pre-counted remote Delete window');
+    await closeModal(); // Cancel keeps every byte
+    let l = await cli(['ls', `${S}://${u}/`, '--recursive', '--json']);
+    need(l.out.includes('one.txt') && l.out.includes('two.txt') && l.out.includes('sib.txt'), `Cancel lost remote data: ${l.out}${l.err}`);
+    await rightClickRow('one.txt');
+    await ctxItem(/^delete/i);
+    await waitFor(async () => /1 (object|file)/i.test(await modalText()), 8000, 'the Delete window again');
+    await clickFooter(/^delete$/i);
+    await waitFor(async () => {
+      const rr = await cli(['ls', `${S}://${u}/sub/`, '--json']);
+      return !rr.out.includes('one.txt');
+    }, 45000, 'one.txt gone through the CLI face');
+    l = await cli(['ls', `${S}://${u}/`, '--recursive', '--json']);
+    need(l.out.includes('two.txt') && l.out.includes('sib.txt') && l.out.includes('c.txt') && !l.out.includes('a.txt'),
+      `the executed delete broke its scope: ${l.out}${l.err}`);
+    await cli(['rm', '-r', `${S}://${u}`, '--force']);
+    await call('RemoveSource', S).catch(() => {});
+    await cli(['source', 'remove', S]).catch(() => {});
+    return 'the SFTP clobber guard refused with both files byte-intact; Cancel kept every byte; execute removed exactly one.txt';
+  });
+
+  await verify({ id: 'GUI-75', area: 'deletion', action: 'WebDAV mutations on the GUI face: the merge guard, and the delete ladder', ds: 'WebDAV', scenario: 'a WebDAV MOVE onto an existing folder MERGES into it by server policy — children pour into the target and the boundary between two trees dissolves silently: renaming a folder onto an occupied sibling must be refused with both trees exactly as they were, a free name lands; the delete ladder then holds — root refused, Cancel keeps every byte, execute removes exactly the selected subtree while sibling trees survive — oracles through the CLI face', face: 'GUI' }, async () => {
+    if (!(await portOpen(WEBDAV_PORT))) return skip('WebDAV :7070 not reachable');
+    const W = 'verify-w75', u = `w75-${RUNID}`;
+    await cli(['source', 'add', W, `webdav://${E2E_USER}:${E2E_PASS}@127.0.0.1:${WEBDAV_PORT}/`]).catch(() => {});
+    await call('SaveSource', { name: W, type: 'webdav', host: '127.0.0.1', port: WEBDAV_PORT, username: E2E_USER, password: E2E_PASS, root: '/' });
+    const seed = path.join(ART, 'w75.txt');
+    await writeFile(seed, `w75 payload ${RUNID}\n`);
+    const X = path.join(ART, 'w75-x.txt'), Y = path.join(ART, 'w75-y.txt');
+    await writeFile(X, 'X original — precious\n');
+    await writeFile(Y, 'Y original — precious\n');
+    for (const [p, src] of [['dirA/x.txt', X], ['dirB/y.txt', Y], ['sub/one.txt', seed], ['sub/two.txt', seed], ['sib.txt', seed]]) {
+      const r = await cli(['cp', src, `${W}://${u}/${p}`]);
+      need(r.code === 0, `seed ${p}: ${r.out}${r.err}`);
+    }
+    // rung 1 — the merge guard: MOVE dirA onto dirB would pour x.txt INTO dirB
+    let refused = false;
+    try { await call('RemoteRename', W, `${u}/dirA`, 'dirB'); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /already exists/i.test(refused), `the occupied folder rename went through on WebDAV: ${refused}`);
+    const sa = await call('RemoteStat', W, `${u}/dirA`), sb = await call('RemoteStat', W, `${u}/dirB`);
+    need(sa && sa.isDir === true && sb && sb.isDir === true, `a tree was destroyed or merged: ${JSON.stringify(sa)} ${JSON.stringify(sb)}`);
+    let l = await cli(['ls', `${W}://${u}/dirB/`, '--json']);
+    need(!l.out.includes('x.txt'), 'dirA merged into dirB under the refused rename');
+    const back = path.join(ART, 'w75-back.txt');
+    await rm(back, { force: true });
+    const ry = await cli(['cp', `${W}://${u}/dirB/y.txt`, back]);
+    need(ry.code === 0 && (await readFile(back, 'utf8')) === 'Y original — precious\n', `dirB bytes disturbed: ${ry.out}${ry.err}`);
+    // a free name lands cleanly
+    await call('RemoteRename', W, `${u}/dirA`, 'dirC');
+    l = await cli(['ls', `${W}://${u}/`, '--json']);
+    need(l.out.includes('dirC/') && !l.out.includes('dirA/'), `the landed folder rename misfired: ${l.out}${l.err}`);
+    // rung 2 — the delete ladder through the real UI
+    const pv = await call('RemoteDeletePreview', W, ['/']);
+    need(pv && (pv.errors || []).some((e) => /root/i.test(String(e))) && !pv.files && !pv.folders,
+      `the source root was not refused: ${JSON.stringify(pv)}`);
+    await page.reload(); // boot re-reads sources — a bridge SaveSource never reaches the page's tree
+    await sleep(1200);
+    await treeOpen(W);
+    await sweepOverlays();
+    await waitFor(async () => {
+      await refresh();
+      return (await txt('#breadcrumb')).trim().endsWith(W);
+    }, 25000, `the view on the ${W} root`);
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k === u);
+    }, 50000, `this run's ${u}/ seed folder`);
+    await enterFolderByChild(u, 'sub');
+    await rightClickRow('sub');
+    await ctxItem(/^delete/i);
+    await waitFor(async () => /2 (object|file)/i.test(await modalText()), 8000, 'the pre-counted remote Delete window');
+    await closeModal(); // Cancel keeps every byte
+    l = await cli(['ls', `${W}://${u}/`, '--recursive', '--json']);
+    need(l.out.includes('one.txt') && l.out.includes('two.txt'), `Cancel lost remote data: ${l.out}${l.err}`);
+    await rightClickRow('sub');
+    await ctxItem(/^delete/i);
+    await waitFor(async () => /2 (object|file)/i.test(await modalText()), 8000, 'the Delete window again');
+    await clickFooter(/^delete$/i);
+    await waitFor(async () => {
+      const rr = await cli(['ls', `${W}://${u}/`, '--json']);
+      return !rr.out.includes('sub/');
+    }, 45000, 'sub gone through the CLI face');
+    l = await cli(['ls', `${W}://${u}/`, '--recursive', '--json']);
+    need(l.out.includes('sib.txt') && l.out.includes('y.txt') && !l.out.includes('one.txt'),
+      `the executed delete broke its scope: ${l.out}${l.err}`);
+    await cli(['rm', '-r', `${W}://${u}`, '--force']);
+    await call('RemoveSource', W).catch(() => {});
+    await cli(['source', 'remove', W]).catch(() => {});
+    return 'the WebDAV merge guard refused with both trees intact; Cancel kept every byte; execute removed exactly sub/';
+  });
+
+  await verify({ id: 'GUI-76', area: 'deletion', action: 'Cancel mid-convert: the counter never lies — flipped == doneUnits ± one in-flight copy, and no object is ever lost', ds: 'S3 (MinIO)', scenario: 'a storage-class conversion rewrites objects server-side one by one — canceling mid-batch must be honest to the OBJECT: the doneUnits counter’s worth of keys — never more than one in-flight copy ahead, never an over-report — carry the new class (atomic per key, never half-converted), every converted object stays byte-identical (a self-copy may add a version, never lose one), the untouched rest keeps the old class, the task reports canceled — and a clean re-run finishes the whole batch', face: 'GUI' }, async () => {
+    const PFX = 'verify-gui/conv76/', d = path.join(ART, 'conv76-seed');
+    await s3(['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force']);
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    const N = 60;
+    for (let i = 0; i < N; i++) await writeFile(path.join(d, `c-${String(i).padStart(2, '0')}.txt`), `c76 ${i}\n`);
+    let r = await s3(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json']);
+    need(r.code === 0 && r.out.includes(`"items": ${N}`), `seed: ${r.out}${r.err}`);
+    const classOf = async (k) => ((await s3(['stat', `s3://${BUCKET}/${PFX}${k}`])).out.match(/class:\s*(\S+)/) || [])[1] || 'STANDARD';
+    const keys = [];
+    for (let i = 0; i < N; i++) keys.push(`c-${String(i).padStart(2, '0')}.txt`);
+    const countRR = async () => {
+      let n = 0;
+      for (const k of keys) if ((await classOf(k)) === 'REDUCED_REDUNDANCY') n++;
+      return n;
+    };
+    need((await countRR()) === 0, 'the seed was not all-STANDARD');
+    const conv = call('ConvertStorageClass', BUCKET, [PFX], 'REDUCED_REDUNDANCY', true);
+    let id = null;
+    for (let i = 0; i < 800 && !id; i++) {
+      const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'convert' && x.status === 'running');
+      if (t && t.doneUnits >= 3) id = t.id;
+      if (!id) await sleep(20);
+    }
+    need(id, 'the convert never showed running progress to cancel against');
+    call('CancelTask', id);
+    await conv.catch(() => {});
+    await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 30000, 'the canceled convert to settle');
+    const st = ((await call('RunningTasks')) || []).find((t) => t.id === id);
+    need(st && st.status === 'canceled', `the canceled convert reports "${st?.status}" instead of canceled`);
+    const K = st.doneUnits;
+    need(K > 0 && K < N, `the cancel landed outside the batch (doneUnits ${K})`);
+    // the counter never lies: a key is counted only after its copy returned
+    // success, so the counter can never OVER-report; the only slack is the
+    // one in-flight copy that committed server-side just as the cancel tore
+    // the loop before its progress tick — server truth ∈ {K, K+1}
+    const flippedN = await countRR();
+    need(flippedN >= K, `the counter over-reports: ${flippedN} flipped, doneUnits says ${K}`);
+    need(flippedN <= K + 1, `${flippedN - K} key(s) flipped past the counter — more than the single in-flight copy`);
+    const flipped = [];
+    for (const k of keys) { if ((await classOf(k)) === 'REDUCED_REDUNDANCY') flipped.push(k); if (flipped.length >= 2) break; }
+    const back = path.join(ART, 'conv76-back.txt');
+    for (const k of flipped) {
+      await rm(back, { force: true });
+      const rr = await s3(['cp', `s3://${BUCKET}/${PFX}${k}`, back]);
+      need(rr.code === 0 && (await readFile(back, 'utf8')) === `c76 ${parseInt(k.slice(2), 10)}\n`, `${k} lost bytes under conversion`);
+    }
+    // a clean re-run finishes the whole batch, bytes intact
+    await call('ConvertStorageClass', BUCKET, [PFX], 'REDUCED_REDUNDANCY', true);
+    need((await countRR()) === N, `the re-run left ${N - (await countRR())} object(s) unconverted`);
+    await rm(back, { force: true });
+    r = await s3(['cp', `s3://${BUCKET}/${PFX}${keys[N - 1]}`, back]);
+    need(r.code === 0 && (await readFile(back, 'utf8')) === `c76 ${N - 1}\n`, 'the re-run disturbed bytes');
+    await s3(['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force']);
+    return `canceled mid-convert at ${K}/${N} with ${flippedN} flipped (the counter never over-reports): bytes intact, the re-run finished all ${N}`;
+  });
+
+  await verify({ id: 'GUI-77', area: 'resilience', action: 'Wire-death mid-destroy: the task reports ERROR with honest partial accounting — never done, never silent', ds: 'S3 (MinIO) via faultproxy', scenario: 'the wire dies halfway through a PERMANENT destroy: every connection is reset the moment part of the batch is gone — the destroy must fail LOUD (status error, the reason recorded), the task’s doneUnits must equal what the CLI can still count on the server (the counter never lies about what it destroyed), the untouched remainder survives, and once the wire heals a clean re-run destroys exactly the rest', face: 'GUI' }, async () => {
+    const PFX = 'verify-gui/wire77/', KEEP = 'verify-gui/wire77-keep/';
+    await s3(['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force']);
+    await s3(['rm', '-r', `s3://${BUCKET}/${KEEP}`, '--force']);
+    const d = path.join(ART, 'wire77-seed');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    const N = 30;
+    for (let i = 0; i < N; i++) await writeFile(path.join(d, `f-${String(i).padStart(2, '0')}.txt`), `w77 ${i}\n`);
+    let r = await s3(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json']);
+    need(r.code === 0 && r.out.includes(`"items": ${N}`), `seed: ${r.out}${r.err}`);
+    for (let round = 1; round <= 2; round++) {
+      r = await s3(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json']);
+      need(r.code === 0, `re-put ${round}: ${r.out}${r.err}`);
+    }
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `s3://${BUCKET}/${KEEP}w.txt`]);
+    const statVersions = async () => {
+      const j = await s3(['versions', 'stat', `s3://${BUCKET}/${PFX}`, '--json']);
+      return +((/"versions":\s*(\d+)/.exec(j.out) || [0, -1])[1]);
+    };
+    const seeded = await statVersions();
+    need(seeded === N * 3, `seed expected ${N * 3} versions, stat says ${seeded}`);
+    const PPORT = 19316, PCTL = 19317;
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', '127.0.0.1:9000'], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: 'verify-slow77', type: 's3', s3: { name: 'verify-slow77', endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 200 }) });
+      const KEYS = Array.from({ length: N }, (_, i) => `${PFX}f-${String(i).padStart(2, '0')}.txt`);
+      const destroying = call('SourceDeleteSelectionPermanent', 'verify-slow77', BUCKET, KEYS, true);
+      let id = null;
+      for (let i = 0; i < 3000 && !id; i++) {
+        const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'purge' && x.status === 'running' && x.doneUnits >= 3);
+        if (t) id = t.id; else await sleep(20);
+      }
+      need(id, 'the destroy never showed partial progress to kill the wire against');
+      // the wire dies NOW: every live connection resets and every new one dies
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reset' }) });
+      await destroying.catch(() => {});
+      await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 120000, 'the wire-dead destroy to fail out');
+      const st = ((await call('RunningTasks')) || []).find((t) => t.id === id);
+      need(st && st.status === 'error', `the wire-dead destroy reports "${st?.status}" — it must fail loud, never done`);
+      need(st && st.error, 'the wire-dead destroy recorded no error reason');
+      // the counter never lies: doneUnits == what the server actually lost
+      const K = st.doneUnits;
+      const afterFail = await statVersions();
+      need(afterFail === seeded - K, `partial accounting lies: ${afterFail} left, seed ${seeded}, counter says it destroyed ${K}`);
+      let l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+      need(l.out.split('\n').filter((x) => x.includes('wire77-keep/')).length === 1, 'the out-of-scope sibling was touched by the failed destroy');
+      // the wire heals; a clean re-run destroys exactly the rest
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'direct', delayMs: 0 }) });
+      await call('RemoveSource', 'verify-slow77');
+      await call('DeleteSelectionPermanent', BUCKET, KEYS, true);
+      need((await statVersions()) === 0, 'versions survived the completed re-run destroy');
+      l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+      need(!l.out.split('\n').some((x) => x.includes('wire77/')), `residue after the re-run: ${l.out.slice(0, 120)}`);
+      return `wire-death mid-destroy: status error with the reason recorded, counter ${K} == server truth ${seeded - afterFail}, re-run finished the rest`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+    }
+  });
+  await verify({ id: 'GUI-78', area: 'deletion', action: 'Cancel mid-remote-delete: the per-path loop stops between paths — server truth within one in-flight op of the counter', ds: 'SFTP via faultproxy', scenario: 'a remote delete runs as a serial per-path task with no trash and no versions behind it: canceled mid-run it must stop cleanly between paths, report canceled — never done — with the counter never claiming a path the server still holds nor hiding more than the one op that was in flight; the untouched remainder survives byte-for-byte', face: 'GUI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const P = 'verify-slow78', S = 'verify-d78', u = `c78-${RUNID}`;
+    const N = 24, PPORT = 19318, PCTL = 19319;
+    await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+    const seed = path.join(ART, 'c78-seed.txt');
+    await writeFile(seed, `c78 ${RUNID}\n`);
+    const KEYS = [];
+    for (let i = 0; i < N; i++) {
+      const f = `c78-${String(i).padStart(2, '0')}.txt`;
+      KEYS.push(`/${u}/${f}`);
+      const r = await cli(['cp', seed, `${S}://${u}/${f}`]);
+      need(r.code === 0, `seed ${f}: ${r.out}${r.err}`);
+    }
+    const remaining = async () => (await cli(['ls', `${S}://${u}/`, '--json'])).out.split('\n').filter((x) => x.includes('"name": "c78-')).length;
+    need((await remaining()) === N, 'the seed did not land whole');
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', `127.0.0.1:${SFTP_PORT}`], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
+      const killing = call('RemoteRemove', P, KEYS);
+      let id = null;
+      for (let i = 0; i < 3000 && !id; i++) {
+        const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
+        if (t) id = t.id; else await sleep(20);
+      }
+      need(id, 'the remote delete never showed partial progress to cancel against');
+      call('CancelTask', id);
+      await killing.catch(() => {});
+      await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 30000, 'the canceled remote delete to settle');
+      const st = ((await call('RunningTasks')) || []).find((t) => t.id === id);
+      need(st && st.status === 'canceled', `the canceled remote delete reports "${st?.status}" instead of canceled`);
+      const D = st.doneUnits;
+      need(D > 0 && D < N, `the cancel landed outside the batch (doneUnits ${D})`);
+      // the counter never over-reports: only removes that returned success
+      // count; the one op in flight when the cancel tore the channel may have
+      // landed server-side — server truth ∈ {D, D+1}
+      const gone = N - (await remaining());
+      need(gone >= D, `the counter over-reports: ${gone} gone, doneUnits says ${D}`);
+      need(gone <= D + 1, `${gone - D} path(s) gone past the counter — more than the single in-flight remove`);
+      return `canceled mid-remote-delete at ${D}/${N} (${gone} gone server-side, within the one in-flight op): remainder intact`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+      await cli(['rm', '-r', `${S}://${u}`, '--force']).catch(() => {});
+      await call('RemoveSource', P).catch(() => {});
+      await cli(['source', 'remove', S]).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'GUI-79', area: 'resilience', action: 'Wire-death mid-remote-delete: per-path errors are collected and surfaced — never silent, never a lying counter', ds: 'SFTP via faultproxy', scenario: 'the wire dies halfway through a remote delete (no trash, no versions behind it): the loop keeps its honesty — every path it could not remove lands in errors, the deleted counter equals the registry’s, the task completes with the failures recorded for the caller to surface as an error toast, and once the wire heals a re-run removes exactly what is left', face: 'GUI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const P = 'verify-slow79', S = 'verify-d79', u = `c79-${RUNID}`;
+    const N = 24, PPORT = 19320, PCTL = 19321;
+    await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+    const seed = path.join(ART, 'c79-seed.txt');
+    await writeFile(seed, `c79 ${RUNID}\n`);
+    const KEYS = [];
+    for (let i = 0; i < N; i++) {
+      const f = `c79-${String(i).padStart(2, '0')}.txt`;
+      KEYS.push(`/${u}/${f}`);
+      const r = await cli(['cp', seed, `${S}://${u}/${f}`]);
+      need(r.code === 0, `seed ${f}: ${r.out}${r.err}`);
+    }
+    const remaining = async () => (await cli(['ls', `${S}://${u}/`, '--json'])).out.split('\n').filter((x) => x.includes('"name": "c79-')).length;
+    need((await remaining()) === N, 'the seed did not land whole');
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', `127.0.0.1:${SFTP_PORT}`], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
+      const killing = call('RemoteRemove', P, KEYS);
+      let id = null;
+      for (let i = 0; i < 3000 && !id; i++) {
+        const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
+        if (t) id = t.id; else await sleep(20);
+      }
+      need(id, 'the remote delete never showed partial progress to kill the wire against');
+      // the wire dies NOW: every live connection resets and every new one dies
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reset' }) });
+      let res = null;
+      try { res = await killing; } catch (e) { need(false, `the wire-dead remote delete rejected instead of collecting per-path errors: ${e}`); }
+      await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 60000, 'the wire-dead remote delete to finish collecting');
+      const st = ((await call('RunningTasks')) || []).find((t) => t.id === id);
+      // per-path resilience is the design: the task COMPLETES with the
+      // failures recorded for the caller (reportDeleteResult shows them as an
+      // error toast) — what must never happen is silence or a lying counter
+      need(st && st.status === 'done', `the registry reports "${st?.status}" — the loop should complete with errors recorded, not die`);
+      need(res && res.deleted === st.doneUnits, `the returned counter (${res?.deleted}) and the registry’s (${st?.doneUnits}) disagree`);
+      need(res && (res.errors || []).length > 0, 'the wire-dead paths were dropped from errors — silent partial delete');
+      const gone = N - (await remaining());
+      need(gone >= res.deleted, `the counter over-reports: ${gone} gone, deleted says ${res.deleted}`);
+      need(gone <= res.deleted + res.errors.length, `${gone - res.deleted} path(s) gone past counter+errors — unaccounted destruction`);
+      // the wire heals; a re-run removes exactly what is left
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'direct', delayMs: 0 }) });
+      const rerun = await call('RemoteRemove', P, KEYS);
+      need(rerun && rerun.deleted >= 1 && (await remaining()) === 0, 'the healed re-run left files behind');
+      return `wire-death mid-remote-delete: ${res.deleted} deleted + ${res.errors.length} error(s) recorded (never silent), counter == registry, the re-run removed the rest`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+      await cli(['rm', '-r', `${S}://${u}`, '--force']).catch(() => {});
+      await call('RemoveSource', P).catch(() => {});
+      await cli(['source', 'remove', S]).catch(() => {});
+    }
+  });
   await verify({ id: 'GUI-58', area: 'sources', action: 'RemoveSource: the store forgets, the data survives', ds: 'FTP', scenario: 'removing a saved source must delete exactly the STORE entry — the engine data it pointed at stays intact, witnessed through the CLI face on its own connection; the GUI keeps browsing afterwards; where the FTP engine is absent the row records the gap', face: 'GUI' }, async () => {
     if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
     const before = (await call('ListSources')) || [];
@@ -6079,6 +6454,26 @@ async function main() {
   const COMMIT_SUBJ = await gitOut(['log', '-1', '--pretty=%s']);
   console.log(`s3b action verification — ${VERSION} on ${os.type()} ${os.release()} (${os.arch()})`);
   console.log(`run id ${RUNID}, bucket ${BUCKET}${QUICK ? ', quick mode (sweeps skipped)' : ''}${ONLY !== 'all' ? `, category: ${ONLY}` : ''}${RELEASE ? `, RELEASE EVIDENCE for ${RELEASE} @ ${COMMIT || 'unknown commit'}` : ''}\n`);
+
+  // Keyring hygiene: the two S3B_CONFIG stores are wiped below, but their
+  // sources' OS-keyring secrets (keyed by source ID, pkg/core/profile/
+  // keyring.go) outlive the files — a wipe without this step orphans them,
+  // and a few hundred orphaned entries fill the Windows credential vault:
+  // CredWrite then fails ERROR_NO_SYSTEM_RESOURCES and every later secret
+  // write silently degrades to plaintext (seen 27 Sep 2026 — 900+ leaked
+  // entries red-flooded a healthy matrix). Remove the referenced entries
+  // first; a missing target (or no cmdkey off-Windows) is a silent no-op.
+  if (process.platform === 'win32') {
+    for (const cfg of [CFG, GUICFG]) {
+      let sources = [];
+      try { sources = JSON.parse(await readFile(path.join(cfg, 'profiles.json'), 'utf8')).sources || []; } catch { /* absent or mid-write from a crashed run — nothing referenced */ }
+      for (const s of sources) {
+        for (const kind of ['password', 's3secret', 's3token']) {
+          await new Promise((res) => execFile('cmdkey', [`/delete:s3b:sources/${s.id}/${kind}`], { windowsHide: true }, () => res()));
+        }
+      }
+    }
+  }
 
   await rm(ART, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });
