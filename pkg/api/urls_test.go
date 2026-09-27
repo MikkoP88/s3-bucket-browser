@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 
