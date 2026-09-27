@@ -306,68 +306,75 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot covers the **rounds 3–4
+Replaced on every run — this snapshot covers the **round 5
 critical-actions closure** (27 Sep 2026, `node scripts/verify.mjs` on
 Windows Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): the
-destructive-loop × interruption cross-product — {cancel, wire death} ×
-{S3-side loops, remote-engine loops} — closing the last uncovered cells
-of the mutation surface and growing the matrix from 152 to 158 rows.
-Release evidence for v1.1.0-beta.20 stays at
+cross-source transfer engine — the one code path that moves bytes
+between two different sources (`TransferCross`) — plus the S3-versioned
+purge ladder and the object-editor race, growing the matrix from 158 to
+166 rows. Release evidence for v1.1.0-beta.20 stays at
 [`docs/verification/v1.1.0-beta.20/windows-x64/REPORT.md`](verification/v1.1.0-beta.20/windows-x64/REPORT.md).
 
 ```
-full matrix (158 rows):
-  151 PASS · 7 SKIP · 0 FAIL — 2056 s
+full matrix (166 rows):
+  159 PASS · 7 SKIP · 0 FAIL — 2585 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
   SWEEP-VIS-01  gui-visual   669/669 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
   standalone units, same tree:
-  --only gui --row GUI-78,GUI-79    6 PASS · 0 SKIP · 0 FAIL —  200 s
+  --only gui --row GUI-80,GUI-81    6 PASS · 0 SKIP · 0 FAIL —   61 s
 ```
 
 The rounds in brief:
 
-- Round 3 pinned the remote-engine mutation ladder and the S3
-  loop-interruption bounds (GUI-74..77): the SFTP and WebDAV
-  clobber/merge guards hold with byte round-trip proof and the
-  file-level typed delete ladder works through the real sources tree;
-  a storage-class convert canceled mid-run reports `canceled` with
-  flipped == doneUnits ± the one copy that can be in flight (the
-  counter never over-reports); a PERMANENT destroy under wire death
-  reports `error` with EXACT partial accounting — its progress fires
-  before the error check, so the counter equals server truth.
-- Round 4 closed the remote-engine loop cells (GUI-78/79): a remote
-  per-path delete canceled mid-run stops between paths with server
-  truth within one in-flight op of the counter and the remainder
-  byte-intact; under wire death it completes with every unremovable
-  path recorded in errors — never silent, counter == registry — and
-  once the wire heals, a re-run removes exactly the rest.
-- **Round 4's find, fixed.** The live wire-death row exposed a genuine
-  defect: the engine cache held the raw connection, so after one wire
-  death every later operation on that source failed until a source
-  re-save or an app restart. `pkg/api/engineheal.go` now wraps every
-  cached engine: the idempotent single-request operations (List, Stat,
-  MkdirAll, Remove, Rename) redial once on a classified transport
-  death (reset, closed pipe, EOF — never a cancel, a deadline, or a
-  semantic error), streaming operations (Open, Create) never retry
-  transparently, and an engine dropped by a source edit stays dropped.
-  Unit-tested in `pkg/api/engineheal_test.go`; GUI-79's healed re-run
-  leg is the live proof.
-- Harness traps from these rounds are baked into the rows: cross-face
-  sources are registered in BOTH stores (bridge `SaveSource` + CLI
-  `source add`) and torn down from both; a bridge-saved source reaches
-  the tree only after a page reload; and CLI `ls --json` output is
-  indented, so seed oracles count the `"name":` fields, never raw
-  substrings.
-- Round 1's find re-proven in this run: the FTP transfer discard
-  stranding fix (`pkg/core/remotefs/ftp.go` + `pkg/api/xfer.go`) and
-  its 11 extreme rows — the ladder from GUI-63's delete-bucket typed
-  escalation to GUI-71's cancel-strands-nothing move.
-- Harness self-sufficiency carried forward: `--only <cat>` and
-  `--row <id>` triage runs seed their own sources and buckets, and
-  every GUI-battery CLI oracle pins `--profile verifys3`.
+- Round 5 pinned the cross-source engine (GUI-80..84) and the
+  S3/remote destroy-interruption cells (CLI-RES-08..10): a wire dying
+  mid-upload or mid-download of the cross-source engine never leaves a
+  partial at the FINAL name (remote writes stage to `s3b-part-*` and
+  rename; local writes stage-and-commit over the victim) — a stage
+  stranded by a dead wire is garbage the healed retry must consume; an
+  `rm -r` interrupted by wire death or a hard kill exits non-zero with
+  exactly the observed partial and a re-run finishes the rest; a
+  versions purge killed mid-batch reports the honest partial and a
+  re-run reaches zero; a source removed mid-delete settles honestly
+  within one in-flight op; the exit guard vetoes a close mid-permanent
+  destroy while `ExitApp` itself keeps the task alive; and a concurrent
+  editor write clobbers last-writer-wins with the loser byte-recoverable
+  from the version timeline.
+- **Round 5's find, fixed.** GUI-81's healed retry failed forever with
+  `connection lost`: after a wire death the cached engine healed only
+  through idempotent operations (List/Stat/Remove/…), and a retried
+  single-file download performs none of them — its first wire op is
+  Open, which never healed. `pkg/api/engineheal.go` now heals the Open
+  HANDSHAKE like Stat (an open call that dies on the wire has flowed
+  zero bytes and holds no handle), while the stream it returns and
+  Create still never restart transparently. Unit-tested in
+  `pkg/api/engineheal_test.go`; GUI-81's one-click healed retry is the
+  live proof.
+- **Product note (verified, unfixed by design):** the object editor's
+  StopEdit pushes unconditionally — no If-Match/ETag guard — so a save
+  racing a concurrent writer is last-writer-wins (GUI-84). On a
+  versioned bucket the clobbered bytes stay recoverable from the
+  version timeline (the row restores the loser byte-exact); on an
+  unversioned bucket they would be gone. If editor conflict-safety
+  becomes a requirement, the guard belongs in StopEdit.
+- Rounds 3–4 (carried forward): the destructive-loop × interruption
+  cross-product — {cancel, wire death} × {S3-side loops, remote-engine
+  loops} — with the round-4 engine-healing wrapper for cached engines
+  (idempotent ops redial once on a classified transport death; an
+  engine dropped by a source edit stays dropped), the round-1 FTP
+  discard-stranding fix and its 11 extreme rows, and the typed delete
+  ladder GUI-63..71.
+- Harness traps baked into the rows, cumulative: cross-face sources are
+  registered in BOTH stores (bridge `SaveSource` + CLI `source add`)
+  and torn down from both; CLI `ls --json` output is indented (count
+  `"name":` fields) and `ls --recursive` prints keys RELATIVE to the
+  listed prefix; a resilience row that needs S3 versioning enables it
+  in-row (CLI-S3-02 owns it only in a full run); resilience triage must
+  include CLI-RES-01 — it spawns the shared faultproxy; and every
+  GUI-battery CLI oracle pins `--profile verifys3`.
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
 plus `testartifacts/verification/verification.json` for the machine copy
