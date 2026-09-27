@@ -40,8 +40,12 @@ func (a *App) engine(idOrName string) (remotefs.FS, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.engines[src.ID] = fs
-	return fs, nil
+	// Cache the healing wrapper, not the raw connection: its cached
+	// identity survives wire deaths by redialing in place, so one dead
+	// connection cannot strand the source until the next edit or restart.
+	healed := newHealingFS(a, src, fs)
+	a.engines[src.ID] = healed
+	return healed, nil
 }
 
 // closeEngines drops the engine cache (source edits, container switches,

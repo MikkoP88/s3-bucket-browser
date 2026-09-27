@@ -306,54 +306,61 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot is the **round-2
-critical-actions sweep** (27 Sep 2026, `node scripts/verify.mjs` on
-Windows Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): a fresh
-mutation-surface audit — every App method, CLI command and dialog call
-site that can alter data, diffed against the row inventory — which
-confirmed the round-1 matrix and added the three rows the diff exposed,
-growing it from 149 to 152 rows. Release evidence for v1.1.0-beta.20
-stays at
+Replaced on every run — this snapshot covers the **rounds 3–4
+critical-actions closure** (27 Sep 2026, `node scripts/verify.mjs` on
+Windows Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): the
+destructive-loop × interruption cross-product — {cancel, wire death} ×
+{S3-side loops, remote-engine loops} — closing the last uncovered cells
+of the mutation surface and growing the matrix from 152 to 158 rows.
+Release evidence for v1.1.0-beta.20 stays at
 [`docs/verification/v1.1.0-beta.20/windows-x64/REPORT.md`](verification/v1.1.0-beta.20/windows-x64/REPORT.md).
 
 ```
-full matrix (152 rows):
-  145 PASS · 7 SKIP · 0 FAIL — 2401 s
+full matrix (158 rows):
+  151 PASS · 7 SKIP · 0 FAIL — 2056 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
   SWEEP-VIS-01  gui-visual   669/669 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
   standalone units, same tree:
-  --only s3                        42 PASS · 5 SKIP · 0 FAIL —  520 s
-  --only gui --row GUI-72,GUI-73    6 PASS · 0 SKIP · 0 FAIL —   97 s
+  --only gui --row GUI-78,GUI-79    6 PASS · 0 SKIP · 0 FAIL —  200 s
 ```
 
-The round in brief:
+The rounds in brief:
 
-- The mutation-surface diff cleared every suspect it examined:
-  drag-out is copy-only loopback streaming (never a delete path), mv
-  clobber semantics were already pinned by CLI-S3-45/46, remote
-  delete/mkdir/rename by CLI-X-13/15 + GUI-65/66/59, and the
-  PAB/lifecycle/encryption admin tabs sit behind the same refused
-  MinIO APIs already recorded as provider gaps.
-- The three real holes, now pinned. **CLI-S3-47** — sync's download
-  direction points `--delete` at the LOCAL tree, the side with no
-  version history to recover from: repair is byte-exact, a local-only
-  file survives a plain sync, `--dry-run` plans the removal without
-  touching disk, the real `--delete` removes exactly that one file
-  while every synced file and an out-of-scope sibling directory stay
-  intact, and both-s3:// / both-local operand pairs are refused as
-  usage errors. **GUI-72** — a PERMANENT destroy (no markers, no undo)
-  canceled while still in its COUNT phase destroys exactly zero of 90
-  seeded versions, the task reports `canceled` — never done — and the
-  app stays healthy enough to finish the destroy exactly on a direct
-  re-run while an out-of-scope sibling survives. **GUI-73** — the
-  admin Lock tab: a wrong typed word fires nothing, the provider's
-  refusal to arm object lock post-creation surfaces as an error toast
-  while the bucket stays writable, and a saved GOVERNANCE 1-day
-  default rule arms WORM on a NEW object that defeats the GUI
-  permanent delete until Clear releases it and the destroy lands.
+- Round 3 pinned the remote-engine mutation ladder and the S3
+  loop-interruption bounds (GUI-74..77): the SFTP and WebDAV
+  clobber/merge guards hold with byte round-trip proof and the
+  file-level typed delete ladder works through the real sources tree;
+  a storage-class convert canceled mid-run reports `canceled` with
+  flipped == doneUnits ± the one copy that can be in flight (the
+  counter never over-reports); a PERMANENT destroy under wire death
+  reports `error` with EXACT partial accounting — its progress fires
+  before the error check, so the counter equals server truth.
+- Round 4 closed the remote-engine loop cells (GUI-78/79): a remote
+  per-path delete canceled mid-run stops between paths with server
+  truth within one in-flight op of the counter and the remainder
+  byte-intact; under wire death it completes with every unremovable
+  path recorded in errors — never silent, counter == registry — and
+  once the wire heals, a re-run removes exactly the rest.
+- **Round 4's find, fixed.** The live wire-death row exposed a genuine
+  defect: the engine cache held the raw connection, so after one wire
+  death every later operation on that source failed until a source
+  re-save or an app restart. `pkg/api/engineheal.go` now wraps every
+  cached engine: the idempotent single-request operations (List, Stat,
+  MkdirAll, Remove, Rename) redial once on a classified transport
+  death (reset, closed pipe, EOF — never a cancel, a deadline, or a
+  semantic error), streaming operations (Open, Create) never retry
+  transparently, and an engine dropped by a source edit stays dropped.
+  Unit-tested in `pkg/api/engineheal_test.go`; GUI-79's healed re-run
+  leg is the live proof.
+- Harness traps from these rounds are baked into the rows: cross-face
+  sources are registered in BOTH stores (bridge `SaveSource` + CLI
+  `source add`) and torn down from both; a bridge-saved source reaches
+  the tree only after a page reload; and CLI `ls --json` output is
+  indented, so seed oracles count the `"name":` fields, never raw
+  substrings.
 - Round 1's find re-proven in this run: the FTP transfer discard
   stranding fix (`pkg/core/remotefs/ftp.go` + `pkg/api/xfer.go`) and
   its 11 extreme rows — the ladder from GUI-63's delete-bucket typed
