@@ -2597,10 +2597,17 @@ export function licenseDialog() {
   );
   select('about');
   // Version arrives async; re-draw the About partition if it is on screen.
-  api.GetVersion().then((v) => {
-    version = v;
-    if (current === 'about') select('about');
-  }).catch(() => {});
+  // A freshly loaded ?popout= page can render before Wails injects the
+  // bindings — GetVersion then rejects with "backend binding missing",
+  // and a swallowed rejection would leave the row at "v?" forever. Keep
+  // asking until the binding answers (bounded — the visual sweep's shim
+  // binding answers on the first try).
+  let tries = 0;
+  const askVersion = () => api.GetVersion().then(
+    (v) => { version = v; if (current === 'about') select('about'); },
+    () => { if (++tries < 100) setTimeout(askVersion, 150); },
+  );
+  askVersion();
   openPopout({ id: 'license', title: t('menu.license'), body: el('div', { class: 'admin' }, strip, content), cls: 'admin-modal' });
 }
 
