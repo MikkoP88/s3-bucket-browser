@@ -155,10 +155,10 @@ func isConnErr(err error) bool {
 // constructing it.
 func withRetry[T any](f *FTP, ctx context.Context, op func() (T, error)) (T, error) {
 	v, err := op()
-	if err == nil || !isConnErr(err) {
+	if err == nil || !(isConnErr(err) || errors.Is(err, errFTPEntryUnreliable)) {
 		return v, err
 	}
-	_ = f.c.Quit() // already dead; best effort
+	_ = f.c.Quit() // already dead (or verdict-poisoned); best effort
 	c, derr := dialFTPConn(ctx, f.src)
 	if derr != nil {
 		return v, err // the original connection error is the honest one
@@ -168,18 +168,46 @@ func withRetry[T any](f *FTP, ctx context.Context, op func() (T, error)) (T, err
 }
 
 func (f *FTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
-	return withRetry(f, ctx, func() ([]listing.Entry, error) {
-		raw, err := f.c.List(f.abs(dir))
-		if err != nil {
-			return nil, err
-		}
-		parent := CleanPath(dir)
+	parent := CleanPath(dir)
+	filter := func(raw []*ftp.Entry) []listing.Entry {
 		entries := make([]listing.Entry, 0, len(raw))
 		for _, e := range raw {
 			if e.Name == "." || e.Name == ".." || e.Name == "" {
 				continue
 			}
 			entries = append(entries, ftpEntry(parent, e))
+		}
+		return entries
+	}
+	return withRetry(f, ctx, func() ([]listing.Entry, error) {
+		raw, err := f.c.List(f.abs(dir))
+		if err != nil {
+			return nil, err
+		}
+		entries := filter(raw)
+		if len(entries) == 0 {
+			// An empty listing is ambiguous twice over. A data connection
+			// that closes early truncates LIST to an empty success — the
+			// scanner cannot tell an aborted stream from a completed one,
+			// and vsftpd's three-port pasv range drops data connections
+			// under churn — and vsftpd answers LIST on a MISSING directory
+			// the same empty way, with the control-channel 550 arriving
+			// too late for the parser. Both read as "no children" to every
+			// caller, which inverts the safety of deletes and transfer
+			// planners: a wipe scoped to a glitched path reports a no-op
+			// success. One retry absorbs the transient; the stat then
+			// separates "gone" (550) from honestly empty.
+			if again, rerr := f.c.List(f.abs(dir)); rerr == nil {
+				entries = filter(again)
+			}
+			if len(entries) == 0 {
+				if _, gerr := ftpGetEntry(f.c, f.abs(dir)); gerr != nil {
+					if is550(gerr) {
+						return nil, &fs.PathError{Op: "list", Path: parent, Err: fs.ErrNotExist}
+					}
+					return nil, gerr
+				}
+			}
 		}
 		listing.SortEntries(entries)
 		return entries, nil
@@ -190,6 +218,15 @@ func (f *FTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 // support; vsftpd (the common Linux FTP server) implements neither MLST
 // nor MLSD and answers 502 — so fall back to listing the parent and
 // matching the basename, which works everywhere LIST does.
+// errFTPEntryUnreliable marks an entry probe whose control channel gave a
+// suspect answer — a failed or garbage reply on the listing path. A verdict
+// of "no such file" from such a channel is not trustworthy: the classic case
+// is a control connection desynced by an aborted transfer reading the dead
+// command's stale reply as its own. Callers (via withRetry) reconnect and
+// re-probe instead of acting on it; treating it as a clean miss once left a
+// transfer's staging file stranded on the server.
+var errFTPEntryUnreliable = errors.New("ftp: entry probe unreliable")
+
 func ftpGetEntry(c *ftp.ServerConn, absPath string) (*ftp.Entry, error) {
 	if strings.TrimSuffix(absPath, "/") == "" {
 		return &ftp.Entry{Type: ftp.EntryTypeFolder, Name: "/"}, nil // the root
@@ -199,7 +236,20 @@ func ftpGetEntry(c *ftp.ServerConn, absPath string) (*ftp.Entry, error) {
 		return e, nil
 	}
 	dir, name := path.Split(strings.TrimSuffix(absPath, "/"))
-	entries, lerr := c.List(strings.TrimSuffix(dir, "/"))
+	parent := strings.TrimSuffix(dir, "/")
+	if parent == "" {
+		parent = "/" // never a bare LIST — that reads the connection's CWD, which earlier engine ops may have moved
+	}
+	entries, lerr := c.List(parent)
+	if lerr == nil && len(entries) == 0 {
+		// An empty parent listing is ambiguous — an honestly empty parent
+		// or a data connection that closed early (see List) — and the
+		// basename match below would turn the transient into a false
+		// "no such file" for a live path. One retry before declaring the
+		// path missing; Remove's pre-check and Mkdir's exists-tolerance
+		// both route through here.
+		entries, lerr = c.List(parent)
+	}
 	if lerr != nil {
 		// A 550 on the parent listing means the parent is gone, so the
 		// path cannot exist — surface that, not the MLST 502, or
@@ -208,14 +258,40 @@ func ftpGetEntry(c *ftp.ServerConn, absPath string) (*ftp.Entry, error) {
 		if errors.As(lerr, &l550) && l550.Code == 550 {
 			return nil, l550
 		}
-		return nil, err // the original error is the honest one
+		// Anything else is a channel that answered garbage, not a
+		// verdict. Returning the original MLST error here once let the
+		// poison masquerade as a clean "unsupported" and skip the
+		// reconnect — mark it unreliable so withRetry redials.
+		return nil, fmt.Errorf("%w: listing %s: %v", errFTPEntryUnreliable, parent, lerr)
 	}
 	for _, e := range entries {
 		if e.Name == name {
 			return e, nil
 		}
 	}
+	// The basename miss rests entirely on the listing, and a listing can
+	// lie empty (see List). SIZE addresses the exact path over the
+	// control channel, independent of any data connection: if it answers,
+	// the file is real and the miss was the lie — this is what makes a
+	// canceled transfer's stage removable even when the listing that
+	// should show it reads empty.
+	if size, serr := c.FileSize(absPath); serr == nil {
+		sz := uint64(0)
+		if size > 0 {
+			sz = uint64(size)
+		}
+		return &ftp.Entry{Type: ftp.EntryTypeFile, Name: name, Size: sz}, nil
+	} else if !is550(serr) {
+		return nil, fmt.Errorf("%w: size %s: %v", errFTPEntryUnreliable, absPath, serr)
+	}
 	return nil, &textproto.Error{Code: 550, Msg: "no such file"}
+}
+
+// is550 reports whether err is FTP's clean "not available" reply — the
+// server's honest word that a path is gone.
+func is550(err error) bool {
+	var tp *textproto.Error
+	return errors.As(err, &tp) && tp.Code == 550
 }
 
 func (f *FTP) Stat(ctx context.Context, p string) (listing.Entry, error) {
@@ -241,8 +317,7 @@ func (f *FTP) Stat(ctx context.Context, p string) (listing.Entry, error) {
 // the local/sftp engines (os.IsNotExist only unwraps PathError-style
 // errors, not arbitrary %w chains).
 func ftpNotExist(p string, err error) error {
-	var tpErr *textproto.Error
-	if errors.As(err, &tpErr) && tpErr.Code == 550 {
+	if is550(err) {
 		return &fs.PathError{Op: "stat", Path: p, Err: fs.ErrNotExist}
 	}
 	return err
@@ -306,6 +381,33 @@ func (f *FTP) MkdirAll(ctx context.Context, dir string) error {
 	return err
 }
 
+// removeDir deletes one directory tree through the engine's own hardened
+// listing. jlaffaye's RemoveDirRecur walks with raw c.List calls — no
+// empty-listing retry, so the transient above reads as "no children" —
+// deletes by RELATIVE name against whatever directory the connection
+// happens to sit in, and leaves the pooled connection CWDed at the parent
+// when it returns. Walking with f.List instead means every level of the
+// wipe gets the retry, every delete targets an absolute path, and the
+// server's refusal to RMDIR a non-empty directory stays as the backstop
+// against a listing that still lied.
+func (f *FTP) removeDir(ctx context.Context, cleaned string) error {
+	entries, err := f.List(ctx, cleaned)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		child := path.Join(cleaned, e.Name)
+		if e.IsDir {
+			if err := f.removeDir(ctx, child); err != nil {
+				return err
+			}
+		} else if err := f.c.Delete(f.abs(child)); err != nil {
+			return err
+		}
+	}
+	return f.c.RemoveDir(f.abs(cleaned))
+}
+
 func (f *FTP) Remove(ctx context.Context, p string) error {
 	cleaned := CleanPath(p)
 	if cleaned == "/" {
@@ -317,11 +419,14 @@ func (f *FTP) Remove(ctx context.Context, p string) error {
 			return struct{}{}, err
 		}
 		if e.Type == ftp.EntryTypeFolder {
-			return struct{}{}, f.c.RemoveDirRecur(f.abs(cleaned))
+			return struct{}{}, f.removeDir(ctx, cleaned)
 		}
 		return struct{}{}, f.c.Delete(f.abs(cleaned))
 	})
-	return err
+	// A clean miss arrives as a raw 550; map it to fs.ErrNotExist so
+	// callers (rm --force, idempotent re-runs, the transfer discard)
+	// recognize "already gone" the same way as on every other engine.
+	return ftpNotExist(cleaned, err)
 }
 
 func (f *FTP) Rename(ctx context.Context, oldp, newp string) error {

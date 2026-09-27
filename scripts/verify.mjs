@@ -83,6 +83,30 @@ const ONLY = (() => {
   return v;
 })();
 const want = (c) => ONLY === 'all' || ONLY === c || (ONLY === 'cli' && ['s3', 'cross', 'resilience', 'meta'].includes(c));
+// Row filter (--row id1,id2): triage tool — run only the named rows
+// inside the selected categories (pair with --only gui for a solo GUI
+// row). The prologue still seeds everything, so a solo row sees the
+// exact fixtures a full battery would; filtered rows neither run nor
+// appear in the report. Never for release evidence — --release
+// refuses filtered runs by refusing --only, and triage never needs it.
+const ROWS = (() => {
+  const i = process.argv.indexOf('--row');
+  if (i < 0) return null;
+  const ids = String(process.argv[i + 1] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!ids.length) {
+    console.error('--row expects verification ids like GUI-68 or CLI-S3-11,GUI-68');
+    process.exit(2);
+  }
+  return new Set(ids);
+})();
+// Boot rows always run under --row: GUI-01 starts the server, browser
+// and page every later row drives, and GUI-53 walks the license gate a
+// fresh GUICFG raises — without both, a solo row times out on a tree
+// node that never loads.
+// GUI-02/GUI-03 create the tree's S3/FTP sources every later row
+// navigates through (03 sits behind the haveFtp guard at its call
+// site, so it only runs when the FTP engine is up).
+const BOOT_ROWS = new Set(['GUI-01', 'GUI-02', 'GUI-03', 'GUI-53']);
 
 // Release-evidence mode: `--release v1.2.3` stamps the tag into the binaries
 // exactly as the release workflow does (main.version=<tag without v> — see
@@ -138,6 +162,7 @@ const gitOut = (args) => new Promise((resolve) => {
 const rows = [];
 let cur = null;
 function verify(meta, fn) {
+  if (ROWS && !ROWS.has(meta.id) && !BOOT_ROWS.has(meta.id)) return Promise.resolve(); // --row triage filter (boot rows stay)
   cur = { result: 'PASS', detail: '', ...meta };
   rows.push(cur);
   process.stdout.write(`[${cur.face}] ${cur.id} ${cur.action} (${cur.ds}) … `);
@@ -1568,6 +1593,37 @@ async function cliCross() {
     return 'remote skips kept the local file, the remote file and the folder';
   });
 
+  await verify({ id: 'CLI-X-15', area: 'objects', action: 'Remote mkdir: parents created, occupied names honest', ds: 'SFTP/FTP/WebDAV', scenario: 'mkdir NAME://deep/a/b must create every missing parent (the same MkdirAll the transfer path relies on mid-copy); mkdir onto an OCCUPIED folder must never destroy or merge away its children — an error or an idempotent no-op are both honest answers, silent data loss is not; the seeded canary file survives every branch, and the cleanup removes exactly the created tree', face: 'CLI' }, async () => {
+    const eng = [];
+    if (haveFtp) eng.push(['xf', `xf://${RUNID}/mk15`]);
+    if (haveDav) eng.push(['xw', `xw://${RUNID}/mk15`]);
+    if (haveSftp) eng.push(['xt', `xt://${RUNID}/mk15`]);
+    if (!eng.length) return skip('no remote engine container reachable');
+    const canary = path.join(ART, 'mk15.txt');
+    await writeFile(canary, `canary ${RUNID}\n`);
+    for (const [tag, dir] of eng) {
+      let r = await cli(['mkdir', dir]);
+      need(r.code === 0, `${tag} mkdir: ${r.out}${r.err}`);
+      // parents in one stroke — the depth proves MkdirAll, not Mkdir
+      r = await cli(['mkdir', `${dir}/a/b`]);
+      need(r.code === 0, `${tag} nested mkdir: ${r.out}${r.err}`);
+      let l = await cli(['ls', dir, '--recursive', '--json']);
+      need(l.out.includes('a/b'), `${tag} nested parents not created: ${l.out}${l.err}`);
+      // seed a canary, then attack the occupied name: whatever the engine
+      // answers, the child must still be there afterwards
+      r = await cli(['cp', canary, `${dir}/a/b/canary.txt`]);
+      need(r.code === 0, `${tag} canary cp: ${r.out}${r.err}`);
+      r = await cli(['mkdir', `${dir}/a/b`]); // occupied — exit code is the engine's choice
+      l = await cli(['ls', `${dir}/a/b`, '--json']);
+      need(l.out.includes('canary.txt'), `${tag} the occupied mkdir destroyed the children (exit ${r.code}): ${l.out}${l.err}`);
+      // cleanup removes exactly the created tree
+      r = await cli(['rm', dir, '-r', '--force']);
+      need(r.code === 0, `${tag} rm cleanup: ${r.out}${r.err}`);
+      l = await cli(['ls', `${dir.split('://')[0]}://${RUNID}/`, '--json']);
+      need(!l.out.includes('mk15'), `${tag} cleanup left residue behind: ${l.out.slice(0, 160)}`);
+    }
+    return `parents + occupied-name honesty held on ${eng.map((e) => e[0]).join('/')}`;
+  });
 }
 
 // ============================================================
@@ -1580,6 +1636,24 @@ async function cliResilience() {
   const fmode = async (body) => {
     await fetch(`http://127.0.0.1:${FCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   };
+
+  // The S3 battery seeds verifys3 + the bucket (and the readme RES-01
+  // lists) in a full run; recreate them here so the documented standalone
+  // unit (--only resilience) is real (in a full run every step resolves
+  // to a no-op and changes nothing downstream — the readme probe only
+  // re-uploads when the object is genuinely missing, so version counts
+  // stay untouched).
+  {
+    const srcs = await cli(['source', 'list']).catch(() => ({ out: '' }));
+    if (!srcs.out.includes('verifys3')) {
+      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+      need(r.code === 0, `prologue: verifys3 source add (resilience): ${r.err}`);
+    }
+    await cli(['mb', `s3://${BUCKET}`]).catch(() => {});
+    if ((await cli(['stat', `s3://${BUCKET}/readme.md`])).code !== 0) {
+      await cli(['cp', path.join(FIX, 'data', 'readme.md'), `s3://${BUCKET}/readme.md`]).catch(() => {});
+    }
+  }
   await verify({ id: 'CLI-RES-01', area: 'resilience', action: 'Slow link: latency +600ms/chunk', ds: 'S3 via faultproxy', scenario: 'listing through a delayed proxy completes with correct output, measurably slower', face: 'CLI' }, async () => {
     proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(FPORT), '--control', String(FCTL), '--target', '127.0.0.1:9000'], { stdio: 'ignore', windowsHide: true });
     for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${FCTL}/state`, { signal: AbortSignal.timeout(500) }); break; } catch { await sleep(100); } }
@@ -1692,6 +1766,65 @@ async function cliResilience() {
     need(retry.code === 0, `healthy retry after blackhole: ${retry.out}${retry.err}`);
     return `failed in ${dt}ms under an 8s budget; no partial; healthy retry landed`;
   });
+  await verify({ id: 'CLI-RES-07', area: 'resilience', action: 'Torn download: a pre-existing local file is never truncated', ds: 'S3 via faultproxy', scenario: 'the download-side twin of RES-04 — the data at stake is the file ALREADY on disk: a 64 MiB download hard-killed mid-flight must leave the pre-existing destination byte-identical (the commit rename never ran) with at most ONE dot-prefixed staging file behind and never a partial at the final name; a watchdog-cut failure must settle cleanly with ZERO new residue; the healthy retry then replaces the original whole and byte-identical', face: 'CLI' }, async () => {
+    if (!proxy) return skip('proxy not running');
+    const obj = `s3://${BUCKET}/verify-res/dl-rst.bin`;
+    const src = path.join(ART, 'dl-rst-64m.bin');
+    await writeFile(src, randomBytes(64 * 1024 * 1024));
+    const sha = await sha256file(src);
+    let r = await cli(['cp', src, obj, '--profile', 'verifys3'], { timeout: 300000 });
+    need(r.code === 0, `seed upload: ${r.out}${r.err}`);
+    const ORIG = 'PRE-EXISTING LOCAL ORIGINAL — MUST SURVIVE EVERY TORN DOWNLOAD\n';
+    const parts = async () => (await readdir(ART)).filter((f) => f.startsWith('.s3b-part-'));
+    const base = new Set(await parts()); // residue older runs may own
+    // leg 1 — hard kill mid-download: the rename never ran, original intact
+    await fmode({ mode: 'latency', delayMs: 600 });
+    const dst1 = path.join(ART, 'dl-rst-kill.bin');
+    await writeFile(dst1, ORIG);
+    const child = spawn(CLI_EXE, ['cp', obj, dst1, '--profile', 'verifyfault'], {
+      cwd: ROOT, windowsHide: true, stdio: 'ignore',
+      env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' },
+    });
+    await sleep(3000); // 64 MiB through a 600ms/chunk link is nowhere near done
+    need(child.exitCode === null, 'the download finished before the kill — not a mid-flight probe');
+    child.kill(); // Windows: process termination — the hard-kill contract
+    await new Promise((res) => { child.once('exit', res); if (child.exitCode !== null) res(); });
+    need((await readFile(dst1, 'utf8')) === ORIG, 'the hard kill truncated or replaced the pre-existing local file');
+    const afterKill = (await parts()).filter((f) => !base.has(f));
+    need(afterKill.length <= 1, `${afterKill.length} staging files after the kill (the contract allows one): ${afterKill.join(', ')}`);
+    // leg 2 — a SETTLED failure (a mid-body RST cuts the link for good:
+    // every SDK retry dies on the reset proxy as well): the staged temp
+    // is discarded synchronously, so zero new residue and the second
+    // original is untouched too
+    // latency mode never trips the watchdog — every delayed request still
+    // SUCCEEDS, so --timeout (a time-to-first-response budget) stays armed
+    // for the whole body (run 2: 64 MiB at 3s/chunk still exited 0). Cut
+    // the link for real: spawn under latency 600, RST the live connection
+    // mid-body, and let every SDK retry die on the reset proxy.
+    await fmode({ mode: 'latency', delayMs: 600 });
+    const dst2 = path.join(ART, 'dl-rst-timeout.bin');
+    await writeFile(dst2, ORIG);
+    const t2 = spawn(CLI_EXE, ['cp', obj, dst2, '--profile', 'verifyfault', '--timeout', '8s'], {
+      cwd: ROOT, windowsHide: true, stdio: 'ignore',
+      env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' },
+    });
+    await sleep(2500); // mid-body on the leg-1 clock: 64 MiB at 600ms/chunk
+    need(t2.exitCode === null, 'leg 2 finished before the cut — not a mid-flight probe');
+    await fmode({ mode: 'reset' }); // RST the live connection; every retry dies too
+    const rst = await new Promise((res) => { t2.once('exit', (c) => res(c)); if (t2.exitCode !== null) res(t2.exitCode); });
+    need(rst !== 0, 'the download survived a mid-body RST');
+    need((await readFile(dst2, 'utf8')) === ORIG, 'the RST-cut download damaged the pre-existing local file');
+    const afterRst = (await parts()).filter((f) => !base.has(f) && !afterKill.includes(f));
+    need(afterRst.length === 0, `a settled failure left staging residue: ${afterRst.join(', ')}`);
+    // leg 3 — the healthy retry replaces the original WHOLE, byte-identical
+    await fmode({ mode: 'direct' });
+    r = await cli(['cp', obj, dst1, '--profile', 'verifys3'], { timeout: 300000 });
+    need(r.code === 0, `healthy retry: ${r.out}${r.err}`);
+    need(await sha256file(dst1) === sha, 'the retried download is not byte-identical to the object');
+    for (const f of (await parts()).filter((x) => !base.has(x))) await rm(path.join(ART, f), { force: true });
+    return 'kill + RST each preserved the original; retry replaced it whole';
+  });
+
   stop();
 }
 
@@ -1855,8 +1988,19 @@ const USERDIR = path.join(ART, 'browser-profile');
 
 const evalPage = (fn, ...args) => page.evaluate(fn, ...args);
 const elOrNull = (js, arg) => page.evaluateHandle(js, arg).then(async (h) => ((await h.asElement()) ? h : null));
-const rowKeys = () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
-  .map((r) => r.dataset.key || r.querySelector('.tname')?.textContent || ''));
+// State-backed: the virtualized grid renders only the visible window (+ a
+// few overscan rows), so DOM queries cannot see rows beyond it — run 4's
+// GUI-65/66/68/71 all timed out on rows that existed but sat past the render
+// edge (the FTP engine root had grown past 100 entries of harness residue,
+// the S3 listing past 30). __s3bGrid.rows is the app's own filtered+sorted
+// logical list — every row, rendered or not; the DOM walk stays as the
+// fallback for any view the hook cannot serve.
+const rowKeys = () => evalPage(() => {
+  const g = window.__s3bGrid;
+  if (g && Array.isArray(g.rows)) return g.rows.map((r) => String(r.name ?? ''));
+  return Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .map((r) => r.dataset.key || r.querySelector('.tname')?.textContent || '');
+});
 const txt = (sel) => evalPage((s) => document.querySelector(s)?.textContent || '', sel);
 async function waitFor(fn, ms = 15000, what = 'condition') {
   const t0 = Date.now();
@@ -1868,11 +2012,35 @@ async function waitFor(fn, ms = 15000, what = 'condition') {
   }
 }
 async function rowAction(label, kind = 'grid') {
+  // Virtualization insurance: a row can exist in the grid's logical list
+  // yet sit beyond the render window (run 4: the FTP engine root had grown
+  // past 100 entries; rows past the ~30-row window are invisible at
+  // scrollTop 0). When no VISIBLE row matches, reveal the logical row via
+  // the grid's own scrollTo() — the same reveal keyboard navigation uses —
+  // and let the next poll find the freshly rendered element. Matching only
+  // visible rows also kills the ghost-click hazard: hidden recycle-pool
+  // rows carry stale names from the previous view (rightClickRow already
+  // skipped them for exactly that reason).
+  await waitFor(() => evalPage((src) => {
+    const [l, k] = src;
+    const root = document.getElementById(k === 'grid' ? 'grid-body' : 'local-grid-body');
+    if (!root) return false;
+    const hit = Array.from(root.querySelectorAll('.grid-row'))
+      .find((r) => ((r.querySelector('.tname')?.textContent || '').trim() === l
+        || (r.dataset.key || '') === l));
+    if (hit && hit.style.display !== 'none') return true;
+    const g = k === 'grid' ? window.__s3bGrid : null;
+    if (!g || !Array.isArray(g.rows)) return false;
+    const idx = g.rows.findIndex((r) => String(r.name ?? '') === l || String(r.key ?? '') === l);
+    if (idx >= 0) g.scrollTo(idx);
+    return false;
+  }, [label, kind]).catch(() => false), 10000, `row "${label}" to render`);
   const h = await elOrNull((src) => {
     const [l, k] = src;
     const root = document.getElementById(k === 'grid' ? 'grid-body' : 'local-grid-body');
     if (!root) return null;
     return Array.from(root.querySelectorAll('.grid-row'))
+      .filter((r) => r.style.display !== 'none')
       .find((r) => ((r.querySelector('.tname')?.textContent || '').trim() === l
         || (r.dataset.key || '') === l)) || null;
   }, [label, kind]);
@@ -1883,12 +2051,25 @@ const clickRow = (l) => rowAction(l).then((e) => e.click());
 const ctrlClickRow = (l) => rowAction(l).then((e) => e.click({ modifiers: ['Control'] }));
 const dblClickRow = (l) => rowAction(l).then((e) => e.dblclick());
 async function clickFooter(re) {
-  const h = await elOrNull((src) => {
-    const btns = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'));
-    return btns.find((b) => new RegExp(src, 'i').test(b.textContent.trim())) || null;
-  }, re.source);
-  if (!h) throw new Error(`no footer button /${re.source}/`);
-  await h.asElement().click();
+  // Same starvation class as ctxItem — a real click on a modal footer
+  // button (the GUI-69 delete confirm rides this): find + synthetic
+  // dispatch in ONE page turn, retried; dump the footer when absent.
+  try {
+    await waitFor(() => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((x) => new RegExp(src, 'i').test((x.textContent || '').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    }, re.source).catch(() => false), 10000, `footer button /${re.source}/`);
+  } catch (e) {
+    const st = await evalPage(() => JSON.stringify({
+      modal: !!document.querySelector('#modal-root .modal:not(.hidden)'),
+      foot: Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .map((b) => (b.textContent || '').trim()).slice(0, 12),
+    })).catch(() => '?');
+    throw new Error(`${e.message} [footer: ${st}]`);
+  }
   await sleep(120);
 }
 async function modalText() { return evalPage(() => document.querySelector('#modal-root .modal')?.textContent || ''); }
@@ -1920,7 +2101,29 @@ async function enterFolder(label) {
     // dblclick time out, and an UNAWAITED rejection here once killed the
     // whole runner (run #2, GUI-36) — never leave a pending Playwright
     // action floating outside the row's error boundary
-    try { await (await rowAction(label)).dblclick({ timeout: 4000 }); } catch { /* row mid-render or covered */ }
+    // find + dispatch in ONE page turn: a captured handle can be a recycled
+    // pool element by dblclick time (run 2: GUI-68 never entered verify-gui
+    // through a stale handle); the grid dblclick has no isTrusted gate
+    try {
+      await evalPage((l) => {
+        const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+          .filter((r) => r.style.display !== 'none')
+          .find((r) => ((r.querySelector('.tname')?.textContent || '').trim() === l || (r.dataset.key || '') === l));
+        if (row) {
+          row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, detail: 2 }));
+          return true;
+        }
+        // virtualization insurance (see rowAction): reveal the logical row
+        // through the grid's own scrollTo so the next poll can dblclick the
+        // real element — an unrendered row cannot be double-clicked
+        const g = window.__s3bGrid;
+        if (g && Array.isArray(g.rows)) {
+          const idx = g.rows.findIndex((r) => String(r.name ?? '') === l || String(r.key ?? '') === l);
+          if (idx >= 0) g.scrollTo(idx);
+        }
+        return false;
+      }, label).catch(() => false);
+    } catch { /* row mid-render */ }
     await sleep(300);
     return false;
   }, 12000, `enter ${label}`);
@@ -1935,17 +2138,60 @@ async function modalVisible() {
 async function closeModal() {
   const btn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
     .reverse().find((b) => /^(close|cancel)$/i.test(b.textContent.trim())) || null);
-  if (btn) { await btn.asElement().click(); await sleep(100); return; }
+  if (btn) { await btn.asElement().evaluate((b) => b.click()); await sleep(100); return; } // synthetic — real modal clicks can starve (see clickFooter)
   await page.keyboard.press('Escape');
   await sleep(100);
   await evalPage(() => document.getElementById('modal-root')?.classList.add('hidden'));
 }
-const rightClickRow = (l) => rowAction(l).then((e) => e.click({ button: 'right' }));
+// rightClickRow: find + dispatch in ONE page turn. Playwright actionability
+// once starved a buckets-view right-click for its whole 20s budget while
+// the app itself was fine (run 2, GUI-67) — a synthetic contextmenu on the
+// matched VISIBLE row cannot hang, and the grid handler has no isTrusted
+// gate. Hidden pool rows are skipped: the recycle pool keeps stale names
+// from the previous view and would otherwise match by ghost.
+const rightClickRow = (l) => waitFor(() => evalPage((label) => {
+  const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .filter((r) => r.style.display !== 'none')
+    .find((r) => ((r.querySelector('.tname')?.textContent || '').trim() === label || (r.dataset.key || '') === label));
+  if (!row) {
+    // virtualization insurance (see rowAction): reveal the logical row via
+    // the grid's own scrollTo — a contextmenu needs the real element
+    const g = window.__s3bGrid;
+    if (g && Array.isArray(g.rows)) {
+      const idx = g.rows.findIndex((r) => String(r.name ?? '') === label || String(r.key ?? '') === label);
+      if (idx >= 0) g.scrollTo(idx);
+    }
+    return false;
+  }
+  const rc = row.getBoundingClientRect();
+  row.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, cancelable: true, button: 2,
+    clientX: Math.round(rc.left + rc.width / 2), clientY: Math.round(rc.top + rc.height / 2),
+  }));
+  return true;
+}, l).catch(() => false), 10000, `row "${l}" for the context menu`).then(() => sleep(50));
 async function ctxItem(re) {
-  const h = await elOrNull((src) => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
-    .find((i) => new RegExp(src, 'i').test(i.textContent)) || null, re.source);
-  if (!h) throw new Error(`no ctxmenu item /${re.source}/`);
-  await h.asElement().click();
+  // Find + dispatch in ONE page turn, retried until the menu shows the
+  // item: the real elementHandle.click starved its whole actionability
+  // budget on an open, clickable menu once (run 3: GUI-67 died on its
+  // FIRST item), and a single elOrNull also races the menu render. A
+  // synthetic .click() cannot hang. On failure, report the menu state.
+  try {
+    await waitFor(() => evalPage((src) => {
+      const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+        .find((i) => new RegExp(src, 'i').test(i.textContent));
+      if (!it) return false;
+      it.click();
+      return true;
+    }, re.source).catch(() => false), 10000, `ctxmenu item /${re.source}/`);
+  } catch (e) {
+    const st = await evalPage(() => JSON.stringify({
+      open: !document.getElementById('ctxmenu')?.classList.contains('hidden'),
+      items: Array.from(document.querySelectorAll('#ctxmenu .item')).slice(0, 12)
+        .map((i) => (i.textContent || '').trim()),
+    })).catch(() => '?');
+    throw new Error(`${e.message} [menu: ${st}]`);
+  }
   await sleep(100);
 }
 async function menuClick(menuRe, itemRe) {
@@ -1988,6 +2234,13 @@ async function startIfAsked(timeoutMs = 8000) {
 async function filterTo(text) {
   await page.locator('#filter').fill(text);
   await sleep(250); // the app debounces the filter input 120ms
+  // The fill FOCUSES #filter, and the global keydown dispatcher ignores
+  // every shortcut while an input is focused (except F5). Real clicks
+  // heal focus (the grid mousedown does not preventDefault), but
+  // SYNTHETIC dispatches never do — run 3 killed the keyboard legs of
+  // GUI-10/19/26/29 through the clearFilter inside navCertGui. Hand
+  // focus back to the grid.
+  await evalPage(() => { document.getElementById('grid-body')?.focus(); return true; });
 }
 async function clearFilter() { await filterTo(''); }
 const sideKeys = () => evalPage(() => Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
@@ -2067,8 +2320,17 @@ async function guiBattery() {
     if (!/docs/.test(rootLs.out)) await s3p(['mkdir', `s3://${BUCKET}/docs/`]).catch(() => {});
     if (!/data/.test(rootLs.out)) await s3p(['cp', '-r', path.join(FIX, 'data'), `s3://${BUCKET}/data/`, '--json']).catch(() => {});
     if (ftpUp) {
-      const f = await cli(['ls', `xf://${RUNID}/gui`]).catch(() => ({ code: 1 }));
-      if (f.code !== 0) await cli(['cp', '-r', path.join(FIX, 'data'), `xf://${RUNID}/gui`, '--json']).catch(() => {});
+      // The FTP engine lists a MISSING path as an empty success (fixed in
+      // remotefs, but this guard stays belt-and-braces): exit 0 with no
+      // output cannot mean "seeded", and a swallowed cp failure starves
+      // every later FTP row into a 50s timeout apiece — run 4 burned
+      // minutes on exactly that. gui/ always carries the fixture tree, so
+      // empty output == unseeded; a failed seed cp is fatal, not skippable.
+      const f = await cli(['ls', `xf://${RUNID}/gui`]).catch(() => ({ code: 1, out: '', err: '' }));
+      if (f.code !== 0 || !String(f.out || '').trim()) {
+        const c = await cli(['cp', '-r', path.join(FIX, 'data'), `xf://${RUNID}/gui`, '--json']);
+        need(c.code === 0, `prologue: FTP seed cp failed: ${String(c.out || '')}${String(c.err || '')}`.slice(0, 300));
+      }
     }
   }
 
@@ -2354,6 +2616,15 @@ async function guiBattery() {
   // the grid then lists every bucket of the endpoint (and the tree adopts
   // the live bucket set).
   const goBuckets = async () => {
+    // cascade insurance: from ANOTHER source's view the first crumb is
+    // that source's root — a single-crumb dead ringer for the buckets
+    // view (run 1: an FTP residue folder made a later row "arrive" at
+    // the FTP root and filter for a bucket that was never there). Snap
+    // to the S3 source first so the root-crumb click means what it says.
+    if (((await evalPage(() => document.querySelector('#breadcrumb .crumb')?.textContent || '')) || '').trim() !== SRCNAME) {
+      await treeOpen(SRCNAME);
+      await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+    }
     await evalPage(() => { document.querySelector('#breadcrumb .crumb')?.click(); });
     try {
       // the buckets view's breadcrumb is exactly ONE crumb (the source
@@ -3988,7 +4259,29 @@ async function guiBattery() {
     try {
       return await waitFor(async () => {
         if ((await rowKeys()).some((k) => k.includes(childNeedle))) return true;
-        try { await (await rowAction(label)).dblclick({ timeout: 4000 }); } catch { /* row not rendered yet / mid-render */ }
+        // find + dispatch in ONE page turn: the grid recycles row elements
+        // (render() rebinds row._model in place), so a handle captured by
+        // rowAction can be a DIFFERENT folder by dblclick time — run 1
+        // entered a stale residue folder exactly this way
+        await evalPage((l) => {
+          const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+            .filter((r) => r.style.display !== 'none')
+            .find((r) => ((r.querySelector('.tname')?.textContent || '').trim() === l || (r.dataset.key || '') === l));
+          if (row) {
+            row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, detail: 2 }));
+            return true;
+          }
+          // virtualization insurance (see rowAction): run 4's FTP root sat
+          // the seed folder past the render window and this dispatch never
+          // fired — reveal the logical row via the grid's own scrollTo and
+          // let the next poll dblclick the real element
+          const g = window.__s3bGrid;
+          if (g && Array.isArray(g.rows)) {
+            const idx = g.rows.findIndex((r) => String(r.name ?? '') === l || String(r.key ?? '') === l);
+            if (idx >= 0) g.scrollTo(idx);
+          }
+          return false;
+        }, label).catch(() => false);
         await sleep(300);
         return false;
       }, 25000, `inside ${label} (its ${childNeedle} row visible)`);
@@ -4009,6 +4302,47 @@ async function guiBattery() {
       throw new Error(`${e.message}: ${st}`);
     }
   };
+  // waitForRows: refresh + row wait that reports WHERE the view actually
+  // was on timeout — a bare "row never appeared" is undiagnosable (the
+  // 2026-09-26 runs lost GUI-68/69 behind cascade states, and run 3's
+  // failure line was itself truncated mid-dump). The FULL state lands in
+  // shots/waitfail-<needle>.json; the thrown line stays short (crumb +
+  // visible-row count + filter) so log truncation cannot eat it.
+  const waitForRows = async (needle, ms, what) => {
+    try {
+      return await waitFor(async () => {
+        await refresh();
+        return (await rowKeys()).some((k) => k.includes(needle));
+      }, ms, what);
+    } catch (e) {
+      const safe = needle.replace(/[^a-z0-9-]/gi, '_');
+      const st = await evalPage(() => JSON.stringify({
+        crumb: (document.querySelector('#breadcrumb')?.textContent || '').trim(),
+        rows: Array.from(document.querySelectorAll('#grid-body .grid-row')).slice(0, 40)
+          .map((r) => r.dataset.key || (r.querySelector('.tname')?.textContent || '')),
+        vis: Array.from(document.querySelectorAll('#grid-body .grid-row'))
+          .filter((r) => r.style.display !== 'none').slice(0, 40)
+          .map((r) => r.dataset.key || (r.querySelector('.tname')?.textContent || '')),
+        filter: document.getElementById('filter')?.value || '',
+        modal: !!document.querySelector('#modal-root .modal:not(.hidden)'),
+        modalText: (document.querySelector('#modal-root .modal:not(.hidden)')?.textContent || '').trim().slice(0, 200),
+        ctxmenu: !!document.getElementById('ctxmenu') && !document.getElementById('ctxmenu').classList.contains('hidden'),
+        toasts: (document.getElementById('toasts')?.textContent || '').trim().slice(0, 300),
+      })).catch(() => '?');
+      try { await writeFile(path.join(SHOTS, `waitfail-${safe}.json`), String(st)); } catch { /* non-fatal */ }
+      let brief = '?';
+      try {
+        brief = await evalPage(() => JSON.stringify({
+          crumb: (document.querySelector('#breadcrumb')?.textContent || '').trim(),
+          vis: Array.from(document.querySelectorAll('#grid-body .grid-row'))
+            .filter((r) => r.style.display !== 'none').length,
+          filter: document.getElementById('filter')?.value || '',
+        }));
+      } catch { /* page gone */ }
+      throw new Error(`${e.message} [${brief}] — full state: shots/waitfail-${safe}.json`);
+    }
+  };
+
   // A floating popout over the grid intercepts pointer events and starves
   // row clicks — the battery hit this before (GUI-34 leaves the transfer
   // manager; navCertGui carries this insurance for the mid-battery rows).
@@ -4605,6 +4939,693 @@ async function guiBattery() {
     } finally {
       if (proxy.exitCode === null) proxy.kill();
     }
+  });
+
+  await verify({ id: 'GUI-63', area: 'gates', action: 'Delete bucket ladder: typed name → Cancel → execute', ds: 'S3 (MinIO)', scenario: 'the buckets-view Delete bucket… window pre-counts the inventory and demands the bucket\'s OWN name (L2 — force, never auto-confirmed): a wrong word keeps the button disabled; Cancel leaves bucket AND contents intact on both faces; only the typed execute removes bucket and contents in one motion; an empty bucket confirms the lighter path under the same typed gate', face: 'GUI' }, async () => {
+    const OB = `${BUCKET}-del63`, EB = `${BUCKET}-e63`;
+    for (const b of [OB, EB]) await s3(['rb', `s3://${b}`, '--force']).catch(() => {}); // residue of a failed earlier run (best effort)
+    let r = await s3(['mb', `s3://${OB}`]);
+    need(r.code === 0, `mb occupied: ${r.out}${r.err}`);
+    r = await s3(['mb', `s3://${EB}`]);
+    need(r.code === 0, `mb empty: ${r.out}${r.err}`);
+    r = await s3(['cp', path.join(FIX, 'data', 'readme.md'), `s3://${OB}/keep.txt`]);
+    need(r.code === 0, `seed: ${r.out}${r.err}`);
+    await navCertGui();
+    await goBuckets();
+    const armDeleteWindow = async (name) => {
+      await filterTo(name.slice(BUCKET.length)); // the unique -suffix
+      await waitFor(async () => (await rowKeys()).some((k) => k === name), 15000, `the ${name} row`);
+      await rightClickRow(name);
+      await ctxItem(/delete bucket/i);
+      await waitFor(async () => /delete bucket/i.test(await modalText()), 8000, 'the Delete bucket window');
+    };
+    const goDisabled = () => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((x) => /delete bucket/i.test(x.textContent.trim()));
+      return b === undefined ? null : !!b.disabled;
+    });
+    await armDeleteWindow(OB);
+    need(/1 object/i.test(await modalText()), `no pre-counted inventory in the window: ${(await modalText()).slice(0, 160)}`);
+    const input = page.locator('#modal-root .delw-confirm input');
+    await input.fill(`${OB}-typo`);
+    need((await goDisabled()) === true, 'Delete bucket enabled under a WRONG word');
+    await input.fill(OB);
+    need((await goDisabled()) === false, 'Delete bucket still disabled under the right word');
+    await shot('63-delbucket-armed');
+    await closeModal(); // Cancel — never the destructive path
+    let st = await s3(['stat', `s3://${OB}`]);
+    need(/region|created|size/i.test(st.out), `Cancel damaged the bucket: ${st.out}`);
+    st = await s3(['ls', `s3://${OB}/`, '--json']);
+    need(st.out.includes('keep.txt'), 'Cancel lost the bucket contents');
+    // the typed execute removes bucket AND contents in one motion
+    await armDeleteWindow(OB);
+    await page.locator('#modal-root .delw-confirm input').fill(OB);
+    await clickFooter(/^delete bucket$/i);
+    await waitFor(async () => (await s3(['stat', `s3://${OB}`])).code !== 0, 60000, 'bucket gone after the execute');
+    st = await s3(['ls', `s3://${OB}/`, '--json']);
+    need(st.code !== 0, 'the bucket contents outlived the bucket');
+    // the empty-bucket variant: same typed gate, the lighter warning path
+    await armDeleteWindow(EB);
+    need(/empty bucket/i.test(await modalText()), `the empty variant did not say so: ${(await modalText()).slice(0, 160)}`);
+    await page.locator('#modal-root .delw-confirm input').fill(EB);
+    await clickFooter(/^delete bucket$/i);
+    await waitFor(async () => (await s3(['stat', `s3://${EB}`])).code !== 0, 60000, 'empty bucket gone');
+    await clearFilter();
+    return 'wrong word held; Cancel kept everything; both executes removed bucket + contents';
+  });
+
+  await verify({ id: 'GUI-64', area: 'transfers', action: 'Cancel mid-download: the local original survives, no partial lands', ds: 'S3 (MinIO) → local', scenario: 'the download-side twin of GUI-21: an 8 MiB download dragged onto a local file that ALREADY EXISTS, canceled mid-flight under a 256 kB/s throttle, must leave the pre-existing local bytes byte-identical (the staging rename never ran), leave no .s3b-part- residue in the destination folder and never a partial at the final name; the retried download then replaces the original whole and sha-identical', face: 'GUI' }, async () => {
+    const K = `s3://${BUCKET}/verify-gui/dl64.bin`;
+    await s3(['rm', K, '--versions', '--force']).catch(() => {});
+    const src = path.join(ART, 'dl64-8m.bin');
+    await writeFile(src, randomBytes(8 * 1024 * 1024));
+    const sha = await sha256file(src);
+    let r = await s3(['cp', src, K]);
+    need(r.code === 0, `seed: ${r.out}${r.err}`);
+    const ORIG = 'LOCAL ORIGINAL — MUST SURVIVE EVERY CANCELED DOWNLOAD\n';
+    const dstDir = path.join(ART, 'dl64');
+    await rm(dstDir, { recursive: true, force: true });
+    await mkdir(dstDir, { recursive: true });
+    const dst = path.join(dstDir, 'dl64.bin');
+    await writeFile(dst, ORIG);
+    await evalPage(() => { localStorage.setItem('s3b-throttle', '262144'); localStorage.setItem('s3b-show-throttle', '1'); return true; });
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('dl64.bin')); }, 15000, 'the dl64 row');
+    await ensureDualPane();
+    await localDir(dstDir, 'dl64.bin');
+    await dnd(await rowAction('dl64.bin'), await sideBodyH());
+    // the destination is occupied: the conflict dialog offers Start (overwrite)
+    await waitFor(async () => /already exist/i.test(await modalText())
+      || ((await call('ActiveTransfers')) || []).some((x) => x.status === 'running' && !x.hidden), 10000, 'the conflict dialog or the started job');
+    if (/already exist/i.test(await modalText())) await clickFooter(/^start$/i);
+    else await startIfAsked(3000);
+    await waitFor(async () => {
+      const j = ((await call('ActiveTransfers')) || []).find((x) => x.status === 'running' && !x.hidden);
+      return j && j.sentBytes > 0 && j.sentBytes < j.totalBytes;
+    }, 20000, 'the throttled running download');
+    await shot('64-download-running');
+    // the manager re-renders per progress tick — find AND click in one turn
+    await waitFor(async () => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('.tr-job.running button'))
+        .find((x) => /cancel/i.test(x.textContent || ''));
+      if (!b) return false;
+      b.click();
+      return true;
+    }), 10000, 'Cancel click on the running download');
+    await waitFor(async () => {
+      const js = (await call('ActiveTransfers')) || [];
+      return js.some((x) => x.status === 'canceled' && JSON.stringify(x).includes('dl64'));
+    }, 20000, 'this download reported canceled');
+    // the discard races the status report on Windows — settle before judging
+    await waitFor(async () => !(await readdir(dstDir)).some((f) => f.startsWith('.s3b-part-')), 10000, 'the staging discard after the cancel');
+    await evalPage(() => { localStorage.removeItem('s3b-throttle'); localStorage.removeItem('s3b-show-throttle'); return true; });
+    need((await readFile(dst, 'utf8')) === ORIG, 'the canceled download damaged the pre-existing local file');
+    need(!(await readdir(dstDir)).some((f) => f.startsWith('.s3b-part-')), 'staging residue survived the cancel');
+    // the retry replaces the original WHOLE, byte-identical
+    await dnd(await rowAction('dl64.bin'), await sideBodyH());
+    await waitFor(async () => /already exist/i.test(await modalText()), 10000, 'the conflict dialog again');
+    await clickFooter(/^start$/i);
+    await waitFor(async () => await sha256file(dst) === sha, 60000, 'the retried download');
+    need(!(await readdir(dstDir)).some((f) => f.startsWith('.s3b-part-')), 'staging residue survived the retry');
+    await s3(['rm', K, '--versions', '--force']);
+    return 'cancel kept the original + zero residue; retry replaced it whole';
+  });
+
+  await verify({ id: 'GUI-65', area: 'deletion', action: 'Remote delete ladder: preview counts, root refused, exact scope', ds: 'FTP', scenario: 'on the engine with no trash, no versions and no undo: deleting the SOURCE ROOT is refused outright (RemoteDeletePreview errors before anything moves); the Delete… window shows the engine-truthful pre-count and Cancel keeps every byte; the executed delete removes exactly the selected scope — a sibling survivor and the parent stay; every oracle re-checked through the CLI face on its own connection', face: 'GUI' }, async () => {
+    if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
+    const F = FTPNAME, u = `del65-${RUNID}`;
+    const seed = path.join(ART, 'del65.txt');
+    await writeFile(seed, `del65 payload ${RUNID}\n`);
+    for (const p of ['sub/one.txt', 'sub/two.txt', 'sib.txt']) {
+      const r = await cli(['cp', seed, `xf://${u}/${p}`]);
+      need(r.code === 0, `seed ${p}: ${r.out}${r.err}`);
+    }
+    // rung 0 — the root is refused before anything moves; the preview
+    // REPORTS the refusal in errors[] — it does not throw
+    const pv = await call('RemoteDeletePreview', F, ['/']);
+    need(pv && (pv.errors || []).some((e) => /root/i.test(String(e))) && !pv.files && !pv.folders,
+      `the source root was not refused: ${JSON.stringify(pv)}`);
+    // browse to the seeded folder through the real UI
+    await treeOpen(F);
+    await sweepOverlays();
+    await waitFor(async () => {
+      await refresh();
+      return (await txt('#breadcrumb')).trim().endsWith(F);
+    }, 25000, `the view on the ${F} root`);
+    await waitFor(async () => {
+      await refresh();
+      return (await rowKeys()).some((k) => k.startsWith(RUNID));
+    }, 50000, `this run's ${RUNID}/ seed folder`);
+    await enterFolderByChild(RUNID, u);
+    await enterFolderByChild(u, 'sub'); // sub/ lives INSIDE u — a second hop
+    // rung 1 — Cancel keeps everything
+    await rightClickRow('sub');
+    await ctxItem(/^delete/i);
+    await waitFor(async () => /2 (object|file)/i.test(await modalText()), 8000, 'the pre-counted remote Delete window');
+    const armed = await evalPage(() => !!document.querySelector('#modal-root .delw-confirm input'));
+    if (armed) await page.locator('#modal-root .delw-confirm input').fill('delete');
+    await shot('65-remote-del-window');
+    await closeModal(); // Cancel
+    let l = await cli(['ls', `xf://${u}/`, '--json']);
+    need(l.out.includes('sub/') && l.out.includes('sib.txt'), `Cancel lost remote data: ${l.out}${l.err}`);
+    // rung 2 — the executed delete removes exactly the selected scope
+    await rightClickRow('sub');
+    await ctxItem(/^delete/i);
+    await waitFor(async () => /2 (object|file)/i.test(await modalText()), 8000, 'the Delete window again');
+    if (await evalPage(() => !!document.querySelector('#modal-root .delw-confirm input'))) {
+      await page.locator('#modal-root .delw-confirm input').fill('delete');
+    }
+    await clickFooter(/^delete$/i);
+    await waitFor(async () => {
+      const rr = await cli(['ls', `xf://${u}/`, '--json']);
+      return !rr.out.includes('sub/');
+    }, 45000, 'sub gone through the CLI face');
+    l = await cli(['ls', `xf://${u}/`, '--json']);
+    need(l.out.includes('sib.txt'), 'the sibling survivor was deleted too');
+    l = await cli(['ls', `xf://${u}/sub/`, '--json']);
+    // The FTP face lists a MISSING child under an existing parent as an
+    // empty SUCCESS (exit 0, no output) — gone means nonzero OR nothing.
+    need(l.code !== 0 || !l.out.trim(), 'the deleted folder still lists');
+    // teardown — the parent folder and the survivor, nothing else
+    const res = await call('RemoteRemove', F, [`/${u}`]);
+    need(res && res.deleted >= 1 && !(res.errors || []).length, `cleanup: ${JSON.stringify(res)}`);
+    return 'root refused; Cancel kept every byte; execute removed exactly sub/';
+  });
+
+  await verify({ id: 'GUI-66', area: 'objects', action: 'Remote create: New folder / New file — and their cancels create nothing', ds: 'FTP', scenario: 'a canceled New folder or New file prompt must leave the engine untouched (no half-made entries); the confirmed creates land exactly once — folder via RemoteMkdir, file via RemoteCreateFile — witnessed through the CLI face; the New-file dialog must never launch an editor on remote sources', face: 'GUI' }, async () => {
+    if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
+    const F = FTPNAME, u = `nf66-${RUNID}`;
+    await call('RemoteMkdir', F, `/${u}`);
+    await treeOpen(F);
+    await sweepOverlays();
+    await waitFor(async () => {
+      await refresh();
+      return (await txt('#breadcrumb')).trim().endsWith(F);
+    }, 25000, `the view on the ${F} root`);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(RUNID)), 50000, 'the run seed folder');
+    await enterFolderByChild(RUNID, 'gui');
+    await enterFolderByChild('gui', 'readme.md'); // readme.md lives inside gui/
+    // cancel legs — the engine must not change at all
+    const snap = async () => (await cli(['ls', `xf://${RUNID}/gui/`, '--json'])).out;
+    const before = await snap();
+    await rightClickRow('readme.md');
+    await ctxItem(/^new folder/i);
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n > 0), 5000, 'the folder-name prompt');
+    await closeModal(); // Cancel the prompt
+    await rightClickRow('readme.md');
+    await ctxItem(/^new file/i);
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n > 0), 5000, 'the new-file prompt');
+    await closeModal();
+    need((await snap()) === before, 'a canceled create changed the engine');
+    // the confirmed New folder lands exactly once
+    await rightClickRow('readme.md');
+    await ctxItem(/^new folder/i);
+    await answerPrompt(`made-${RUNID}`);
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes(`made-${RUNID}`)); }, 20000, 'the created folder row')
+      .catch(async (e) => { await shot('66-made-timeout'); throw e; });
+    let r = await cli(['ls', `xf://${RUNID}/gui/`, '--json']);
+    need(r.code === 0 && r.out.includes(`made-${RUNID}`), `the folder did not land on the engine: ${r.out}${r.err}`);
+    // the confirmed New file lands exactly once, empty, no editor launched
+    await rightClickRow('readme.md');
+    await ctxItem(/^new file/i);
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n > 0), 5000, 'the new-file prompt');
+    await page.locator('#modal-root .modal input.input').last().fill('born');
+    await page.locator('#modal-root .modal select.input').selectOption('txt');
+    await clickFooter(/^create$/i);
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('born.txt')); }, 20000, 'the created file row')
+      .catch(async (e) => { await shot('66-born-timeout'); throw e; });
+    r = await cli(['stat', `xf://${RUNID}/gui/born.txt`]);
+    need(r.code === 0 && /size:\s*0/i.test(r.out), `born.txt not an empty file on the engine: ${r.out}${r.err}`);
+    // teardown
+    const res = await call('RemoteRemove', F, [`/${RUNID}/gui/made-${RUNID}`, `/${RUNID}/gui/born.txt`]);
+    need(res && res.deleted === 2 && !(res.errors || []).length, `cleanup: ${JSON.stringify(res)}`);
+    return 'cancels created nothing; folder + empty file landed once each';
+  });
+
+  await verify({ id: 'GUI-67', area: 'versions', action: 'Purge dialog: markers mode, noncurrent mode, and the >50 typed escalation', ds: 'S3 (MinIO)', scenario: 'the bucket-wide purge tools in the admin Versions tab are the irreversible mass-deletion surface: the markers mode must remove ONLY delete markers (a marker-buried object becomes visible again — its current version untouched); the noncurrent mode must collapse every key to exactly its CURRENT version (never fewer, never the wrong bytes) while >50 armed items demand the escalation word \'purge\' — a wrong word keeps Purge dead; every count is re-checked through the CLI face', face: 'GUI' }, async () => {
+    const KP = `s3://${BUCKET}/verify-gui/purge67.txt`;
+    const KM = `s3://${BUCKET}/verify-gui/mk67.txt`;
+    await s3(['rm', '--versions', KP, '--force']).catch(() => {});
+    await s3(['rm', '--versions', KM, '--force']).catch(() => {});
+    // 52 seeded versions → 51 noncurrent (>50 arms the escalation word)
+    const seed = path.join(ART, 'purge67.txt');
+    for (let i = 1; i <= 52; i++) {
+      await writeFile(seed, `purge67 v${i}\n`);
+      const r = await s3(['cp', seed, KP, '--force']);
+      need(r.code === 0, `seed v${i}: ${r.out}${r.err}`);
+    }
+    await writeFile(seed, 'mk67 lives\n');
+    let r = await s3(['cp', seed, KM]);
+    need(r.code === 0, `mk seed: ${r.out}${r.err}`);
+    r = await s3(['rm', KM]); // a versioned delete → exactly one marker
+    need(r.code === 0, `mk marker: ${r.out}${r.err}`);
+    // sentinel bytes that must survive every purge: the CURRENT versions
+    const snap = async (k, f) => { const o = path.join(ART, f); await rm(o, { force: true }); await s3(['cp', k, o]); return readFile(o); };
+    const p67cur = await snap(KP, 'p67-cur.txt');
+    const kv = `s3://${BUCKET}/verify-gui/gui-ver.txt`; // seeded by GUI-12 in a full run (≥3 versions); self-seeded here so --row triage stands alone
+    for (let i = 0; i < 3 && (await cliVerCount(kv)) < 3; i++) {
+      await writeFile(seed, `gui-ver triage v${i}\n`);
+      await s3(['cp', seed, kv, '--force']).catch(() => {});
+    }
+    const gvc = await snap(kv, 'gv-cur.txt');
+    const gvBefore = await cliVerCount(kv);
+    // open the admin panel on the verify bucket through the buckets view
+    await navCertGui();
+    await goBuckets();
+    await filterTo(BUCKET); // BUCKET, not RUNID — independent timestamps
+    await waitFor(async () => (await rowKeys()).some((k) => k === BUCKET), 15000, 'the verify bucket row');
+    await rightClickRow(BUCKET);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    const clickTab = (name) => evalPage((n) => {
+      const t = Array.from(document.querySelectorAll('#modal-root .tab'))
+        .find((x) => (x.textContent || '').trim() === n);
+      t?.click(); return !!t;
+    }, name);
+    await clickTab('Versions');
+    await waitFor(async () => /purge noncurrent versions/i.test(await modalText()), 15000, 'the Versions tab tools');
+    const bodyBtn = (re) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .find((x) => new RegExp(src, 'i').test(x.textContent || ''));
+      if (!b) return false;
+      b.click(); return true;
+    }, re.source);
+    // markers mode first: the marker-buried object must come back visible
+    need(await bodyBtn(/purge delete markers/i), 'no Purge delete markers button');
+    await waitFor(async () => /delete marker/i.test(await modalText()) && /purge versions/i.test(await modalText()), 8000, 'the markers purge window');
+    if (await evalPage(() => !!document.querySelector('#modal-root .delw-confirm input'))) {
+      // BOTH purge modes type-gate on "purge" once the count passes 50
+      // (typedAlways: n > 50 — and the count is bucket-wide, so by
+      // mid-battery the gate is always armed). Run 4 typed "delete" here,
+      // clicked a dead Purge button and timed out with all 695 markers
+      // still buried. The noncurrent leg below keeps the wrong-word
+      // refusal ladder on purpose; this leg fills the right word directly.
+      await page.locator('#modal-root .delw-confirm input').fill('purge');
+    }
+    await clickFooter(/^purge$/i);
+    // Sequence on the completion toast (the dialog awaits PurgeVersions
+    // before toasting), then let the CLI listing carry the assertion —
+    // through s3(), never a bare cli(): full-matrix runs 6+7 "failed"
+    // here while the purge had actually worked. By GUI-battery time the
+    // shared config holds 5 profiles (verifys3, verifyfault, xf, xs, xt),
+    // so a profile-less call dies with "multiple profiles", .out stays
+    // empty, and the poll times out against a bucket where mk67.txt is
+    // fully visible. Solo runs keep one profile in the store, which is
+    // exactly the solo-pass / full-fail split that masqueraded as a
+    // purge-coverage bug (the engine walks past the 1000-entry page
+    // boundary correctly — proven by CLI probe, 1055 versions + 5
+    // markers, purge 5/5, every buried object restored).
+    await waitFor(async () => /purged \d+ version|purge failed/i.test(await page.locator('#toasts').innerText()), 120000, 'the markers purge to finish');
+    const mkt = await page.locator('#toasts').innerText();
+    need(!/purge failed/i.test(mkt), `the markers purge errored: ${mkt.slice(0, 160)}`);
+    await waitFor(async () => (await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--json'])).out.includes('mk67.txt'), 30000, 'the marker-buried object visible again');
+    r = await s3(['cp', KM, path.join(ART, 'mk-after.txt')]);
+    need(r.code === 0 && (await readFile(path.join(ART, 'mk-after.txt'), 'utf8')) === 'mk67 lives\n', 'the markers purge disturbed the current version');
+    // noncurrent mode under the >50 escalation word
+    need(await bodyBtn(/purge noncurrent versions/i), 'no Purge noncurrent versions button');
+    // Run 5 raced this read twice over: /noncurrent version/i matches
+    // the admin PANEL's own button label, and the panel phrases its
+    // counter number-AFTER ("Noncurrent versions63"), so the need fired
+    // on panel text while the purge window was still a binding
+    // round-trip away (the bucket had 764 objects). The window's title
+    // is "Purge versions" — which the panel never contains, its buttons
+    // say "purge noncurrent/delete markers" — and its counter is
+    // number-BEFORE ("63 noncurrent versions"). Require both before
+    // the count is read.
+    await waitFor(async () => /purge versions/i.test(await modalText()) && /(\d+)\s+noncurrent version/i.test(await modalText()), 15000, 'the noncurrent purge window');
+    const m = (await modalText()).match(/(\d+)\s+noncurrent version/i);
+    need(m && parseInt(m[1], 10) >= 51, `the window did not count the armed batch (>50): ${(await modalText()).slice(0, 160)}`);
+    await page.locator('#modal-root .delw-confirm input').fill('delete'); // the WRONG word
+    const purgeDead = () => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
+        .find((x) => /^purge$/i.test(x.textContent.trim()));
+      return b === undefined ? null : !!b.disabled;
+    });
+    need((await purgeDead()) === true, 'Purge enabled under the wrong word');
+    await shot('67-purge-escalation');
+    await page.locator('#modal-root .delw-confirm input').fill('purge');
+    need((await purgeDead()) === false, 'Purge still disabled under the right word');
+    await clickFooter(/^purge$/i);
+    // every key collapses to exactly its current version, bytes intact
+    await waitFor(async () => (await cliVerCount(KP)) === 1, 60000, 'purge67 collapsed to one version');
+    need((await cliVerCount(kv)) === 1, `the sentinel collapsed to ${(await cliVerCount(kv))} version(s), want its current only (${gvBefore} before)`);
+    need((await cliVerCount(KM)) === 1, 'the un-markered object lost its current version');
+    need((await snap(KP, 'p67-after.txt')).equals(p67cur), 'the purge67 current bytes changed');
+    need((await snap(kv, 'gv-after.txt')).equals(gvc), 'the sentinel current bytes changed');
+    await closeModal(); // the admin panel
+    await clearFilter();
+    // teardown
+    await s3(['rm', '--versions', KP, '--force']);
+    await s3(['rm', '--versions', KM, '--force']);
+    return `markers restored a buried object; noncurrent collapsed every key to its current (${m[1]} armed)`;
+  });
+
+  await verify({ id: 'GUI-68', area: 'objects', action: 'Storage-class dialog: single convert, and the >50 typed force gate', ds: 'S3 (MinIO)', scenario: 'converting storage class rewrites objects server-side — a mis-fired batch rewrites everything: one object converts straight from the dialog (CLI stat witnesses the class flip); a 51-object batch exceeds the confirm threshold and demands the typed word \'convert\' — a wrong word does nothing (the dialog stays put, the classes unchanged), Cancel leaves every object untouched, and only the typed confirm rewrites the whole batch', face: 'GUI' }, async () => {
+    const P1 = `s3://${BUCKET}/verify-gui/sc68.txt`;
+    const PB = `s3://${BUCKET}/verify-gui/sc68b`;
+    await s3(['rm', P1, '--force']).catch(() => {});
+    await s3(['rm', `${PB}/`, '-r', '--force']).catch(() => {});
+    await writeFile(path.join(ART, 'sc68.txt'), 'sc68 payload\n');
+    let r = await s3(['cp', path.join(ART, 'sc68.txt'), P1]);
+    need(r.code === 0, `seed one: ${r.out}${r.err}`);
+    const dir = path.join(ART, 'sc68b');
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    for (let i = 0; i < 51; i++) await writeFile(path.join(dir, `f${String(i).padStart(2, '0')}.txt`), `sc68b ${i}\n`);
+    r = await s3(['cp', '-r', dir, PB]);
+    need(r.code === 0, `seed batch: ${r.out}${r.err}`);
+    // stat omits the class line for the default tier (S3/MinIO never send
+    // the header for STANDARD), so a no-match reads as STANDARD, not garbage.
+    const classOf = async (k) => ((await s3(['stat', k])).out.match(/class:\s*(\S+)/) || [])[1] || 'STANDARD';
+    // single object — under the threshold, converts directly
+    await navCertGui();
+    try {
+      await waitForRows('sc68.txt', 15000, 'the sc68 row');
+    } catch (e) {
+      // runs 4 AND 5 lost this row identically: absent from ~50
+      // refreshed app listings seconds after the seed cp exited 0 —
+      // the CLI stat settles which side lied before the failure
+      // travels any further
+      const st = await s3(['stat', P1]);
+      throw new Error(`${e.message} — CLI stat: code=${st.code} ${String(st.out || st.err || '').split('\n')[0].slice(0, 160)}`);
+    }
+    await rightClickRow('sc68.txt');
+    await ctxItem(/storage class/i);
+    await waitFor(async () => /storage class/i.test(await modalText()), 8000, 'the class dialog');
+    // MinIO answers the convert CopyObject with InvalidStorageClass for
+    // AWS-only tiers — the solo run caught the 400 in the server log.
+    // The dialog selector defaults to GLACIER, so pick the one
+    // non-standard tier this provider actually accepts.
+    await page.locator('#modal-root .modal select').last().selectOption('REDUCED_REDUNDANCY');
+    await clickFooter(/^convert$/i);
+    await waitFor(async () => /converted 1 object/i.test(await modalText()), 30000, 'the single conversion');
+    need((await classOf(P1)) === 'REDUCED_REDUNDANCY', `the single object did not flip class: ${await classOf(P1)}`);
+    await closeModal();
+    // the 51-object batch — over the threshold, the typed gate holds it
+    await enterFolder('sc68b');
+    await waitFor(async () => (await rowKeys()).filter((k) => k.includes('.txt')).length >= 51, 15000, 'the batch rows');
+    await page.keyboard.press('Control+a');
+    await rightClickRow('f00.txt'); // a member of the selection keeps it armed
+    await ctxItem(/storage class/i);
+    await waitFor(async () => /51 item/i.test(await modalText()), 8000, 'the batch class dialog');
+    await page.locator('#modal-root .modal select').last().selectOption('REDUCED_REDUNDANCY');
+    await clickFooter(/^convert$/i); // the API refuses without force
+    await waitFor(async () => /type "convert"/i.test(await modalText()), 15000, 'the typed force gate');
+    // the wrong word: the button is a no-op, the dialog stays, nothing converts
+    await page.locator('#modal-root .modal input.input').last().fill('wrong');
+    await clickFooter(/^convert$/i);
+    need(await modalVisible(), 'the typed gate closed on a wrong word');
+    need(/type "convert"/i.test(await modalText()), 'the typed gate dialog vanished on a wrong word');
+    await closeModal(); // Cancel the gate
+    await waitFor(async () => /canceled/i.test(await modalText()), 5000, 'the Canceled status');
+    let allStd = true;
+    for (let i = 0; i < 51; i += 10) { if ((await classOf(`${PB}/f${String(i).padStart(2, '0')}.txt`)) !== 'STANDARD') allStd = false; }
+    need(allStd, 'an unconfirmed batch still converted objects');
+    // the typed confirm rewrites the whole batch
+    await clickFooter(/^convert$/i);
+    await waitFor(async () => /type "convert"/i.test(await modalText()), 15000, 'the typed gate again');
+    await page.locator('#modal-root .modal input.input').last().fill('convert');
+    await clickFooter(/^convert$/i);
+    await waitFor(async () => /converted 51 object/i.test(await modalText()), 120000, 'the batch conversion');
+    let allRr = true;
+    for (let i = 0; i < 51; i += 10) { if ((await classOf(`${PB}/f${String(i).padStart(2, '0')}.txt`)) !== 'REDUCED_REDUNDANCY') allRr = false; }
+    need(allRr, 'the batch did not flip classes uniformly');
+    await closeModal();
+    await s3(['rm', P1, '--force']);
+    await s3(['rm', `${PB}/`, '-r', '--force']);
+    return 'single flipped; wrong word + cancel held the batch; typed confirm flipped all 51';
+  });
+
+  await verify({ id: 'GUI-69', area: 'security', action: 'Object lock dialog: retention and legal hold each defeat a GUI permanent delete', ds: 'S3 (MinIO)', scenario: 'the per-object lock dialog on a lock-enabled bucket (mb --object-lock, irreversible for the bucket): Set GOVERNANCE retention must make the object un-deletable through the REAL UI (Shift+Del permanent window confirms, the engine refuses, the error surfaces, the version survives); Clear re-arms it; Legal hold ON blocks the same way, OFF re-arms it; the final permanent delete then succeeds and the scratch bucket tears down — the GUI ladder twin of the CLI WORM row', face: 'GUI' }, async () => {
+    const LB = `${BUCKET}-l69`, K = 'worm69.txt';
+    await s3(['rb', `s3://${LB}`, '--force']).catch(() => {}); // residue of a failed earlier run
+    let r = await s3(['mb', `s3://${LB}`, '--object-lock']);
+    need(r.code === 0, `mb --object-lock: ${r.out}${r.err}`);
+    await writeFile(path.join(ART, 'worm69.txt'), 'worm69 original\n');
+    r = await s3(['cp', path.join(ART, 'worm69.txt'), `s3://${LB}/${K}`]);
+    need(r.code === 0, `seed: ${r.out}${r.err}`);
+    const KS = `s3://${LB}/${K}`;
+    const verN = async () => cliVerCount(KS);
+    const clearToasts = () => evalPage(() => { document.getElementById('toasts')?.replaceChildren(); return true; });
+    const waitErrToast = () => waitFor(() => evalPage(() => {
+      const t = document.getElementById('toasts')?.textContent || '';
+      return /error|denied|fail/i.test(t) && t.length > 0;
+    }), 20000, 'the refused delete surfaced an error toast');
+    const bodyBtn = (label) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .find((x) => (x.textContent || '').trim() === src);
+      if (!b) return false;
+      b.click(); return true;
+    }, label);
+    const permanentDeleteAttempt = async (tag) => {
+      await clearToasts();
+      await clickRow(K);
+      await page.keyboard.press('Shift+Delete');
+      await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) >= 1, 5000, `the permanent window (${tag})`);
+      if (await evalPage(() => !!document.querySelector('#modal-root .delw-confirm input'))) {
+        await page.locator('#modal-root .delw-confirm input').fill('delete');
+      }
+      await shot(`69-worm-${tag}`);
+      await clickFooter(/^delete$/i);
+    };
+    // open the bucket through the buckets view (the browse source is bucket-scoped)
+    await navCertGui();
+    await goBuckets();
+    await filterTo('-l69');
+    await waitFor(async () => (await rowKeys()).some((k) => k === LB), 15000, 'the lock bucket row');
+    await rightClickRow(LB);
+    await ctxItem(/^open/i);
+    await clearFilter(); // the filter survives navigation — worm69.txt doesn't match '-l69' (run 2)
+    await waitForRows(K, 20000, 'the locked object row');
+    const openLock = async () => {
+      await rightClickRow(K);
+      await ctxItem(/object lock/i);
+      await waitFor(async () => /object lock/i.test(await modalText()) && /retention/i.test(await modalText()), 8000, 'the lock dialog');
+    };
+    // GOVERNANCE retention in force — the engine refuses the permanent delete
+    await openLock();
+    await page.locator('#modal-root .modal input.input').fill('+1h');
+    need(await bodyBtn('Set'), 'no Set button in the lock dialog');
+    await sleep(800);
+    await closeModal();
+    await permanentDeleteAttempt('retention');
+    await waitErrToast();
+    need((await verN()) >= 1, 'the retained version did not survive the GUI permanent delete');
+    // Clear re-arms the delete path… but hold ON must block it too.
+    // Assert the ENGINE state after every toggle — run 3 clicked Clear
+    // while the retention silently stayed armed (the clear request must
+    // ask for governance bypass; product bug fixed this round), and only
+    // the much later delete refusal exposed it.
+    await openLock();
+    need(await bodyBtn('Clear'), 'no Clear button in the lock dialog');
+    await sleep(800);
+    let lk = await call('GetObjectLock', LB, K, '').catch((e) => ({ err: String(e) }));
+    need(!/(governance|compliance)/i.test(JSON.stringify(lk)), `Clear left retention armed: ${JSON.stringify(lk)}`);
+    need(await bodyBtn('On'), 'no hold On button in the lock dialog');
+    await sleep(800);
+    await closeModal();
+    await permanentDeleteAttempt('hold');
+    await waitErrToast();
+    need((await verN()) >= 1, 'the held version did not survive the GUI permanent delete');
+    // hold OFF re-arms it — the delete now succeeds
+    await openLock();
+    need(await bodyBtn('Off'), 'no hold Off button in the lock dialog');
+    await sleep(800);
+    lk = await call('GetObjectLock', LB, K, '').catch((e) => ({ err: String(e) }));
+    need(!/"legalHold"\s*:\s*"ON"/.test(JSON.stringify(lk)), `hold Off left the lock armed: ${JSON.stringify(lk)}`);
+    await closeModal();
+    await permanentDeleteAttempt('released');
+    await waitFor(async () => (await verN()) === 0, 45000, 'the unlocked permanent delete landed');
+    r = await s3(['rb', `s3://${LB}`, '--force']);
+    need(r.code === 0, `rb teardown: ${r.out}${r.err}`);
+    await clearFilter();
+    return 'retention and hold each refused the GUI permanent delete; unlock re-armed it';
+  });
+
+  await verify({ id: 'GUI-70', area: 'admin', action: 'Policy editor round-trip: Save and Delete through the dialog, CLI oracle', ds: 'S3 (MinIO)', scenario: 'the bucket policy is the access-control surface — a wrong save locks people out, a wrong delete opens the bucket up: the admin Policy tab must Save exactly the edited JSON (the CLI face reads the same policy back), report the statement summary, and Delete policy must remove it for real (the CLI answers that none is set); the editor works on a scratch bucket torn down after', face: 'GUI' }, async () => {
+    const PB = `${BUCKET}-p70`;
+    await s3(['rb', `s3://${PB}`, '--force']).catch(() => {});
+    let r = await s3(['mb', `s3://${PB}`]);
+    need(r.code === 0, `mb: ${r.out}${r.err}`);
+    // a baseline policy via the CLI face, so the tab always has raw JSON
+    const pol = path.join(ART, 'p70.json');
+    const POLICY = JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [{ Sid: 'verify70', Effect: 'Allow', Principal: { AWS: ['*'] }, Action: 's3:GetBucketLocation', Resource: `arn:aws:s3:::${PB}` }],
+    }, null, 2);
+    await writeFile(pol, POLICY);
+    r = await s3(['bucket', 'policy', 'put', `s3://${PB}`, pol]);
+    need(r.code === 0, `baseline policy put: ${r.out}${r.err}`);
+    await navCertGui();
+    await goBuckets();
+    await filterTo('-p70');
+    await waitFor(async () => (await rowKeys()).some((k) => k === PB), 15000, 'the policy bucket row');
+    await rightClickRow(PB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    const clickTab = (name) => evalPage((n) => {
+      const t = Array.from(document.querySelectorAll('#modal-root .tab'))
+        .find((x) => (x.textContent || '').trim() === n);
+      t?.click(); return !!t;
+    }, name);
+    await clickTab('Policy');
+    await waitFor(async () => /save policy/i.test(await modalText()), 15000, 'the Policy tab');
+    need(/statement/i.test(await modalText()), `no statement summary: ${(await modalText()).slice(0, 160)}`);
+    const clearToasts = () => evalPage(() => { document.getElementById('toasts')?.replaceChildren(); return true; });
+    // edit + Save through the dialog — the CLI face must read the SAME bytes
+    const ta = page.locator('#modal-root textarea');
+    await waitFor(() => ta.count().then((n) => n > 0), 5000, 'the policy textarea');
+    const edited = POLICY.replace('verify70', 'verify70-edited');
+    await ta.fill(edited);
+    await clearToasts();
+    need(await evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .find((x) => /save policy/i.test(x.textContent || ''));
+      if (!b) return false;
+      b.click(); return true;
+    }), 'no Save policy button');
+    await waitFor(() => evalPage(() => /policy saved/i.test(document.getElementById('toasts')?.textContent || '')), 20000, 'the saved toast');
+    let g = await s3(['bucket', 'policy', 'get', `s3://${PB}`]);
+    need(g.code === 0 && g.out.includes('verify70-edited'), `the CLI face did not read the edited policy: ${(g.out + g.err).slice(0, 160)}`);
+    // Delete policy removes it for real
+    await clearToasts();
+    need(await evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .find((x) => /delete policy/i.test(x.textContent || ''));
+      if (!b) return false;
+      b.click(); return true;
+    }), 'no Delete policy button');
+    await waitFor(() => evalPage(() => /policy (removed|deleted)/i.test(document.getElementById('toasts')?.textContent || '')), 20000, 'the removed toast');
+    g = await s3(['bucket', 'policy', 'get', `s3://${PB}`]);
+    need(/no policy/i.test(g.out + g.err) || g.code !== 0, `the policy outlived the dialog delete: ${(g.out + g.err).slice(0, 160)}`);
+    await closeModal();
+    await clearFilter();
+    r = await s3(['rb', `s3://${PB}`, '--force']);
+    need(r.code === 0, `rb teardown: ${r.out}${r.err}`);
+    return 'Save and Delete both landed, CLI-verified';
+  });
+
+  await verify({ id: 'GUI-71', area: 'transfers', action: 'Cut/paste move: self-paste refused, canceled move keeps the source, completed move is exact', ds: 'S3 (MinIO) + FTP', scenario: 'a move is a copy whose source deletion rides on completeness: pasting a cut selection into its OWN folder must be refused with the exact toast and change nothing; a cross-engine move canceled mid-flight must keep the source untouched and land NO partial at the destination final name; the completed move removes the source for real and the destination bytes are sha-identical; teardown leaves both stores clean', face: 'GUI' }, async () => {
+    if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
+    const F = FTPNAME;
+    const D = `s3://${BUCKET}/verify-gui/mv71`;
+    await s3(['rm', `${D}/`, '-r', '--force']).catch(() => {});
+    await cli(['rm', `xf://${RUNID}/gui/mv71-8m.bin`, '--force']).catch(() => {});
+    const src = path.join(ART, 'mv71-8m.bin');
+    await writeFile(src, randomBytes(8 * 1024 * 1024));
+    const sha = await sha256file(src);
+    let r = await s3(['mkdir', `${D}/`]);
+    r = await s3(['cp', src, `${D}/mv71-8m.bin`]);
+    need(r.code === 0, `seed big: ${r.out}${r.err}`);
+    r = await s3(['cp', path.join(FIX, 'data', 'readme.md'), `${D}/self.txt`]);
+    need(r.code === 0, `seed self: ${r.out}${r.err}`);
+    const clearToasts = () => evalPage(() => { document.getElementById('toasts')?.replaceChildren(); return true; });
+    // rung 1 — self-paste refused, nothing moves
+    await navCertGui();
+    await enterFolder('mv71');
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('self.txt')); }, 15000, 'self.txt row');
+    await clickRow('self.txt');
+    await page.keyboard.press('Control+x');
+    await sleep(300);
+    await clearToasts();
+    await page.keyboard.press('Control+v');
+    await waitFor(() => evalPage(() => /source and destination are the same/i.test(document.getElementById('toasts')?.textContent || '')), 8000, 'the self-paste refusal toast');
+    need(/size:/.test((await s3(['stat', `${D}/self.txt`])).out), 'the refused self-paste still moved the file');
+    // rung 2 — canceled cross-engine move keeps the source, no partial lands
+    await evalPage(() => { localStorage.setItem('s3b-throttle', '262144'); localStorage.setItem('s3b-show-throttle', '1'); return true; });
+    await clickRow('mv71-8m.bin');
+    await page.keyboard.press('Control+x');
+    await sleep(300);
+    // Prove the cut REGISTERED before navigating away — run 3's rung 2
+    // produced no move job at all and left no evidence why.
+    await waitFor(() => evalPage(() => /cut 1 item/i.test(document.getElementById('toasts')?.textContent || '')), 5000, 'the cut toast');
+    await clearToasts();
+    await treeOpen(F);
+    await sweepOverlays();
+    await waitFor(async () => {
+      await refresh();
+      return (await txt('#breadcrumb')).trim().endsWith(F);
+    }, 25000, `the view on the ${F} root`);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(RUNID)), 50000, 'the run seed folder');
+    await enterFolderByChild(RUNID, 'gui');
+    await enterFolderByChild('gui', 'readme.md'); // paste INSIDE gui, not the FTP run root
+    await clearToasts();
+    await page.keyboard.press('Control+v');
+    await startIfAsked(3000);
+    // Match THIS job by its RUNID marker: run 3's byte-window matcher
+    // (0 < sent < total) dies when a job's totals read 0 and it names no
+    // evidence on timeout. The marker identifies the mv71 move whatever
+    // the counters say; the dump shows every job + the toasts if absent.
+    await waitFor(async () => {
+      const js = (await call('ActiveTransfers')) || [];
+      return js.some((x) => x.status === 'running' && !x.hidden && JSON.stringify(x).includes('mv71'));
+    }, 20000, 'the throttled running move').catch(async (e) => {
+      await shot('71-move-not-running');
+      const js = (await call('ActiveTransfers').catch(() => [])) || [];
+      const toasts = await evalPage(() => (document.getElementById('toasts')?.textContent || '').trim().slice(0, 200)).catch(() => '?');
+      throw new Error(`${e.message} — jobs: ${JSON.stringify(js).slice(0, 400)} — toasts: ${toasts}`);
+    });
+    await shot('71-move-running');
+    await waitFor(async () => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('.tr-job.running button'))
+        .find((x) => /cancel/i.test(x.textContent || ''));
+      if (!b) return false;
+      b.click();
+      return true;
+    }), 10000, 'Cancel click on the running move');
+    await waitFor(async () => {
+      const js = (await call('ActiveTransfers')) || [];
+      return js.some((x) => x.status === 'canceled' && JSON.stringify(x).includes('mv71'));
+    }, 20000, 'this move reported canceled');
+    await evalPage(() => { localStorage.removeItem('s3b-throttle'); localStorage.removeItem('s3b-show-throttle'); return true; });
+    // run 5 fired this need with no evidence attached; the stat result
+    // decides between a real source deletion and a lying stat
+    const cst = await s3(['stat', `${D}/mv71-8m.bin`]);
+    // stat prints "size:     8.0 MB (8388608 bytes)" — the raw byte
+    // count only appears in the parenthesized tail.
+    need(cst.code === 0 && /\(8388608 bytes\)/.test(cst.out), `the canceled move deleted the source anyway — stat: code=${cst.code} ${String(cst.out || cst.err || '').split('\n')[0].slice(0, 160)}`);
+    let f = await cli(['stat', `xf://${RUNID}/gui/mv71-8m.bin`]);
+    need(f.code !== 0, 'a partial landed at the destination final name');
+    let fl = await cli(['ls', `xf://${RUNID}/gui/`, '--json']);
+    // the stage name lost its leading dot (FTP servers hide dotfiles
+    // from LIST, which made the stage unremovable); the needle matches
+    // both spellings so old residue is still caught
+    need(!fl.out.includes('s3b-part-'), `the canceled move stranded remote staging: ${fl.out.slice(0, 160)}`);
+    // rung 3 — the completed move removes the source and lands byte-identical
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+    await enterFolder('verify-gui');
+    await enterFolder('mv71');
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('mv71-8m.bin')); }, 15000, 'the source row again');
+    await clickRow('mv71-8m.bin');
+    await page.keyboard.press('Control+x');
+    await sleep(300);
+    await treeOpen(F);
+    await sweepOverlays();
+    await waitFor(async () => {
+      await refresh();
+      return (await txt('#breadcrumb')).trim().endsWith(F);
+    }, 25000, `the view on the ${F} root (retry)`);
+    await waitFor(async () => (await rowKeys()).some((k) => k.startsWith(RUNID)), 50000, 'the run seed folder (retry)');
+    await enterFolderByChild(RUNID, 'gui');
+    await enterFolderByChild('gui', 'readme.md'); // same second hop on the retry leg
+    await clearToasts();
+    await page.keyboard.press('Control+v');
+    await startIfAsked(3000);
+    await waitFor(async () => {
+      const js = (await call('ActiveTransfers')) || [];
+      return !js.some((x) => x.status === 'running');
+    }, 120000, 'the move finished');
+    await waitFor(async () => (await cli(['stat', `xf://${RUNID}/gui/mv71-8m.bin`])).code === 0, 60000, 'the moved file on the engine');
+    need((await s3(['stat', `${D}/mv71-8m.bin`])).code !== 0, 'the completed move kept the source');
+    const back = path.join(ART, 'mv71-back.bin');
+    await rm(back, { force: true });
+    r = await cli(['cp', `xf://${RUNID}/gui/mv71-8m.bin`, back]);
+    need(r.code === 0 && await sha256file(back) === sha, 'the moved bytes differ');
+    // teardown
+    await cli(['rm', `xf://${RUNID}/gui/mv71-8m.bin`, '--force']);
+    await s3(['rm', `${D}/`, '-r', '--force']);
+    return 'self-paste refused; canceled move kept the source + no partial; completed move exact';
   });
 
   await verify({ id: 'GUI-58', area: 'sources', action: 'RemoveSource: the store forgets, the data survives', ds: 'FTP', scenario: 'removing a saved source must delete exactly the STORE entry — the engine data it pointed at stays intact, witnessed through the CLI face on its own connection; the GUI keeps browsing afterwards; where the FTP engine is absent the row records the gap', face: 'GUI' }, async () => {

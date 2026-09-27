@@ -2,6 +2,11 @@ package transfer
 
 import (
 	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -133,4 +138,114 @@ func countKey(keys []string, want string) int {
 		}
 	}
 	return n
+}
+
+// stagingResidue reports any .s3b-part-* staging file left in dir — the
+// write contract allows none after a settled (non-killed) outcome.
+func stagingResidue(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".s3b-part-") {
+			left = append(left, e.Name())
+		}
+	}
+	return left
+}
+
+// The critical-data write contract: a failed or canceled write must leave
+// the pre-existing destination file byte-identical and leave no staging
+// residue behind.
+func TestStageAndCommitFailureNeverTruncates(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "report.csv")
+	if err := os.WriteFile(dst, []byte("ORIGINAL BYTES\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("connection reset mid-body")
+	err := StageAndCommit(dst, func(f *os.File) error {
+		if _, err := f.WriteString("PARTIAL"); err != nil {
+			t.Fatal(err)
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the write error surfaced", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ORIGINAL BYTES\n" {
+		t.Fatalf("failed write damaged the destination: %q", got)
+	}
+	if left := stagingResidue(t, dir); len(left) > 0 {
+		t.Fatalf("staging residue after a settled failure: %v", left)
+	}
+}
+
+// A successful write replaces the destination whole (or creates it), with
+// no residue — and keeps the permissions of the file it replaced.
+func TestStageAndCommitSuccessReplacesWhole(t *testing.T) {
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "report.csv")
+	if err := os.WriteFile(dst, []byte("OLD\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := StageAndCommit(dst, func(f *os.File) error {
+		_, err := f.WriteString("NEW COMPLETE BYTES\n")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "NEW COMPLETE BYTES\n" {
+		t.Fatalf("committed content = %q", got)
+	}
+	if left := stagingResidue(t, dir); len(left) > 0 {
+		t.Fatalf("staging residue after a clean commit: %v", left)
+	}
+
+	// A fresh destination (no predecessor) lands the same way.
+	fresh := filepath.Join(dir, "sub", "new.txt")
+	if err := StageAndCommit(fresh, func(f *os.File) error {
+		_, err := f.WriteString("first\n")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(fresh); err != nil || string(b) != "first\n" {
+		t.Fatalf("fresh file = %q (%v)", b, err)
+	}
+}
+
+func TestStageAndCommitKeepsReplacedMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are advisory on Windows")
+	}
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "secret.key")
+	if err := os.WriteFile(dst, []byte("k1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := StageAndCommit(dst, func(f *os.File) error {
+		_, err := f.WriteString("k2\n")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != fs.FileMode(0o600) {
+		t.Fatalf("replaced file mode = %v, want the predecessor's 0600", perm)
+	}
 }

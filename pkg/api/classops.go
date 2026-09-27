@@ -107,7 +107,10 @@ func (a *App) PutObjectRetention(bucket, key, versionID, mode, until string) err
 	return adminops.PutObjectRetention(ctx, c.S3, bucket, key, versionID, mode, when, false)
 }
 
-// ClearObjectRetention removes GOVERNANCE retention.
+// ClearObjectRetention removes GOVERNANCE retention. The request must ask for
+// governance bypass: MinIO rejects the retention-clearing PutObjectRetention
+// with "Object is WORM protected" otherwise (COMPLIANCE stays unremovable
+// until expiry regardless — the server still enforces the bypass permission).
 func (a *App) ClearObjectRetention(bucket, key, versionID string) error {
 	c, err := a.client("")
 	if err != nil {
@@ -115,7 +118,7 @@ func (a *App) ClearObjectRetention(bucket, key, versionID string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.DeleteObjectRetention(ctx, c.S3, bucket, key, versionID, false)
+	return adminops.DeleteObjectRetention(ctx, c.S3, bucket, key, versionID, true)
 }
 
 // SetObjectLegalHold toggles the legal hold on one object version.

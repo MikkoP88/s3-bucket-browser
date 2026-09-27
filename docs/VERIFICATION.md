@@ -306,30 +306,65 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot is the release evidence for
-**v1.1.0-beta.20** (26 Sep 2026, `node scripts/verify.mjs --release
-v1.1.0-beta.20`, full matrix from a tag-stamped fresh build) on Windows
-Server 2025 (x64): the brand-master adoption round — the author’s
-draw.io vector export (`build/icon.svg`) taken verbatim as the single
-source of truth, with every derived asset regenerated from it (PNG set,
-.ico/.icns containers, the exe’s RT_GROUP_ICON id 3, favicon,
-empty-state mark, README logo) — plus the comprehensive macOS/Xcode
-build guide in the README (toolchain, Gatekeeper quarantine, universal
-binaries, Developer ID signing + notarization). No new matrix rows;
-the round rides on the existing 138-row gate. Full report at
-[`docs/verification/v1.1.0-beta.20/windows-x64/REPORT.md`](verification/v1.1.0-beta.20/windows-x64/REPORT.md):
+Replaced on every run — this snapshot is the **critical-actions
+extreme-verification round** (27 Sep 2026, `node scripts/verify.mjs` on
+Windows Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): a
+codebase-wide sweep of every action that can affect data — deletes,
+edits, cancels, overwrites, purges, conversions, moves — across all five
+source types (S3/MinIO, SFTP/SCP, FTP/FTPS, WebDAV(S), local) on both
+faces, growing the matrix from 138 to 149 rows with 11 new extreme rows
+and hardening the holes the sweep surfaced. Release evidence for
+v1.1.0-beta.20 stays at
+[`docs/verification/v1.1.0-beta.20/windows-x64/REPORT.md`](verification/v1.1.0-beta.20/windows-x64/REPORT.md).
 
 ```
-full matrix (138 rows):
-  131 PASS · 7 SKIP · 0 FAIL — 2072 s
+full matrix (149 rows):
+  142 PASS · 7 SKIP · 0 FAIL — 2346 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
   SWEEP-VIS-01  gui-visual   669/669 checks
-  SWEEP-LIVE-01 gui-v3live   142 checks, no page errors (the one
-   transparent retry the harness allows — first attempt hit a
-   clipboard-write flake)
+  SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
+  standalone units, same tree:
+  --only gui          69 PASS · 2 SKIP · 0 FAIL — 1074 s
+  --only resilience    7 PASS · 0 SKIP · 0 FAIL —   76 s
 ```
+
+The round in brief:
+
+- **FTP transfer discard stranded remote staging** — the round's real
+  product bug. An aborted upload left the pooled control channel
+  desynced; the discard path then concluded "no such file" without ever
+  issuing DELE, and the partial stage stayed on the server. Fixed in
+  `pkg/core/remotefs/ftp.go` + `pkg/api/xfer.go`: suspect-channel
+  verdicts carry an `errFTPEntryUnreliable` sentinel that forces a
+  redial, a SIZE probe earns the basename-miss verdict
+  listing-independently, and the discard retries three times (400 ms
+  apart, 30 s per attempt). GUI-71's wire proof: partial stage
+  uploaded, DELE on a fresh connection the same second, then the full
+  upload + atomic RENAME on the retry.
+- The 11 new rows: CLI-X-15 remote mkdir honesty (parents created,
+  occupied names refused); CLI-RES-07 a torn download never truncates a
+  pre-existing local file; GUI-63 delete-bucket ladder; GUI-64 cancel
+  mid-download; GUI-65 remote delete ladder over FTP; GUI-66 canceled
+  creates leave nothing behind; GUI-67 purge dialog (markers restore a
+  buried object, noncurrent collapses every key to its current, >50
+  typed escalation — 770 markers armed in the passing full run);
+  GUI-68 storage-class dialog with the typed convert gate; GUI-69
+  object lock defeats the GUI's permanent delete; GUI-70 policy editor
+  round-trip with a CLI oracle; GUI-71 cut/paste move whose cancel
+  strands nothing on either side.
+- Standing rows now cover the sweep's earlier finds: download
+  stage-and-commit, the WORM-clear bypass, transfer size re-read, FTP
+  list guards, engine-driven removeDir, remote stage-name visibility.
+- Harness self-sufficiency: `--only resilience` and `--row <id>` triage
+  runs seed their own sources and buckets instead of assuming the S3
+  battery ran first, and GUI-67's CLI oracle pins `--profile verifys3`
+  — a profile-less call went blind once five profiles shared the store
+  while the purge itself had worked (the engine's version walk past the
+  1000-entry page boundary was separately proven by CLI probe: 1055
+  versions + 5 markers, count 5/5, purge 5/5, every buried object
+  restored).
 
 Run it yourself: `node scripts/verify.mjs` and read the table it prints,
 plus `testartifacts/verification/verification.json` for the machine copy

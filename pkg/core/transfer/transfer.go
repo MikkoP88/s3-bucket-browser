@@ -239,11 +239,10 @@ type DownloadOptions struct {
 }
 
 // DownloadFile downloads bucket/key to localPath (parent dirs created).
+// The payload is staged through StageAndCommit: a canceled or failed
+// download can never truncate a file already at localPath and never
+// leaves a partial behind at the final name.
 func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath string, opts DownloadOptions) error {
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		return err
-	}
-
 	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(bucket), Key: aws.String(key),
 	})
@@ -252,26 +251,73 @@ func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath
 	}
 	total := aws.ToInt64(head.ContentLength)
 
-	f, err := os.Create(localPath)
+	return StageAndCommit(localPath, func(f *os.File) error {
+		var w io.WriterAt = f
+		downloader := newDownloader(client, opts)
+		if opts.Progress != nil || opts.MaxBPS > 0 {
+			w = &progressWriterAt{
+				w: f, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
+				total: total, lastReport: 0,
+			}
+		}
+
+		//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
+		_, err := downloader.Download(ctx, w, &s3.GetObjectInput{
+			Bucket: aws.String(bucket), Key: aws.String(key),
+		})
+		return err
+	})
+}
+
+// StageAndCommit is the local-file write half of the critical-data
+// contract: bytes are written to a sibling temp file (same directory →
+// same volume → the final rename is atomic) and renamed onto finalPath
+// only after write reports success. Any error or cancellation removes the
+// temp and leaves whatever was already at finalPath untouched — the
+// download-side twin of "S3 materializes nothing until the upload
+// completes". A hard process kill can at worst leave one .s3b-part-*
+// staging file behind; it never leaves a partial at the final name.
+func StageAndCommit(finalPath string, write func(*os.File) error) error {
+	dir := filepath.Dir(finalPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".s3b-part-*")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	var w io.WriterAt = f
-	downloader := newDownloader(client, opts)
-	if opts.Progress != nil || opts.MaxBPS > 0 {
-		w = &progressWriterAt{
-			w: f, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
-			total: total, lastReport: 0,
-		}
+	name := tmp.Name()
+	discard := func() {
+		tmp.Close()
+		os.Remove(name)
 	}
 
-	//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
-	_, err = downloader.Download(ctx, w, &s3.GetObjectInput{
-		Bucket: aws.String(bucket), Key: aws.String(key),
-	})
-	return err
+	if err := write(tmp); err != nil {
+		discard()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		discard()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(name)
+		return err
+	}
+
+	// Keep the permissions a plain os.Create would have produced, or the
+	// ones of the file being replaced (CreateTemp clamps to 0600).
+	mode := os.FileMode(0o644)
+	if st, err := os.Stat(finalPath); err == nil {
+		mode = st.Mode().Perm()
+	}
+	_ = os.Chmod(name, mode) // best-effort: Windows ignores most of it
+
+	if err := os.Rename(name, finalPath); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 // progressWriterAt reports byte progress for ranged downloads.
