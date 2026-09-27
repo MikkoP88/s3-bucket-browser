@@ -20,6 +20,12 @@ const RATE_STEPS = [
   [2097152, '2 MB/s'],
   [5242880, '5 MB/s'],
   [10485760, '10 MB/s'],
+  [52428800, '50 MB/s'],
+  [104857600, '100 MB/s'],
+  [262144000, '250 MB/s'],
+  [524288000, '500 MB/s'],
+  [786432000, '750 MB/s'],
+  [1048576000, '1000 MB/s'],
 ];
 
 // Engine-tuning steps (Settings → Network / Transfers; persisted Go-side

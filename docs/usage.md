@@ -238,7 +238,7 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   copies names, full paths or `s3://` URIs to the OS clipboard.
 - **Conflicts & speed** — every transfer states a conflict policy
   (overwrite / skip / rename) with a live pre-check that lists exactly
-  which files collide, and can be throttled (256 kB/s … 10 MB/s).
+  which files collide, and can be throttled (256 kB/s … 1000 MB/s).
 - **Transfer manager** — View → File transfers (or the status-bar
   counter) shows every job with per-file and byte-level progress, speed
   and cancel — in a floating window, so you can keep browsing while it

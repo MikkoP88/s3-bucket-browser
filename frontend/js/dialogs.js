@@ -2418,7 +2418,7 @@ const GUIDE_SECTIONS = [
     ['Download', 'Toolbar ▼, Ctrl+D, Enter, or the context menu. Multistep downloads/uploads are multipart and resumable per file. Dragging rows out of the window onto Explorer, Finder or the desktop downloads them as real files.'],
     ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move. Need the text instead? The context menu (or Edit → Copy as) copies names, full paths or s3:// URIs to the OS clipboard.'],
     ['Two-way Explorer clipboard', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. The other direction works too — Ctrl+C here quietly stages small selections onto the OS clipboard (a hidden download that never shows in File transfers) so Ctrl+V in Explorer pastes them; pasting inside the app still uses the reference copy and runs the real transfer then. Cut never mirrors — an Explorer paste of a cut would move. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
-    ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 10 MB/s).'],
+    ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 1000 MB/s).'],
     ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle.'],
     ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, deep searches, bulk deletes, version purges, folder and file creation, bucket deletes, pane compares, doctor runs — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
   ]],
@@ -2678,6 +2678,12 @@ const RATE_LIMITS = [
   [2097152, '2 MB/s'],
   [5242880, '5 MB/s'],
   [10485760, '10 MB/s'],
+  [52428800, '50 MB/s'],
+  [104857600, '100 MB/s'],
+  [262144000, '250 MB/s'],
+  [524288000, '500 MB/s'],
+  [786432000, '750 MB/s'],
+  [1048576000, '1000 MB/s'],
 ];
 
 // savedThrottle returns the remembered speed limit. The control is hidden
