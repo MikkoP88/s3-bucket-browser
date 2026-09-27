@@ -1244,6 +1244,54 @@ async function cliS3() {
     await cli(['rm', '-r', `${P}/`, '--force']);
     return 'skips protected the local bytes; mv never deleted a skipped source; fresh moves complete';
   });
+  await verify({ id: 'CLI-S3-47', area: 'transfers', action: 'sync S3→local: repair, and --delete aims ONLY at the extra local file', ds: 'S3 (MinIO)', scenario: 'the download direction points --delete at the LOCAL tree — the side with no version history to recover from: a drifted prefix repairs byte-identical; without --delete a local-only file SURVIVES; --dry-run plans the removal but touches nothing on disk; the real --delete removes exactly the extra file while every synced file and an out-of-scope sibling directory stay intact; both-s3:// and both-local operand pairs are refused as usage errors', face: 'CLI' }, async () => {
+    const d = path.join(ART, 'syncdl'), sib = path.join(ART, 'syncdl-sib'), P = `${B}/syncdl/`;
+    const exists = async (p) => { try { await readFile(p, 'utf8'); return true; } catch { return false; } };
+    await rm(d, { recursive: true, force: true });
+    await rm(sib, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    await mkdir(sib, { recursive: true });
+    await cli(['rm', '-r', P, '--force']);
+    // local tree: keep (in sync), drift (stale), local-only (the --delete target)
+    await writeFile(path.join(d, 'keep.txt'), 'syncdl keep\n');
+    await writeFile(path.join(d, 'drift.txt'), 'stale\n');
+    await writeFile(path.join(d, 'local-only.txt'), 'local-only PRECIOUS\n');
+    await writeFile(path.join(sib, 'precious.txt'), 'sibling PRECIOUS\n');
+    // remote prefix: keep (same bytes), drift (fresher, different size), extra (remote-only)
+    const seed = path.join(ART, 'syncdl-seed');
+    await rm(seed, { recursive: true, force: true });
+    await mkdir(seed, { recursive: true });
+    await writeFile(path.join(seed, 'keep.txt'), 'syncdl keep\n');
+    await writeFile(path.join(seed, 'drift.txt'), 'fresh remote bytes\n');
+    await writeFile(path.join(seed, 'extra.txt'), 'remote-only payload\n');
+    let r = await cli(['cp', '-r', seed, P, '--json']);
+    need(r.code === 0 && r.out.includes('"items": 3'), `seed: ${r.out}${r.err}`);
+    // plain sync (no --delete): the drift repairs, the remote-only file lands, the local-only file survives
+    r = await cli(['sync', P, d, '--json']);
+    need(r.code === 0 && /"direction":\s*"download"/.test(r.out) && /"transferred":\s*2/.test(r.out) && /"skipped":\s*1/.test(r.out) && /"deleted":\s*0/.test(r.out), `repair sync: ${r.out}${r.err}`);
+    need((await readFile(path.join(d, 'drift.txt'), 'utf8')) === 'fresh remote bytes\n', 'the drifted file was not repaired to the remote bytes');
+    need((await readFile(path.join(d, 'keep.txt'), 'utf8')) === 'syncdl keep\n', 'the in-sync file changed under a repair');
+    need(await exists(path.join(d, 'local-only.txt')), 'sync WITHOUT --delete removed the local-only file');
+    // --dry-run plans the deletion, touches nothing on disk
+    r = await cli(['sync', P, d, '--delete', '--dry-run', '--json']);
+    need(r.code === 0 && /"transferred":\s*0/.test(r.out) && /"deleted":\s*1/.test(r.out), `dry-run plan: ${r.out}${r.err}`);
+    need(await exists(path.join(d, 'local-only.txt')), 'the --dry-run deleted the local-only file anyway');
+    // the real --delete: exactly the extra local file, nothing else in or out of scope
+    r = await cli(['sync', P, d, '--delete', '--json']);
+    need(r.code === 0 && /"transferred":\s*0/.test(r.out) && /"deleted":\s*1/.test(r.out), `delete sync: ${r.out}${r.err}`);
+    need(!await exists(path.join(d, 'local-only.txt')), '--delete left the extra local file behind');
+    for (const [f, want] of [['keep.txt', 'syncdl keep\n'], ['drift.txt', 'fresh remote bytes\n'], ['extra.txt', 'remote-only payload\n']]) {
+      need((await readFile(path.join(d, f), 'utf8')) === want, `${f} was disturbed by the --delete pass`);
+    }
+    need((await readFile(path.join(sib, 'precious.txt'), 'utf8')) === 'sibling PRECIOUS\n', 'sync reached outside its destination directory');
+    // operand-kind gate: never two s3:// or two local operands
+    r = await cli(['sync', P, `${B}/other/`]);
+    need(r.code !== 0 && /exactly one/i.test(r.out + r.err), `two s3:// operands accepted: exit ${r.code} ${r.out}${r.err}`);
+    r = await cli(['sync', d, sib]);
+    need(r.code !== 0 && /exactly one/i.test(r.out + r.err), `two local operands accepted: exit ${r.code} ${r.out}${r.err}`);
+    await cli(['rm', '-r', P, '--force']);
+    return 'download repair exact; --delete removed exactly the extra local file; dry-run and operand gates held';
+  });
 
 }
 
@@ -5628,6 +5676,226 @@ async function guiBattery() {
     return 'self-paste refused; canceled move kept the source + no partial; completed move exact';
   });
 
+  await verify({ id: 'GUI-72', area: 'deletion', action: 'Count-phase cancel: a PERMANENT destroy killed while counting destroys nothing', ds: 'S3 (MinIO) via faultproxy', scenario: 'the most destructive ladder — permanent version destruction (no markers, no history, nothing to undo) — must be cancellable in its COUNT half: fired through a delayed source and canceled from the task registry while still counting, it must destroy exactly zero versions (all 90 still stat-able), the task must report canceled — never done — and the app must stay healthy enough to finish the destroy on a direct re-run that removes exactly the counted set while an out-of-scope sibling survives untouched', face: 'GUI' }, async () => {
+    const PFX = 'verify-gui/purgecancel/', KEEP = 'verify-gui/pc-keep/';
+    await s3(['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force']);
+    await s3(['rm', '-r', `s3://${BUCKET}/${KEEP}`, '--force']);
+    const d = path.join(ART, 'pc72-seed');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    const N = 30;
+    for (let i = 0; i < N; i++) await writeFile(path.join(d, `f-${String(i).padStart(2, '0')}.txt`), `pc72 ${i}\n`);
+    let r = await s3(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json']);
+    need(r.code === 0 && r.out.includes(`"items": ${N}`), `seed: ${r.out}${r.err}`);
+    for (let round = 1; round <= 2; round++) { // two more PUT rounds → 3 versions per key, 90 total
+      r = await s3(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json']);
+      need(r.code === 0, `re-put ${round}: ${r.out}${r.err}`);
+    }
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `s3://${BUCKET}/${KEEP}w.txt`]);
+    const statVersions = async () => {
+      const j = await s3(['versions', 'stat', `s3://${BUCKET}/${PFX}`, '--json']);
+      return +((/"versions":\s*(\d+)/.exec(j.out) || [0, -1])[1]);
+    };
+    const seeded = await statVersions();
+    need(seeded === N * 3, `seed expected ${N * 3} versions, stat says ${seeded}`);
+    const PPORT = 19312, PCTL = 19313;
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', '127.0.0.1:9000'], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: 'verify-slow72', type: 's3', s3: { name: 'verify-slow72', endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 1500 }) });
+      const destroying = call('SourceDeleteSelectionPermanent', 'verify-slow72', BUCKET, [PFX], true);
+      let id = null;
+      for (let i = 0; i < 400 && !id; i++) {
+        id = ((await call('RunningTasks')) || []).find((t) => t.kind === 'purge' && t.status === 'running' && t.phase === 'count')?.id;
+        if (!id) await sleep(25);
+      }
+      need(id, 'the permanent destroy never showed a running count phase');
+      call('CancelTask', id); // killed while counting — the destroy loop must never start
+      await destroying.catch(() => {});
+      await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 30000, 'the canceled count to settle');
+      const st = ((await call('RunningTasks')) || []).find((t) => t.id === id);
+      need(!st || st.status === 'canceled', `the canceled destroy reports "${st?.status}" instead of canceled`);
+      const afterCancel = await statVersions();
+      need(afterCancel === N * 3, `the count-phase cancel destroyed versions anyway (${N * 3 - afterCancel} of ${N * 3} gone)`);
+      let l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+      need(l.out.split('\n').filter((x) => x.includes('pc-keep/')).length === 1, 'the out-of-scope sibling was touched');
+      // the app is still healthy: the direct re-run destroys exactly the counted set
+      await call('DeleteSelectionPermanent', BUCKET, [PFX, KEEP], true);
+      l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+      need(!l.out.split('\n').some((x) => x.includes('purgecancel/') || x.includes('pc-keep/')), `residue after the direct destroy: ${l.out.slice(0, 120)}`);
+      need((await statVersions()) === 0, `versions survived the completed destroy (stat: ${await statVersions()})`);
+      await call('RemoveSource', 'verify-slow72');
+      return `canceled in the count phase: ${N * 3}/${N * 3} versions alive and the task reports canceled; the direct re-run destroyed the exact set`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+    }
+  });
+
+  await verify({ id: 'GUI-73', area: 'security', action: 'Lock tab: the typed enable gate, and a default-retention rule that really arms WORM', ds: 'S3 (MinIO)', scenario: 'the admin Lock tab is where bucket-level WORM is configured — a silent failure here means data believed undeletable is not, or a healthy bucket gets bricked: on a plain bucket the typed Enable (L2 — the bucket\'s own name) with a wrong word must fire nothing, and with the right word the provider refusal must surface while the bucket stays writable; on a lock-enabled bucket the saved default rule (GOVERNANCE 1 day) must be read back by the engine, applied to a NEW object, and DEFEAT a GUI permanent delete; Clear re-arms the destroy', face: 'GUI' }, async () => {
+    const NB = `${BUCKET}-n73`, LB = `${BUCKET}-l73`, K = 'l73.txt';
+    await s3(['rb', `s3://${NB}`, '--force']).catch(() => {});
+    await s3(['rb', `s3://${LB}`, '--force']).catch(() => {});
+    let r = await s3(['mb', `s3://${NB}`]);
+    need(r.code === 0, `mb plain: ${r.out}${r.err}`);
+    r = await s3(['mb', `s3://${LB}`, '--object-lock']);
+    need(r.code === 0, `mb --object-lock: ${r.out}${r.err}`);
+    await writeFile(path.join(ART, 'l73.txt'), 'l73 original\n');
+    r = await s3(['cp', path.join(ART, 'l73.txt'), `s3://${LB}/seed.txt`]);
+    need(r.code === 0, `lock bucket seed: ${r.out}${r.err}`);
+    const admLock = async (b) => {
+      const a = await call('GetBucketAdmin', b).catch((e) => ({ err: String(e) }));
+      return (a && a.lock) || {};
+    };
+    const clearToasts = () => evalPage(() => { document.getElementById('toasts')?.replaceChildren(); return true; });
+    await navCertGui();
+    await goBuckets();
+    // ---- leg 1: the typed gate + the honest refusal on a plain bucket ----
+    await filterTo('-n73');
+    await waitFor(async () => (await rowKeys()).some((k) => k === NB), 15000, 'the plain bucket row');
+    await rightClickRow(NB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    await page.locator('#modal-root .tab[data-tab="Lock"]').click();
+    await sleep(400);
+    await waitFor(async () => /enable object lock/i.test(await modalText()), 5000, 'the Lock tab enable form');
+    const clickText = (label) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root button'))
+        .find((x) => (x.textContent || '').trim() === src);
+      if (!b) return false;
+      b.click();
+      return true;
+    }, label);
+    await clearToasts();
+    need(await clickText('Enable object lock'), 'no Enable object lock button');
+    await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input.input').length)) >= 1, 5000, 'the typed confirm');
+    // a wrong word is inert: the confirm stays up, the engine is never asked
+    await page.locator('#modal-root input.input').last().fill('wrong-word');
+    await clickText('Enable');
+    await sleep(600);
+    need(await evalPage(() => !!document.querySelector('#modal-root input.input')), 'the wrong typed word fired anyway (the confirm closed)');
+    let lk = await admLock(NB);
+    need(!lk.enabled, `the wrong-word enable armed the lock: ${JSON.stringify(lk)}`);
+    // the right word asks the engine — and the refusal must surface, never vanish
+    await page.locator('#modal-root input.input').last().fill(NB);
+    await clickText('Enable');
+    let refused = false, allowed = false;
+    await waitFor(async () => {
+      const t = await evalPage(() => document.getElementById('toasts')?.textContent || '');
+      if (/failed|error/i.test(t)) { refused = true; return true; }
+      const now = await admLock(NB);
+      if (now.enabled) { allowed = true; return true; }
+      return false;
+    }, 20000, 'the enable attempt to resolve (refusal or provider gap)');
+    if (allowed) {
+      await closeModal().catch(() => {});
+      await clearFilter();
+      await s3(['rb', `s3://${NB}`, '--force']);
+      return skip('provider ALLOWED enabling object lock post-creation (recorded gap — AWS semantics refuse this)');
+    }
+    need(refused, 'the refused enable never surfaced in the UI');
+    lk = await admLock(NB);
+    need(!lk.enabled, `the refused enable landed anyway: ${JSON.stringify(lk)}`);
+    r = await s3(['cp', path.join(ART, 'l73.txt'), `s3://${NB}/${K}`]);
+    need(r.code === 0, `the plain bucket stopped taking writes after the refused enable: ${r.out}${r.err}`);
+    await s3(['rb', `s3://${NB}`, '--force']);
+    await closeModal().catch(() => {});
+    await clearFilter();
+    // ---- leg 2: the default-retention rule on a lock-enabled bucket ----
+    await filterTo('-l73');
+    await waitFor(async () => (await rowKeys()).some((k) => k === LB), 15000, 'the lock bucket row');
+    await rightClickRow(LB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the lock admin panel');
+    await page.locator('#modal-root .tab[data-tab="Lock"]').click();
+    await sleep(400);
+    await waitFor(async () => /enabled \(permanent\)/i.test(await modalText()), 5000, 'the lock-enabled view');
+    await clearToasts();
+    need(await evalPage(() => {
+      const sel = document.querySelector('#modal-root select');
+      if (!sel) return false;
+      sel.value = 'GOVERNANCE';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      const days = document.querySelector('#modal-root input[type="number"]');
+      if (!days) return false;
+      days.value = '1';
+      days.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }), 'the rule form (mode select + days input) never rendered');
+    need(await clickText('Save rule'), 'no Save rule button');
+    let ruleLanded = false, ruleRefused = false;
+    await waitFor(async () => {
+      const t = await evalPage(() => document.getElementById('toasts')?.textContent || '');
+      if (/failed|error/i.test(t)) { ruleRefused = true; return true; }
+      const now = await admLock(LB);
+      if (now.mode === 'GOVERNANCE' && String(now.days) === '1') { ruleLanded = true; return true; }
+      return false;
+    }, 20000, 'the default rule to resolve (saved or refused)');
+    if (ruleRefused) {
+      await closeModal().catch(() => {});
+      await clearFilter();
+      await s3(['rb', `s3://${LB}`, '--force']);
+      return skip('provider refused the bucket default-retention rule (recorded gap)');
+    }
+    need(ruleLanded, 'the default rule never landed and never reported why');
+    await closeModal();
+    // the rule must arm NEW objects: permanent destroy through the real UI is refused
+    r = await s3(['cp', path.join(ART, 'l73.txt'), `s3://${LB}/${K}`]);
+    need(r.code === 0, `new object: ${r.out}${r.err}`);
+    const armed = await call('GetObjectLock', LB, K, '').catch(() => ({}));
+    if (!/(governance|compliance)/i.test(JSON.stringify(armed))) {
+      await clearFilter();
+      await s3(['rb', `s3://${LB}`, '--force']);
+      return skip('provider does not apply the bucket default retention to new objects (recorded gap)');
+    }
+    const KS = `s3://${LB}/${K}`;
+    const verN = async () => cliVerCount(KS);
+    const waitErrToast = () => waitFor(() => evalPage(() => {
+      const t = document.getElementById('toasts')?.textContent || '';
+      return /error|denied|fail/i.test(t) && t.length > 0;
+    }), 20000, 'the refused permanent delete surfaced an error toast');
+    const permanentDeleteAttempt = async (tag) => {
+      await clearToasts();
+      await clickRow(K);
+      await page.keyboard.press('Shift+Delete');
+      await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root input[name="delmode"]').length)) >= 1, 5000, `the permanent window (${tag})`);
+      if (await evalPage(() => !!document.querySelector('#modal-root .delw-confirm input'))) {
+        await page.locator('#modal-root .delw-confirm input').fill('delete');
+      }
+      await shot(`73-lock-${tag}`);
+      await clickFooter(/^delete$/i);
+    };
+    await rightClickRow(LB);
+    await ctxItem(/^open/i);
+    await clearFilter(); // the filter survives navigation — l73.txt doesn't match '-l73'
+    await waitForRows(K, 20000, ' the default-locked object row');
+    await permanentDeleteAttempt('default-rule');
+    await waitErrToast();
+    need((await verN()) >= 1, 'the default-retention rule did not protect the new object');
+    // Clear (with governance bypass) re-arms the destroy — and the engine state is asserted, not the toast
+    await rightClickRow(K);
+    await ctxItem(/object lock/i);
+    await waitFor(async () => /object lock/i.test(await modalText()) && /retention/i.test(await modalText()), 8000, 'the lock dialog');
+    const bodyBtn = (label) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .find((x) => (x.textContent || '').trim() === src);
+      if (!b) return false;
+      b.click(); return true;
+    }, label);
+    need(await bodyBtn('Clear'), 'no Clear button in the lock dialog');
+    await sleep(800);
+    lk = await call('GetObjectLock', LB, K, '').catch((e) => ({ err: String(e) }));
+    need(!/(governance|compliance)/i.test(JSON.stringify(lk)), `Clear left the default retention armed: ${JSON.stringify(lk)}`);
+    await closeModal();
+    await permanentDeleteAttempt('released');
+    await waitFor(async () => (await verN()) === 0, 45000, 'the re-armed permanent delete to land');
+    r = await s3(['rb', `s3://${LB}`, '--force']);
+    need(r.code === 0, `rb teardown: ${r.out}${r.err}`);
+    await clearFilter();
+    return 'typed gate inert on a wrong word; the refused enable surfaced honestly; the saved default rule armed WORM on a new object and defeated the GUI permanent destroy';
+  });
   await verify({ id: 'GUI-58', area: 'sources', action: 'RemoveSource: the store forgets, the data survives', ds: 'FTP', scenario: 'removing a saved source must delete exactly the STORE entry — the engine data it pointed at stays intact, witnessed through the CLI face on its own connection; the GUI keeps browsing afterwards; where the FTP engine is absent the row records the gap', face: 'GUI' }, async () => {
     if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
     const before = (await call('ListSources')) || [];
