@@ -1,6 +1,7 @@
 // engineheal_test.go: the cached-engine healing contract. A dead wire
 // must not strand a source; a cancel, a closed engine, a semantic error,
-// or a streaming op must never trigger a transparent retry.
+// or a consumed stream (Create) must never trigger a transparent retry —
+// the Open handshake, which has flowed zero bytes, heals like Stat.
 package api
 
 import (
@@ -222,21 +223,68 @@ func TestHealingFSHealsEveryIdempotentOp(t *testing.T) {
 	}
 }
 
-// Streams (Open/Create) surface the wire death — a transparent restart of
-// a partially consumed stream would corrupt the transfer.
-func TestHealingFSStreamsNeverRetry(t *testing.T) {
+// Create surfaces the wire death — its reader is consumed inside the call,
+// so a transparent restart would corrupt the transfer.
+func TestHealingFSCreateNeverRetries(t *testing.T) {
 	deadWire := errors.New("connection closed")
 	inner := newHealStub("dead", deadWire)
 	h, dials := newHealHarness(t, inner, func() remotefs.FS { return newHealStub("fresh", nil) })
 
-	if _, _, err := h.Open(context.Background(), "/big.bin"); !errors.Is(err, deadWire) {
-		t.Fatalf("Open: err = %v, want the wire death surfaced", err)
-	}
 	if err := h.Create(context.Background(), "/up.bin", strings.NewReader("x")); !errors.Is(err, deadWire) {
 		t.Fatalf("Create: err = %v, want the wire death surfaced", err)
 	}
 	if got := dials(); got != 0 {
-		t.Fatalf("redials = %d after streamed ops — streams must never transparently retry", got)
+		t.Fatalf("redials = %d after Create — a consumed stream must never transparently retry", got)
+	}
+}
+
+// The Open handshake heals: an open call that dies on the wire has flowed
+// zero bytes and holds no handle, so it redials and retries itself exactly
+// like Stat. This is what makes a user's transfer retry after a wire death
+// recover on the first click instead of failing with "connection lost"
+// until an unrelated listing heals the source.
+func TestHealingFSOpenHandshakeHeals(t *testing.T) {
+	deadWire := errors.New("sftp: connection lost")
+	inner1 := newHealStub("dead-engine", deadWire)
+	fresh := newHealStub("fresh-engine", nil)
+	h, dials := newHealHarness(t, inner1, func() remotefs.FS { return fresh })
+
+	if _, _, err := h.Open(context.Background(), "/big.bin"); err != nil {
+		t.Fatalf("healed Open: %v", err)
+	}
+	if got := dials(); got != 1 {
+		t.Fatalf("redials = %d, want 1", got)
+	}
+	if got := inner1.called("open"); got != 1 {
+		t.Fatalf("dead engine open calls = %d, want 1 (no re-beating a dead engine)", got)
+	}
+	if got := fresh.called("open"); got != 1 {
+		t.Fatalf("fresh engine open calls = %d, want 1 (the retry)", got)
+	}
+	// The swap persists: the next Open rides the fresh engine directly.
+	if _, _, err := h.Open(context.Background(), "/big.bin"); err != nil {
+		t.Fatalf("post-heal Open: %v", err)
+	}
+	if got := fresh.called("open"); got != 2 {
+		t.Fatalf("fresh engine open calls = %d, want 2 (swap persisted)", got)
+	}
+	if got := dials(); got != 1 {
+		t.Fatalf("redials = %d after a second Open — the swap must persist, not re-dial", got)
+	}
+}
+
+// Open on a wire that is STILL down surfaces the original death — the
+// handshake heals once, it does not invent a connection.
+func TestHealingFSOpenRedialRefusedSurfacesOriginal(t *testing.T) {
+	deadWire := errors.New("sftp: connection lost")
+	inner := newHealStub("dead", deadWire)
+	h, dials := newHealHarness(t, inner, nil) // fresh == nil → dial fails
+
+	if _, _, err := h.Open(context.Background(), "/big.bin"); !connDead(err) {
+		t.Fatalf("Open err = %v, want the original wire death", err)
+	}
+	if got := dials(); got != 1 {
+		t.Fatalf("redials = %d, want exactly one attempt", got)
 	}
 }
 

@@ -1873,10 +1873,129 @@ async function cliResilience() {
     return 'kill + RST each preserved the original; retry replaced it whole';
   });
 
+  await verify({ id: 'CLI-RES-08', area: 'resilience', action: 'Dead-wire mid rm -r: the batch loop stops honestly, a re-run finishes the rest', ds: 'S3 via faultproxy', scenario: 'the wire dies after the first 1000-key delete batch of a multi-batch rm -r: the process must exit non-zero with the error surfaced — never a clean 0 over a partial delete — exactly the landed batches are gone, the out-of-scope sibling survives untouched, and a clean re-run removes precisely what is left', face: 'CLI' }, async () => {
+    if (!proxy) return skip('proxy not running');
+    const PFX = `verify-res/rmwire-${RUNID}/`, KEEP = `verify-res/rmwire-${RUNID}-keep/g.txt`;
+    const N = 2200; // 3 delete batches at 1000/batch — a mid-loop death window
+    await cli(['versions', 'purge', `s3://${BUCKET}/${PFX}`, '--mode', 'all', '--force', '--profile', 'verifys3']).catch(() => {});
+    const d = path.join(ART, 'rmwire-seed');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    for (let i = 0; i < N; i++) await writeFile(path.join(d, `f-${String(i).padStart(4, '0')}.txt`), `rmwire ${i}\n`);
+    let r = await cli(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json', '--profile', 'verifys3'], { timeout: 600000 });
+    need(r.code === 0 && r.out.includes(`"items": ${N}`), `seed: ${r.out}${r.err}`);
+    const keep = path.join(ART, 'rmwire-keep.txt');
+    await writeFile(keep, 'sibling guard\n');
+    await cli(['cp', keep, `s3://${BUCKET}/${KEEP}`, '--profile', 'verifys3']);
+    const count = async () => (await cli(['ls', `s3://${BUCKET}/${PFX}`, '--recursive', '--profile', 'verifys3'], { timeout: 120000 })).out.split('\n').filter((x) => /f-\d{4}\.txt/.test(x)).length; // ls prints keys relative to the listed prefix
+    need((await count()) === N, 'the seed did not land whole');
+    await fmode({ mode: 'latency', delayMs: 600 });
+    const child = spawn(CLI_EXE, ['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force', '--profile', 'verifyfault'], { cwd: ROOT, windowsHide: true, stdio: 'ignore', env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' } });
+    let seen = 0;
+    for (let i = 0; i < 400 && !seen; i++) { const c = await count(); if (c > 0 && c < N) seen = c; else await sleep(250); }
+    need(seen > 0, 'the first delete batch never landed — nothing to kill the wire against');
+    need(child.exitCode === null, 'rm finished before the wire died — not a mid-loop probe');
+    // the wire dies NOW: every live connection resets and every new one dies
+    await fmode({ mode: 'reset' });
+    const code = await new Promise((res) => { child.once('exit', (c) => res(c)); if (child.exitCode !== null) res(child.exitCode); });
+    need(code !== 0, `rm exited 0 over a dead wire (partial state unreported): exit ${code}`);
+    const left = await count();
+    need(left > 0 && left < N, `the dead-wire rm left ${left}/${N} — not an honest partial`);
+    const g = await cli(['stat', `s3://${BUCKET}/${KEEP}`, '--profile', 'verifys3'], { timeout: 60000 });
+    need(g.code === 0, 'the out-of-scope sibling died with the wire');
+    // the wire heals; a clean re-run removes exactly what is left
+    await fmode({ mode: 'direct', delayMs: 0 });
+    r = await cli(['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force', '--profile', 'verifys3'], { timeout: 300000 });
+    need(r.code === 0, `re-run rm: ${r.out}${r.err}`);
+    need((await count()) === 0, 'the re-run left objects behind');
+    await cli(['versions', 'purge', `s3://${BUCKET}/${PFX}`, '--mode', 'all', '--force', '--profile', 'verifys3']).catch(() => {});
+    await cli(['rm', `s3://${BUCKET}/${KEEP}`, '--profile', 'verifys3']).catch(() => {});
+    return `dead-wire mid rm -r: exit ${code} with the error surfaced, ${N - left}/${N} gone at the wire death, re-run finished the rest`;
+  });
+
+  await verify({ id: 'CLI-RES-09', area: 'resilience', action: 'Hard kill mid remote rm -r: the serial loop dies between paths, a re-run finishes', ds: 'SFTP via faultproxy', scenario: 'a process kill lands mid-way through the serial per-path remote delete: the killed process must have deleted ONLY the paths it already confirmed, the untouched remainder survives on the server, and a clean re-run removes exactly what is left', face: 'CLI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const P = 'verify-slowx5', S = 'verify-d5x', u = `rmk-${RUNID}`;
+    const N = 30, PPORT = 19322, PCTL = 19323;
+    await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+    const seed = path.join(ART, 'rmk-seed.txt');
+    await writeFile(seed, `rmk ${RUNID}\n`);
+    for (let i = 0; i < N; i++) {
+      const r = await cli(['cp', seed, `${S}://${u}/f-${String(i).padStart(2, '0')}.txt`]);
+      need(r.code === 0, `seed ${i}: ${r.out}${r.err}`);
+    }
+    const remaining = async () => (await cli(['ls', `${S}://${u}/`, '--json'])).out.split('\n').filter((x) => x.includes('"name": "f-')).length;
+    need((await remaining()) === N, 'the seed did not land whole');
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', `127.0.0.1:${SFTP_PORT}`], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await cli(['source', 'add', P, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${PPORT}/upload`]).catch(() => {});
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
+      const child = spawn(CLI_EXE, ['rm', '-r', `${P}://${u}`, '--force'], { cwd: ROOT, windowsHide: true, stdio: 'ignore', env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' } });
+      let gone = 0;
+      for (let i = 0; i < 300 && !gone; i++) { const n = await remaining(); if (n > 0 && n < N) gone = N - n; else await sleep(200); }
+      need(gone > 0, 'the delete loop never confirmed a path — nothing to kill against');
+      need(child.exitCode === null, 'rm finished before the kill — not a mid-loop probe');
+      child.kill(); // hard process kill — the crash-style interruption contract
+      await new Promise((res) => { child.once('exit', res); if (child.exitCode !== null) res(); });
+      const left = await remaining();
+      need(left > 0, `the killed rm removed everything (${left} left) — not a mid-loop probe`);
+      const r = await cli(['rm', '-r', `${S}://${u}`, '--force'], { timeout: 120000 });
+      need(r.code === 0, `re-run rm: ${r.out}${r.err}`);
+      need((await remaining()) === 0, 'the re-run left files behind');
+      return `hard kill mid remote rm -r at ${gone}/${N} confirmed: remainder intact, the re-run removed the rest`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+      await cli(['rm', '-r', `${S}://${u}`, '--force']).catch(() => {});
+      await cli(['source', 'remove', P]).catch(() => {});
+      await cli(['source', 'remove', S]).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'CLI-RES-10', area: 'resilience', action: 'Hard kill mid versions purge: the permanent destroy stops mid-batch, a re-run finishes', ds: 'S3 via faultproxy', scenario: 'a process kill lands after the first 1000-version destroy batch of a --mode all purge: exactly the landed batch is permanently gone, the untouched versions survive, the current objects still list, and a clean re-run purge empties the prefix to zero versions', face: 'CLI' }, async () => {
+    if (!proxy) return skip('proxy not running');
+    const PFX = `verify-res/pgkill-${RUNID}/`;
+    const KEYS = 21, ROUNDS = 100; // 2100 versions = 3 destroy batches
+    const rv = await cli(['bucket', 'versioning', `s3://${BUCKET}`, 'on', '--profile', 'verifys3']); // CLI-S3-02 owns this in a full run — keeps the row honest standalone
+    need(rv.code === 0, `versioning on: ${rv.out}${rv.err}`);
+    await cli(['versions', 'purge', `s3://${BUCKET}/${PFX}`, '--mode', 'all', '--force', '--profile', 'verifys3']).catch(() => {});
+    const d = path.join(ART, 'pgkill-seed');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    for (let i = 0; i < KEYS; i++) await writeFile(path.join(d, `k-${String(i).padStart(2, '0')}.txt`), `pgkill ${i}\n`);
+    for (let round = 0; round < ROUNDS; round++) {
+      const r = await cli(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json', '--profile', 'verifys3'], { timeout: 120000 });
+      need(r.code === 0, `round ${round}: ${r.out}${r.err}`);
+    }
+    const statVersions = async () => +((/"versions":\s*(\d+)/.exec((await cli(['versions', 'stat', `s3://${BUCKET}/${PFX}`, '--json', '--profile', 'verifys3'], { timeout: 60000 })).out) || [0, -1])[1]);
+    const seeded = await statVersions();
+    need(seeded === KEYS * ROUNDS, `seed expected ${KEYS * ROUNDS} versions, stat says ${seeded}`);
+    await fmode({ mode: 'latency', delayMs: 800 });
+    const child = spawn(CLI_EXE, ['versions', 'purge', `s3://${BUCKET}/${PFX}`, '--mode', 'all', '--force', '--profile', 'verifyfault'], { cwd: ROOT, windowsHide: true, stdio: 'ignore', env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' } });
+    let seen = 0;
+    for (let i = 0; i < 400 && !seen; i++) { const c = await statVersions(); if (c > 0 && c < seeded) seen = c; else await sleep(250); }
+    need(seen > 0, 'the first destroy batch never landed — nothing to kill against');
+    need(child.exitCode === null, 'purge finished before the kill — not a mid-batch probe');
+    child.kill(); // hard kill mid permanent destroy
+    await new Promise((res) => { child.once('exit', res); if (child.exitCode !== null) res(); });
+    const left = await statVersions();
+    need(left > 0 && left < seeded, `the killed purge left ${left}/${seeded} — not an honest partial`);
+    const l = await cli(['ls', `s3://${BUCKET}/${PFX}`, '--recursive', '--profile', 'verifys3'], { timeout: 60000 });
+    need(l.out.split('\n').filter((x) => /k-\d{2}\.txt/.test(x)).length > 0, 'every current object vanished although versions remain');
+    // the wire heals; a clean re-run purge empties the prefix to zero versions
+    await fmode({ mode: 'direct', delayMs: 0 });
+    const rr = await cli(['versions', 'purge', `s3://${BUCKET}/${PFX}`, '--mode', 'all', '--force', '--profile', 'verifys3'], { timeout: 300000 });
+    need(rr.code === 0, `re-run purge: ${rr.out}${rr.err}`);
+    need((await statVersions()) === 0, 'the re-run left versions behind');
+    return `hard kill mid purge: ${seeded - left}/${seeded} versions destroyed at the kill, remainder + current objects intact, re-run emptied the prefix`;
+  });
   stop();
 }
 
 async function cliMeta() {
+
   await verify({ id: 'CLI-M-01', area: 'meta', action: 'Version identity', ds: '—', scenario: 'version prints the build version, exit 0', face: 'CLI' }, async () => {
     const r = await cli(['version']);
     need(r.code === 0 && r.out.trim() === VERSION, `version: ${r.out}`);
@@ -6271,6 +6390,285 @@ async function guiBattery() {
       await cli(['source', 'remove', S]).catch(() => {});
     }
   });
+  await verify({ id: 'GUI-80', area: 'resilience', action: 'Wire-death mid remote upload (cross-source engine): no partial ever sits at the final name', ds: 'SFTP via faultproxy', scenario: 'the wire dies mid-stream of a local→SFTP upload driven through the cross-source engine: the job must fail loud (error status, reason recorded), the server must hold NO trace of the transfer — not the final file, not a stranded temp — and once the wire heals the retried upload lands byte-identical', face: 'GUI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const P = 'verify-slow80', S = 'verify-d80', u = `w80-${RUNID}`;
+    const PPORT = 19324, PCTL = 19325;
+    await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+    await cli(['rm', '-r', `${S}://${u}`, '--force']).catch(() => {});
+    const src = path.join(ART, 'wire80.bin');
+    await rm(src, { force: true });
+    await writeFile(src, randomBytes(8 * 1024 * 1024));
+    const sha = await sha256file(src);
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', `127.0.0.1:${SFTP_PORT}`], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
+      const jid = await call('TransferCross', [], [src], { kind: 'remote', source: P, dir: `/${u}` }, 'overwrite', 0, false, null, false);
+      await waitFor(async () => ((await call('ActiveTransfers')) || []).some((x) => x.id === jid && x.status === 'running' && x.sentBytes > 0 && x.sentBytes < x.totalBytes), 30000, 'the upload to reach mid-flight');
+      // the wire dies NOW: every live connection resets and every new one dies
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reset' }) });
+      const dead = await waitFor(async () => { const j = ((await call('ActiveTransfers')) || []).find((x) => x.id === jid); return j && j.status === 'error' && j; }, 60000, 'the wire-dead upload to fail out');
+      need(dead.error, `the wire-dead upload recorded no error reason: ${JSON.stringify(dead).slice(0, 160)}`);
+      // a stranded s3b-part-* stage is acceptable garbage while the wire is dead — nothing can flow to remove it; the FINAL NAME must stay clean and the retry must consume the stage
+      const l = await cli(['ls', `${S}://${u}/`, '--json']).catch(() => ({ out: '' }));
+      const names = [...l.out.matchAll(/"name":\s*"([^"]+)"/g)].map((m) => m[1]);
+      need(!names.includes('wire80.bin'), `the dead upload left a partial AT THE FINAL NAME: ${JSON.stringify(names)}`);
+      // the wire heals; the retry lands byte-identical through the healed engine
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'direct', delayMs: 0 }) });
+      const jid2 = await call('TransferCross', [], [src], { kind: 'remote', source: P, dir: `/${u}` }, 'overwrite', 0, false, null, false);
+      const j2 = await waitFor(async () => { const j = ((await call('ActiveTransfers')) || []).find((x) => x.id === jid2); return j && (j.status === 'done' || j.status === 'error') && j; }, 120000, 'the retried upload to settle');
+      need(j2.status === 'done', `the healed retry did not complete: ${JSON.stringify(j2).slice(0, 160)}`);
+      const back = path.join(ART, 'wire80-back.bin');
+      await rm(back, { force: true });
+      const dl = await cli(['cp', `${S}://${u}/wire80.bin`, back]);
+      need(dl.code === 0, `download back: ${dl.out}${dl.err}`);
+      need(await sha256file(back) === sha, 'the retried upload bytes differ from the source');
+      const l2 = await cli(['ls', `${S}://${u}/`, '--json']);
+      const names2 = [...l2.out.matchAll(/"name":\s*"([^"]+)"/g)].map((m) => m[1]);
+      need(names2.includes('wire80.bin') && !names2.some((n) => n.startsWith('s3b-part-')), `post-retry destination must hold exactly the final file, stage consumed: ${JSON.stringify(names2)}`);
+      return `wire-death mid remote upload: error with the reason recorded, no partial at the final name, healed retry sha-identical`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+      await cli(['rm', '-r', `${S}://${u}`, '--force']).catch(() => {});
+      await call('RemoveSource', P).catch(() => {});
+      await cli(['source', 'remove', S]).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'GUI-81', area: 'resilience', action: 'Wire-death mid remote download (cross-source engine): the local original is never truncated, no partial lands', ds: 'SFTP via faultproxy', scenario: 'the wire dies mid-stream of an SFTP→local download OVER a pre-existing local file of the same name: the job must fail loud, the pre-existing file keep its ORIGINAL bytes — never truncated in place — no temp partial survive in the directory, and once the wire heals the retried download lands byte-identical over it', face: 'GUI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const P = 'verify-slow81', S = 'verify-d81', u = `w81-${RUNID}`;
+    const PPORT = 19326, PCTL = 19327;
+    await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+    await cli(['rm', '-r', `${S}://${u}`, '--force']).catch(() => {});
+    const bin = path.join(ART, 'wire81.bin');
+    await rm(bin, { force: true });
+    await writeFile(bin, randomBytes(8 * 1024 * 1024));
+    const sha = await sha256file(bin);
+    const r0 = await cli(['cp', bin, `${S}://${u}/wire81.bin`]);
+    need(r0.code === 0, `seed remote file: ${r0.out}${r0.err}`);
+    // the local victim: a pre-existing file at the exact destination name
+    const ldir = path.join(ART, 'wire81-dl');
+    await rm(ldir, { recursive: true, force: true });
+    await mkdir(ldir, { recursive: true });
+    const vic = path.join(ldir, 'wire81.bin');
+    const ORIGINAL = 'PRE-EXISTING ORIGINAL — must survive every failed download\n';
+    await writeFile(vic, ORIGINAL);
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', `127.0.0.1:${SFTP_PORT}`], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
+      const jid = await call('TransferCross', [{ source: P, bucket: '', key: `/${u}/wire81.bin`, size: 8 * 1024 * 1024, isDir: false }], [], { kind: 'local', dir: ldir }, 'overwrite', 0, false, null, false);
+      await waitFor(async () => ((await call('ActiveTransfers')) || []).some((x) => x.id === jid && x.status === 'running' && x.sentBytes > 0 && x.sentBytes < x.totalBytes), 30000, 'the download to reach mid-flight');
+      // the wire dies NOW
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reset' }) });
+      const dead = await waitFor(async () => { const j = ((await call('ActiveTransfers')) || []).find((x) => x.id === jid); return j && j.status === 'error' && j; }, 60000, 'the wire-dead download to fail out');
+      need(dead.error, `the wire-dead download recorded no error reason: ${JSON.stringify(dead).slice(0, 160)}`);
+      // the victim is untouched — never truncated — and no partial temp survives
+      need((await readFile(vic, 'utf8')) === ORIGINAL, 'the wire-dead download truncated the pre-existing local file');
+      const residue = (await readdir(ldir)).filter((f) => f !== 'wire81.bin');
+      need(residue.length === 0, `partial temp residue survived: ${residue.join(', ')}`);
+      // the wire heals; the retry lands byte-identical over the victim
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'direct', delayMs: 0 }) });
+      const jid2 = await call('TransferCross', [{ source: P, bucket: '', key: `/${u}/wire81.bin`, size: 8 * 1024 * 1024, isDir: false }], [], { kind: 'local', dir: ldir }, 'overwrite', 0, false, null, false);
+      const j2 = await waitFor(async () => { const j = ((await call('ActiveTransfers')) || []).find((x) => x.id === jid2); return j && (j.status === 'done' || j.status === 'error') && j; }, 120000, 'the retried download to settle');
+      if (j2.status !== 'done') {
+        const vicNow = await sha256file(vic).catch(() => 'unreadable');
+        need(false, `the healed retry did not complete: status=${j2.status} error=${JSON.stringify(j2.error)} phase=${j2.phase} sent=${j2.sentBytes}/${j2.totalBytes} done=${j2.doneFiles} failed=${j2.failedFiles}; victim sha now ${vicNow} vs source ${sha}`);
+      }
+      need(await sha256file(vic) === sha, 'the retried download bytes differ from the remote source');
+      return `wire-death mid remote download: pre-existing file kept its original bytes, no temp residue, healed retry sha-identical`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+      await cli(['rm', '-r', `${S}://${u}`, '--force']).catch(() => {});
+      await call('RemoveSource', P).catch(() => {});
+      await cli(['source', 'remove', S]).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'GUI-82', area: 'sources', action: 'RemoveSource mid-remote-delete: the store forgets, the orphaned loop settles honestly — no hang, no panic, no lying counter', ds: 'SFTP via faultproxy', scenario: 'a source is removed WHILE its own remote delete task is mid-loop: the app must stay alive and the orphaned task must settle within a bounded window reporting done-with-errors or error — never hanging, never crashing — with the counter never claiming a path the server still holds nor hiding more than the one op in flight; the untouched remainder survives and the store no longer lists the source', face: 'GUI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const P = 'verify-slow82', S = 'verify-d82', u = `w82-${RUNID}`;
+    const N = 24, PPORT = 19328, PCTL = 19329;
+    await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+    const seed = path.join(ART, 'w82-seed.txt');
+    await writeFile(seed, `w82 ${RUNID}\n`);
+    const KEYS = [];
+    for (let i = 0; i < N; i++) {
+      const f = `w82-${String(i).padStart(2, '0')}.txt`;
+      KEYS.push(`/${u}/${f}`);
+      const r = await cli(['cp', seed, `${S}://${u}/${f}`]);
+      need(r.code === 0, `seed ${f}: ${r.out}${r.err}`);
+    }
+    const remaining = async () => (await cli(['ls', `${S}://${u}/`, '--json'])).out.split('\n').filter((x) => x.includes('"name": "w82-')).length;
+    need((await remaining()) === N, 'the seed did not land whole');
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', `127.0.0.1:${SFTP_PORT}`], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
+      const killing = call('RemoteRemove', P, KEYS);
+      let id = null;
+      for (let i = 0; i < 3000 && !id; i++) {
+        const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
+        if (t) id = t.id; else await sleep(20);
+      }
+      need(id, 'the remote delete never showed partial progress to remove the source against');
+      // the source is removed NOW — the engine cache slams shut under the live loop
+      await call('RemoveSource', P);
+      let res = null;
+      try { res = await killing; } catch { res = null; } // resolve-with-errors or reject are both honest shapes
+      await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 60000, 'the orphaned remote delete to settle (no hang)');
+      const st = ((await call('RunningTasks')) || []).find((t) => t.id === id);
+      need(st && (st.status === 'done' || st.status === 'error'), `the orphaned delete reports "${st?.status}" — it must settle honestly, never hang or vanish`);
+      const claimed = (res && typeof res.deleted === 'number') ? res.deleted : st.doneUnits;
+      const gone = N - (await remaining());
+      need(gone >= claimed, `the counter over-reports: ${gone} gone, claimed ${claimed}`);
+      need(gone <= claimed + 1, `${gone - claimed} path(s) gone past the counter — more than the single in-flight remove`);
+      need((await remaining()) > 0, 'the orphaned delete destroyed everything — not a mid-loop probe');
+      need(!((await call('ListSources')) || []).some((s) => (s?.name || s?.Name) === P), 'the store still lists the removed source');
+      return `RemoveSource mid-remote-delete: loop settled "${st.status}" with honest accounting (${gone}/${N} gone, counter ${claimed}), remainder survived, the store forgot`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+      await cli(['rm', '-r', `${S}://${u}`, '--force']).catch(() => {});
+      await call('RemoveSource', P).catch(() => {});
+      await cli(['source', 'remove', S]).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'GUI-83', area: 'gates', action: 'Exit gates mid-DESTROY: a permanent purge vetoes the close and survives the guarded ExitApp', ds: 'S3 (MinIO) via faultproxy', scenario: 'with a PERMANENT version destroy CONFIRMED running: the close request is vetoed with the task named as the reason, ExitApp only asks — the app stays fully alive (/health, GetVersion and the running destroy all still answer) — and the confirmation is dismissed, never force-confirmed; the destroy then completes its job (versions gone to zero) and afterwards no close veto names it anymore', face: 'GUI' }, async () => {
+    const PFX = 'verify-gui/wire83/', KEEP = 'verify-gui/wire83-keep/';
+    await s3(['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force']);
+    await s3(['rm', '-r', `s3://${BUCKET}/${KEEP}`, '--force']);
+    const d = path.join(ART, 'wire83-seed');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(d, { recursive: true });
+    const N = 12;
+    for (let i = 0; i < N; i++) await writeFile(path.join(d, `f-${String(i).padStart(2, '0')}.txt`), `w83 ${i}\n`);
+    let r = await s3(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json']);
+    need(r.code === 0 && r.out.includes(`"items": ${N}`), `seed: ${r.out}${r.err}`);
+    for (let round = 1; round <= 2; round++) {
+      r = await s3(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json']);
+      need(r.code === 0, `re-put ${round}: ${r.out}${r.err}`);
+    }
+    await s3(['cp', path.join(ART, 'wire83-seed', 'f-00.txt'), `s3://${BUCKET}/${KEEP}w.txt`]);
+    const statVersions = async () => {
+      const j = await s3(['versions', 'stat', `s3://${BUCKET}/${PFX}`, '--json']);
+      return +((/"versions":\s*(\d+)/.exec(j.out) || [0, -1])[1]);
+    };
+    const seeded = await statVersions();
+    need(seeded === N * 3, `seed expected ${N * 3} versions, stat says ${seeded}`);
+    const PPORT = 19330, PCTL = 19331;
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', '127.0.0.1:9000'], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: 'verify-slow83', type: 's3', s3: { name: 'verify-slow83', endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 200 }) });
+      const KEYS = Array.from({ length: N }, (_, i) => `${PFX}f-${String(i).padStart(2, '0')}.txt`);
+      const destroying = call('SourceDeleteSelectionPermanent', 'verify-slow83', BUCKET, KEYS, true);
+      let id = null;
+      for (let i = 0; i < 3000 && !id; i++) {
+        const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'purge' && x.status === 'running' && x.doneUnits >= 2);
+        if (t) id = t.id; else await sleep(20);
+      }
+      need(id, 'the destroy never showed partial progress to gate the exit against');
+      await evalPage(() => { window.__exitReason = null; window.runtime?.EventsOn('exit:confirm', (p) => { window.__exitReason = String(p?.reason ?? p); }); return true; });
+      const veto = await call('ShouldClose');
+      need(veto === true, `ShouldClose did not veto while a PERMANENT destroy runs (${JSON.stringify(veto)})`);
+      await waitFor(async () => /task|purge/i.test(String(await evalPage(() => window.__exitReason))), 5000, 'the exit:confirm reason naming the destructive task');
+      // ExitApp while busy only ASKS — the app and the destroy must stay alive
+      await call('ExitApp');
+      await sleep(1200);
+      const health = await (await fetch(`http://127.0.0.1:${GUI_PORT}/health`)).json();
+      need(health?.status === 'ok', `the app died on a guarded ExitApp: ${JSON.stringify(health)}`);
+      const ver = await call('GetVersion');
+      need(String(ver).length > 0, 'GetVersion stopped answering after the guarded ExitApp');
+      need(((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 'the destroy did not survive the guarded ExitApp');
+      // dismiss the confirmation — NEVER ConfirmExit — and let the destroy finish
+      await evalPage(() => {
+        const b = Array.from(document.querySelectorAll('#modal-root button'))
+          .find((x) => /cancel|keep/i.test((x.textContent || '').trim()) && !/exit|quit|anyway/i.test(x.textContent || ''));
+        if (b) b.click();
+        return true;
+      });
+      await closeModal();
+      await destroying.catch(() => {});
+      await waitFor(async () => !((await call('RunningTasks')) || []).some((t) => t.id === id && t.status === 'running'), 120000, 'the gated destroy to finish');
+      const st = ((await call('RunningTasks')) || []).find((t) => t.id === id);
+      need(st && st.status === 'done', `the gated destroy reports "${st?.status}"`);
+      need((await statVersions()) === 0, 'the gated destroy left versions behind');
+      let l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive']);
+      need(l.out.split('\n').filter((x) => x.includes('wire83-keep/')).length === 1, 'the out-of-scope sibling was touched by the destroy');
+      await call('RemoveSource', 'verify-slow83');
+      // idle now: any remaining veto must be the benign unsaved-sources one — never the finished task
+      const lateVeto = await call('ShouldClose');
+      if (lateVeto === true) {
+        const r2 = String(await evalPage(() => window.__exitReason) || '');
+        need(!/purge|delet/i.test(r2), `the finished destroy still vetoes the close: "${r2}"`);
+      }
+      await s3(['rm', '-r', `s3://${BUCKET}/${KEEP}`, '--force']).catch(() => {});
+      return `close vetoed with the task named; guarded ExitApp left app + destroy alive; destroy finished to zero versions; no late veto names it`;
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+      await call('RemoveSource', 'verify-slow83').catch(() => {});
+      await s3(['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force']).catch(() => {});
+      await s3(['rm', '-r', `s3://${BUCKET}/${KEEP}`, '--force']).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'GUI-84', area: 'objects', action: 'Editor concurrent-change race on a versioned bucket: last-writer-wins, but the loser stays recoverable', ds: 'S3 (MinIO)', scenario: 'an editor session stages v1 while a CONCURRENT writer outside the app lands v2; the editor then pushes v3: the push must land as current (honest last-writer-wins), the timeline must hold every version, and restoring the clobbered concurrent v2 by id must bring its exact bytes back — on unversioned buckets this race would destroy the concurrent change, so recoverability here is the pinned guarantee', face: 'GUI' }, async () => {
+    const K = 'verify-gui/edit-race.txt';
+    const V1 = 'editor race v1 — staged by the session\n';
+    const V2 = 'CONCURRENT writer v2 — landed while the editor held the file\n';
+    const V3 = 'editor race v3 — pushed last, must win the current slot\n';
+    await s3(['rm', `s3://${BUCKET}/${K}`]).catch(() => {});
+    const seed = path.join(ART, 'edit-race-v1.txt');
+    await writeFile(seed, V1);
+    await s3(['cp', seed, `s3://${BUCKET}/${K}`]);
+    const info = await call('EditObject', BUCKET, K, false);
+    const local = info?.Local || info?.local;
+    need(local && fs.existsSync(local), `EditObject did not stage the file: ${JSON.stringify(info)}`);
+    // the concurrent writer lands v2 OUTSIDE the app while the session holds v1
+    const v2f = path.join(ART, 'edit-race-v2.txt');
+    await writeFile(v2f, V2);
+    await s3(['cp', v2f, `s3://${BUCKET}/${K}`]);
+    const j = await s3(['versions', 'ls', `s3://${BUCKET}/${K}`, '--json']);
+    const vids = [...j.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
+    need(vids.length >= 2, `the concurrent write did not version: ${j.out.slice(0, 160)}`);
+    const v2id = vids[0]; // versions ls lists newest first — v2 right now
+    // the editor pushes v3 on top — honest last-writer-wins
+    await writeFile(local, V3);
+    await call('StopEdit', BUCKET, K, true);
+    const back = path.join(ART, 'edit-race-back.txt');
+    await rm(back, { force: true });
+    let r = await s3(['cp', `s3://${BUCKET}/${K}`, back]);
+    need(r.code === 0 && (await readFile(back, 'utf8')) === V3, `the editor push did not land as current: ${r.out}${r.err}`);
+    // the clobbered concurrent change stays recoverable in the timeline
+    const j2 = await s3(['versions', 'ls', `s3://${BUCKET}/${K}`, '--json']);
+    const now = [...j2.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
+    need(now.length >= 3, `the timeline lost versions across the race: ${j2.out.slice(0, 160)}`);
+    need(now.includes(v2id), 'the clobbered concurrent version vanished from the timeline');
+    r = await s3(['versions', 'restore', `s3://${BUCKET}/${K}`, '--version-id', v2id]);
+    need(r.code === 0, `restore the clobbered version: ${r.out}${r.err}`);
+    await rm(back, { force: true });
+    r = await s3(['cp', `s3://${BUCKET}/${K}`, back]);
+    need(r.code === 0 && (await readFile(back, 'utf8')) === V2, 'the clobbered concurrent change was NOT recoverable — silent data loss');
+    await s3(['rm', `s3://${BUCKET}/${K}`]).catch(() => {});
+    await s3(['versions', 'purge', `s3://${BUCKET}/${K}`, '--mode', 'all', '--force']).catch(() => {});
+    return `editor race: v3 won current honestly, ${now.length} versions retained, clobbered v2 restored byte-exact by id`;
+  });
+
   await verify({ id: 'GUI-58', area: 'sources', action: 'RemoveSource: the store forgets, the data survives', ds: 'FTP', scenario: 'removing a saved source must delete exactly the STORE entry — the engine data it pointed at stays intact, witnessed through the CLI face on its own connection; the GUI keeps browsing afterwards; where the FTP engine is absent the row records the gap', face: 'GUI' }, async () => {
     if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
     const before = (await call('ListSources')) || [];

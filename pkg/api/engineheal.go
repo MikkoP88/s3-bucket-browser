@@ -58,10 +58,16 @@ func connDead(err error) bool {
 // MkdirAll, Remove, Rename): a retry either re-issues a pure read, re-runs
 // an idempotent mutation, or — for Rename, whose first attempt may have
 // landed before the response was lost — fails harmlessly on the now-missing
-// source path. Streaming operations (Open, Create) are NOT retried: their
-// reader/writer is partially consumed by the time the failure surfaces, and
-// a transparent restart would duplicate or truncate bytes — their failures
-// surface to the caller, which owns the transfer-level restart.
+// source path. Open is healed at the handshake only: an Open whose open
+// call dies on the wire has flowed zero bytes and holds no handle, so it is
+// as idempotent as Stat — without this, the first operation of a user's
+// transfer retry after a wire death speaks to the stale engine and fails
+// with "connection lost" until an unrelated listing happens to heal the
+// source. What is never retried is the stream beyond that handshake and
+// Create (whose reader the engine consumes mid-call): a partially consumed
+// reader or writer restarted transparently would duplicate or truncate
+// bytes — those failures surface to the caller, which owns the
+// transfer-level restart.
 //
 // Mutating callers already serialize per source via lockSrcs; the mutex
 // here guards the inner swap against the one true overlap — a stream
@@ -162,10 +168,18 @@ func (h *healingFS) Rename(ctx context.Context, oldp, newp string) error {
 	return err
 }
 
-// Open and Create stream: no transparent retry (see the type comment).
+// The Open handshake heals like Stat; the stream it returns never restarts
+// and Create never retries (see the type comment).
 
 func (h *healingFS) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) {
-	return h.inner.Open(ctx, p)
+	rc, sz, err := h.inner.Open(ctx, p)
+	if err == nil || !connDead(err) || ctx.Err() != nil {
+		return rc, sz, err
+	}
+	if fs, ok := h.redial(); ok {
+		return fs.Open(ctx, p)
+	}
+	return rc, sz, err
 }
 
 func (h *healingFS) Create(ctx context.Context, p string, r io.Reader) error {
