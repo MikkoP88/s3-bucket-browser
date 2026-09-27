@@ -273,6 +273,28 @@ async function cliS3() {
     return 'added, tested, listed, mirrored';
   });
 
+  await verify({ id: 'CLI-S3-48', area: 'sources', action: 'Bucket-scoped addressing: NAME:// is content-only — the bucket never repeats', ds: 'S3 (dead endpoint)', scenario: 'a scoped source is ONE data source: its name carries the bucket, so NAME:// operands address content INSIDE it (the bucket must never appear twice in any rendered path); the listing shows the scope; browsing correctly refuses and points at s3:// URIs; same-object cp fires before any dial', face: 'CLI' }, async () => {
+    // scratch config, keyring-less (CLI-X-12 pattern): keyring slots are
+    // keyed by NAME ONLY, so a keyring-backed verifyscope would leave a
+    // global slot behind and collide on re-runs; the shared face stays
+    // untouched and the dead-endpoint row dials nothing.
+    const dir = path.join(ART, 's48-config');
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    const k = { cfg: dir, nokeyring: true };
+    let r = await cli(['source', 'add', 'verifyscope', '--type', 's3', '--endpoint', 'http://127.0.0.1:1', '--access-key', 'k', '--secret-key', 's', '--bucket', 'scoped-bkt'], k);
+    need(r.code === 0, `source add: ${r.err}`);
+    r = await cli(['source', 'list'], k);
+    need(r.out.includes('verifyscope') && r.out.includes('scoped-bkt'), `list shows the scope: ${r.out}${r.err}`);
+    need(!/scoped-bkt:\/\/scoped-bkt/.test(r.out), `doubled bucket in a rendered path: ${r.out}`);
+    r = await cli(['ls', 'verifyscope://'], k);
+    need(r.code !== 0 && /s3:\/\//.test(r.out + r.err), `ls must point at s3:// URIs: ${r.out}${r.err}`);
+    r = await cli(['cp', 'verifyscope://a.txt', 'verifyscope://a.txt'], k);
+    need(r.code !== 0, 'same-object cp must refuse before dialing');
+    await rm(dir, { recursive: true, force: true });
+    return 'scoped operands are content-only; browsing stays on s3://';
+  });
+
   await verify({ id: 'CLI-S3-02', area: 'buckets', action: 'Create versioned bucket', ds: 'S3 (MinIO)', scenario: 'mb + bucket versioning on (the delete-marker scenarios need it)', face: 'CLI' }, async () => {
     let r = await cli(['mb', B]);
     need(r.code === 0 && /created bucket/.test(r.out), `mb: ${r.out}${r.err}`);
@@ -2777,22 +2799,33 @@ async function guiBattery() {
     await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
     await enterFolder('verify-gui');
   };
-  // The verify-minio source is bucket-scoped, so sibling buckets the CLI
-  // creates (…-mig, …-adm, …-l2x) never appear while it is open. The
-  // breadcrumb's ROOT crumb opens the source's account-wide buckets view —
-  // the grid then lists every bucket of the endpoint (and the tree adopts
-  // the live bucket set).
+  // The verify-minio source is bucket-scoped: one data source = one
+  // bucket. Its root crumb opens the bucket's CONTENTS — the account's
+  // bucket list is deliberately unreachable from inside it (a data source
+  // never contains other data sources). Rows that legitimately need the
+  // buckets view (cross-bucket paste, sibling-bucket admin) enter through
+  // verify-acct, a legacy account-wide source that keeps the bucket-list
+  // view (and whose tree adopts the live bucket set).
+  const ACCT = 'verify-acct';
+  const ensureAcctSource = async () => {
+    if (((await call('ListSources')) || []).some((s) => (s?.name || s?.Name) === ACCT)) return;
+    await call('SaveSource', { name: ACCT, type: 's3', s3: { name: ACCT, endpoint: ENDPOINT, region: REGION, accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
+    await page.reload(); // boot re-reads sources — a bridge SaveSource never reaches the page's tree
+    await waitFor(() => evalPage(() => !!window.go && !!window.runtime), 15000, 'bridge after acct reload');
+  };
+  // Materialize the account source NOW, at battery boot: creation needs a
+  // page.reload(), and a reload wipes the in-memory app clipboard — doing
+  // it lazily inside the first goBuckets() call destroyed the Ctrl+C
+  // GUI-31 had staged moments earlier (run 1: "timeout waiting for the
+  // version-choice dialog"). After this call the lazy check above is a
+  // no-op for the whole battery: no row ever reloads mid-flight.
+  await ensureAcctSource();
   const goBuckets = async () => {
-    // cascade insurance: from ANOTHER source's view the first crumb is
-    // that source's root — a single-crumb dead ringer for the buckets
-    // view (run 1: an FTP residue folder made a later row "arrive" at
-    // the FTP root and filter for a bucket that was never there). Snap
-    // to the S3 source first so the root-crumb click means what it says.
-    if (((await evalPage(() => document.querySelector('#breadcrumb .crumb')?.textContent || '')) || '').trim() !== SRCNAME) {
-      await treeOpen(SRCNAME);
-      await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
-    }
-    await evalPage(() => { document.querySelector('#breadcrumb .crumb')?.click(); });
+    // cascade insurance: the account source's own tree node opens the
+    // buckets view directly — no crumb-shape guessing, no dependence on
+    // whatever view an earlier row left behind.
+    await ensureAcctSource();
+    await treeOpen(ACCT);
     try {
       // the buckets view's breadcrumb is exactly ONE crumb (the source
       // root, current) — a virtualization-proof signature: this endpoint
@@ -6667,6 +6700,79 @@ async function guiBattery() {
     await s3(['rm', `s3://${BUCKET}/${K}`]).catch(() => {});
     await s3(['versions', 'purge', `s3://${BUCKET}/${K}`, '--mode', 'all', '--force']).catch(() => {});
     return `editor race: v3 won current honestly, ${now.length} versions retained, clobbered v2 restored byte-exact by id`;
+  });
+
+  await verify({ id: 'GUI-85', area: 'sources', action: 'Bucket-scoped paths: NAME://content — the bucket never repeats after ://', ds: 'S3 (MinIO)', scenario: 'one data source = one bucket: the breadcrumb carries NO bucket segment and its root crumb stays inside the source (never the account bucket list); the path bar copies back as NAME://prefix/; a pasted canonical path navigates, and the legacy doubled paste folds away to the same place; the dual-pane crumb matches', face: 'GUI' }, async () => {
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('docs')), 10000, 'source contents');
+    // breadcrumb: the root crumb is the source; the bucket never appears
+    const crumbs = await evalPage(() => Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => c.textContent.trim()));
+    need(crumbs[0] === SRCNAME, `root crumb: ${JSON.stringify(crumbs)}`);
+    need(!crumbs.includes(BUCKET), `bucket leaked as a crumb segment: ${JSON.stringify(crumbs)}`);
+    // root-crumb click stays INSIDE the source — contents, not a bucket list
+    await evalPage(() => { document.querySelector('#breadcrumb .crumb')?.click(); });
+    await sleep(400);
+    const after = await evalPage(() => Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => c.textContent.trim()));
+    need(after[0] === SRCNAME && !after.includes(BUCKET), `root click escaped the source: ${JSON.stringify(after)}`);
+    // path bar at the source root: NAME:// — the bucket never follows
+    await evalPage(() => { document.querySelector('.navbar')?.click(); });
+    let bar = await evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value ?? null);
+    need(bar === `${SRCNAME}://`, `path bar at root: ${JSON.stringify(bar)}`);
+    // inside docs/: content only after ://
+    await evalPage(() => document.activeElement?.blur());
+    await enterFolder('docs');
+    await evalPage(() => { document.querySelector('.navbar')?.click(); });
+    bar = await evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value ?? null);
+    need(bar === `${SRCNAME}://docs/`, `path bar in docs: ${JSON.stringify(bar)}`);
+    // paste-back round trip: canonical AND legacy-doubled forms land in docs
+    for (const p of [`${SRCNAME}://docs/`, `${SRCNAME}://${BUCKET}/docs/`]) {
+      await evalPage(() => { document.querySelector('.navbar')?.click(); });
+      await evalPage((v) => {
+        const i = document.querySelector('#breadcrumb input.path-edit');
+        if (i) { i.value = v; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); }
+      }, p);
+      await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 8000, `paste ${p}`);
+    }
+    // dual pane bound to the scoped source: the crumb matches NAME://content
+    await ensureDualPane();
+    const bound = await evalPage((n) => {
+      const s = document.getElementById('local-src');
+      // the option's text is "NAME (type)" and its value is the source
+      // ID — match the value or the name prefix, never the full text
+      const o = Array.from(s?.options || []).find((x) => x.value === n || (x.textContent || '').trim().startsWith(`${n} (`));
+      if (o && s.value !== o.value) { s.value = o.value; s.dispatchEvent(new Event('change')); }
+      return o ? o.value : null;
+    }, SRCNAME);
+    need(bound, 'no side-pane option for the scoped source');
+    await waitFor(async () => (await txt('#local-crumb')) === `${SRCNAME}://`, 10000, 'side crumb');
+    // leave the pane on the local binding, as earlier rows found it
+    await evalPage(() => { const s = document.getElementById('local-src'); if (s && s.value !== 'local') { s.value = 'local'; s.dispatchEvent(new Event('change')); } return true; });
+    await shot('85-scoped-format');
+    return 'name://content everywhere: path bar, breadcrumb, paste-back, side pane';
+  });
+
+  await verify({ id: 'GUI-86', area: 'sources', action: 'Remote source paths: the same NAME://content hierarchy as every other type', ds: 'FTP', scenario: 'the uniform <source>://<content> format on a remote source: the tree opens at the source root and the path bar shows the source name as the scheme with only directory content after it — never a host, never a port, never an engine address', face: 'GUI' }, async () => {
+    if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
+    await treeOpen(FTPNAME);
+    await waitFor(async () => (await rowKeys()).length > 0, 10000, 'ftp root rows');
+    await evalPage(() => { document.querySelector('.navbar')?.click(); });
+    let bar = await evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value ?? null);
+    need(bar === `${FTPNAME}://` || bar === `${FTPNAME}:///`, `path bar at ftp root: ${JSON.stringify(bar)}`);
+    need(!(bar || '').includes('127.0.0.1') && !(bar || '').includes(`:${FTP_PORT}`), `path bar leaked the host/port: ${bar}`);
+    await evalPage(() => document.activeElement?.blur());
+    const first = await evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row')).map((r) => r._model?.key).find(Boolean));
+    if (first && String(first).includes('/')) {
+      // descend one real directory and read the path bar again
+      const dir = String(first).replace(/\/+$/, '').split('/').pop();
+      await enterFolder(dir);
+      await evalPage(() => { document.querySelector('.navbar')?.click(); });
+      const barIn = await evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value ?? null);
+      need(barIn && barIn.startsWith(`${FTPNAME}://`) && barIn.includes(`${dir}/`), `path bar inside ${dir}: ${JSON.stringify(barIn)}`);
+      need(!barIn.includes('127.0.0.1'), `path bar leaked the host inside: ${barIn}`);
+      await evalPage(() => document.activeElement?.blur());
+    }
+    await shot('86-remote-format');
+    return 'remote sources render NAME://dir — the uniform hierarchy';
   });
 
   await verify({ id: 'GUI-58', area: 'sources', action: 'RemoveSource: the store forgets, the data survives', ds: 'FTP', scenario: 'removing a saved source must delete exactly the STORE entry — the engine data it pointed at stays intact, witnessed through the CLI face on its own connection; the GUI keeps browsing afterwards; where the FTP engine is absent the row records the gap', face: 'GUI' }, async () => {

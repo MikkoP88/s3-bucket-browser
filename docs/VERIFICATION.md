@@ -255,6 +255,7 @@ switching; the same S3 source stays connected through it).
 | **Editor explicit save pushes what is on disk — WORM keeps the locked original safe through it** | S3 (MinIO) | StopEdit(upload=true) re-checks the staged file at stop time (the watcher only notices changes on its 1.2 s poll — a save-and-close inside that window used to silently push nothing and lose the edit); the same save against a GOVERNANCE-retained object lands as a new version while the locked original survives in the timeline, restores byte-identical, and rm --versions stays refused — editing can never destroy locked bytes | — | ✅ GUI-60 | Win 11 x64 |
 | **Keep-current purge deletes exactly N-1 versions** | S3 (MinIO) | three seeded versions: DeleteSelectionKeepCurrent reports 2 deleted, the timeline holds exactly 1, and the survivor is the newest payload byte-identical — the irreversible pruning rung never takes more or fewer than reported | — | ✅ GUI-61 | Win 11 x64 |
 | **A delete canceled while still counting deletes nothing** | S3 (MinIO) via faultproxy | the count-then-act ladder's COUNT half is cancellable: a delete through a 1.5 s/chunk delayed source, canceled from the task registry in the count phase, leaves 30/30 objects alive (the act phase never ran), the out-of-scope sibling untouched, and the app healthy enough to finish the job on a direct re-run | — | ✅ GUI-62 | Win 11 x64 |
+| **Canonical path hierarchy: `<source>://<content>` — a data source never repeats its own identity** | **all source types** | every path surface renders `NAME://content`: the navbar path bar, breadcrumbs, properties windows, transfer labels, the dual-pane crumb, and the directory picker. A bucket-scoped S3 source's name already IS the bucket, so the bucket never appears again after `://` (the reported `testijotain://testijotain/…` doubling is gone), and its root crumb stays INSIDE the source's contents — the account bucket list is unreachable from a single data source, by design; legacy account-wide sources keep the bucket as their first content segment; a path copied under the old doubled rendering still navigates (parsePath folds an exact-case repeated bucket away); remote sources render the same hierarchy with no host or port leak; the CLI keeps `NAME://` browsing refused with s3:// guidance while cp/mv accept scoped operands as content-only | ✅ CLI-S3-48 | ✅ GUI-85 + GUI-86 | Win 11 x64 |
 
 ---
 
@@ -329,6 +330,22 @@ full matrix (166 rows):
 
 The rounds in brief:
 
+- Round 6 pinned the canonical path hierarchy `<source>://<content>`
+  across every source type: a bucket-scoped S3 source's name already
+  IS the bucket, so the bucket never repeats after `://` (the
+  "testijotain://testijotain/" report). One scope-aware composer
+  (s3TreePath) now feeds the path bar, breadcrumbs, properties,
+  transfer labels, and the dual-pane crumb; the scoped root crumb stays
+  inside the source's contents (the account bucket list is
+  unreachable from one data source); legacy doubled pastes fold away
+  in parsePath; the directory picker gained scopeBucket so a scoped
+  binding cannot climb out to the bucket list; and the harness's
+  bucket-list rows now enter through verify-acct, a dedicated legacy
+  account-wide source, because a scoped source can no longer reach the
+  bucket list at all. Landed green through the targeted batteries
+  (s3 43 PASS · 5 SKIP · 0 FAIL — 330 s; gui 84 PASS · 2 SKIP · 0
+  FAIL — 1300 s); the full-matrix re-run lands with the next release
+  snapshot.
 - Round 5 pinned the cross-source engine (GUI-80..84) and the
   S3/remote destroy-interruption cells (CLI-RES-08..10): a wire dying
   mid-upload or mid-download of the cross-source engine never leaves a
