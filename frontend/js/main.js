@@ -834,15 +834,24 @@ function renderBreadcrumb() {
   }
   const srcName = loc.source || viewSource;
   const s = sources.find((x) => x.name === srcName);
-  const root = el('span', { class: `crumb${loc.kind === 'buckets' ? ' current' : ''}`, title: `${srcName}://` },
+  // bucket-scoped source: its home IS the bucket's contents — the root
+  // crumb opens them directly and no bucket segment follows (the name
+  // already says which bucket; the account's bucket list is unreachable
+  // from inside a single data source).
+  const scoped = loc.kind === 'objects' && !!s?.bucket;
+  const root = el('span', { class: `crumb${(loc.kind === 'buckets' || (scoped && !loc.prefix)) ? ' current' : ''}`, title: `${srcName}://` },
     srcIconEl(s?.type || 's3', s?.color), srcName);
-  root.onclick = () => nav.to({ kind: 'buckets', source: srcName });
+  root.onclick = () => nav.to(scoped
+    ? { kind: 'objects', source: srcName, bucket: s.bucket, prefix: '' }
+    : { kind: 'buckets', source: srcName });
   bc.appendChild(root);
   if (loc.kind !== 'objects') return;
-  bc.appendChild(el('span', { class: 'crumb-sep', text: '\u203A' }));
-  const b = el('span', { class: 'crumb', text: loc.bucket });
-  b.onclick = () => nav.to({ kind: 'objects', source: srcName, bucket: loc.bucket, prefix: '' });
-  bc.appendChild(b);
+  if (!scoped) {
+    bc.appendChild(el('span', { class: 'crumb-sep', text: '\u203A' }));
+    const b = el('span', { class: 'crumb', text: loc.bucket });
+    b.onclick = () => nav.to({ kind: 'objects', source: srcName, bucket: loc.bucket, prefix: '' });
+    bc.appendChild(b);
+  }
   let acc = '';
   for (const part of (loc.prefix || '').split('/')) {
     if (!part) continue;
@@ -858,15 +867,28 @@ function renderBreadcrumb() {
 
 // ====================== canonical path bar ======================
 // Every location has ONE path format across all source kinds:
-// "NAME://bucket/prefix/" for S3 sources, "NAME:///dir/" for the remote
-// engines — the source's display name is the scheme. Clicking the navbar's
-// empty area swaps the breadcrumb for an editable field with that string,
-// so a path can be copied out or pasted in from anywhere and navigated
-// with Enter.
+// "NAME://content" — the source's display name is the scheme and
+// everything after :// is content INSIDE that one data source. A
+// bucket-scoped S3 source's name already carries its bucket, so the
+// bucket never repeats after :// ("testijotain://docs/", never
+// "testijotain://testijotain/docs/"); legacy account-wide S3 sources keep
+// the bucket as the first content segment (their content level 1 IS the
+// bucket). Clicking the navbar's empty area swaps the breadcrumb for an
+// editable field with that string, so a path can be copied out or pasted
+// in from anywhere and navigated with Enter.
+// s3TreePath is the composer every S3 path display goes through: it
+// decides, from the source definition, whether the bucket belongs after
+// :// (account-wide) or is already spoken for by the name (scoped).
+function s3TreePath(source, bucket, prefix) {
+  const name = source || viewSource;
+  const src = sources.find((x) => x.name === name);
+  if (src && src.type === 's3' && src.bucket) return `${name}://${prefix || ''}`;
+  return `${name}://${bucket}/${prefix || ''}`;
+}
 function canonicalPath(loc) {
   if (!loc) return '';
   if (loc.kind === 'buckets') return `${loc.source || viewSource}://`;
-  if (loc.kind === 'objects') return `${loc.source || viewSource}://${loc.bucket}/${loc.prefix || ''}`;
+  if (loc.kind === 'objects') return s3TreePath(loc.source, loc.bucket, loc.prefix);
   if (loc.kind === 'remote') return `${loc.source}://${loc.path || '/'}`;
   return '';
 }
@@ -883,6 +905,18 @@ function parsePath(str) {
     || String(s.id || '').toLowerCase() === scheme);
   if (!src) return null;
   if (src.type === 's3') {
+    // bucket-scoped source: the whole rest is content INSIDE its one
+    // bucket (NAME:// alone opens the contents). The legacy doubled
+    // form — the bucket repeated as the first segment — is accepted and
+    // folded away so paths copied under the old rendering still resolve.
+    if (src.bucket) {
+      let content = rest;
+      if (content === src.bucket) content = '';
+      else if (content.startsWith(`${src.bucket}/`)) content = content.slice(src.bucket.length + 1);
+      if (!content) return { loc: { kind: 'objects', source: src.name, bucket: src.bucket, prefix: '' } };
+      const parts = content.replace(/\/+$/g, '').split('/');
+      return { loc: { kind: 'objects', source: src.name, bucket: src.bucket, prefix: `${parts.join('/')}/` } };
+    }
     if (!rest) return { loc: { kind: 'buckets', source: src.name } };
     const parts = rest.replace(/\/+$/g, '').split('/');
     const bucket = parts.shift();
@@ -1461,7 +1495,7 @@ async function folderProperties() {
   const files = rows.filter((r) => !r.isDir);
   const bytes = files.reduce((s, r) => s + (r.size || 0), 0);
   const g = await ensureGuard(loc.source, loc.bucket);
-  properties(`Properties — ${loc.source || viewSource}://${loc.bucket}/${loc.prefix || ''}`, [
+  properties(`Properties — ${s3TreePath(loc.source, loc.bucket, loc.prefix || '')}`, [
     ['Folders', rows.length - files.length],
     ['Files', files.length],
     ['Total size', fmtBytes(bytes)],
@@ -1742,7 +1776,7 @@ async function treeProperties(node) {
       ['Objects', st.usage.objectCount],
       ['Total size', fmtBytes(st.usage.totalBytes)],
       ...guardRows(g),
-      ['Path', `${node.source}://${node.bucket}/${node.prefix}`],
+      ['Path', s3TreePath(node.source, node.bucket, node.prefix)],
     ]);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');
@@ -1872,7 +1906,7 @@ function xferDestOf(loc) {
 }
 
 function xferDestLabel(dest) {
-  if (dest.kind === 's3') return `${dest.source || viewSource}://${dest.bucket}/${dest.dir || ''}`;
+  if (dest.kind === 's3') return s3TreePath(dest.source, dest.bucket, dest.dir || '');
   if (dest.kind === 'remote') return `${dest.source}://${dest.dir || '/'}`;
   return dest.dir;
 }
@@ -2526,7 +2560,7 @@ async function selectionProperties() {
         ['Content type', st.contentType],
         ['SSE', st.sse || 'none'],
       ]),
-      ['Path', `${loc.source || viewSource}://${loc.bucket}/${row.key}`],
+      ['Path', s3TreePath(loc.source, loc.bucket, row.key)],
     ];
     // Object-lock state of the selected object (M10.4): one extra call,
     // tolerating buckets without a lock config (rows simply stay away).
@@ -3134,8 +3168,8 @@ function showSideS3RowMenu(e, rows) {
 async function deleteSideS3Selection(source, bucket, keys) {
   if (!keys.length) return;
   const target = keys.length === 1
-    ? `${source}://${bucket}/${keys[0]}`
-    : `${source}://${bucket}/${localPane.dir || ''}`;
+    ? s3TreePath(source, bucket, keys[0])
+    : s3TreePath(source, bucket, localPane.dir || '');
   try {
     await deleteS3Keys(source, bucket, keys, '', target, () => localPane.refresh());
   } catch (err) {
@@ -3194,7 +3228,7 @@ async function sideS3Properties(row) {
           ['Storage class', st.storageClass || ''],
         ]),
       ['Source', b.source],
-      ['Path', `${b.source}://${localPane.bucket}/${row.key}`],
+      ['Path', s3TreePath(b.source, localPane.bucket, row.key)],
     ]);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');

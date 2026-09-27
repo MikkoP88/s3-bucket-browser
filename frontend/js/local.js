@@ -436,6 +436,9 @@ export class LocalPane {
         source: this.binding.source,
         name: this.binding.name,
         startBucket: this.bucket,
+        // a bucket-scoped source has nothing above its bucket root:
+        // the picker must never offer the account's bucket list
+        scopeBucket: this.binding.bucket || '',
         startPrefix: this.dir || '',
       });
       if (p) this.navigateS3({ bucket: p.bucket, prefix: p.prefix || '' });
@@ -499,8 +502,14 @@ export class LocalPane {
       return;
     }
     if (this.binding.kind === 's3') {
+      // bucket-scoped binding: the name IS the bucket — only content
+      // follows :// (never name://bucket/…). Legacy account-wide bindings
+      // keep the bucket as their first content segment.
+      const scoped = this.binding.bucket && this.bucket === this.binding.bucket;
       const label = this.bucket
-        ? `${label_}://${this.bucket}/${this.dir || ''}`
+        ? (scoped
+          ? `${label_}://${this.dir || ''}`
+          : `${label_}://${this.bucket}/${this.dir || ''}`)
         : `${label_}://`;
       $('local-crumb').textContent = label;
       $('local-crumb').title = label;

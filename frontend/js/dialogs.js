@@ -4000,13 +4000,18 @@ export function toast(message, type = '') {
 // against a SAVED source (kind:'s3'/'remote' + source id) or an unsaved
 // editor draft (draft Source object, remote engines only).
 // Resolves: remote → '/path/' string; s3 → {bucket, prefix}.
-export function browseDirDialog({ title, kind, source = '', name = '', draft = null, start = '/', startBucket = '', startPrefix = '' }) {
+// scopeBucket pins a bucket-scoped S3 source to its ONE bucket: the
+// crumb renders NAME://prefix (the bucket is the source's identity, not
+// content) and Up never climbs out to the account's bucket list.
+export function browseDirDialog({ title, kind, source = '', name = '', draft = null, start = '/', startBucket = '', scopeBucket = '', startPrefix = '' }) {
   return new Promise((resolve) => {
     let cur = kind === 's3'
-      ? { bucket: startBucket || '', prefix: startPrefix || '' }
+      ? { bucket: startBucket || scopeBucket || '', prefix: startPrefix || '' }
       : { dir: start || '/' };
     const labelOf = () => kind === 's3'
-      ? `${name || source}://${cur.bucket}${cur.bucket ? '/' + cur.prefix : ''}`
+      ? (scopeBucket && cur.bucket === scopeBucket
+        ? `${name || source}://${cur.prefix || ''}`
+        : `${name || source}://${cur.bucket}${cur.bucket ? '/' + cur.prefix : ''}`)
       : `${name || source}://${cur.dir || '/'}`;
     const crumb = el('div', { class: 'bd-crumb mono', title: '' });
     const list = el('div', { class: 'bd-list' });
@@ -4075,7 +4080,10 @@ export function browseDirDialog({ title, kind, source = '', name = '', draft = n
 
     const up = async () => {
       if (kind === 's3') {
-        if (!cur.prefix) { if (cur.bucket) cur = { bucket: '', prefix: '' }; }
+        // a bucket-scoped source has nothing above its bucket root — Up
+        // stops there (the account's bucket list is a different source's
+        // territory, never this one's).
+        if (!cur.prefix) { if (cur.bucket && !scopeBucket) cur = { bucket: '', prefix: '' }; }
         else {
           const p = cur.prefix.replace(/\/+$/, '');
           const i = p.lastIndexOf('/');
