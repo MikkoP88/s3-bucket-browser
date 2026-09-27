@@ -54,7 +54,9 @@ or the welcome screen) reads:
   endpoints (URL / JSON path / headers)
 
 Every candidate is listed with a live **bucket-count test** before you
-commit; import it and the bucket's content opens immediately.
+commit. Picks accumulate: add from several files and services in one
+go, remove any row (or clear the list), then import the checked ones
+— the imported bucket's content opens immediately.
 
 ![Credential import with live test](screenshots/import-credentials.png)
 

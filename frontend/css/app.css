@@ -1212,6 +1212,18 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .cred-test { flex: none; max-width: 40%; font-size: 12px; text-align: right; overflow-wrap: anywhere; }
 .cred-test.ok { color: var(--ok); }
 .cred-test.err { color: var(--danger); }
+.cred-list-head { display: flex; align-items: baseline; gap: 8px; flex: none;
+  color: var(--text-dim); font-size: 12px; }
+.cred-list-head .cred-clear { margin-left: auto; }
+/* the header's text link and each row's X follow the modal-head .X idiom:
+   quiet until hovered, then clearly destructive */
+.cred-clear { cursor: pointer; background: none; border: none; padding: 0;
+  color: var(--text-dim); font-size: 12px; text-decoration: underline; }
+.cred-clear:hover { color: var(--danger); }
+.cred-x { flex: none; cursor: pointer; background: none; border: none;
+  color: var(--text-dim); font-size: 15px; line-height: 1.2;
+  padding: 4px 6px; margin: -4px -6px; border-radius: 4px; }
+.cred-x:hover { color: var(--danger); background: var(--border-soft); }
 
 /* Scrollbars */
 ::-webkit-scrollbar { width: 10px; height: 10px; }

@@ -2399,7 +2399,7 @@ export function helpSheet() {
 const GUIDE_SECTIONS = [
   ['Getting started', [
     ['Add a data source', 'Click the + button next to DATA SOURCES on the left (or the button on the empty state). Every connection is a data source; click one to browse it in the main view.'],
-    ['Import existing credentials', '"Import S3 Credential" (File menu or the empty state) reads credential files — AWS INI (~/.aws/credentials), rclone, JSON, .env, encrypted .s3bprofile — or a KMS service (Vault, AWS SM, Azure, GCP). Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3. Test each candidate before importing.'],
+    ['Import existing credentials', '"Import S3 Credential" (File menu or the empty state) reads credential files — AWS INI (~/.aws/credentials), rclone, JSON, .env, encrypted .s3bprofile — or a KMS service (Vault, AWS SM, Azure, GCP). Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3. Test each candidate before importing. Picks accumulate — add from several files and services, remove any row (or clear all), then import the checked ones.'],
     ['Save your workspace', 'Data sources live in the session until saved. Ctrl+S / File → Save As writes an encrypted .s3bprofile you can reopen, keep or share; the status bar counts unsaved sources.'],
     ['Secrets', 'Keys and passwords are stored in the OS keyring (Windows Credential Manager, macOS Keychain, Linux SecretService) when available, with a 0600-permission file fallback on headless hosts.'],
     ['Settings', 'The Settings menu opens one dialog with a page tree: theme (light/dark), 15 languages, view options, network timeouts and S3 retries, the transfer engine (multipart part size, parts in flight, stall threshold), delete gates and security — including the opt-in Secure Storage mode that encrypts the whole source store. Every change applies immediately; no restart.'],
@@ -4281,22 +4281,52 @@ function kmsFetchDialog(onCandidates) {
   });
 }
 
-// importCredsDialog (the "Import S3 Credential" dialog): pick credential files or fetch from a KMS service,
-// review + test the parsed candidates (bucket counts), then import them
-// as data sources. Secrets never leave the Go side — the dialog only sees
+// importCredsDialog (the "Import S3 Credential" dialog): pick credential
+// files and fetch from KMS services — several picks accumulate in one
+// list, any row can be removed (or the whole list cleared), and closing
+// the dialog discards whatever is left. Review + test the parsed
+// candidates (bucket counts), then import the checked ones as data
+// sources. Secrets never leave the Go side — the dialog only sees
 // metadata.
 export function importCredsDialog(onImported) {
   let candidates = [];
   const list = el('div', { class: 'cred-list' });
   const status = el('div', { class: 'dlg-status' });
 
+  // fp fingerprints a candidate's metadata (the dialog never sees the
+  // secret itself): re-picking the same file or re-fetching the same
+  // secret refreshes the existing row — a fresh stash id, so its
+  // 30-minute TTL restarts — instead of stacking a duplicate.
+  const fp = (c) => `${c.type}|${c.name}|${c.endpoint || ''}|${c.host || ''}|${c.username || ''}|${c.origin || ''}`;
   const add = (cs) => {
-    candidates = cs.map((c) => ({ ...c, checked: true, tested: null }));
+    let added = 0, refreshed = 0;
+    for (const c of cs) {
+      const sig = fp(c);
+      const i = candidates.findIndex((x) => x.sig === sig);
+      if (i < 0) { candidates.push({ ...c, sig, checked: true, tested: null }); added++; }
+      else { candidates[i] = { ...c, sig, checked: true, tested: null }; refreshed++; }
+    }
     draw();
+    return { added, refreshed };
   };
 
   const draw = () => {
     list.replaceChildren();
+    if (candidates.length) {
+      const checked = candidates.filter((c) => c.checked).length;
+      list.appendChild(el('div', { class: 'cred-list-head' },
+        el('span', { text: `${candidates.length} candidate(s) \u00b7 ${checked} selected` }),
+        el('button', {
+          class: 'cred-clear', text: 'Remove all',
+          title: 'Clear every candidate (their stashed secrets are discarded)',
+          onclick: () => {
+            api.DiscardCredentialDrafts(candidates.map((c) => c.id));
+            candidates = [];
+            draw();
+          },
+        }),
+      ));
+    }
     if (!candidates.length) {
       list.appendChild(el('div', { class: 'cred-empty', text: 'No candidates yet — pick a credential file or fetch from a secrets service.' }));
       return;
@@ -4335,12 +4365,23 @@ export function importCredsDialog(onImported) {
           ? el('div', { class: `cred-test ${c.tested.ok ? 'ok' : 'err'}`, text: c.tested.ok ? `\u2705 ${c.tested.message}` : `\u274C ${c.tested.message}` })
           : c.tested?.pending ? el('div', { class: 'cred-test', text: 'Testing…' }) : null,
         testBtn,
+        el('button', {
+          class: 'cred-x', text: '\u00d7',
+          title: 'Remove this candidate (its stashed secret is discarded)',
+          'aria-label': `Remove ${c.name || 'candidate'}`,
+          onclick: () => {
+            api.DiscardCredentialDrafts([c.id]);
+            candidates = candidates.filter((x) => x !== c);
+            draw();
+          },
+        }),
       ));
     }
   };
   draw();
 
   const fromFiles = async () => {
+    const tally = { files: 0, added: 0, refreshed: 0 };
     try {
       const files = await api.PickCredentialFiles();
       if (!files || !files.length) return;
@@ -4357,8 +4398,15 @@ export function importCredsDialog(onImported) {
             cs = await api.ParseCredentialFile(p, pw);
           } else throw e;
         }
-        if (cs?.length) add(cs);
-        else status.textContent = `${p.split(/[\\/]/).pop()}: no importable connection found`;
+        if (cs?.length) {
+          const { added, refreshed } = add(cs);
+          tally.files++; tally.added += added; tally.refreshed += refreshed;
+        } else status.textContent = `${p.split(/[\\/]/).pop()}: no importable connection found`;
+      }
+      if (tally.files) {
+        status.textContent = `Added ${tally.added} candidate(s) from ${tally.files} file(s)` +
+          (tally.refreshed ? ` \u2014 ${tally.refreshed} refreshed (already listed)` : '');
+        status.style.color = 'var(--text-dim)';
       }
     } catch (e) {
       status.textContent = String(e);
@@ -4369,8 +4417,13 @@ export function importCredsDialog(onImported) {
   // show() opens the dialog once. Nested modals (the profile password
   // prompt, the KMS fetch dialog) stack on top of it; the modal stack
   // parks it with the candidate state and returns it when they close.
+  // Closing the dialog (Close, the X, Escape — or a successful import,
+  // whose ids the import already consumed) discards every candidate
+  // left in the list: rejected secrets must not sit in the stash out
+  // the 30-minute TTL.
   const show = () => openModal({
     title: 'Import S3 Credential',
+    onClose: () => api.DiscardCredentialDrafts(candidates.map((c) => c.id)),
     body: el('div', {},
       el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'Turn connection credentials into data sources. Files: AWS CLI INI, rclone.conf, JSON (any shape), .env, or an exported .s3bprofile. Services: Vault, AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or any custom HTTP endpoint.' }),
       list,
@@ -4379,7 +4432,12 @@ export function importCredsDialog(onImported) {
     wide: true,
     buttons: [
       { label: 'From file\u2026', onclick: async () => { await fromFiles(); } },
-      { label: 'From service\u2026', onclick: () => kmsFetchDialog(add) },
+      { label: 'From service\u2026', onclick: () => kmsFetchDialog((cs) => {
+        const { added, refreshed } = add(cs);
+        status.textContent = `Added ${added} candidate(s)` +
+          (refreshed ? ` \u2014 ${refreshed} refreshed (already listed)` : '');
+        status.style.color = 'var(--text-dim)';
+      }) },
       {
         label: 'Import', class: 'primary',
         onclick: async (close) => {

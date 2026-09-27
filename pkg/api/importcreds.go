@@ -219,6 +219,18 @@ func (a *App) ImportCredentials(ids []string) (ImportResult, error) {
 	return res, nil
 }
 
+// DiscardCredentialDrafts drops stashed candidates the import dialog
+// rejected — a removed row, a cleared list, or the dialog closing without
+// importing them. Their secrets should not outlive that choice by the
+// stash's 30-minute TTL. Unknown or already-imported ids are no-ops.
+func (a *App) DiscardCredentialDrafts(ids []string) {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	for _, id := range ids {
+		delete(a.pendingCreds, id)
+	}
+}
+
 // importSource upserts one candidate: a workspace source matching it by
 // ID or connection is refreshed in place (name, color and timestamps
 // kept); otherwise a new uniquely-named source is created.
