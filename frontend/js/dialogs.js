@@ -2526,6 +2526,19 @@ function extLink(url, text) {
     e.preventDefault();
     api.OpenExternal(url).catch(() => window.open(url, '_blank', 'noopener'));
   });
+  // Middle-click would ask the webview for a new window, which Wails
+  // drops on macOS (no createWebViewWith) — route it to the OS browser
+  // like a click.
+  a.addEventListener('auxclick', (e) => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    api.OpenExternal(url).catch(() => window.open(url, '_blank', 'noopener'));
+  });
+  // The default context menu's "Open Link" item navigates the main
+  // webview with no click event — on macOS that swaps the whole app out
+  // for the external page and leaves no way back. No menu on external
+  // links; a normal click still opens the user's browser.
+  a.addEventListener('contextmenu', (e) => e.preventDefault());
   return a;
 }
 
