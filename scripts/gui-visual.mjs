@@ -1432,6 +1432,11 @@ await step('column-resize-reorder', async () => {
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   });
   const w0 = await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width);
+  const s0 = await evalPage(() => {
+    const cells = Array.from(document.querySelectorAll('#grid-head .gh')).map((c) => c.getBoundingClientRect());
+    const b = document.getElementById('grid-body');
+    return { next: { l: cells[3].left, w: cells[3].width }, last: cells[4].left, bodyW: b.clientWidth };
+  });
   await page.mouse.move(h.x, h.y);
   await page.mouse.down();
   await page.mouse.move(h.x + 120, h.y, { steps: 8 });
@@ -1445,6 +1450,13 @@ await step('column-resize-reorder', async () => {
   }));
   await ok('pooled rows follow the resized template', evalPage(() =>
     Math.abs(document.querySelector('#grid-canvas .grid-row .gc.type').getBoundingClientRect().width - 270) <= 3));
+  await ok('rightward drag keeps the following columns in place', evalPage((s) => {
+    const cells = Array.from(document.querySelectorAll('#grid-head .gh')).map((c) => c.getBoundingClientRect());
+    return Math.abs(cells[3].left - s.next.l) <= 1 && Math.abs(cells[3].width - s.next.w) <= 1
+      && Math.abs(cells[4].left - s.last) <= 1;
+  }, s0));
+  await ok('widening never pushes the rows into horizontal scroll', evalPage((s) =>
+    document.getElementById('grid-body').scrollWidth <= s.bodyW + 1, s0));
   await page.mouse.click(h.x, h.y, { clickCount: 2 }); // double-click resets
   await sleep(80);
   const w2 = await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width);
@@ -1452,6 +1464,39 @@ await step('column-resize-reorder', async () => {
     try { return !(JSON.parse(localStorage.getItem('s3b-cols') || '{}').widths || {}).type; }
     catch { return false; }
   }));
+  // narrow pane: the column set's minimums exceed the head — a rightward
+  // drag must stay inert (regression: the degenerate ceiling used to snap the
+  // column to the 48px clamp on the first move and shift everything after it)
+  const vp = page.viewportSize();
+  await page.setViewportSize({ width: 720, height: 600 });
+  await sleep(150);
+  const n0 = await evalPage(() => {
+    const cells = Array.from(document.querySelectorAll('#grid-head .gh')).map((c) => c.getBoundingClientRect());
+    return { w: cells[2].width, nextL: cells[3].left };
+  });
+  const t = await evalPage(() => {
+    const r = document.querySelector('#grid-head .gh:nth-child(3) .gh-resize').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.move(t.x, t.y);
+  await page.mouse.down();
+  await page.mouse.move(t.x + 80, t.y, { steps: 8 });
+  await page.mouse.up();
+  await sleep(80);
+  await ok('narrow pane: rightward drag does not snap the column', evalPage((n) => {
+    const cells = Array.from(document.querySelectorAll('#grid-head .gh')).map((c) => c.getBoundingClientRect());
+    return Math.abs(cells[2].width - n.w) <= 1 && Math.abs(cells[3].left - n.nextL) <= 1;
+  }, n0));
+  await page.mouse.move(t.x, t.y);
+  await page.mouse.down();
+  await page.mouse.move(t.x - 40, t.y, { steps: 8 });
+  await page.mouse.up();
+  await sleep(80);
+  await ok('narrow pane: narrowing still works',
+    Math.abs((await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width)) - (n0.w - 40)) <= 3);
+  await evalPage(() => localStorage.removeItem('s3b-cols'));
+  await page.setViewportSize(vp);
+  await sleep(150);
   // reorder: drag the Size header in front of Type
   const d = await evalPage(() => {
     const cells = Array.from(document.querySelectorAll('#grid-head .gh'));

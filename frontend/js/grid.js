@@ -333,7 +333,18 @@ export class Grid {
     e.stopPropagation();
     const startW = rz.closest('.gh').getBoundingClientRect().width;
     const startX = e.clientX;
-    const maxW = Math.max(MIN_COL_W, this.head.clientWidth - 34
+    // The bound is the narrower of head and rows: the rows area loses the
+    // vertical-scrollbar width, and a template that fits the head but not
+    // the rows would slide an h-scrollbar under the grid mid-drag.
+    const body = this.canvas.parentElement;
+    const bound = Math.min(this.head.clientWidth,
+      (body && body.clientWidth) || this.head.clientWidth);
+    // The ceiling can compute below the column's own width when the layout
+    // already overflows (a pane narrower than the column set's minimums);
+    // flooring it at startW keeps a rightward drag from snapping the column
+    // down to the clamp — and shifting every column after it — on the first
+    // move. In that regime the drag stays inert until space is freed.
+    const maxW = Math.max(startW, bound - 34
       - this.cols.reduce((sum, x) => (x === c ? sum : sum + this.colFloor(x)), 0));
     rz.setPointerCapture?.(e.pointerId); // keep the drag alive past the window edge
     rz.classList.add('dragging');
