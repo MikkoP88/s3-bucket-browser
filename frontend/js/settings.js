@@ -118,7 +118,7 @@ function logFileRows(ctx) {
     sync();
   };
   const applyFilters = async () => {
-    cur = (await ctx.log.set(cur.mode || 'default', cur.dir || '', [...levelsSel.sel], [...scopesSel.sel], [...sourcesSel.sel])) || {};
+    cur = (await ctx.log.set(cur.mode || 'off', cur.dir || '', [...levelsSel.sel], [...scopesSel.sel], [...sourcesSel.sel])) || {};
     sync();
   };
   levelsSel.root.addEventListener('change', applyFilters);

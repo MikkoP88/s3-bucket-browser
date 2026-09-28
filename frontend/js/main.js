@@ -3596,12 +3596,12 @@ async function openSettings() {
     // Reset to defaults: wipe every persisted shell knob and reload.
     // Favorites are data, not settings — they survive. The Go-side
     // preferences (logsettings.json, appsettings.json) reset through
-    // their bindings — 0 means "default" per field.
+    // their bindings — file logging to off (its default), tuning 0s.
     reset: () => {
       const favs = localStorage.getItem('s3b-favs');
       localStorage.clear();
       if (favs !== null) localStorage.setItem('s3b-favs', favs);
-      try { api.SetLogSettings('default', '', [], [], []); } catch { /* best effort */ }
+      try { api.SetLogSettings('off', '', [], [], []); } catch { /* best effort */ }
       try { api.SetTuning(0, 0, 0, 0, 0, 0); } catch { /* best effort */ }
       window.location.reload();
     },
