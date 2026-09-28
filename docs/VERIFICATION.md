@@ -54,6 +54,7 @@ Prerequisites (scripts/e2e-cross.sh header starts all of them)
   SFTP    :2222   e2e / e2epass   atmoz/sftp        (joins when port answers)
   FTP     :2121   e2e / e2epass   fauria/vsftpd     (joins when port answers)
   WebDAV  :7070   e2e / e2epass   rclone serve webdav (joins when port answers)
+  Vault   :8200   root token s3b-e2e-root-token  hashicorp/vault (dev mode, joins when port answers)
 
 Faces
   CLI   — s3b built with -tags s3b_headless, driven as a process; exit
@@ -95,6 +96,10 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **`source add` UPDATE semantics + secret masking** | **S3 (dead endpoint)** | re-adding an EXISTING source name must update in place (one row, new endpoint live immediately — never a silent duplicate) or refuse outright; the secret never appears in `source list`; the store stays removable afterwards | ✅ CLI-S3-41 | — | Win 11 x64 |
 | **Re-import + name collision: the store never forks** | **all** | the same encrypted export imported TWICE into one config: zero duplicates (source-ID collision) and the imported entry dials the live endpoint; then a pre-existing owner of the incoming name + a third import: exactly one row per name, nothing else lost, everything still removable | ✅ CLI-X-12 | — | Win 11 x64 |
 | **Credential file import over the bridge** | **S3 (MinIO) via INI** | an AWS-style credentials INI: ParseCredentialFile finds the profile (secret detected, never returned); TestCredentialDraft dials the live endpoint; ImportCredentials upserts it as a source (ListSources proves it by name); RemoveSource drops it — the whole import ladder runs through the GUI's own bindings | — | ✅ GUI-41 | Win 11 x64 |
+| **Credential import from a REAL KMS: Vault** | **S3 (MinIO) via HashiCorp Vault** | a live Vault dev-mode container (KV v2), not a stub: the row seeds a run-scoped bucket-scoped secret through Vault's own HTTP API, KmsFetch(vault) returns the candidate with the secret stashed Go-side (origin Vault; neither the secret nor the Vault token appears in the candidate metadata), ?version=1 pins the rotated secret's FIRST version, TestCredentialDraft dials the live MinIO through the stashed secret, ImportCredentials lands exactly one bucket-scoped source (ListSources proves it by name), and RemoveSource cleans up; the row wipes its Vault secrets afterwards | — | ✅ GUI-87 | Win 11 x64 |
+| **KMS import failure contract over the bridge** | **HashiCorp Vault** | a wrong Vault token, an unknown service name, and a missing secret path all come back over the bridge AS ERRORS (403 / unknown secrets service / not found) — never as an empty candidate list, which the dialog would render as "nothing to import" | — | ✅ GUI-88 | Win 11 x64 |
+| **Non-S3 credential from a REAL KMS: SFTP via Vault** | **SFTP via HashiCorp Vault** | a type-less secret (host + user, no type field) is recognized as SFTP with the password kept Go-side, TestCredentialDraft lists the live sftp root, ImportCredentials lands a working remote source, and RemoveSource cleans up — the import ladder is engine-uniform, S3 is just the common case | — | ✅ GUI-89 | Win 11 x64 |
+| **Go live-e2e: the import ladder against a REAL Vault** | **S3 (MinIO) + SFTP via HashiCorp Vault** | env-gated go test (S3B_E2E_* + S3B_E2E_VAULT_*, seeded by the e2e-cross.sh header): Flows A/B cover the INI file and a custom-HTTP secrets endpoint; Flows C/D hit the real Vault KV-v2 wire — an account-wide S3 candidate with version pinning and the 403 / missing-path / unknown-service failure contract, plus a type-less SFTP secret imported as a live remote source; the per-bucket expansion contract is asserted (every visible bucket becomes its own bucket-named source, the wanted bucket among them, live-listed) | ✅ Go test: pkg/api TestImportCredentialsE2E File / KmsHTTP / Vault / VaultSftp | — (no import command exists on the CLI — the dialog is the bridge face; the Go e2e drives the exact API the bridge calls) | Win 11 x64 |
 | Local filesystem bindings: list / preview / remove | local disk | ListLocal reports entries with correct dir flags; LocalDeletePreview counts exactly what a delete would take (1 file, exact bytes); LocalRemove actually deletes — proven from OUTSIDE the app (Node fs), never from the app's own view | — | ✅ GUI-44 | Win 11 x64 |
 
 ### Buckets & configuration
@@ -264,7 +269,7 @@ switching; the same S3 source stays connected through it).
 A row records **SKIP** only for conditions outside s3b's control, and the
 reason is written into the verification report:
 
-- **Engine down** — a container (SFTP/FTP/WebDAV) is not reachable; the
+- **Engine down** — a container (SFTP/FTP/WebDAV/Vault) is not reachable; the
   cross-engine rows SKIP instead of failing.
 - **Provider API gap** — the engine answers but rejects a valid request.
   The one live example: this MinIO build returns `400 InvalidArgument` for
@@ -307,29 +312,56 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot covers the **round 5
-critical-actions closure** (27 Sep 2026, `node scripts/verify.mjs` on
-Windows Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): the
-cross-source transfer engine — the one code path that moves bytes
-between two different sources (`TransferCross`) — plus the S3-versioned
-purge ladder and the object-editor race, growing the matrix from 158 to
-166 rows. Release evidence for v1.1.0-beta.20 stays at
+Replaced on every run — this snapshot covers the **round 7 real-KMS
+import closure** (28 Sep 2026, `node scripts/verify.mjs` on Windows
+Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): the Import S3
+Credential ladder verified against a REAL HashiCorp Vault dev-mode
+container — GUI-87/88/89 over the bridge plus the Go live-e2e Flows
+C/D — taking the matrix to 172 rows (round 6's deferred full-matrix
+re-run is folded into the same numbers). Release evidence for
+v1.1.0-beta.20 stays at
 [`docs/verification/v1.1.0-beta.20/windows-x64/REPORT.md`](verification/v1.1.0-beta.20/windows-x64/REPORT.md).
 
 ```
-full matrix (166 rows):
-  159 PASS · 7 SKIP · 0 FAIL — 2585 s
+full matrix (172 rows):
+  165 PASS · 7 SKIP · 0 FAIL — 2692 s
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
   SWEEP-VIS-01  gui-visual   669/669 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
   standalone units, same tree:
-  --only gui --row GUI-80,GUI-81    6 PASS · 0 SKIP · 0 FAIL —   61 s
+  --only gui                        87 PASS · 2 SKIP · 0 FAIL — 1369 s
+  go test ./pkg/api -run TestImportCredentialsE2E   4/4 legs PASS (live Vault + MinIO)
 ```
 
 The rounds in brief:
 
+- Round 7 closed the Import S3 Credential ladder's last unverified
+  face: a REAL KMS. A HashiCorp Vault dev-mode container (KV v2, the
+  exact wire protocol kmsVault speaks) joined the fixture set, and
+  three bridge rows plus two Go e2e flows now run against it live:
+  GUI-87 walks the whole happy path (seed a run-scoped secret over
+  Vault's HTTP API → KmsFetch with the secret stashed Go-side and
+  neither secret nor token in the candidate metadata → ?version=1
+  pinning → TestCredentialDraft against live MinIO → ImportCredentials
+  → RemoveSource), GUI-88 pins the failure contract (wrong token /
+  unknown service / missing path must REJECT over the bridge — never
+  resolve as an empty list the dialog would render as "nothing to
+  import"), and GUI-89 proves a type-less host+user secret is
+  recognized as SFTP and imports as a working remote source; Flows C/D
+  (TestImportCredentialsE2EVault/VaultSftp, env-gated) cover the same
+  wire from the Go side. Live testing caught two things a stub could
+  not: the older e2e flows' stale assertion (the per-bucket expansion
+  feature postdates it — assertImportedExpansion now pins that every
+  visible bucket becomes its own bucket-named source) and GUI-87's
+  cross-row collision (its first form borrowed the shared fixture
+  bucket, whose source an earlier row had already saved — same
+  endpoint + key + bucket — so the import correctly UPDATED instead
+  of importing; the row now owns a dedicated verify-kms-<run> bucket).
+  There is no CLI import command to cover: the import dialog is
+  bridge/GUI-only, and the Go e2e drives the exact API the bridge
+  calls.
 - Round 6 pinned the canonical path hierarchy `<source>://<content>`
   across every source type: a bucket-scoped S3 source's name already
   IS the bucket, so the bucket never repeats after `://` (the
@@ -344,7 +376,7 @@ The rounds in brief:
   account-wide source, because a scoped source can no longer reach the
   bucket list at all. Landed green through the targeted batteries
   (s3 43 PASS · 5 SKIP · 0 FAIL — 330 s; gui 84 PASS · 2 SKIP · 0
-  FAIL — 1300 s); the full-matrix re-run lands with the next release
+  FAIL — 1300 s); the full-matrix re-run landed with the round-7
   snapshot.
 - Round 5 pinned the cross-source engine (GUI-80..84) and the
   S3/remote destroy-interruption cells (CLI-RES-08..10): a wire dying

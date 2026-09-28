@@ -16,6 +16,31 @@
 #   docker run -d -p 7070:80 rclone/rclone:latest \
 #     serve webdav --addr :80 --user e2e --pass e2epass /srv)
 #
+# Vault, the REAL KMS service for the import-credentials e2e
+# (pkg/api/importcreds_e2e_test.go Flows C/D and the verify.mjs GUI-87/88/89
+# rows — all env-gated, skip cleanly without it):
+#   docker run -d --name s3b-e2e-vault -p 8200:8200 \
+#     -e VAULT_DEV_ROOT_TOKEN_ID=s3b-e2e-root-token hashicorp/vault:latest
+#   export S3B_E2E_VAULT_ADDR=http://127.0.0.1:8200
+#   export S3B_E2E_VAULT_TOKEN=s3b-e2e-root-token
+#   docker exec -e VAULT_TOKEN=s3b-e2e-root-token -e VAULT_ADDR=http://127.0.0.1:8200 \
+#     s3b-e2e-vault vault kv put secret/s3b/e2e/s3 \
+#     name=vault-e2e-s3 type=s3 endpoint=http://127.0.0.1:9000 region=us-east-1 \
+#     aws_access_key_id=minioadmin aws_secret_access_key=minioadmin
+#   docker exec -e VAULT_TOKEN=s3b-e2e-root-token -e VAULT_ADDR=http://127.0.0.1:8200 \
+#     s3b-e2e-vault vault kv put secret/s3b/e2e/sftp \
+#     name=vault-e2e-sftp host=127.0.0.1 port=2222 user=e2e password=e2epass
+#   docker exec -e VAULT_TOKEN=s3b-e2e-root-token -e VAULT_ADDR=http://127.0.0.1:8200 \
+#     s3b-e2e-vault vault kv put secret/s3b/e2e/rotated \
+#     name=vault-e2e-rotated-v1 type=s3 endpoint=http://127.0.0.1:9000 \
+#     aws_access_key_id=minioadmin aws_secret_access_key=minioadmin
+#   docker exec -e VAULT_TOKEN=s3b-e2e-root-token -e VAULT_ADDR=http://127.0.0.1:8200 \
+#     s3b-e2e-vault vault kv put secret/s3b/e2e/rotated \
+#     name=vault-e2e-rotated-v2 type=s3 endpoint=http://127.0.0.1:9000 \
+#     aws_access_key_id=minioadmin aws_secret_access_key=minioadmin
+#   (dev mode mounts secret/ as KV v2; the GUI rows seed their own
+#   run-scoped secrets through the HTTP API — only the Go e2e needs these)
+#
 # Hetzner (env-gated — never in CI by default):
 #   S3B_HETZNER_ACCESS_KEY / S3B_HETZNER_SECRET_KEY
 #   S3B_HETZNER_ENDPOINT   (default https://fsn1.yourobjectstorage.com)

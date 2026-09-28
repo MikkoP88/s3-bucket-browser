@@ -143,6 +143,8 @@ const E2E_PASS = process.env.S3B_E2E_PASS || 'e2epass';
 const SFTP_PORT = +(process.env.S3B_SFTP_PORT || 2222);
 const FTP_PORT = +(process.env.S3B_FTP_PORT || 2121);
 const WEBDAV_PORT = +(process.env.S3B_WEBDAV_PORT || 7070);
+const VAULT_PORT = +(process.env.S3B_VAULT_PORT || 8200);        // Vault dev-mode container
+const VAULT_TOKEN = process.env.S3B_VAULT_TOKEN || 's3b-e2e-root-token';
 
 const RUNID = `ver${Date.now().toString(36)}`;
 const BUCKET = `verify-${Date.now().toString(36)}`;      // lowercase — S3-safe
@@ -6778,6 +6780,117 @@ async function guiBattery() {
     }
     await shot('86-remote-format');
     return 'remote sources render NAME://dir — the uniform hierarchy';
+  });
+
+  // ---- Import S3 Credential against a REAL KMS service (live Vault) ----
+  // Shared helper: seed a run-scoped KV-v2 secret through Vault's own HTTP
+  // API and wipe it afterwards — the rows are self-sufficient against any
+  // dev-mode Vault holding the known token (fixture in e2e-cross.sh header).
+  const VAULT = `http://127.0.0.1:${VAULT_PORT}`;
+  const vaultPut = (path, data) => fetch(`${VAULT}/v1/secret/data/${path}`, {
+    method: 'PUT',
+    headers: { 'X-Vault-Token': VAULT_TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data }),
+  });
+  const vaultWipe = (path) => fetch(`${VAULT}/v1/secret/metadata/${path}`, {
+    method: 'DELETE', headers: { 'X-Vault-Token': VAULT_TOKEN },
+  }).catch(() => {});
+
+  await verify({ id: 'GUI-87', area: 'sources', action: 'Credential import from a REAL KMS: Vault over the bridge', ds: 'S3 (MinIO) via HashiCorp Vault', scenario: 'a live Vault dev-mode container (KV v2): the row seeds a run-scoped bucket-scoped secret over the Vault HTTP API, KmsFetch(vault) returns the candidate with its secret stashed Go-side (origin Vault, no secret in the metadata), ?version=1 pins the rotated secret\'s FIRST version, TestCredentialDraft dials the live MinIO through the stashed secret, ImportCredentials lands exactly one bucket-scoped source in the GUI store and RemoveSource cleans up', face: 'GUI' }, async () => {
+    if (!(await portOpen(VAULT_PORT))) return skip(`Vault :${VAULT_PORT} not reachable — docker run -d -p 8200:8200 -e VAULT_DEV_ROOT_TOKEN_ID=${VAULT_TOKEN} hashicorp/vault:latest`);
+    const NAME = `vault-gui-${RUNID}`;
+    const PATH_S3 = `s3b/e2e/s3-${RUNID}`;
+    const PATH_ROT = `s3b/e2e/rotated-${RUNID}`;
+    // bucket-scoped on a DEDICATED bucket this row creates: the import
+    // must land exactly ONE NEW source (the account-wide form expands to
+    // one source per visible bucket) — and the SHARED fixture bucket
+    // would upsert-match a source an earlier row already saved (same
+    // endpoint + key + bucket), landing an UPDATE instead of an import
+    const KB = `verify-kms-${RUNID}`;
+    const mb = await cli(['--profile', 'verifys3', 'mb', `s3://${KB}`]);
+    need(mb.code === 0, `mb ${KB}: ${mb.out}${mb.err}`);
+    const seed = await vaultPut(PATH_S3, {
+      name: NAME, type: 's3', endpoint: 'http://127.0.0.1:9000', region: 'us-east-1', bucket: KB,
+      aws_access_key_id: 'minioadmin', aws_secret_access_key: 'minioadmin',
+    });
+    need(seed.ok, `seeding the Vault secret failed: HTTP ${seed.status}`);
+    // two versions of one secret: rotation must not hide history
+    await vaultPut(PATH_ROT, { name: `${NAME}-r1`, type: 's3', endpoint: 'http://127.0.0.1:9000', aws_access_key_id: 'minioadmin', aws_secret_access_key: 'minioadmin' });
+    await vaultPut(PATH_ROT, { name: `${NAME}-r2`, type: 's3', endpoint: 'http://127.0.0.1:9000', aws_access_key_id: 'minioadmin', aws_secret_access_key: 'minioadmin' });
+    try {
+      const cands = await call('KmsFetch', 'vault', { url: VAULT, token: VAULT_TOKEN, mount: 'secret', path: PATH_S3 });
+      need(Array.isArray(cands) && cands.length === 1, `KmsFetch(vault) returned: ${JSON.stringify(cands)?.slice(0, 160)}`);
+      const cand = cands[0];
+      need(cand?.name === NAME && cand?.type === 's3' && (cand?.hasSecret ?? cand?.has_secret) === true, `candidate: ${JSON.stringify(cand)?.slice(0, 160)}`);
+      need(cand?.origin === 'Vault', `candidate origin: ${cand?.origin}`);
+      const meta = JSON.stringify(cands);
+      need(!meta.includes('minioadmin') && !meta.includes(VAULT_TOKEN), 'candidate metadata leaked the secret or the Vault token');
+      // version pin over the bridge: ?version=1 = the FIRST payload
+      const old = await call('KmsFetch', 'vault', { url: VAULT, token: VAULT_TOKEN, path: PATH_ROT, version: '1' });
+      need(Array.isArray(old) && old[0]?.name === `${NAME}-r1`, `version=1 fetch: ${JSON.stringify(old)?.slice(0, 120)}`);
+      const tr = await call('TestCredentialDraft', cand.id);
+      need(tr?.ok === true, `TestCredentialDraft did not verify against live MinIO: ${JSON.stringify(tr)?.slice(0, 160)}`);
+      const res = await call('ImportCredentials', [cand.id]);
+      const imp = res?.imported || [];
+      need(imp.length === 1 && imp[0] === NAME, `ImportCredentials: ${JSON.stringify(res)?.slice(0, 160)}`);
+      const srcs = (await call('ListSources')) || [];
+      const hit = srcs.find((x) => x.name === NAME);
+      need(hit, `the imported source is not visible through ListSources: ${JSON.stringify(srcs.map((x) => x.name))}`);
+      await call('RemoveSource', hit.id || hit.name);
+      const after = (await call('ListSources')) || [];
+      need(!after.some((x) => x.name === NAME), 'the imported source survived RemoveSource');
+      return `fetched from live Vault, version-pinned, live-tested, imported "${NAME}", removed cleanly`;
+    } finally {
+      await vaultWipe(PATH_S3);
+      await vaultWipe(PATH_ROT);
+      await cli(['--profile', 'verifys3', 'rb', `s3://${KB}`]).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'GUI-88', area: 'sources', action: 'KMS import failure contract over the bridge', ds: 'HashiCorp Vault', scenario: 'a wrong Vault token and an unknown service name must come back over the bridge AS ERRORS (403 / unknown secrets service) — never as an empty candidate list, which the dialog would render as "nothing to import"; a missing secret path errors too', face: 'GUI' }, async () => {
+    if (!(await portOpen(VAULT_PORT))) return skip(`Vault :${VAULT_PORT} not reachable — docker run -d -p 8200:8200 -e VAULT_DEV_ROOT_TOKEN_ID=${VAULT_TOKEN} hashicorp/vault:latest`);
+    const rejects = async (fn, re, what) => {
+      try { await fn(); } catch (e) {
+        const msg = String(e?.message || e);
+        need(re.test(msg), `${what}: rejected with the wrong error: ${msg.slice(0, 140)}`);
+        return;
+      }
+      need(false, `${what}: the bridge call RESOLVED instead of rejecting — an empty candidate list would read as "nothing to import"`);
+    };
+    await rejects(() => call('KmsFetch', 'vault', { url: VAULT, token: 'wrong-token', path: 's3b/e2e/absent-anyway' }), /403/, 'a wrong Vault token');
+    await rejects(() => call('KmsFetch', 'nosuchservice', { url: VAULT, token: VAULT_TOKEN }), /unknown secrets service/, 'an unknown service name');
+    await rejects(() => call('KmsFetch', 'vault', { url: VAULT, token: VAULT_TOKEN, path: 's3b/e2e/absent' }), /404|not found|empty/, 'a missing secret path');
+    return '403 / unknown-service / missing-path all reject over the bridge';
+  });
+
+  await verify({ id: 'GUI-89', area: 'sources', action: 'Non-S3 credential from a REAL KMS: SFTP via Vault', ds: 'SFTP via HashiCorp Vault', scenario: 'the row seeds a type-less secret (host+user only, no type field) — the fetcher must recognize it as SFTP, keep the password Go-side, TestCredentialDraft must list the live sftp root, and the import must land a working remote source; RemoveSource cleans up', face: 'GUI' }, async () => {
+    if (!(await portOpen(VAULT_PORT))) return skip(`Vault :${VAULT_PORT} not reachable`);
+    if (!(await portOpen(SFTP_PORT))) return skip(`SFTP :${SFTP_PORT} not reachable`);
+    const NAME = `vault-sftp-${RUNID}`;
+    const PATH = `s3b/e2e/sftp-${RUNID}`;
+    const seed = await vaultPut(PATH, { name: NAME, host: '127.0.0.1', port: String(SFTP_PORT), user: E2E_USER, password: E2E_PASS });
+    need(seed.ok, `seeding the Vault sftp secret failed: HTTP ${seed.status}`);
+    try {
+      const cands = await call('KmsFetch', 'vault', { url: VAULT, token: VAULT_TOKEN, path: PATH });
+      need(Array.isArray(cands) && cands.length === 1, `KmsFetch(vault, sftp) returned: ${JSON.stringify(cands)?.slice(0, 160)}`);
+      const cand = cands[0];
+      need(cand?.type === 'sftp' && (cand?.hasSecret ?? cand?.has_secret) === true && cand?.username === E2E_USER, `candidate: ${JSON.stringify(cand)?.slice(0, 160)}`);
+      need(!JSON.stringify(cands).includes(E2E_PASS), 'candidate metadata leaked the sftp password');
+      const tr = await call('TestCredentialDraft', cand.id);
+      need(tr?.ok === true, `TestCredentialDraft(sftp) did not list the live root: ${JSON.stringify(tr)?.slice(0, 160)}`);
+      const res = await call('ImportCredentials', [cand.id]);
+      const imp = res?.imported || [];
+      need(imp.length === 1 && imp[0] === NAME, `ImportCredentials: ${JSON.stringify(res)?.slice(0, 160)}`);
+      const srcs = (await call('ListSources')) || [];
+      const hit = srcs.find((x) => x.name === NAME);
+      need(hit, `the imported sftp source is not visible through ListSources: ${JSON.stringify(srcs.map((x) => x.name))}`);
+      await call('RemoveSource', hit.id || hit.name);
+      const after = (await call('ListSources')) || [];
+      need(!after.some((x) => x.name === NAME), 'the sftp source survived RemoveSource');
+      return `type-less secret recognized as sftp, live-tested, imported \"${NAME}\", removed cleanly`;
+    } finally {
+      await vaultWipe(PATH);
+    }
   });
 
   await verify({ id: 'GUI-58', area: 'sources', action: 'RemoveSource: the store forgets, the data survives', ds: 'FTP', scenario: 'removing a saved source must delete exactly the STORE entry — the engine data it pointed at stays intact, witnessed through the CLI face on its own connection; the GUI keeps browsing afterwards; where the FTP engine is absent the row records the gap', face: 'GUI' }, async () => {
