@@ -58,7 +58,15 @@ type Settings struct {
 	Levels  []string `json:"logFileLevels,omitempty"`
 	Scopes  []string `json:"logFileScopes,omitempty"`
 	Sources []string `json:"logFileSources,omitempty"`
+	Ver     int      `json:"logFileVer,omitempty"`
 }
+
+// settingsVer is the generation stamp every SaveSettings writes. Files
+// without one (Ver 0) predate the off default: they were written while
+// "app settings folder" was what a fresh install logged to, so their plain
+// "default" mode is that old implicit default rather than a deliberate
+// choice — LoadSettings migrates those to off exactly once.
+const settingsVer = 2
 
 func settingsPath() (string, error) {
 	dir, err := profile.DefaultDir()
@@ -71,6 +79,11 @@ func settingsPath() (string, error) {
 // LoadSettings reads the preference; the zero value (mode "" = off) is
 // returned when the file is missing or unreadable — a torn settings file
 // must never silently re-enable logging the user never asked for.
+// An unstamped legacy file is migrated in the same read: "default" (the
+// pre-off-default era's implicit value) becomes off, deliberate modes
+// (off, custom) survive, and the stamped result is persisted so the
+// migration runs once. A save that fails on an unwritable dir just
+// re-migrates on the next load — the in-memory value is already correct.
 func LoadSettings() Settings {
 	p, err := settingsPath()
 	if err != nil {
@@ -81,10 +94,19 @@ func LoadSettings() Settings {
 	if err != nil || json.Unmarshal(b, &s) != nil {
 		return Settings{}
 	}
+	if s.Ver < settingsVer {
+		if s.Mode == "" || s.Mode == "default" {
+			s.Mode = "off"
+		}
+		s.Ver = settingsVer
+		_ = SaveSettings(s)
+	}
 	return s
 }
 
-// SaveSettings persists the preference (0600, like profiles.json).
+// SaveSettings persists the preference (0600, like profiles.json) and
+// stamps it with the current generation so LoadSettings can tell a
+// deliberate "default" from the pre-migration implicit one.
 func SaveSettings(s Settings) error {
 	p, err := settingsPath()
 	if err != nil {
@@ -93,6 +115,7 @@ func SaveSettings(s Settings) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
+	s.Ver = settingsVer
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err

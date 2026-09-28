@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -177,6 +178,53 @@ func TestSettingsOffAndCustom(t *testing.T) {
 	Append("info", "test", "", "torn write must not land")
 	if _, err := os.Stat(filepath.Join(cfg, "events.jsonl")); !os.IsNotExist(err) {
 		t.Fatal("torn settings still wrote the default log")
+	}
+}
+
+func TestLegacyDefaultMigratesToOff(t *testing.T) {
+	cfg := eventEnv(t)
+
+	// an unstamped file from before off became the default: plain default
+	// was the implicit value back then, so it migrates to off — once
+	legacy := `{"logFileMode":"default","logFileDir":""}`
+	if err := os.WriteFile(filepath.Join(cfg, "logsettings.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := LoadSettings(); s.Mode != "off" || s.Ver != settingsVer {
+		t.Fatalf("legacy default not migrated: %+v", s)
+	}
+	if FileLoggingOn() {
+		t.Fatal("legacy default still enabled file logging")
+	}
+	// the decision persisted — the file on disk is stamped off
+	b, err := os.ReadFile(filepath.Join(cfg, "logsettings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"logFileMode": "off"`) || !strings.Contains(string(b), `"logFileVer": 2`) {
+		t.Fatalf("migration not persisted: %s", b)
+	}
+
+	// a legacy custom folder is a deliberate choice — it survives stamped
+	custom := t.TempDir()
+	customJSON := `{"logFileMode":"custom","logFileDir":` + strconv.Quote(custom) + `}`
+	if err := os.WriteFile(filepath.Join(cfg, "logsettings.json"), []byte(customJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := LoadSettings(); s.Mode != "custom" || s.Dir != custom {
+		t.Fatalf("legacy custom disturbed by migration: %+v", s)
+	}
+
+	// a stamped default is a deliberate post-migration choice — it stays
+	if err := os.WriteFile(filepath.Join(cfg, "logsettings.json"),
+		[]byte(`{"logFileMode":"default","logFileDir":"","logFileVer":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := LoadSettings(); s.Mode != "default" {
+		t.Fatalf("stamped default migrated anyway: %+v", s)
+	}
+	if !FileLoggingOn() {
+		t.Fatal("stamped default no longer enabled file logging")
 	}
 }
 
