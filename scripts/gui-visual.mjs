@@ -1176,7 +1176,9 @@ await step('objects-view', async () => {
 await step('filter', async () => {
   await page.fill('#filter', 'read');
   await sleep(120);
-  await ok('filter narrows to readme.md', (await rowKeys()).join(',') === 'readme.md');
+  // the global filter spans every visible column: "read" hits the
+  // readme.md name AND budget-2026.xlsx's Type cell ("Excel spreadsheet")
+  await ok('filter narrows to the read hits (name + Type column)', (await rowKeys()).sort().join(',') === 'budget-2026.xlsx,readme.md');
   await shot('filter');
   await page.fill('#filter', '');
   await sleep(120);

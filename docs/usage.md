@@ -128,7 +128,10 @@ directory compare) with S3 and the local pane.
 - **Grid** — Windows-Explorer selection: click, Ctrl+click, Shift+click,
   Ctrl+A (all), Ctrl+I (invert), marquee drag-select, type-to-jump. The
   funnel row under the header filters per column; right-click the header
-  to pick which columns show; Ctrl+F focuses the quick filter.
+  to pick which columns show; Ctrl+F focuses the quick filter. The Type
+  column names common file types ("PNG image", "Text document") in the
+  UI language — anything else shows as an extension file ("DAT file") —
+  and is on by default; Storage class is opt-in via the header menu.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and type a path like `s3://bucket/folder/` — or
   `source://path` for any source — to jump directly. Back / forward /

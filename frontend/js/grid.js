@@ -4,7 +4,7 @@
 // catalog below lists every possible column, setColumns() picks the visible
 // ones (Settings exposes them; "name" is always visible).
 import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
-import { t } from './i18n.js';
+import { t, has } from './i18n.js';
 
 const ROW_H = 28;
 const OVERSCAN = 8;
@@ -25,22 +25,31 @@ function acceptedMimes(kind) {
 // column (icon + name + version/marker badges) and is always visible.
 export const COLUMNS = [
   { id: 'name', labelKey: 'col.name', flex: true, minW: 200 },
-  { id: 'type', labelKey: 'col.type', w: 110 },
+  { id: 'type', labelKey: 'col.type', w: 150 },
   { id: 'size', labelKey: 'col.size', w: 110, num: true },
   { id: 'lastModified', labelKey: 'col.date', w: 160 },
   { id: 'storageClass', labelKey: 'col.class', w: 120 },
   { id: 'etag', labelKey: 'col.etag', w: 190 },
 ];
 
-// DEFAULT_COLS is the out-of-box visible set (the pre-settings layout).
-export const DEFAULT_COLS = ['name', 'size', 'lastModified', 'storageClass'];
+// DEFAULT_COLS is the out-of-box visible set (the pre-settings layout):
+// Type is on by default; Storage class and ETag are opt-in via the
+// header menu. A saved choice (s3b-cols in localStorage) always wins.
+export const DEFAULT_COLS = ['name', 'type', 'size', 'lastModified'];
 
-// typeOf renders the Type column: "Folder" / "File" / the uppercase
-// extension ("JPG", "PDF").
+// typeOf renders the Type column Windows-Explorer style: "Folder", the
+// friendly name of a common extension ("PNG image", "Text document") in
+// the UI language, or "<EXT> file" for the long tail. It derives
+// everything from the name alone, so every engine — S3, local, SFTP,
+// FTP, WebDAV — shows the same column for the same file name.
 function typeOf(r) {
   if (r.isDir) return t('type.folder');
   const i = String(r.name || '').lastIndexOf('.');
-  if (i > 0 && i < r.name.length - 1) return r.name.slice(i + 1).toUpperCase();
+  if (i > 0 && i < r.name.length - 1) {
+    const ext = r.name.slice(i + 1).toLowerCase();
+    if (has(`type.${ext}`)) return t(`type.${ext}`);
+    return t('type.extFile', { ext: ext.toUpperCase() });
+  }
   return t('type.file');
 }
 
@@ -265,7 +274,8 @@ export class Grid {
     rows = [...rows].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1; // folders first, always
       let va = a[key], vb = b[key];
-      if (key === 'size' || key === 'lastModified') {
+      if (key === 'type') { va = typeOf(a); vb = typeOf(b); }
+      else if (key === 'size' || key === 'lastModified') {
         va = va || 0; vb = vb || 0;
         return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
       }
