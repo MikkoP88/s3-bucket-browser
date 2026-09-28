@@ -62,11 +62,15 @@ type Settings struct {
 }
 
 // settingsVer is the generation stamp every SaveSettings writes. Files
-// without one (Ver 0) predate the off default: they were written while
-// "app settings folder" was what a fresh install logged to, so their plain
-// "default" mode is that old implicit default rather than a deliberate
-// choice — LoadSettings migrates those to off exactly once.
-const settingsVer = 2
+// below the current generation are migrated on load — their "default"
+// mode becomes off — because the product's standing rule is that file
+// logging comes up OFF unless the choice was made on a current build:
+//   - v0 (no stamp): written while "app settings folder" was the implicit
+//     default, so a plain "default" is that old default, not a choice;
+//   - v2: written after off became the default — its "default" was a
+//     deliberate pick from that era, re-decided to off by v3.
+// Deliberate off and custom-folder modes always survive, re-stamped.
+const settingsVer = 3
 
 func settingsPath() (string, error) {
 	dir, err := profile.DefaultDir()
@@ -79,11 +83,11 @@ func settingsPath() (string, error) {
 // LoadSettings reads the preference; the zero value (mode "" = off) is
 // returned when the file is missing or unreadable — a torn settings file
 // must never silently re-enable logging the user never asked for.
-// An unstamped legacy file is migrated in the same read: "default" (the
-// pre-off-default era's implicit value) becomes off, deliberate modes
-// (off, custom) survive, and the stamped result is persisted so the
-// migration runs once. A save that fails on an unwritable dir just
-// re-migrates on the next load — the in-memory value is already correct.
+// A file from an older generation is migrated in the same read: its
+// "default" mode becomes off, deliberate modes (off, custom) survive, and
+// the stamped result is persisted so the migration runs once. A save that
+// fails on an unwritable dir just re-migrates on the next load — the
+// in-memory value is already correct.
 func LoadSettings() Settings {
 	p, err := settingsPath()
 	if err != nil {

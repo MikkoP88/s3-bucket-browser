@@ -191,18 +191,31 @@ func TestLegacyDefaultMigratesToOff(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s := LoadSettings(); s.Mode != "off" || s.Ver != settingsVer {
-		t.Fatalf("legacy default not migrated: %+v", s)
+		t.Fatalf("unstamped default not migrated: %+v", s)
 	}
 	if FileLoggingOn() {
-		t.Fatal("legacy default still enabled file logging")
+		t.Fatal("unstamped default still enabled file logging")
 	}
 	// the decision persisted — the file on disk is stamped off
 	b, err := os.ReadFile(filepath.Join(cfg, "logsettings.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"logFileMode": "off"`) || !strings.Contains(string(b), `"logFileVer": 2`) {
+	if !strings.Contains(string(b), `"logFileMode": "off"`) || !strings.Contains(string(b), `"logFileVer": 3`) {
 		t.Fatalf("migration not persisted: %s", b)
+	}
+
+	// a v2-stamped default — a deliberate pick from the previous
+	// generation — is re-decided to off by the current one
+	if err := os.WriteFile(filepath.Join(cfg, "logsettings.json"),
+		[]byte(`{"logFileMode":"default","logFileDir":"","logFileVer":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := LoadSettings(); s.Mode != "off" || s.Ver != settingsVer {
+		t.Fatalf("v2 default not re-migrated: %+v", s)
+	}
+	if FileLoggingOn() {
+		t.Fatal("v2 default still enabled file logging")
 	}
 
 	// a legacy custom folder is a deliberate choice — it survives stamped
@@ -215,16 +228,17 @@ func TestLegacyDefaultMigratesToOff(t *testing.T) {
 		t.Fatalf("legacy custom disturbed by migration: %+v", s)
 	}
 
-	// a stamped default is a deliberate post-migration choice — it stays
+	// a current-generation default is a deliberate post-migration choice
+	// — it stays
 	if err := os.WriteFile(filepath.Join(cfg, "logsettings.json"),
-		[]byte(`{"logFileMode":"default","logFileDir":"","logFileVer":2}`), 0o600); err != nil {
+		[]byte(`{"logFileMode":"default","logFileDir":"","logFileVer":3}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if s := LoadSettings(); s.Mode != "default" {
-		t.Fatalf("stamped default migrated anyway: %+v", s)
+		t.Fatalf("current-generation default migrated anyway: %+v", s)
 	}
 	if !FileLoggingOn() {
-		t.Fatal("stamped default no longer enabled file logging")
+		t.Fatal("current-generation default no longer enabled file logging")
 	}
 }
 
