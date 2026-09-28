@@ -261,6 +261,32 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   border: 1px solid var(--accent); border-radius: 3px; padding: 1px 4px;
 }
 .gh-cfilter:focus { outline: none; }
+/* Column resize handle: a full-height grab zone hugging each header
+   cell's right edge. Hover (or an active drag) lights the boundary up;
+   the body class pins the col-resize cursor for the whole drag. */
+.grid-head { position: relative; } /* anchors the drag indicator */
+.gh { position: relative; }
+.gh span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gh-resize {
+  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
+  cursor: col-resize; z-index: 2; touch-action: none;
+}
+.gh-resize::after {
+  content: ''; position: absolute; top: 4px; bottom: 4px; right: 3px; width: 2px;
+  border-radius: 1px; background: transparent;
+}
+.gh-resize:hover::after, .gh-resize.dragging::after { background: var(--accent); }
+body.col-resize-active, body.col-resize-active * { cursor: col-resize !important; user-select: none; }
+body.col-resize-active .gh:hover .gh-filter { display: none; } /* no funnel flicker mid-drag */
+/* Drag-to-reorder: the dragged header dims and a lit 2px bar marks the
+   insertion point; the grabbing cursor spans the drag. */
+.gh.drag-src { opacity: .45; }
+.gh-insert {
+  position: absolute; top: 0; bottom: 0; width: 2px; z-index: 3;
+  background: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft);
+  pointer-events: none;
+}
+body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 
 .grid-body { flex: 1; overflow: auto; position: relative; outline: none; }
 .grid-canvas { position: relative; width: 100%; }

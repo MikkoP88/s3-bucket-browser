@@ -136,7 +136,9 @@ directory compare) with S3 and the local pane.
   modified. Opt-in columns: Date created (bucket views, WebDAV
   creationdate, Windows local birth times), Mode (local and SFTP
   permission bits), Storage class and ETag — via the header menu or
-  Settings.
+  Settings. Columns resize by dragging a header edge (double-click
+  resets) and reorder by dragging the header itself; widths and order
+  persist per pane.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and type a path like `s3://bucket/folder/` — or
   `source://path` for any source — to jump directly. Back / forward /

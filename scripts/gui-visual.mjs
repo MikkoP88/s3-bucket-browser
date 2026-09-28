@@ -1412,7 +1412,10 @@ await step('header-column-menu', async () => {
   await ctxItem(/etag/i); // default off — toggling adds the column
   await ok('etag column appears', evalPage(() => Array.from(document.querySelectorAll('#grid-head .gh span'))
     .some((s) => /etag/i.test(s.textContent))));
-  await ok('column choice persisted', evalPage(() => (localStorage.getItem('s3b-cols') || '').split(',').includes('etag')));
+  await ok('column choice persisted', evalPage(() => {
+    try { return (JSON.parse(localStorage.getItem('s3b-cols') || '{}').cols || []).includes('etag'); }
+    catch { return false; }
+  }));
   await openHead();
   await sleep(60);
   await ctxItem(/etag/i); // toggle back off
@@ -1420,6 +1423,60 @@ await step('header-column-menu', async () => {
     .some((s) => /etag/i.test(s.textContent))));
   await evalPage(() => localStorage.removeItem('s3b-cols')); // back to boot defaults
   await closeCtx();
+});
+
+await step('column-resize-reorder', async () => {
+  // resize: drag the Type header's right edge 120px wider
+  const h = await evalPage(() => {
+    const r = document.querySelector('#grid-head .gh:nth-child(3) .gh-resize').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  const w0 = await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width);
+  await page.mouse.move(h.x, h.y);
+  await page.mouse.down();
+  await page.mouse.move(h.x + 120, h.y, { steps: 8 });
+  await page.mouse.up();
+  await sleep(80);
+  await ok('dragging the header edge widens the column',
+    Math.abs((await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width)) - (w0 + 120)) <= 3);
+  await ok('user width persisted as JSON', evalPage(() => {
+    try { return (JSON.parse(localStorage.getItem('s3b-cols') || '{}').widths || {}).type === 270; }
+    catch { return false; }
+  }));
+  await ok('pooled rows follow the resized template', evalPage(() =>
+    Math.abs(document.querySelector('#grid-canvas .grid-row .gc.type').getBoundingClientRect().width - 270) <= 3));
+  await page.mouse.click(h.x, h.y, { clickCount: 2 }); // double-click resets
+  await sleep(80);
+  const w2 = await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width);
+  await ok('double-click on the edge resets the width', Math.abs(w2 - w0) <= 3 && evalPage(() => {
+    try { return !(JSON.parse(localStorage.getItem('s3b-cols') || '{}').widths || {}).type; }
+    catch { return false; }
+  }));
+  // reorder: drag the Size header in front of Type
+  const d = await evalPage(() => {
+    const cells = Array.from(document.querySelectorAll('#grid-head .gh'));
+    const src = cells[3].getBoundingClientRect(); // Size (cells[0] = checkbox column)
+    const dst = cells[2].getBoundingClientRect(); // drop just inside Type
+    return { x: src.x + 12, y: src.y + src.height / 2, tx: dst.x + 4, ty: dst.y + dst.height / 2 };
+  });
+  await page.mouse.move(d.x, d.y);
+  await page.mouse.down();
+  await page.mouse.move(d.tx, d.ty, { steps: 12 });
+  await page.mouse.up();
+  await sleep(120);
+  await ok('dragging a header reorders the columns', evalPage(() => {
+    const known = ['check', 'name', 'type', 'mode', 'size', 'lastModified', 'created', 'storageClass', 'etag'];
+    const got = Array.from(document.querySelector('#grid-canvas .grid-row').children)
+      .map((c) => known.find((k) => c.classList.contains(k)));
+    return JSON.stringify(got) === JSON.stringify(['check', 'name', 'size', 'type', 'lastModified']);
+  }));
+  await ok('reordered column set persisted', evalPage(() => {
+    try { return JSON.stringify(JSON.parse(localStorage.getItem('s3b-cols') || '{}').cols)
+      === JSON.stringify(['name', 'size', 'type', 'lastModified']); }
+    catch { return false; }
+  }));
+  await shot('columns-drag');
+  await evalPage(() => localStorage.removeItem('s3b-cols')); // back to boot defaults
 });
 
 await step('invert-selection', async () => {

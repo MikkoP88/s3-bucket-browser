@@ -2,7 +2,9 @@
 // Renders only the visible slice (+overscan) so a 100k-object folder scrolls
 // at full frame rate (performance budget). The column set is dynamic: the
 // catalog below lists every possible column, setColumns() picks the visible
-// ones (Settings exposes them; "name" is always visible).
+// ones (Settings exposes them; "name" is always visible). Columns resize by
+// dragging their header edge and reorder by dragging the header itself;
+// order and widths persist per pane (loadColState/saveColState below).
 import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
 import { t, has } from './i18n.js';
 
@@ -42,6 +44,42 @@ export const COLUMNS = [
 // Type is on by default; Storage class and ETag are opt-in via the
 // header menu. A saved choice (s3b-cols in localStorage) always wins.
 export const DEFAULT_COLS = ['name', 'type', 'size', 'lastModified'];
+
+const MIN_COL_W = 48;      // resize floor for fixed-width columns
+const DRAG_THRESHOLD = 6;  // px before a header press becomes a reorder drag
+
+// Column-layout persistence, one key per pane ('s3b-cols' remote,
+// 's3b-cols-local' side pane). The value is JSON { cols: [ordered ids],
+// widths: { id: px } }; values written before widths existed are plain CSV
+// id lists and still load (order only). loadColState never throws — a
+// corrupt or unknown entry reads as "no preference".
+export function loadColState(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const known = new Set(COLUMNS.map((c) => c.id));
+    if (!raw.startsWith('{')) {
+      return { cols: raw.split(',').map((s) => s.trim()).filter((id) => known.has(id)), widths: {} };
+    }
+    const v = JSON.parse(raw);
+    const cols = Array.isArray(v?.cols)
+      ? v.cols.filter((id) => known.has(id)) : [];
+    const widths = {};
+    for (const [id, w] of Object.entries(v?.widths || {})) {
+      if (known.has(id) && Number.isFinite(w) && w >= MIN_COL_W && w <= 4000) widths[id] = Math.round(w);
+    }
+    return { cols, widths };
+  } catch {
+    return null;
+  }
+}
+
+// saveColState persists a pane's column order plus any user-set widths.
+export function saveColState(key, cols, widths) {
+  try {
+    localStorage.setItem(key, JSON.stringify({ cols, widths: widths || {} }));
+  } catch { /* storage full or blocked: the layout just won't persist */ }
+}
 
 // typeOf renders the Type column Windows-Explorer style: "Folder", the
 // friendly name of a common extension ("PNG image", "Text document") in
@@ -98,6 +136,7 @@ export class Grid {
     this.sortDir = 1;
     this.filter = '';        // global (all-columns) substring filter
     this.colFilters = {};    // column id -> substring filter (stacked)
+    this.widths = {};        // column id -> user-set pixel width (catalog w otherwise)
     this.typeBuf = '';
     this.typeTimer = null;
 
@@ -120,16 +159,25 @@ export class Grid {
   // visibleCols returns the currently shown columns in display order.
   visibleCols() { return this.cols; }
 
-  // setColumns applies a visible-column id list ("name" is forced in).
+  // setColumns applies a visible-column id list. The list's order IS the
+  // display order (drag-to-reorder persists through here); unknown ids and
+  // duplicates are dropped, and "name" — the identity column — is forced in
+  // (and leads) when absent.
   setColumns(ids) {
-    const want = new Set(Array.isArray(ids) ? ids : []);
-    want.add('name');
-    this.cols = COLUMNS.filter((c) => want.has(c.id));
+    const byId = new Map(COLUMNS.map((c) => [c.id, c]));
+    const seen = new Set();
+    this.cols = [];
+    for (const id of Array.isArray(ids) ? ids : []) {
+      const c = byId.get(id);
+      if (c && !seen.has(id)) { seen.add(id); this.cols.push(c); }
+    }
+    if (!seen.has('name')) this.cols.unshift(byId.get('name'));
     if (!this.cols.some((c) => c.id === this.sortKey)) {
       this.sortKey = 'name';
       this.sortDir = 1;
     }
     // filters of now-hidden columns are dropped, not kept dormant
+    const want = new Set(this.cols.map((c) => c.id));
     for (const c of COLUMNS) {
       if (!want.has(c.id) && this.colFilters[c.id]) delete this.colFilters[c.id];
     }
@@ -138,9 +186,41 @@ export class Grid {
     this.apply();
   }
 
-  // gridTemplate is the CSS grid-template-columns for head + rows.
+  // restoreCols applies a persisted column state (order + widths) or the
+  // default layout when nothing valid is stored.
+  restoreCols(key) {
+    const st = loadColState(key);
+    this.widths = (st && st.widths) || {};
+    this.setColumns(st && st.cols.length ? st.cols : DEFAULT_COLS);
+  }
+
+  // gridTemplate is the CSS grid-template-columns for head + rows. The flex
+  // column (name) absorbs the remaining width until the user sizes it; a
+  // user-sized flex column becomes capped (minmax up to that width) and a
+  // trailing filler track takes the rest, so the last column never stretches.
   gridTemplate() {
-    return `34px ${this.cols.map((c) => (c.flex ? `minmax(${c.minW}px,3fr)` : `${c.w}px`)).join(' ')}`;
+    const parts = this.cols.map((c) => {
+      if (c.flex && !this.widths[c.id]) return `minmax(${c.minW}px,3fr)`;
+      const w = Math.round(this.widths[c.id] || c.w);
+      return c.flex ? `minmax(${c.minW}px,${w}px)` : `${w}px`;
+    });
+    if (this.cols.some((c) => c.flex && this.widths[c.id])) parts.push('minmax(0,1fr)');
+    return `34px ${parts.join(' ')}`;
+  }
+
+  // colWidth is a column's current effective width (user-set or catalog).
+  colWidth(c) { return this.widths[c.id] || c.w; }
+
+  // colFloor is the width a column must keep while another one is being
+  // resized: fixed columns their current width, the flex one its minimum.
+  colFloor(c) { return c.flex ? c.minW : this.colWidth(c); }
+
+  // applyTemplate pushes the current column template onto the head and
+  // every pooled row — called live from a resize drag.
+  applyTemplate() {
+    const tpl = this.gridTemplate();
+    this.head.style.gridTemplateColumns = tpl;
+    for (const row of this.pool) row.style.gridTemplateColumns = tpl;
   }
 
   // nameCellIdx is the child index of the name cell within pooled rows.
@@ -167,26 +247,41 @@ export class Grid {
     });
     this.headCb = cb;
     this.head.style.gridTemplateColumns = this.gridTemplate();
-    this.head.replaceChildren(
-      el('div', { class: 'gh check' }, cb),
-      ...this.cols.map((c) => {
-        const ind = el('span', { class: 'sort-ind' });
-        if (this.sortKey === c.id) ind.textContent = this.sortDir > 0 ? '\u25B2' : '\u25BC';
-        const active = this.colFilters[c.id];
-        const label = t(c.labelKey);
-        const funnel = el('button', {
-          class: `gh-filter${active ? ' on' : ''}`,
-          title: active ? `${label}: ${active} (Esc clears)` : `${t('col.filterBy')} ${label.toLowerCase()}`,
-          'aria-label': `${t('col.filterBy')} ${label}`,
-          onclick: (e) => { e.stopPropagation(); this.editColumnFilter(c.id, funnel); },
-        });
-        funnel.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 2h14l-5.5 6.2V14l-3-1.6V8.2Z" fill="currentColor"/></svg>';
-        return el('div', {
-          class: `gh${c.num ? ' num' : ''}`,
-          onclick: () => this.cycleSort(c.id),
-        }, el('span', { text: label }), ind, funnel);
-      }),
-    );
+    this.headCols = this.cols.map((c) => this.headerCell(c));
+    this.head.replaceChildren(el('div', { class: 'gh check' }, cb), ...this.headCols);
+  }
+
+  // headerCell builds one column header: label + sort indicator + filter
+  // funnel + the edge resize handle. Click cycles the sort; dragging the
+  // cell (6px+) reorders the column; dragging the handle resizes it and
+  // double-clicking resets it.
+  headerCell(c) {
+    const ind = el('span', { class: 'sort-ind' });
+    if (this.sortKey === c.id) ind.textContent = this.sortDir > 0 ? '\u25B2' : '\u25BC';
+    const active = this.colFilters[c.id];
+    const label = t(c.labelKey);
+    const funnel = el('button', {
+      class: `gh-filter${active ? ' on' : ''}`,
+      title: active ? `${label}: ${active} (Esc clears)` : `${t('col.filterBy')} ${label.toLowerCase()}`,
+      'aria-label': `${t('col.filterBy')} ${label}`,
+      onclick: (e) => { e.stopPropagation(); this.editColumnFilter(c.id, funnel); },
+    });
+    funnel.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 2h14l-5.5 6.2V14l-3-1.6V8.2Z" fill="currentColor"/></svg>';
+    const cell = el('div', {
+      class: `gh${c.num ? ' num' : ''}`,
+      title: t('col.dragTip'),
+      onclick: () => this.cycleSort(c.id),
+    }, el('span', { text: label }), ind, funnel);
+    const rz = el('div', {
+      class: 'gh-resize', role: 'separator', 'aria-orientation': 'vertical',
+      'aria-label': `${label}: ${t('col.resizeTip')}`, title: t('col.resizeTip'),
+    });
+    rz.addEventListener('click', (e) => e.stopPropagation()); // a handle click is not a sort
+    rz.addEventListener('pointerdown', (e) => this.startResize(e, c, rz));
+    rz.addEventListener('dblclick', (e) => { e.stopPropagation(); this.resetWidth(c); });
+    cell.appendChild(rz);
+    cell.addEventListener('pointerdown', (e) => this.startColDrag(e, c, cell));
+    return cell;
   }
 
   // editColumnFilter swaps one header cell for an inline input bound to
@@ -224,6 +319,119 @@ export class Grid {
     else { this.sortKey = id; this.sortDir = 1; }
     this.apply();
     this.renderHead();
+  }
+
+  // ---------- column drag: resize + reorder ----------
+
+  // startResize tracks an edge-handle drag: the column width follows the
+  // pointer live (head + pooled rows restyle per move — a pool is ~40 rows,
+  // one inline style each), clamped to MIN_COL_W below and to the width the
+  // other columns must keep above. Pointerup persists via on.colsChanged.
+  startResize(e, c, rz) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const startW = rz.closest('.gh').getBoundingClientRect().width;
+    const startX = e.clientX;
+    const maxW = Math.max(MIN_COL_W, this.head.clientWidth - 34
+      - this.cols.reduce((sum, x) => (x === c ? sum : sum + this.colFloor(x)), 0));
+    rz.setPointerCapture?.(e.pointerId); // keep the drag alive past the window edge
+    rz.classList.add('dragging');
+    document.body.classList.add('col-resize-active');
+    const move = (ev) => {
+      const w = Math.round(Math.min(Math.max(startW + ev.clientX - startX, MIN_COL_W), maxW));
+      if (w !== this.widths[c.id]) {
+        this.widths[c.id] = w;
+        this.applyTemplate();
+      }
+    };
+    const done = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', done);
+      window.removeEventListener('pointercancel', done);
+      rz.classList.remove('dragging');
+      document.body.classList.remove('col-resize-active');
+      this.on.colsChanged?.();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', done);
+    window.addEventListener('pointercancel', done);
+  }
+
+  // resetWidth clears a user-set width — double-click on the handle. The
+  // column returns to its catalog width (the flex column goes back to
+  // absorbing all remaining width).
+  resetWidth(c) {
+    if (this.widths[c.id] === undefined) return;
+    delete this.widths[c.id];
+    this.applyTemplate();
+    this.on.colsChanged?.();
+  }
+
+  // startColDrag arms header drag-to-reorder: a press anywhere on a header
+  // cell (outside the funnel, the inline filter input and the resize
+  // handle) becomes a reorder once the pointer moves past DRAG_THRESHOLD —
+  // a plain click still sorts. The dragged header dims, a 2px indicator
+  // tracks the nearest slot boundary, and pointerup applies the move.
+  startColDrag(e, c, cell) {
+    if (e.button !== 0 || e.target.closest('.gh-resize, .gh-filter, .gh-cfilter')) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const head = this.head;
+    let dragging = false;
+    let indicator = null;
+    let target = null;
+    // the synthetic click after a drag would flip the sort — swallow it on
+    // the head (capture fires before the cell's listener); removed again
+    // in cleanup so nothing lingers when no click follows
+    const swallow = (ev) => ev.stopPropagation();
+    const boundaryX = (i) => {
+      const cells = this.headCols;
+      if (i >= cells.length) return cells[cells.length - 1].getBoundingClientRect().right;
+      return cells[i].getBoundingClientRect().left;
+    };
+    const move = (ev) => {
+      if (!dragging) {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
+        dragging = true;
+        cell.classList.add('drag-src');
+        indicator = el('div', { class: 'gh-insert' });
+        head.appendChild(indicator);
+        head.addEventListener('click', swallow, { capture: true });
+        document.body.classList.add('col-dragging');
+      }
+      let best = 0;
+      let bd = Infinity;
+      for (let i = 0; i <= this.cols.length; i++) {
+        const d = Math.abs(ev.clientX - boundaryX(i));
+        if (d < bd) { bd = d; best = i; }
+      }
+      target = best;
+      indicator.style.left = `${boundaryX(best) - head.getBoundingClientRect().left}px`;
+    };
+    const done = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', done);
+      window.removeEventListener('pointercancel', done);
+      head.removeEventListener('click', swallow, { capture: true });
+      document.body.classList.remove('col-dragging');
+      cell.classList.remove('drag-src');
+      if (indicator) indicator.remove();
+      if (dragging && target !== null) {
+        const from = this.cols.indexOf(c);
+        // dropping immediately before/after the source cell is a no-op
+        if (target !== from && target !== from + 1) {
+          const ids = this.cols.map((x) => x.id);
+          ids.splice(from, 1);
+          ids.splice(target > from ? target - 1 : target, 0, c.id);
+          this.setColumns(ids); // rebuilds head + pool; widths ride along
+          this.on.colsChanged?.();
+        }
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', done);
+    window.addEventListener('pointercancel', done);
   }
 
   // ---------- data ----------

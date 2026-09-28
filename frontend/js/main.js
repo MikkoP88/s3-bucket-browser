@@ -2,7 +2,7 @@
 import { api, onEvent, subscribeStream } from './api.js';
 import { el, fmtBytes, fmtSpeed, fmtDate, basename, debounce, srcIconEl } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
-import { Grid, COLUMNS, DEFAULT_COLS } from './grid.js';
+import { Grid, COLUMNS, saveColState } from './grid.js';
 import { Tree } from './tree.js';
 import {
   confirm, prompt, properties, doctorDialog, transferManager, runningTasks,
@@ -92,17 +92,14 @@ function noteSilentFail() {
   silentFailStreak++;
 }
 
-// applyColumnPrefs restores the persisted visible-column sets (Settings →
-// View) and the delete-marker badge toggle for both grids. "name" is the
-// identity column — the grid forces it in; an unknown/empty stored value
-// falls back to the default layout.
+// applyColumnPrefs restores the persisted column layouts (visibility,
+// order and widths — Settings → View, the header menu and the header
+// drag interactions) plus the delete-marker badge toggle for both
+// grids. "name" is the identity column — the grid forces it in; an
+// unknown/empty stored value falls back to the default layout.
 function applyColumnPrefs() {
-  const parse = (v) => {
-    const ids = (v || '').split(',').map((s) => s.trim()).filter((id) => COLUMNS.some((c) => c.id === id));
-    return ids.length ? ids : DEFAULT_COLS;
-  };
-  grid.setColumns(parse(localStorage.getItem('s3b-cols')));
-  localPane.grid.setColumns(parse(localStorage.getItem('s3b-cols-local')));
+  grid.restoreCols('s3b-cols');
+  localPane.grid.restoreCols('s3b-cols-local');
   // version/marker badges are opt-in (Settings → View); both default off
   grid.showMarkers = localStorage.getItem('s3b-show-markers') === '1';
   grid.showVersions = localStorage.getItem('s3b-show-versions') === '1';
@@ -1096,6 +1093,7 @@ function wireGrid() {
   // Right-click on a header cell: the column picker (Settings' catalog one
   // click closer — Explorer's header menu pattern).
   grid.on.headerMenu = (e) => columnMenu(e, grid, 's3b-cols');
+  grid.on.colsChanged = () => saveColState('s3b-cols', grid.visibleCols().map((c) => c.id), grid.widths);
   // name-cell badges: ⟲ opens the Versions window (files) or the Content
   // Versions window (folders — the object-timeline dialog would paginate the
   // whole subtree); ⛔ opens the Delete Marker window for either.
@@ -1228,6 +1226,7 @@ function wireLocalPane() {
   localPane.on.activateS3File = (_bucket, row) => downloadSideRows([row]);
   localPane.grid.on.context = (e, rows) => showLocalRowMenu(e, rows);
   localPane.grid.on.headerMenu = (e) => columnMenu(e, localPane.grid, 's3b-cols-local');
+  localPane.grid.on.colsChanged = () => saveColState('s3b-cols-local', localPane.grid.visibleCols().map((c) => c.id), localPane.grid.widths);
   localPane.on.contextEmpty = (e, dir) => {
     if (localPane.binding.kind === 'remote') { sideRemoteEmptyMenu(e); return; }
     if (localPane.binding.kind === 's3') { sideS3EmptyMenu(e); return; }
@@ -1309,6 +1308,16 @@ function menuItems(scope, items) {
 }
 
 // ============================ context menu ============================
+// mergeColOrder applies a catalog-ordered on/off list (Settings builds
+// those) onto a pane's current arrangement: columns that stay visible
+// keep their dragged position, newly shown ones append in catalog order.
+function mergeColOrder(g, onIds) {
+  const on = new Set(onIds);
+  const kept = g.visibleCols().map((c) => c.id).filter((id) => on.has(id));
+  for (const id of onIds) if (!kept.includes(id)) kept.push(id);
+  return kept;
+}
+
 // columnMenu: right-click menu on a grid header — the column picker as a
 // check list against the COLUMNS catalog ('name' is locked on), the same
 // control Settings exposes, one click closer. lsKey is the pane's
@@ -1325,7 +1334,7 @@ function columnMenu(e, g, lsKey) {
         if (on) next.delete(c.id);
         else next.add(c.id);
         g.setColumns([...next]);
-        localStorage.setItem(lsKey, g.visibleCols().map((x) => x.id).join(','));
+        saveColState(lsKey, g.visibleCols().map((x) => x.id), g.widths);
       },
       c.id === 'name', // the identity column is always visible
     ];
@@ -3513,8 +3522,8 @@ async function openSettings() {
       showThrottle: (v) => localStorage.setItem('s3b-show-throttle', v ? '1' : '0'),
       editChooseApp: (v) => localStorage.setItem('s3b-edit-choose-app', v ? '1' : '0'),
       copyVersions: (v) => localStorage.setItem('s3b-copy-versions', v ? '1' : '0'),
-      cols: (v) => { grid.setColumns(v); localStorage.setItem('s3b-cols', v.join(',')); },
-      colsLocal: (v) => { localPane.grid.setColumns(v); localStorage.setItem('s3b-cols-local', v.join(',')); },
+      cols: (v) => { grid.setColumns(mergeColOrder(grid, v)); saveColState('s3b-cols', grid.visibleCols().map((x) => x.id), grid.widths); },
+      colsLocal: (v) => { localPane.grid.setColumns(mergeColOrder(localPane.grid, v)); saveColState('s3b-cols-local', localPane.grid.visibleCols().map((x) => x.id), localPane.grid.widths); },
       showHidden: (v) => { localStorage.setItem('s3b-show-hidden', v ? '1' : '0'); refreshCurrent(); },
       showMarkers: (v) => { localStorage.setItem('s3b-show-markers', v ? '1' : '0'); grid.showMarkers = v; grid.render(); },
       showVersions: (v) => { localStorage.setItem('s3b-show-versions', v ? '1' : '0'); grid.showVersions = v; grid.render(); },
