@@ -1402,7 +1402,7 @@ await step('header-column-menu', async () => {
   await openHead();
   await sleep(80);
   const n = await evalPage(() => document.querySelectorAll('#ctxmenu:not(.hidden) .item').length);
-  await ok('header menu lists the whole column catalog', n >= 6);
+  await ok('header menu lists the whole column catalog', n >= 8);
   await ok('name column is checked and locked', evalPage(() => {
     const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
       .find((i) => /^\u2713 name$/i.test(i.textContent.trim()));

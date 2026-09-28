@@ -278,6 +278,8 @@ export class LocalPane {
         isDir: e.isDir,
         size: e.size,
         modTime: e.modTime,
+        created: e.created || null,
+        mode: e.mode || null,
       })));
       this.updateCrumb();
       this.updateStatus();
@@ -306,6 +308,8 @@ export class LocalPane {
         isDir: e.isDir,
         size: e.size,
         lastModified: e.lastModified,
+        created: e.created || null,
+        mode: e.mode || null,
       })));
       this.updateCrumb();
       this.updateStatus();
@@ -340,6 +344,7 @@ export class LocalPane {
         this.grid.setRows(buckets.map((b) => ({
           name: b.name, key: b.name, bucket: b.name, isDir: true, isBucket: true,
           lastModified: b.createdAt,
+          created: b.createdAt,
         })));
         this.updateCrumb();
         this.updateStatus();

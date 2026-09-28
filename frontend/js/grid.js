@@ -23,11 +23,17 @@ function acceptedMimes(kind) {
 // Column catalog — every column the details grid can show. flex columns
 // absorb the remaining width; the rest are fixed. "name" is the identity
 // column (icon + name + version/marker badges) and is always visible.
+// created and mode are engine-optional: created fills where the source
+// carries a birth time (bucket views, WebDAV creationdate, Windows local
+// files), mode where permission bits exist (local, SFTP); rows from
+// engines without the attribute render the cell empty.
 export const COLUMNS = [
   { id: 'name', labelKey: 'col.name', flex: true, minW: 200 },
   { id: 'type', labelKey: 'col.type', w: 150 },
+  { id: 'mode', labelKey: 'col.mode', w: 130 },
   { id: 'size', labelKey: 'col.size', w: 110, num: true },
   { id: 'lastModified', labelKey: 'col.date', w: 160 },
+  { id: 'created', labelKey: 'col.created', w: 160 },
   { id: 'storageClass', labelKey: 'col.class', w: 120 },
   { id: 'etag', labelKey: 'col.etag', w: 190 },
 ];
@@ -55,13 +61,16 @@ function typeOf(r) {
 
 // colText returns the text a filter matches against for one column: the
 // rendered value (sizes formatted, dates localized) plus the raw bytes for
-// size, so both "MB" and "1048576" hit. Folders carry no size/date/class.
+// size, so both "MB" and "1048576" hit. Folders carry no size/date/class;
+// created and mode match only where the engine supplied a value.
 function colText(r, id) {
   switch (id) {
     case 'name': return r.name || '';
     case 'type': return typeOf(r);
+    case 'mode': return r.mode || '';
     case 'size': return r.isDir ? '' : `${fmtBytes(r.size)} ${r.size || 0}`;
     case 'lastModified': return r.isDir ? '' : fmtDate(r.lastModified || r.modTime);
+    case 'created': return r.created ? fmtDate(r.created) : '';
     case 'storageClass': return r.isDir ? '' : (r.storageClass || '');
     case 'etag': return r.isDir ? '' : (r.etag || '');
     default: return '';
@@ -275,7 +284,7 @@ export class Grid {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1; // folders first, always
       let va = a[key], vb = b[key];
       if (key === 'type') { va = typeOf(a); vb = typeOf(b); }
-      else if (key === 'size' || key === 'lastModified') {
+      else if (key === 'size' || key === 'lastModified' || key === 'created') {
         va = va || 0; vb = vb || 0;
         return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
       }
@@ -413,6 +422,8 @@ export class Grid {
           mb.title = hasM ? (m.isDir ? t('mark.count', { n: m.mcount }) : t('mark.has')) : '';
         } else if (c.id === 'type') {
           cell.textContent = typeOf(m);
+        } else if (c.id === 'mode') {
+          cell.textContent = m.mode || '';
         } else if (c.id === 'etag') {
           cell.textContent = m.isDir ? '' : (m.etag || '');
           cell.title = cell.textContent;
@@ -420,6 +431,8 @@ export class Grid {
           cell.textContent = m.isDir ? '' : fmtBytes(m.size);
         } else if (c.id === 'lastModified') {
           cell.textContent = m.isDir ? '' : fmtDate(m.lastModified || m.modTime);
+        } else if (c.id === 'created') {
+          cell.textContent = m.created ? fmtDate(m.created) : '';
         } else if (c.id === 'storageClass') {
           cell.textContent = m.isDir ? '' : (m.storageClass || '');
         }

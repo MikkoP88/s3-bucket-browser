@@ -6,9 +6,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
@@ -233,6 +236,47 @@ func TestLocalMkdirRenameRemove(t *testing.T) {
 
 	if err := l.Remove(ctx, "/"); err == nil {
 		t.Error("removing the root must be refused")
+	}
+}
+
+// TestLocalListModesAndCreation pins the two optional attributes the local
+// engine fills for the grid's Mode and Date created columns: Mode is a
+// classic unix-style string on every platform ("d..."/"-..." by shape),
+// Created is present on Windows (birth time in the Win32 attribute data)
+// and honestly absent elsewhere.
+func TestLocalListModesAndCreation(t *testing.T) {
+	l := newLocalTestBed(t)
+	entries, err := l.List(context.Background(), "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file, dir listing.Entry
+	for _, e := range entries {
+		if e.Name == "readme.md" {
+			file = e
+		}
+		if e.Name == "docs" {
+			dir = e
+		}
+	}
+	if file.Mode == "" || dir.Mode == "" {
+		t.Fatalf("mode missing: file %+v dir %+v", file, dir)
+	}
+	if !strings.HasPrefix(dir.Mode, "d") {
+		t.Errorf("dir mode %q must start with 'd'", dir.Mode)
+	}
+	if !strings.HasPrefix(file.Mode, "-") {
+		t.Errorf("file mode %q must start with '-'", file.Mode)
+	}
+	if file.Created == nil {
+		if runtime.GOOS == "windows" {
+			t.Error("Created missing on Windows, which carries birth time")
+		}
+		return
+	}
+	// Where present, the only portable bound is sanity: after the epoch.
+	if file.Created.Before(time.Unix(0, 0)) {
+		t.Errorf("Created %v is before the epoch", file.Created)
 	}
 }
 

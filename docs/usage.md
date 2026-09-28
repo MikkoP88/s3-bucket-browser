@@ -131,7 +131,12 @@ directory compare) with S3 and the local pane.
   to pick which columns show; Ctrl+F focuses the quick filter. The Type
   column names common file types ("PNG image", "Text document") in the
   UI language — anything else shows as an extension file ("DAT file") —
-  and is on by default; Storage class is opt-in via the header menu.
+  and is on by default. Every column shows or hides in Settings → View
+  (Name is always on); the out-of-box set is Name, Type, Size and Date
+  modified. Opt-in columns: Date created (bucket views, WebDAV
+  creationdate, Windows local birth times), Mode (local and SFTP
+  permission bits), Storage class and ETag — via the header menu or
+  Settings.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and type a path like `s3://bucket/folder/` — or
   `source://path` for any source — to jump directly. Back / forward /

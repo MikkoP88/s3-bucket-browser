@@ -124,7 +124,11 @@ func (d *WebDAV) do(ctx context.Context, method string, u *url.URL, body io.Read
 type davProp struct {
 	GetContentLength int64  `xml:"getcontentlength"`
 	GetLastModified  string `xml:"getlastmodified"`
-	ResourceType     struct {
+	// CreationDate is the RFC 4918 creationdate property — optional, but
+	// mainstream servers (Apache, IIS, Nextcloud, rclone) send it, so the
+	// grid's "Date created" column fills in wherever it is present.
+	CreationDate string `xml:"creationdate"`
+	ResourceType struct {
 		Inner string `xml:",innerxml"`
 	} `xml:"resourcetype"`
 }
@@ -208,6 +212,9 @@ func (d *WebDAV) entryOf(dir string, r davResponse) (listing.Entry, bool) {
 	}
 	if !t.IsZero() {
 		out.LastModified = &t
+	}
+	if c := parseDavTime(prop.CreationDate); !c.IsZero() {
+		out.Created = &c
 	}
 	return out, true
 }

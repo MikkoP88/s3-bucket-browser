@@ -129,6 +129,9 @@ func sftpEntry(dir, name string, info os.FileInfo) listing.Entry {
 		IsDir: info.IsDir(),
 		Size:  info.Size(),
 	}
+	if m := info.Mode(); m != 0 {
+		e.Mode = m.String() // servers that omit permissions leave Mode empty
+	}
 	if t := info.ModTime(); !t.IsZero() {
 		e.LastModified = &t
 	}

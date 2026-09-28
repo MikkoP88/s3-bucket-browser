@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 )
 
@@ -20,6 +21,8 @@ type LocalEntry struct {
 	IsDir   bool   `json:"isDir"`
 	Size    int64  `json:"size"`
 	ModTime int64  `json:"modTime"` // unix millis
+	Created int64  `json:"created"` // unix millis, 0 where the platform has no birth time
+	Mode    string `json:"mode"`    // unix-style mode string, e.g. "drwxr-xr-x"
 }
 
 // LocalRoots lists the roots of the local filesystem: drive letters on
@@ -69,13 +72,18 @@ func (a *App) ListLocal(dir string) ([]LocalEntry, error) {
 		if err != nil {
 			continue // racing delete: skip
 		}
-		out = append(out, LocalEntry{
+		le := LocalEntry{
 			Name:    e.Name(),
 			Path:    full,
 			IsDir:   e.IsDir(),
 			Size:    info.Size(),
 			ModTime: info.ModTime().UnixMilli(),
-		})
+			Mode:    info.Mode().String(),
+		}
+		if t, ok := remotefs.CreationTimeOf(info); ok {
+			le.Created = t.UnixMilli()
+		}
+		out = append(out, le)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].IsDir != out[j].IsDir {

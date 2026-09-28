@@ -544,6 +544,7 @@ async function loadView(loc, { silent = false } = {}) {
       currentEntries = buckets.map((b) => ({
         key: b.name, name: b.name, isDir: true, size: 0,
         lastModified: b.createdAt, bucketCreated: true,
+        created: b.createdAt,
       }));
       hideEmpty();
       grid.setRows(currentEntries);

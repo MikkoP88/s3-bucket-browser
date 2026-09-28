@@ -3,6 +3,7 @@ package remotefs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"golang.org/x/net/webdav"
@@ -182,6 +184,84 @@ func TestWebDAVContract(t *testing.T) {
 				t.Fatalf("removing the root must fail")
 			}
 		})
+	}
+}
+
+// TestWebDAVParsesCreationDate pins the optional RFC 4918 creationdate
+// property: x/net/webdav (the contract test's server) does not emit it, so
+// this uses a stub answering PROPFIND with canned multistatus XML shaped
+// like Apache/Nextcloud output — one file with creationdate, one without
+// (the property is optional; absence must leave Created nil, never zero
+// time).
+func TestWebDAVParsesCreationDate(t *testing.T) {
+	const multistatus = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+ <D:response>
+  <D:href>/with-date.txt</D:href>
+  <D:propstat>
+   <D:prop>
+    <D:getcontentlength>11</D:getcontentlength>
+    <D:getlastmodified>Mon, 28 Sep 2026 10:00:00 GMT</D:getlastmodified>
+    <D:creationdate>2026-01-02T03:04:05Z</D:creationdate>
+   </D:prop>
+   <D:status>HTTP/1.1 200 OK</D:status>
+  </D:propstat>
+ </D:response>
+ <D:response>
+  <D:href>/no-date.txt</D:href>
+  <D:propstat>
+   <D:prop>
+    <D:getcontentlength>7</D:getcontentlength>
+    <D:getlastmodified>Mon, 28 Sep 2026 11:00:00 GMT</D:getlastmodified>
+   </D:prop>
+   <D:status>HTTP/1.1 200 OK</D:status>
+  </D:propstat>
+ </D:response>
+</D:multistatus>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" {
+			http.Error(w, "405", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, multistatus)
+	}))
+	t.Cleanup(srv.Close)
+	host, port, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")
+	p, _ := strconv.Atoi(port)
+	f, err := DialWebDAV(context.Background(), profile.Source{
+		Name: "stub", Type: profile.TypeWebDAV, Host: host, Port: p,
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer f.Close()
+	ents, err := f.List(context.Background(), "/")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(ents) != 2 {
+		t.Fatalf("want 2 entries, got %+v", ents)
+	}
+	for _, e := range ents {
+		switch e.Name {
+		case "with-date.txt":
+			if e.Created == nil {
+				t.Fatalf("creationdate not parsed: %+v", e)
+			}
+			if got := e.Created.UTC().Format(time.RFC3339); got != "2026-01-02T03:04:05Z" {
+				t.Errorf("Created = %s, want 2026-01-02T03:04:05Z", got)
+			}
+			if e.LastModified == nil {
+				t.Errorf("lastmodified dropped alongside creationdate")
+			}
+		case "no-date.txt":
+			if e.Created != nil {
+				t.Errorf("absent creationdate must stay nil, got %v", e.Created)
+			}
+		default:
+			t.Errorf("unexpected entry %q", e.Name)
+		}
 	}
 }
 

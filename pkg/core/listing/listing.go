@@ -11,15 +11,25 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// Entry is one row in a listing: a virtual folder or an object.
+// Entry is one row in a listing: a virtual folder or an object. Fields
+// beyond the universal set are optional and filled only by the engines
+// whose protocol carries them: LastModified (every engine), StorageClass
+// and ETag (S3 objects), Created (WebDAV servers via RFC 4918
+// creationdate; local files on platforms that expose a birth time, i.e.
+// Windows) and Mode (local and SFTP permission bits, unix-style
+// "drwxr-xr-x"). Engines without the attribute leave the field zero, and
+// the GUI renders those cells empty — the same contract folders already
+// follow for size and dates.
 type Entry struct {
 	Key          string     `json:"key"`
 	Name         string     `json:"name"`
 	IsDir        bool       `json:"isDir"`
 	Size         int64      `json:"size"`
 	LastModified *time.Time `json:"lastModified,omitempty"`
+	Created      *time.Time `json:"created,omitempty"`
 	StorageClass string     `json:"storageClass,omitempty"`
 	ETag         string     `json:"etag,omitempty"`
+	Mode         string     `json:"mode,omitempty"`
 }
 
 // Options controls a List call.

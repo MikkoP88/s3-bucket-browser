@@ -54,9 +54,13 @@ func entryFromInfo(dir, name string, info fs.FileInfo) listing.Entry {
 		Name:  name,
 		IsDir: info.IsDir(),
 		Size:  info.Size(),
+		Mode:  info.Mode().String(), // "drwxr-xr-x" (Windows synthesizes from attributes)
 	}
 	if t := info.ModTime(); !t.IsZero() {
 		e.LastModified = &t
+	}
+	if t, ok := CreationTimeOf(info); ok {
+		e.Created = &t
 	}
 	return e
 }
