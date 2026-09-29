@@ -6,32 +6,123 @@
 
 > **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.21).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
 
-![Main window](docs/screenshots/main-view.png)
+## Key Features of S3 Bucket Browser(s3b)
+
+---
+
+### ✔ Cross‑platform
+- **Windows, Linux, macOS** — native desktop app  
+- **Browser‑driven mode** — optional windowless UI accessible from any OS
+
+---
+
+### ✔ Source‑available
+- **PolyForm Internal Use** license  
+- Transparent codebase, no proprietary lock‑in
+
+---
+
+### ✔ True Windows‑Explorer semantics
+- Multi‑select: **Ctrl/Shift**, **Ctrl+A**, **Ctrl+I**, marquee selection  
+- Type‑to‑jump, drag & drop everywhere  
+- Context menus, breadcrumbs, folder tree  
+- Sortable details grid with pickable, resizable, reorderable columns  
+- Dual‑pane local browser  
+- Keyboard‑first operation (**F1** shows the full map)  
+- Guarded exit: never drops running transfers or unsaved profile work
+
+---
+
+### ✔ Every source in one app
+- **S3‑compatible:** AWS, MinIO, Wasabi, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, IBM COS, Hetzner, Ceph, Dell ECS, StorageGRID  
+- **Remote servers:** SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs  
+- **Local folders**  
+- All color‑coded in one sidebar  
+- Same UI and same CLI (`NAME://` URIs)
+
+---
+
+### ✔ Migration across storage types
+- Any‑to‑any transfers: drag rows between sources, panes, or the tree  
+- CLI: `s3b cp s3://bucket/ sftp://dst/ -r`  
+- Same‑source S3 copies run **server‑side**  
+- Cross‑source copies stream through one transfer manager  
+- Conflict pre‑checks, throttling, resumable operations
+
+---
+
+### ✔ S3 versioning done right
+- Per‑object timelines with restore‑as‑latest  
+- Text diffs for versioned text objects  
+- One‑click undo delete for markers  
+- Three‑way Delete Window: marker / keep‑current / permanent  
+- Version‑ and marker‑count badges  
+- Folder‑level version overviews  
+- Bulk purge of noncurrent versions  
+- Force‑empty versioned buckets
+
+---
+
+### ✔ Import your credentials
+- AWS shared files (`~/.aws/credentials`, `~/.aws/config`)  
+  - `endpoint_url` → auto‑mapped to MinIO/R2/Wasabi/etc.  
+- rclone, JSON, `.env`, encrypted `.s3bprofile` containers  
+- KMS/secrets services: Vault, AWS Secrets Manager, Azure Key Vault, GCP  
+- Fully custom HTTP endpoints  
+- Live bucket‑count test before saving
+
+---
+
+### ✔ Savable encrypted profiles
+- **Ctrl+S** saves the entire workspace  
+- All sources + connections stored in one encrypted `.s3bprofile`  
+- **scrypt + AES‑256‑GCM**  
+- Reopen, keep, or share securely
+
+---
+
+### ✔ Security
+- Secrets stored in OS keyring:  
+  - Windows Credential Manager  
+  - macOS Keychain  
+  - Linux SecretService  
+- Secrets masked everywhere, never logged  
+- Optional **Secure Storage** mode:  
+  - Seals the entire store in an AES‑256‑GCM envelope  
+  - Hardens temp workspaces  
+- **Zero telemetry**  
+- See `docs/security.md`
+
+---
+
+### ✔ Fast at scale
+- Streaming page‑by‑page listings (Go holds one page at a time)  
+- Virtualized rendering  
+- Cancelable deep search  
+- Responsive even on **million‑object buckets**
 
 *One binary, two faces: run `s3b` with no arguments for the GUI, with arguments for the CLI — same engine, full parity.*
 
-## Why s3b
+## Why another S3 browser?
 
-| | |
-|---|---|
-| **Easy to use** | True Windows-Explorer semantics: multi-select (Ctrl/Shift, Ctrl+A, Ctrl+I, marquee, type-to-jump), drag & drop everywhere, context menus, breadcrumbs, folder tree, sortable details grid with pickable, resizable, reorderable columns, dual-pane local browser, keyboard-first operation (F1 shows the full map). A guarded exit never silently drops running transfers or unsaved profile work. |
-| **Every source, one app** | S3-compatible (AWS, MinIO, Wasabi, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, IBM COS, Hetzner, Ceph, Dell ECS, StorageGRID), SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs and local folders — color-coded in one sidebar, browsable with the same UI and `NAME://` URIs on the CLI. |
-| **Migration across sources** | Any-to-any transfers: drag rows between sources, panes or the tree, or `s3b cp s3://bucket/ vault://dst/ -r` on the terminal. Same-source S3 copies run server-side; cross-source copies stream through the same transfer manager with conflict pre-checks and throttling. |
-| **S3 versioning done right** | Per-object timelines with restore-as-latest and text diffs, one-click undo delete for markers, a three-way marker / keep-current / permanent Delete Window, version- and marker-count badges, folder-level version overviews, bulk purge of noncurrent versions, force-emptying of versioned buckets. |
-| **Import your credentials** | AWS shared files (`~/.aws/credentials` + `~/.aws/config`, `endpoint_url` entries become MinIO/R2/Wasabi/… sources), rclone, JSON, `.env`, encrypted `.s3bprofile` containers — or a KMS/secrets service (Vault, AWS Secrets Manager, Azure Key Vault, GCP), including fully custom HTTP endpoints. Live bucket-count test before you commit. |
-| **Savable encrypted profiles** | Ctrl+S writes the whole workspace — every source and connection — into one password-encrypted `.s3bprofile` (scrypt + AES-256-GCM) you can reopen, keep or share. |
-| **Security features** | Secrets in the OS keyring (Windows Credential Manager / macOS Keychain / Linux SecretService), masked everywhere, never logged; opt-in **Secure Storage** mode that seals the whole store as an AES-256-GCM envelope and hardens temp workspaces; **zero telemetry**. See [docs/security.md](docs/security.md). |
-| **Fast at scale** | Streaming page-by-page listings (the Go side holds one page at a time), virtualized rendering, cancelable deep search — responsive on million-object buckets. |
+Because none of the existing ones do it all:
 
-More screenshots:
+| Feature | S3 Bucket Browser | S3 Browser (CS) | Cyberduck | MSP360 | AWS Console |
+|--------|--------------------|-----------------|-----------|--------|-------------|
+| **Windows support** | ✔️ Yes | ✔️ Yes | ✔️ Yes | ✔️ Yes | ❌ No |
+| **Linux support** | ✔️ Yes | ❌ No | ✔️ Yes | ❌ No | ❌ No |
+| **Mac support** | ✔️ Yes | ❌ No | ✔️ Yes | ❌ No | ❌ No |
+| **Browser support** | ✔️ Yes | ❌ No | ❌ No | ❌ No | ✔️ Yes |
+| **Source-available** | ✔️ PolyForm | ❌ No | GPL | ❌ No | – |
+| **Explorer-style multi-select, drag & drop** | ✔️ Full | ◑ Partial | ◑ Partial | ◑ Partial | ❌ No |
+| **Versioning management** | ✔️ First-class | ◑ Partial | ◑ Partial | ◑ Partial | ❌ Clunky |
+| **GUI + CLI in one binary** | ✔️ Yes | ❌ No | ❌ Separate | ❌ No | – |
+| **Remote file servers (SFTP/FTP/WebDAV)** | ✔️ Yes | ❌ No | ✔️ Yes | ❌ No | ❌ No |
+| **Provider-quirk awareness** | ✔️ Full | ◑ Minimal | ◑ Profiles | ◑ Minimal | AWS only |
+| **Connection doctor** | ✔️ Yes | ❌ No | ❌ No | ❌ No | ❌ No |
+| **Telemetry** | None | Unknown | ✔️ Yes | ✔️ Yes | ✔️ Yes |
 
-| | |
-|---|---|
-| ![Data sources](docs/screenshots/sources-tree.png) | ![Dual pane compare](docs/screenshots/dual-pane-compare.png) |
-| ![Versions](docs/screenshots/versions.png) | ![Delete window](docs/screenshots/delete-window.png) |
-| ![Admin panel](docs/screenshots/admin-panel.png) | ![Dark theme](docs/screenshots/dark-theme.png) |
-
-The full tour with screenshots lives in the **[usage guide](docs/usage.md)**; the app carries the same guide (Help → User guide, F1).
+See [docs/comparison.md](docs/comparison.md) for the full landscape and gap analysis.
 
 ## Supported operating systems & requirements
 
@@ -66,6 +157,20 @@ recipe in [Build from source → macOS](#macos-13-intel-or-apple-silicon)
   `libwebkit2gtk-4.1-dev`. Per-OS recipes:
   [Build from source](#build-from-source);
   developer workflows live in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Screenshots of S3 Bucket Browser(s3b)
+
+![Main window](docs/screenshots/main-view.png)
+
+More screenshots:
+
+| | |
+|---|---|
+| ![Data sources](docs/screenshots/sources-tree.png) | ![Dual pane compare](docs/screenshots/dual-pane-compare.png) |
+| ![Versions](docs/screenshots/versions.png) | ![Delete window](docs/screenshots/delete-window.png) |
+| ![Admin panel](docs/screenshots/admin-panel.png) | ![Dark theme](docs/screenshots/dark-theme.png) |
+
+The full tour with screenshots lives in the **[usage guide](docs/usage.md)**; the app carries the same guide (Help → User guide, F1).
 
 ## Quickstart (GUI)
 
@@ -275,32 +380,6 @@ Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windo
 - **[Verification reports](docs/verification/)** — per-release evidence: the build, the OS, and the full action-verification matrix behind every tag
 - **[Competitive comparison](docs/comparison.md)** — the S3-browser landscape, fact-checked
 - **[CHANGELOG](CHANGELOG.md)** · **[CONTRIBUTING](CONTRIBUTING.md)** · **[Portable edition](README-portable.md)**
-
-## Why another S3 browser?
-
-Because none of the existing ones do it all:
-
-| | S3 Bucket Browser | S3 Browser (CS) | Cyberduck | MSP360 | AWS Console |
-|---|---|---|---|---|---|
-| Windows / Linux | yes | / – | / – | / – | browser |
-| Source-available (PolyForm Internal Use) | yes | no | GPL | no | – |
-| Explorer-style multi-select, drag & drop | yes (core goal) | partial | partial | partial | no |
-| Versioning management (restore, purge, force-empty versioned buckets) | first-class | partial | partial | partial | clunky |
-| GUI **and** CLI in one binary | yes | no | separate | no | – |
-| Remote file servers (SFTP/FTP/WebDAV) in the same UI and CLI | yes | no | yes | no | – |
-| Provider-quirk awareness (R2, MinIO, B2, Wasabi, …) | yes | minimal | profiles | minimal | AWS only |
-| Connection doctor with fix suggestions | yes | no | no | no | no |
-| Telemetry | **none** | – | – | – | – |
-
-See [docs/comparison.md](docs/comparison.md) for the full landscape and gap analysis.
-
-## Design principles
-
-1. Looks and behaves like **Windows File Explorer** (multi-select, drag & drop, context menus, keyboard-first).
-2. **One binary, two faces**: run `s3b` with no arguments for the GUI, with arguments for the CLI — same engine, full parity.
-3. **Safe by default, force when asked**: destructive operations count first, state what will happen, and ask once.
-4. **Minimal dependencies**: Go + OS webview + official AWS SDK; zero npm runtime dependencies. Source-available under the [PolyForm Internal Use License](LICENSE).
-5. Speaks **every S3 dialect** — AWS, MinIO, Ceph, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean Spaces, IBM COS, Hetzner — and knows each provider's quirks.
 
 ## Relationship to s3-bucket-tester
 
