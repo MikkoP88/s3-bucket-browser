@@ -8,11 +8,18 @@ on:
 permissions:
   contents: read
 
+# A superseded push/PR update cancels its in-flight run instead of
+# burning a duplicate set of runners.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Wails GUI packages (linked from ./cmd/s3b) need the webkit/GTK headers.
       - name: Install GUI build deps
@@ -20,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache: true
@@ -50,7 +57,7 @@ jobs:
 
       # Vet/test need the gtk3 tag since the Wails v3 migration: bare
       # builds resolve Wails' default Linux frontend (gtk4/webkitgtk-6.0),
-      # which ubuntu-latest has never shipped — pkg-config fails before
+      # which the ubuntu image has never shipped — pkg-config fails before
       # any code is checked. The gtk3 tag selects webkit2gtk 4.1 (the
       # installed stack), same as the build matrix and release builds.
       - name: Test
@@ -66,22 +73,23 @@ jobs:
           # every production-only build failure. Wails v3 has no `desktop`
           # tag (the GUI is the default build); `production` strips
           # devtools. Linux GUI: Wails v3 defaults to GTK4/webkitgtk-6.0,
-          # but ubuntu-latest (24.04) ships webkit2gtk 4.1 — pass the gtk3
+          # but the pinned ubuntu-24.04 image ships webkit2gtk 4.1 — pass the gtk3
           # tag against libgtk-3/libwebkit2gtk-4.1. arm64 GUI builds
           # natively on the arm64 runner (ubuntu-24.04-arm keeps the
           # webkit 4.1 stack aligned with the amd64 leg); the headless
           # CLI (-tags s3b_headless, no GTK deps) stays for servers.
           # darwin GUI needs Cocoa/WebKit: build on a macOS runner.
-          - { os: ubuntu-latest, goos: linux, goarch: amd64, tags: "production,gtk3", artifact: s3b-linux-amd64 }
+          - { os: ubuntu-24.04, goos: linux, goarch: amd64, tags: "production,gtk3", artifact: s3b-linux-amd64 }
           - { os: ubuntu-24.04-arm, goos: linux, goarch: arm64, tags: "production,gtk3", artifact: s3b-linux-arm64 }
-          - { os: ubuntu-latest, goos: linux, goarch: arm64, tags: "s3b_headless", artifact: s3b-linux-arm64-cli }
-          - { os: ubuntu-latest, goos: windows, goarch: amd64, tags: "production", artifact: s3b-windows-amd64.exe }
-          - { os: ubuntu-latest, goos: windows, goarch: arm64, tags: "production", artifact: s3b-windows-arm64.exe }
+          - { os: ubuntu-24.04, goos: linux, goarch: arm64, tags: "s3b_headless", artifact: s3b-linux-arm64-cli }
+          - { os: ubuntu-24.04, goos: windows, goarch: amd64, tags: "production", artifact: s3b-windows-amd64.exe }
+          - { os: ubuntu-24.04, goos: windows, goarch: arm64, tags: "production", artifact: s3b-windows-arm64.exe }
           - { os: macos-latest, goos: darwin, goarch: amd64, tags: "production", artifact: s3b-darwin-amd64 }
           - { os: macos-latest, goos: darwin, goarch: arm64, tags: "production", artifact: s3b-darwin-arm64 }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install GUI build deps (linux GUI only)
         if: matrix.goos == 'linux' && matrix.tags != 's3b_headless'
@@ -89,7 +97,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache: true
@@ -129,16 +137,17 @@ jobs:
             exit 1
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
 
   mac-local-build:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.27"
           cache: true
@@ -154,13 +163,14 @@ jobs:
         run: make test
 
   e2e-minio:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The e2e script builds the headless CLI (-tags s3b_headless), a
       # pure-Go build that needs no GUI headers.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache: true
@@ -183,12 +193,15 @@ jobs:
   # containers: the remote engines' handshakes, auth success/failure, PASV
   # data connections and PROPFIND plumbing, exercised through
   # `s3b source test` (M9) and the transfer matrix.
+  # Images digest-pinned (resolved from :latest, 2026-09-29): anonymous
+  # pulls keep working, :latest drift does not. Bump deliberately.
   e2e-remote:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache: true
@@ -197,7 +210,7 @@ jobs:
         run: |
           # The trailing :upload field gives e2e a writable /home/e2e/upload
           # inside the chroot (the transfer matrix writes there).
-          docker run -d --name sftp -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100:upload
+          docker run -d --name sftp -p 2222:22 atmoz/sftp@sha256:0960390462a4441dbb63698d7c185b76a41ffcee7b78ff4adf275f3e66f9c475 e2e:e2epass:1001:100:upload
           # PASV_ADDRESS + mapped passive port range make PASV data
           # connections work through Docker NAT.
           # REVERSE_LOOKUP_ENABLE=NO: vsftpd's reverse-DNS of the client IP
@@ -206,12 +219,12 @@ jobs:
           docker run -d --name ftp -p 2121:21 -p 21000-21002:21000-21002 \
             -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
             -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 \
-            -e REVERSE_LOOKUP_ENABLE=NO fauria/vsftpd
+            -e REVERSE_LOOKUP_ENABLE=NO fauria/vsftpd@sha256:6d71d7c7f1b0ab2844ec7dc7999a30aef6d758b6d8179cf5967513f87c79c177
           # rclone serve webdav twice: once at the root, once under the
           # /dav baseurl prefix (the anchored-root contract).
-          docker run -d --name webdav -p 7070:80 rclone/rclone:latest \
+          docker run -d --name webdav -p 7070:80 rclone/rclone@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5 \
             serve webdav --addr :80 --user e2e --pass e2epass /srv
-          docker run -d --name webdav-dav -p 7071:80 rclone/rclone:latest \
+          docker run -d --name webdav-dav -p 7071:80 rclone/rclone@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5 \
             serve webdav --addr :80 --user e2e --pass e2epass --baseurl /dav /srv
 
       - name: E2E remote engines
@@ -223,11 +236,12 @@ jobs:
   # (cp --versions timelines, plain-cp collapse, mv --versions purge).
   # Hetzner cells stay env-gated (S3B_HETZNER_*) and skip in CI by default.
   e2e-cross:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache: true
@@ -235,19 +249,20 @@ jobs:
       # MinIO from the pinned GitHub-release binary (scripts/start-minio.sh
       # — quay.io anonymous pulls are refused since 24 Sep 2026; the
       # e2e-minio job carries the full story); the remote fixtures stay on
-      # their Docker Hub images, which still pull anonymously.
+      # Docker Hub, digest-pinned (resolved from :latest, 2026-09-29) —
+      # anonymous pulls keep working, :latest drift does not.
       - name: Start MinIO + SFTP + FTP + WebDAV servers
         run: |
           bash scripts/start-minio.sh
-          docker run -d --name sftp -p 2222:22 atmoz/sftp:latest e2e:e2epass:1001:100:upload
+          docker run -d --name sftp -p 2222:22 atmoz/sftp@sha256:0960390462a4441dbb63698d7c185b76a41ffcee7b78ff4adf275f3e66f9c475 e2e:e2epass:1001:100:upload
           # REVERSE_LOOKUP_ENABLE=NO: vsftpd's reverse-DNS of the client IP
           # otherwise stalls every fresh control connection ~15s before the
           # greeting.
           docker run -d --name ftp -p 2121:21 -p 21000-21002:21000-21002 \
             -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
             -e PASV_MIN_PORT=21000 -e PASV_MAX_PORT=21002 \
-            -e REVERSE_LOOKUP_ENABLE=NO fauria/vsftpd
-          docker run -d --name webdav -p 7070:80 rclone/rclone:latest \
+            -e REVERSE_LOOKUP_ENABLE=NO fauria/vsftpd@sha256:6d71d7c7f1b0ab2844ec7dc7999a30aef6d758b6d8179cf5967513f87c79c177
+          docker run -d --name webdav -p 7070:80 rclone/rclone@sha256:45401ad7410db1d67ffdb58e19059ad20b0d8e0285a60e38bbec55cc1019c7a5 \
             serve webdav --addr :80 --user e2e --pass e2epass /srv
 
       - name: E2E cross-source transfers
@@ -256,10 +271,11 @@ jobs:
   # The NSIS installer is only packaged on releases; compile-check it on
   # every push so .nsi regressions surface in CI, not at tag time.
   installer:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
           cache: true
@@ -284,11 +300,11 @@ jobs:
   # ubuntu image ships Chrome stable; the harness itself falls back across
   # channels if the image changes.
   gui-visual:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -300,7 +316,7 @@ jobs:
           S3B_BROWSER_CHANNEL: chrome
       - name: Upload screenshots on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gui-visual-artifacts
           path: testartifacts/gui/
