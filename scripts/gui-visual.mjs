@@ -1426,9 +1426,10 @@ await step('header-column-menu', async () => {
 });
 
 await step('column-resize-reorder', async () => {
-  // resize: drag the Type header's right edge 120px wider
+  // resize: drag the Type boundary handle 120px wider (the overlay
+  // handle floats above the cells, centered on the column's right edge)
   const h = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh:nth-child(3) .gh-resize').getBoundingClientRect();
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   });
   const w0 = await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width);
@@ -1457,13 +1458,104 @@ await step('column-resize-reorder', async () => {
   }, s0));
   await ok('widening never pushes the rows into horizontal scroll', evalPage((s) =>
     document.getElementById('grid-body').scrollWidth <= s.bodyW + 1, s0));
-  await page.mouse.click(h.x, h.y, { clickCount: 2 }); // double-click resets
+  const hReset = await evalPage(() => {
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.click(hReset.x, hReset.y, { clickCount: 2 }); // double-click resets
   await sleep(80);
   const w2 = await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width);
   await ok('double-click on the edge resets the width', Math.abs(w2 - w0) <= 3 && evalPage(() => {
     try { return !(JSON.parse(localStorage.getItem('s3b-cols') || '{}').widths || {}).type; }
     catch { return false; }
   }));
+  // boundary ownership (regression: the in-cell handle was clipped by the
+  // cell's overflow:hidden on the boundary side, so grabbing a couple of px
+  // right of the edge hit the NEXT header — sorting or reordering it
+  // instead of resizing; the overlay handle owns both sides of the edge)
+  await ok('handle grab zone is centered on the boundary and hit-testable past it', evalPage(() => {
+    const cell = document.querySelector('#grid-head .gh[data-col="type"]').getBoundingClientRect();
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
+    return Math.abs((r.left + r.right) / 2 - cell.right) < 1 && Math.abs(r.width - 10) < 0.6
+      && document.elementFromPoint(cell.right + 2, cell.top + cell.height / 2)?.classList.contains('gh-resize') === true;
+  }));
+  const own0 = await evalPage(() => Array.from(document.querySelectorAll('#grid-head .gh[data-col]'))
+    .map((c) => ({ id: c.dataset.col, w: c.getBoundingClientRect().width })));
+  await page.mouse.move(h.x + 2, h.y); // just past the edge: the old dead zone
+  await page.mouse.down();
+  await page.mouse.move(h.x + 62, h.y, { steps: 6 });
+  await page.mouse.up();
+  await sleep(80);
+  await ok('grabbing past the edge resizes the column, not its neighbor', evalPage((o) => {
+    const now = Array.from(document.querySelectorAll('#grid-head .gh[data-col]'))
+      .map((c) => ({ id: c.dataset.col, w: c.getBoundingClientRect().width }));
+    if (now.length !== o.length || now.some((c, i) => c.id !== o[i].id)) return false; // no reorder
+    const dw = now.map((c, i) => c.w - o[i].w);
+    const t = o.findIndex((c) => c.id === 'type');
+    const n = o.findIndex((c) => c.id === 'name'); // flex column absorbs the gain
+    return dw.every((d, i) => (i === t || i === n) || Math.abs(d) <= 1)
+      && Math.abs(dw[t] - 60) <= 2 && Math.abs(dw[n] + 60) <= 2;
+  }, own0));
+  let rh = await evalPage(() => {
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.click(rh.x, rh.y, { clickCount: 2 }); // back to the catalog width
+  await sleep(60);
+  // keyboard resize: handles are focusable separators; arrows nudge, aria tracks
+  const k0 = await evalPage(() => document.querySelector('#grid-head .gh[data-col="type"]').getBoundingClientRect().width);
+  await ok('handle is a focusable aria separator', evalPage((k) => {
+    const rz = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]');
+    return rz.tabIndex === 0 && rz.getAttribute('role') === 'separator'
+      && rz.getAttribute('aria-orientation') === 'vertical'
+      && rz.getAttribute('aria-valuenow') === String(Math.round(k))
+      && rz.getAttribute('aria-valuemin') === '48';
+  }, k0));
+  await page.evaluate(() => document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').focus());
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Shift+ArrowRight');
+  await sleep(60);
+  await ok('arrow keys resize from the keyboard and aria tracks', Math.abs((await evalPage(() =>
+    document.querySelector('#grid-head .gh[data-col="type"]').getBoundingClientRect().width)) - (k0 + 40)) <= 2
+    && evalPage((k) => document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]')
+      .getAttribute('aria-valuenow') === String(Math.round(k + 40)), k0));
+  rh = await evalPage(() => {
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.click(rh.x, rh.y, { clickCount: 2 }); // reset the keyboard nudge too
+  await sleep(60);
+  // flex column floors at exactly its template minimum (regression:
+  // minmax(200px, <200px) silently resolved to 200px, leaving the last
+  // stretch of a narrowing drag inert under the pointer)
+  const nameW0 = await evalPage(() => document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().width);
+  const nh = await evalPage(() => {
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="name"]').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.move(nh.x, nh.y);
+  await page.mouse.down();
+  await page.mouse.move(nh.x - 600, nh.y, { steps: 10 });
+  await page.mouse.up();
+  await sleep(80);
+  await ok('flex column narrows to exactly its minimum and persists it',
+    Math.abs((await evalPage(() => document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().width)) - 200) <= 1
+    && evalPage(() => (JSON.parse(localStorage.getItem('s3b-cols') || '{}').widths || {}).name === 200));
+  await page.mouse.move(nh.x - 600, nh.y); // handle sits at the floored boundary now
+  await page.mouse.down();
+  await page.mouse.move(nh.x - 700, nh.y, { steps: 5 }); // further narrowing changes nothing
+  await page.mouse.up();
+  await sleep(80);
+  await ok('the minimum holds on further narrowing', Math.abs((await evalPage(() =>
+    document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().width)) - 200) <= 1);
+  const nh2 = await evalPage(() => {
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="name"]').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.click(nh2.x, nh2.y, { clickCount: 2 });
+  await sleep(80);
+  await ok('double-click restores the flex column to fill the pane', Math.abs((await evalPage(() =>
+    document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().width)) - nameW0) <= 3);
   // narrow pane: the column set's minimums exceed the head — a rightward
   // drag must stay inert (regression: the degenerate ceiling used to snap the
   // column to the 48px clamp on the first move and shift everything after it)
@@ -1475,7 +1567,7 @@ await step('column-resize-reorder', async () => {
     return { w: cells[2].width, nextL: cells[3].left };
   });
   const t = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh:nth-child(3) .gh-resize').getBoundingClientRect();
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
   });
   await page.mouse.move(t.x, t.y);
@@ -1494,6 +1586,17 @@ await step('column-resize-reorder', async () => {
   await sleep(80);
   await ok('narrow pane: narrowing still works',
     Math.abs((await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width)) - (n0.w - 40)) <= 3);
+  await ok('head scrolls in lockstep with the rows', evalPage(() => {
+    const b = document.getElementById('grid-body');
+    b.scrollLeft = 100;
+    b.dispatchEvent(new Event('scroll'));
+    const head = document.getElementById('grid-head');
+    const okSync = head.style.transform === 'translateX(-100px)'
+      && head.style.width === `${b.clientWidth}px`;
+    b.scrollLeft = 0;
+    b.dispatchEvent(new Event('scroll'));
+    return okSync;
+  }));
   await evalPage(() => localStorage.removeItem('s3b-cols'));
   await page.setViewportSize(vp);
   await sleep(150);

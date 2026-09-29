@@ -3,8 +3,9 @@
 // at full frame rate (performance budget). The column set is dynamic: the
 // catalog below lists every possible column, setColumns() picks the visible
 // ones (Settings exposes them; "name" is always visible). Columns resize by
-// dragging their header edge and reorder by dragging the header itself;
-// order and widths persist per pane (loadColState/saveColState below).
+// dragging their header edge — one overlay handle per boundary (renderHandles)
+// that also resizes from the keyboard — and reorder by dragging the header
+// itself; order and widths persist per pane (loadColState/saveColState below).
 import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
 import { t, has } from './i18n.js';
 
@@ -46,6 +47,7 @@ export const COLUMNS = [
 export const DEFAULT_COLS = ['name', 'type', 'size', 'lastModified'];
 
 const MIN_COL_W = 48;      // resize floor for fixed-width columns
+const RZ_HIT_W = 10;       // boundary-handle hit width (keep in step with .gh-resize)
 const DRAG_THRESHOLD = 6;  // px before a header press becomes a reorder drag
 
 // Column-layout persistence, one key per pane ('s3b-cols' remote,
@@ -124,6 +126,15 @@ export class Grid {
     this.head = document.getElementById(`${prefix}grid-head`);
     this.body = document.getElementById(`${prefix}grid-body`);
     this.canvas = document.getElementById(`${prefix}grid-canvas`);
+    // The head scrolls horizontally WITH the rows: it is width-locked to the
+    // rows' layout width and translated by -scrollLeft inside a clipping
+    // wrapper. Without the lock a pane narrower than the column minimums
+    // clips the head forever — off-clip headers (and their resize handles)
+    // could never be reached, and after a horizontal scroll the headers
+    // would sit over the wrong columns' data.
+    this.headClip = el('div', { class: 'grid-headclip' });
+    this.head.replaceWith(this.headClip);
+    this.headClip.appendChild(this.head);
     this.kind = prefix ? 'local' : 'remote';
     this.mime = prefix ? 'application/x-s3b-local' : 'application/x-s3b';
 
@@ -145,7 +156,13 @@ export class Grid {
     this.showMarkers = true; // delete-marker badges on (Settings toggle)
     this.on = {}; // callbacks: select, activate, context, dragstart, drop, badgeV, badgeM
     this.setColumns(DEFAULT_COLS);
-    this.body.addEventListener('scroll', () => this.render());
+    this.body.addEventListener('scroll', () => { this.syncHeadScroll(); this.render(); });
+    // pane width changes (split drag, window resize) and the scrollbar
+    // appearing/disappearing (row count changes) both re-lock the head width
+    // and re-seat the boundary handles
+    this.ro = new ResizeObserver(() => { this.syncHeadWidth(); this.positionHandles(); });
+    this.ro.observe(this.headClip);
+    this.ro.observe(this.canvas);
     // Right-click on a header cell opens the column picker (same catalog as
     // Settings); wired by the host pane via on.headerMenu.
     this.head.addEventListener('contextmenu', (e) => {
@@ -215,12 +232,51 @@ export class Grid {
   // resized: fixed columns their current width, the flex one its minimum.
   colFloor(c) { return c.flex ? c.minW : this.colWidth(c); }
 
+  // resizeFloor is the least width a drag may give a column: the flex
+  // column bottoms out at its template minimum, fixed columns at
+  // MIN_COL_W. Clamping the drag here (not at MIN_COL_W alone) keeps the
+  // pointer tracking at the floor — minmax(minW, w < minW) silently
+  // resolves to minW, so the last stretch of a narrowing drag would look
+  // dead while the pointer keeps moving.
+  resizeFloor(c) { return c.flex ? c.minW : MIN_COL_W; }
+
+  // resizeCeiling is the most a column may take in this pane: everything
+  // the grid has (checkbox track included) once the other columns keep
+  // their floors. The rows area is the truth — it loses the scrollbar
+  // width. Floored at the column's current width so a rightward drag in a
+  // layout already overflowing its minimums stays inert instead of
+  // snapping the column down to the ceiling — and shifting every column
+  // after it — on the first move.
+  resizeCeiling(c, curW) {
+    const bound = Math.min(this.headClip.clientWidth, this.body.clientWidth);
+    return Math.max(curW, bound - 34
+      - this.cols.reduce((sum, x) => (x === c ? sum : sum + this.colFloor(x)), 0));
+  }
+
+  // syncHeadWidth locks the head to the rows' layout width: the fr/flex
+  // track then resolves against exactly the space the rows see, so head and
+  // row cell boundaries agree pixel-for-pixel, vertical scrollbar included.
+  syncHeadWidth() {
+    this.head.style.width = `${this.body.clientWidth}px`;
+  }
+
+  // syncHeadScroll slides the head by the body's horizontal scroll offset.
+  syncHeadScroll() {
+    this.head.style.transform = `translateX(${-this.body.scrollLeft}px)`;
+  }
+
   // applyTemplate pushes the current column template onto the head and
-  // every pooled row — called live from a resize drag.
+  // every pooled row — called live from a resize drag. The head follows
+  // width-locked and translated, the boundary handles re-seat on their
+  // (possibly just-moved) edges, and the separators re-expose their size.
   applyTemplate() {
     const tpl = this.gridTemplate();
     this.head.style.gridTemplateColumns = tpl;
     for (const row of this.pool) row.style.gridTemplateColumns = tpl;
+    this.syncHeadWidth();
+    this.syncHeadScroll();
+    this.positionHandles();
+    this.updateHandleAria();
   }
 
   // nameCellIdx is the child index of the name cell within pooled rows.
@@ -248,13 +304,70 @@ export class Grid {
     this.headCb = cb;
     this.head.style.gridTemplateColumns = this.gridTemplate();
     this.headCols = this.cols.map((c) => this.headerCell(c));
-    this.head.replaceChildren(el('div', { class: 'gh check' }, cb), ...this.headCols);
+    // the handles layer goes FIRST so the last header cell stays
+    // :last-child (its right border is dropped there)
+    this.head.replaceChildren(this.handlesLayer(), el('div', { class: 'gh check' }, cb), ...this.headCols);
+    this.updateHandleAria();
+    this.positionHandles();
+  }
+
+  // handlesLayer builds the overlay that carries one resize handle per
+  // column boundary. The handles live above the cells — not inside them:
+  // a cell's overflow:hidden (the label ellipsis) clips a child handle at
+  // the padding box, killing exactly the boundary-side half of the grab
+  // zone, and a grab there lands on the NEXT cell instead — a sort click
+  // or an accidental column reorder. The layer itself never blocks a cell
+  // (pointer-events none); only the handles take pointers.
+  handlesLayer() {
+    const layer = el('div', { class: 'gh-handles' });
+    layer.replaceChildren(...this.cols.map((c) => {
+      const label = t(c.labelKey);
+      const rz = el('div', {
+        class: 'gh-resize', role: 'separator', 'aria-orientation': 'vertical',
+        tabindex: '0', 'data-col': c.id,
+        'aria-label': `${label}: ${t('col.resizeTip')}`, title: t('col.resizeTip'),
+      });
+      rz.addEventListener('pointerdown', (e) => this.startResize(e, c, rz));
+      rz.addEventListener('dblclick', (e) => { e.stopPropagation(); this.resetWidth(c); });
+      rz.addEventListener('keydown', (e) => this.keyResize(e, c));
+      return rz;
+    }));
+    return layer;
+  }
+
+  // positionHandles seats every boundary handle on its column's right edge
+  // (cell rects minus the head's own rect, so a translated head needs no
+  // special casing). Runs after any template change — including each live
+  // drag move, so a handle follows its boundary while the column resizes.
+  positionHandles() {
+    const layer = this.head.querySelector('.gh-handles');
+    if (!layer) return;
+    const hl = this.head.getBoundingClientRect().left;
+    this.headCols.forEach((cell, i) => {
+      const h = layer.children[i];
+      if (h) h.style.left = `${cell.getBoundingClientRect().right - hl - RZ_HIT_W / 2}px`;
+    });
+  }
+
+  // updateHandleAria exposes each separator's live size and the same
+  // floor/ceiling a pointer drag respects, so assistive tech reads the
+  // real bounds, not just "separator".
+  updateHandleAria() {
+    const layer = this.head.querySelector('.gh-handles');
+    if (!layer) return;
+    this.cols.forEach((c, i) => {
+      const h = layer.children[i];
+      const w = Math.round(this.headCols[i].getBoundingClientRect().width);
+      h.setAttribute('aria-valuemin', String(this.resizeFloor(c)));
+      h.setAttribute('aria-valuemax', String(this.resizeCeiling(c, w)));
+      h.setAttribute('aria-valuenow', String(w));
+      h.setAttribute('aria-valuetext', `${w}px`);
+    });
   }
 
   // headerCell builds one column header: label + sort indicator + filter
-  // funnel + the edge resize handle. Click cycles the sort; dragging the
-  // cell (6px+) reorders the column; dragging the handle resizes it and
-  // double-clicking resets it.
+  // funnel. Click cycles the sort; dragging the cell (6px+) reorders the
+  // column. The resize handle is NOT here — see handlesLayer.
   headerCell(c) {
     const ind = el('span', { class: 'sort-ind' });
     if (this.sortKey === c.id) ind.textContent = this.sortDir > 0 ? '\u25B2' : '\u25BC';
@@ -269,17 +382,10 @@ export class Grid {
     funnel.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 2h14l-5.5 6.2V14l-3-1.6V8.2Z" fill="currentColor"/></svg>';
     const cell = el('div', {
       class: `gh${c.num ? ' num' : ''}`,
+      'data-col': c.id,
       title: t('col.dragTip'),
       onclick: () => this.cycleSort(c.id),
     }, el('span', { text: label }), ind, funnel);
-    const rz = el('div', {
-      class: 'gh-resize', role: 'separator', 'aria-orientation': 'vertical',
-      'aria-label': `${label}: ${t('col.resizeTip')}`, title: t('col.resizeTip'),
-    });
-    rz.addEventListener('click', (e) => e.stopPropagation()); // a handle click is not a sort
-    rz.addEventListener('pointerdown', (e) => this.startResize(e, c, rz));
-    rz.addEventListener('dblclick', (e) => { e.stopPropagation(); this.resetWidth(c); });
-    cell.appendChild(rz);
     cell.addEventListener('pointerdown', (e) => this.startColDrag(e, c, cell));
     return cell;
   }
@@ -323,34 +429,24 @@ export class Grid {
 
   // ---------- column drag: resize + reorder ----------
 
-  // startResize tracks an edge-handle drag: the column width follows the
+  // startResize tracks a boundary-handle drag: the column width follows the
   // pointer live (head + pooled rows restyle per move — a pool is ~40 rows,
-  // one inline style each), clamped to MIN_COL_W below and to the width the
-  // other columns must keep above. Pointerup persists via on.colsChanged.
+  // one inline style each), clamped to the column's own floor below and to
+  // the width the other columns must keep above. Pointerup persists via
+  // on.colsChanged.
   startResize(e, c, rz) {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
-    const startW = rz.closest('.gh').getBoundingClientRect().width;
+    const startW = this.headCols[this.cols.indexOf(c)].getBoundingClientRect().width;
     const startX = e.clientX;
-    // The bound is the narrower of head and rows: the rows area loses the
-    // vertical-scrollbar width, and a template that fits the head but not
-    // the rows would slide an h-scrollbar under the grid mid-drag.
-    const body = this.canvas.parentElement;
-    const bound = Math.min(this.head.clientWidth,
-      (body && body.clientWidth) || this.head.clientWidth);
-    // The ceiling can compute below the column's own width when the layout
-    // already overflows (a pane narrower than the column set's minimums);
-    // flooring it at startW keeps a rightward drag from snapping the column
-    // down to the clamp — and shifting every column after it — on the first
-    // move. In that regime the drag stays inert until space is freed.
-    const maxW = Math.max(startW, bound - 34
-      - this.cols.reduce((sum, x) => (x === c ? sum : sum + this.colFloor(x)), 0));
+    const floor = this.resizeFloor(c);
+    const maxW = this.resizeCeiling(c, startW);
     rz.setPointerCapture?.(e.pointerId); // keep the drag alive past the window edge
     rz.classList.add('dragging');
     document.body.classList.add('col-resize-active');
     const move = (ev) => {
-      const w = Math.round(Math.min(Math.max(startW + ev.clientX - startX, MIN_COL_W), maxW));
+      const w = Math.round(Math.min(Math.max(startW + ev.clientX - startX, floor), maxW));
       if (w !== this.widths[c.id]) {
         this.widths[c.id] = w;
         this.applyTemplate();
@@ -367,6 +463,29 @@ export class Grid {
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', done);
     window.addEventListener('pointercancel', done);
+  }
+
+  // keyResize is the keyboard path on a focused handle: ArrowLeft/Right
+  // nudge by 8px (Shift ×4), Home/End jump to the bounds — all clamped to
+  // the same floor/ceiling a pointer drag respects.
+  keyResize(e, c) {
+    const cell = this.headCols[this.cols.indexOf(c)];
+    const cur = Math.round(cell.getBoundingClientRect().width);
+    const floor = this.resizeFloor(c);
+    const max = this.resizeCeiling(c, cur);
+    let w;
+    if (e.key === 'ArrowLeft') w = cur - (e.shiftKey ? 32 : 8);
+    else if (e.key === 'ArrowRight') w = cur + (e.shiftKey ? 32 : 8);
+    else if (e.key === 'Home') w = floor;
+    else if (e.key === 'End') w = max;
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+    w = Math.round(Math.min(Math.max(w, floor), max));
+    if (w === cur) return;
+    this.widths[c.id] = w;
+    this.applyTemplate();
+    this.on.colsChanged?.();
   }
 
   // resetWidth clears a user-set width — double-click on the handle. The

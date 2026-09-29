@@ -328,7 +328,7 @@ full matrix (172 rows):
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
-  SWEEP-VIS-01  gui-visual   669/669 checks
+  SWEEP-VIS-01  gui-visual   687/687 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
   standalone units, same tree:
   --only gui                        87 PASS · 2 SKIP · 0 FAIL — 1369 s
