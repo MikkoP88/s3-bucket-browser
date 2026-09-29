@@ -256,12 +256,19 @@ function shim() {
   // leaked 's3b-panes' from a previous run's dual-pane step opens the side
   // pane at boot (boot-time LocalHome/ListLocal) and shifts every later
   // pane assertion.
+  // One-shot escape hatch for the settings-honor language walk: the Save
+  // that applies a language choice reloads the window and the reboot must
+  // read what it applied, not the deterministic 'en' seed. The flag lives
+  // in localStorage (window state dies with the old document) and clears
+  // itself on the next boot, so every other load keeps the old contract.
+  const keepLang = localStorage.getItem('s3b-shim-keep-lang') === '1';
+  if (keepLang) localStorage.removeItem('s3b-shim-keep-lang');
   for (const k of Object.keys(localStorage)) {
-    if (k.startsWith('s3b-')) localStorage.removeItem(k);
+    if (k.startsWith('s3b-') && !(keepLang && k === 's3b-lang')) localStorage.removeItem(k);
   }
   localStorage.setItem('s3b-conflict', 'overwrite');
   localStorage.setItem('s3b-theme', 'light');
-  localStorage.setItem('s3b-lang', 'en');
+  if (!keepLang) localStorage.setItem('s3b-lang', 'en');
   // NOTE: s3b-autorefresh is deliberately NOT set — auto refresh is off by
   // default; the boot path with no stored key is exactly what the walk
   // asserts (and the auto-refresh step re-enables it explicitly).
@@ -415,7 +422,7 @@ function shim() {
     // and never consults these. allSources mirrors the backend's union of
     // seen-on-a-line sources and configured data sources.
     logSettings: {
-      mode: 'default', dir: '', levels: [], scopes: [], sources: [],
+      mode: 'off', dir: '', levels: [], scopes: [], sources: [],
       allScopes: ['admin', 'app', 'copy', 'delete', 'doctor', 'download', 'import', 'list', 'mkdir', 'profile', 'rename', 'settings', 'share', 'sources', 'transfer', 'upload', 'versions'],
       allSources: ['hetzner', 'lab', 'local', 'team-files', 'vault'],
     },
@@ -2520,7 +2527,7 @@ await step('settings-dialog', async () => {
     && tc.args[3] === 0 && tc.args[5] === 10000);
   const ls = await findCall('SetLogSettings');
   await ok('save sends one SetLogSettings with both filters', ls
-    && ls.args[0] === 'default' && Array.isArray(ls.args[2]) && ls.args[2].includes('warn')
+    && ls.args[0] === 'off' && Array.isArray(ls.args[2]) && ls.args[2].includes('warn')
     && Array.isArray(ls.args[3]) && ls.args[3].length === 0
     && Array.isArray(ls.args[4]) && ls.args[4].includes('team-files'));
   await ok('badge toggles applied by save', evalPage(() => localStorage.getItem('s3b-show-versions') === '1'
@@ -6388,6 +6395,301 @@ await step('theme-prepaint', async () => {
   await evalPage(() => { sessionStorage.removeItem('s3b-test-theme'); localStorage.setItem('s3b-theme', 'light'); });
   await page.reload({ waitUntil: 'load' });
   await ok('theme restored to light', evalPage(() => document.documentElement.dataset.theme === 'light'));
+});
+
+// ---------- settings honor walk (every control + every default) ----------
+await step('settings-honor', async () => {
+  // The whole-surface companion to settings-dialog: that step proves the
+  // draft model on representative rows, this one walks EVERY control.
+  // Each row stages into the draft (nothing applied), one Save lands all
+  // of them (persisted key + live consumer), then Reset-to-defaults + Save
+  // returns every property to its documented default - including the
+  // zero-means-Default/Auto tuning snapshot and file-log off. Runs LAST on
+  // purpose: it rewrites every s3b-* key the dialog owns, and its final
+  // reload hands the world back the way the boot shim found it.
+  const DIALOG_KEYS = ['s3b-autorefresh', 's3b-cols', 's3b-cols-local', 's3b-conflict',
+    's3b-copy-versions', 's3b-del-autoconfirm', 's3b-del-typeconfirm', 's3b-del-window',
+    's3b-edit-choose-app', 's3b-local-sync', 's3b-log', 's3b-os-clip', 's3b-panes',
+    's3b-popout-center', 's3b-popouts-persist', 's3b-refresh-focus', 's3b-show-hidden',
+    's3b-show-markers', 's3b-show-throttle', 's3b-show-versions', 's3b-throttle',
+    's3b-xfer-window'];
+  // fresh install: clear every key the dialog owns, then reboot so the
+  // grids, the tuning store and the log preference come back at their
+  // out-of-box state too (a wipe alone leaves the in-memory world mid-run)
+  await evalPage((ks) => { for (const k of ks) localStorage.removeItem(k); }, DIALOG_KEYS);
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction(() => window.__shim !== undefined
+    && document.querySelectorAll('#menubar .mb-title').length > 0, null, { timeout: 10000 });
+  await ok('fresh-install world: no dialog residue beyond the shim seed', evalPage((ks) =>
+    ks.every((k) => localStorage.getItem(k) === (k === 's3b-conflict' ? 'overwrite' : null)), DIALOG_KEYS));
+  // an object view with rows - the column asserts below read live grids
+  await navObjects('media-assets');
+  await waitFor(() => evalPage((x) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .some((r) => r.style.display !== 'none' && r._model && r._model.name === x), 'brand'), 6000, 'row brand');
+  const openSettings = async () => {
+    await page.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
+    await sleep(80);
+    const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')) || null);
+    if (item) await item.asElement().click();
+    await waitFor(modalVisible, 4000, 'settings modal');
+    return !!item;
+  };
+  await ok('settings opens on the fresh world', await openSettings());
+  await ok('fresh install shows a clean draft', evalPage(() =>
+    document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === true));
+  // row-scoped helpers: exact .set-name match (several labels are prefixes
+  // of others - "Speed limit" vs "Show speed limit when transferring").
+  // pick drives a row's select through the real change event; tickTo drives
+  // its checkbox to the wanted state.
+  const pick = (label, value) => evalPage(({ q, v }) => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => (x.querySelector('.set-name')?.textContent || '').trim() === q);
+    const sel = row?.querySelector('select');
+    if (!sel || sel.value === String(v)) return false;
+    sel.value = String(v);
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }, { q: label, v: value });
+  const tickTo = (label, want) => evalPage(({ q, w }) => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => (x.querySelector('.set-name')?.textContent || '').trim() === q);
+    const cb = row?.querySelector('input[type=checkbox]');
+    if (!cb || cb.checked === w) return false;
+    cb.click();
+    return true;
+  }, { q: label, w: want });
+  const selValue = (label) => evalPage((q) => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => (x.querySelector('.set-name')?.textContent || '').trim() === q);
+    return row?.querySelector('select')?.value ?? null;
+  }, label);
+  const cbState = (label) => evalPage((q) => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+      .find((x) => (x.querySelector('.set-name')?.textContent || '').trim() === q);
+    const cb = row?.querySelector('input[type=checkbox]');
+    return cb ? cb.checked : null;
+  }, label);
+  // column checkboxes live under their own section headers - uncheck by
+  // walking the rows between the section and its next sibling section
+  const uncheckCol = (section, col) => evalPage(({ s, c }) => {
+    const start = Array.from(document.querySelectorAll('#modal-root .set-section'))
+      .find((x) => x.textContent.trim() === s);
+    if (!start) return false;
+    const rows = [];
+    for (let n = start.nextElementSibling; n && !n.classList.contains('set-section'); n = n.nextElementSibling) rows.push(n);
+    const row = rows.find((r) => (r.querySelector('.set-name')?.textContent || '').trim() === c);
+    const cb = row?.querySelector('input[type=checkbox]');
+    if (!cb || !cb.checked || cb.disabled) return false;
+    cb.click();
+    return true;
+  }, { s: section, c: col });
+  // appearance: language is the one control whose apply reloads the
+  // window - stage it, prove it stays deferred, hand it back (the apply
+  // path gets its own dedicated reload pass at the end of this step)
+  await ok('language stages deferred', await pick('Language', 'fi') && await evalPage(() =>
+    localStorage.getItem('s3b-lang') === 'en' // the shim's seed - staging changed nothing
+    && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
+  await pick('Language', 'en'); // back to base - no reload may ride this Save
+  // view
+  await tickTo('Show panels', true);
+  await tickTo('Show log area', true);
+  await tickTo('Show version count icons', true);
+  await tickTo('Show delete marker icons', true);
+  await tickTo('Show hidden (delete-marked) objects', true);
+  await tickTo('Sync local pane with remote', true);
+  await tickTo('Remember popout window positions', false);
+  await pick('Popout windows open centered on', 'app');
+  await uncheckCol('Main grid columns', 'Type');
+  await uncheckCol('Side panel columns', 'Size');
+  await ok('view rows stage without applying', evalPage(() =>
+    localStorage.getItem('s3b-panes') === null && localStorage.getItem('s3b-log') === null
+    && document.getElementById('local-pane').classList.contains('hidden')
+    && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
+  // refresh
+  await pick('Auto refresh', '30000');
+  await tickTo('Refresh on focus', true);
+  await ok('refresh rows stage without applying', evalPage(() =>
+    localStorage.getItem('s3b-autorefresh') === null
+    && document.getElementById('status-auto').classList.contains('hidden')));
+  // network + transfer engine: two more of the six tuning rows (the
+  // settings-dialog walk covers listing timeout; the snapshot always
+  // rides whole)
+  await pick('S3 retry attempts', '5');
+  await pick('Multipart part size', '8');
+  // editing
+  await tickTo('Ask which app opens files for editing', false);
+  // deleting
+  await tickTo('Always use the delete window', false);
+  await tickTo('Require typing "delete"', true);
+  await tickTo('Delete without prompting', true);
+  // transfers
+  await pick('Conflict policy', 'rename');
+  await tickTo('Show speed limit when transferring', true);
+  await tickTo('Preserve versions when copying S3→S3', false);
+  await tickTo('Explorer copy & paste', false);
+  await tickTo('Transfer window auto open/close', false);
+  await pick('Speed limit', '524288');
+  // logging: stage the mode select (the file-log filters ride
+  // SetLogSettings the same way - covered by the settings-dialog walk)
+  await pick('Save logs to file', 'default');
+  await ok('editing/deleting/transfers rows stage without applying', evalPage(() =>
+    localStorage.getItem('s3b-edit-choose-app') === null && localStorage.getItem('s3b-conflict') === 'overwrite'
+    && localStorage.getItem('s3b-throttle') === null
+    && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
+  await shot('settings-honor-staged');
+  // ONE Save lands everything staged above
+  await resetCalls();
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').classList.contains('hidden'))), 4000, 'save closes');
+  await ok('save persists every staged value', evalPage(() => {
+    const kv = {
+      's3b-panes': '1', 's3b-log': '1', 's3b-show-versions': '1', 's3b-show-markers': '1',
+      's3b-show-hidden': '1', 's3b-local-sync': '1', 's3b-popouts-persist': '0',
+      's3b-popout-center': 'app', 's3b-conflict': 'rename', 's3b-show-throttle': '1',
+      's3b-copy-versions': '0', 's3b-os-clip': '0', 's3b-xfer-window': '0',
+      's3b-throttle': '524288', 's3b-edit-choose-app': '0', 's3b-del-window': '0',
+      's3b-del-typeconfirm': '1', 's3b-del-autoconfirm': '1', 's3b-autorefresh': '30000',
+      's3b-refresh-focus': '1',
+    };
+    for (const k of Object.keys(kv)) if (localStorage.getItem(k) !== kv[k]) return false;
+    const cols = JSON.parse(localStorage.getItem('s3b-cols') || 'null') || {};
+    const colsLocal = JSON.parse(localStorage.getItem('s3b-cols-local') || 'null') || {};
+    return Array.isArray(cols.cols) && !cols.cols.includes('type') && cols.cols.includes('name')
+      && Array.isArray(colsLocal.cols) && !colsLocal.cols.includes('size') && colsLocal.cols.includes('name');
+  }));
+  await ok('applied controls drive their live consumers', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && !document.getElementById('logarea').classList.contains('hidden')
+    && !document.getElementById('status-auto').classList.contains('hidden')
+    && document.getElementById('local-sync')?.checked === true
+    && !document.getElementById('grid-head').textContent.includes('Type')
+    && !document.getElementById('local-grid-head').textContent.includes('Size')));
+  const tc = await findCall('SetTuning');
+  await ok('one whole-snapshot SetTuning rides the save', tc
+    && tc.args[0] === 30000 && tc.args[1] === 300000 && tc.args[2] === 5
+    && tc.args[3] === 8 && tc.args[4] === 0 && tc.args[5] === 10000);
+  const lc = await findCall('SetLogSettings');
+  await ok('save carries the staged file-log mode', lc && lc.args[0] === 'default'
+    && Array.isArray(lc.args[2]) && lc.args[2].length === 0
+    && Array.isArray(lc.args[4]) && lc.args[4].length === 0);
+  // Reset + Save: every property back at its documented default
+  await openSettings();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root button'))
+      .find((x) => /reset to defaults/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await sleep(80);
+  await ok('reset stages the appearance + refresh defaults',
+    (await selValue('Theme')) === 'auto' && (await selValue('Language')) === 'en'
+    && (await selValue('Auto refresh')) === '0' && (await cbState('Refresh on focus')) === false);
+  await ok('reset stages the view defaults',
+    (await cbState('Show panels')) === false && (await cbState('Show log area')) === false
+    && (await cbState('Show version count icons')) === false
+    && (await cbState('Show delete marker icons')) === false
+    && (await cbState('Show hidden (delete-marked) objects')) === false
+    && (await cbState('Sync local pane with remote')) === false
+    && (await cbState('Remember popout window positions')) === true
+    && (await selValue('Popout windows open centered on')) === 'display');
+  await ok('reset stages the editing + deleting + transfers defaults',
+    (await cbState('Ask which app opens files for editing')) === true
+    && (await cbState('Always use the delete window')) === true
+    && (await cbState('Require typing "delete"')) === false
+    && (await cbState('Delete without prompting')) === false
+    && (await selValue('Conflict policy')) === 'ask'
+    && (await cbState('Show speed limit when transferring')) === false
+    && (await cbState('Preserve versions when copying S3→S3')) === true
+    && (await cbState('Explorer copy & paste')) === true
+    && (await cbState('Transfer window auto open/close')) === true
+    && (await selValue('Speed limit')) === '0');
+  await ok('reset stages tuning zeros as Default/Auto and the log off',
+    (await selValue('Listing timeout')) === '0' && (await selValue('Compare timeout')) === '0'
+    && (await selValue('S3 retry attempts')) === '0' && (await selValue('Multipart part size')) === '0'
+    && (await selValue('Parts in flight')) === '0' && (await selValue('Stall threshold')) === '0'
+    && (await selValue('Save logs to file')) === 'off');
+  await shot('settings-honor-reset');
+  await resetCalls();
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').classList.contains('hidden'))), 4000, 'reset save closes');
+  await ok('save-after-reset persists every default value', evalPage(() => {
+    const kv = {
+      's3b-panes': '0', 's3b-log': '0', 's3b-show-versions': '0', 's3b-show-markers': '0',
+      's3b-show-hidden': '0', 's3b-local-sync': '0', 's3b-popouts-persist': '1',
+      's3b-popout-center': 'display', 's3b-conflict': 'ask', 's3b-show-throttle': '0',
+      's3b-copy-versions': '1', 's3b-os-clip': '1', 's3b-xfer-window': '1',
+      's3b-throttle': '0', 's3b-edit-choose-app': '1', 's3b-del-window': '1',
+      's3b-del-typeconfirm': '0', 's3b-del-autoconfirm': '0', 's3b-autorefresh': '0',
+      's3b-refresh-focus': '0',
+    };
+    for (const k of Object.keys(kv)) if (localStorage.getItem(k) !== kv[k]) return false;
+    const def = ['name', 'type', 'size', 'lastModified'];
+    const cols = JSON.parse(localStorage.getItem('s3b-cols') || 'null') || {};
+    const colsLocal = JSON.parse(localStorage.getItem('s3b-cols-local') || 'null') || {};
+    return def.every((c) => cols.cols?.includes(c)) && cols.cols?.length === 4
+      && def.every((c) => colsLocal.cols?.includes(c)) && colsLocal.cols?.length === 4;
+  }));
+  await ok('default consumers return to their boot state', evalPage(() =>
+    document.getElementById('local-pane').classList.contains('hidden')
+    && document.getElementById('logarea').classList.contains('hidden')
+    && document.getElementById('status-auto').classList.contains('hidden')
+    && document.getElementById('grid-head').textContent.includes('Type')
+    && document.getElementById('local-grid-head').textContent.includes('Size')));
+  const tr2 = await findCall('SetTuning');
+  await ok('reset rides zero-means-default tuning to the backend',
+    tr2 && tr2.args.length === 6 && tr2.args.every((v) => v === 0));
+  const lr2 = await findCall('SetLogSettings');
+  await ok('reset turns file logging back off', lr2 && lr2.args[0] === 'off'
+    && Array.isArray(lr2.args[2]) && lr2.args[2].length === 0
+    && Array.isArray(lr2.args[4]) && lr2.args[4].length === 0);
+  // the discard path on a select: a staged language never lands
+  await openSettings();
+  await pick('Language', 'fi');
+  await page.keyboard.press('Escape');
+  await sleep(80);
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root button'))
+      .find((x) => /^discard$/i.test(x.textContent.trim()));
+    if (b) b.click();
+    return !!b;
+  });
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').classList.contains('hidden'))), 4000, 'discard closes');
+  await ok('discarded language choice never lands', evalPage(() =>
+    localStorage.getItem('s3b-lang') === 'en')); // still the shim's seed
+  // language apply: the one Save that reloads the window - it must land
+  // and boot the whole app in the chosen language
+  await openSettings();
+  await pick('Language', 'fi');
+  await evalPage(() => {
+    window.__honorReload = true;
+    // opt this one reload out of the shim's language seed: the reboot
+    // must read the value Save just applied (the flag clears on boot)
+    localStorage.setItem('s3b-shim-keep-lang', '1');
+  });
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  try {
+    await page.waitForFunction(() => !window.__honorReload && window.__shim !== undefined
+      && document.querySelectorAll('#menubar .mb-title').length > 0, null, { timeout: 10000 });
+  } catch {
+    // the reload can race the probe's execution context - gate on the
+    // new document's boot instead
+    await page.waitForLoadState('load');
+    await page.waitForFunction(() => window.__shim !== undefined
+      && document.querySelectorAll('#menubar .mb-title').length > 0, null, { timeout: 10000 });
+    await sleep(200);
+  }
+  await ok('language save reloads the app in Finnish', evalPage(() =>
+    localStorage.getItem('s3b-lang') === 'fi'
+    && Array.from(document.querySelectorAll('#menubar .mb-title')).some((x) => /Asetukset/i.test(x.textContent))));
+  // hand the world back: the boot shim wipes every s3b-* key (fi included)
+  // and re-pins the theme, so one reload ends the run pristine
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction(() => window.__shim !== undefined
+    && document.querySelectorAll('#menubar .mb-title').length > 0, null, { timeout: 10000 });
+  await ok('reload restores the pristine default world', evalPage(() =>
+    localStorage.getItem('s3b-lang') === 'en' && localStorage.getItem('s3b-conflict') === 'overwrite'
+    && Array.from(document.querySelectorAll('#menubar .mb-title')).some((x) => /settings/i.test(x.textContent))));
 });
 
 // ---------- report ----------
