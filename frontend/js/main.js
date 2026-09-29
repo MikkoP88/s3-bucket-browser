@@ -2,7 +2,7 @@
 import { api, onEvent, subscribeStream } from './api.js';
 import { el, fmtBytes, fmtSpeed, fmtDate, basename, debounce, srcIconEl } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
-import { Grid, COLUMNS, saveColState } from './grid.js';
+import { Grid, COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
 import { Tree } from './tree.js';
 import {
   confirm, prompt, properties, doctorDialog, transferManager, runningTasks,
@@ -3468,10 +3468,11 @@ function setLanguage(v) {
   window.location.reload();
 }
 
-// openSettings mounts the Settings dialog over the persisted knobs; rows
-// apply immediately through the same setters the menus use. The log-file
-// preference lives Go-side (logsettings.json) so the writer honors it —
-// fetched before the dialog opens and pushed back on change.
+// openSettings mounts the Settings dialog over the persisted knobs as a
+// draft: rows stage locally, and Save applies the diff through the same
+// setters the menus use, then closes. The log-file preference lives
+// Go-side (logsettings.json) so the writer honors it — fetched before
+// the dialog opens and pushed back, once, on Save.
 async function openSettings() {
   let logSet = { mode: 'default', dir: '' };
   try { logSet = await api.GetLogSettings(); } catch { /* binding missing pre-Startup */ }
@@ -3513,7 +3514,7 @@ async function openSettings() {
     apply: {
       theme: setThemePref,
       lang: setLanguage,
-      autoRefresh: setAutoRefresh,
+      autoRefreshMs: setAutoRefresh,
       refreshOnFocus: setRefreshOnFocus,
       panes: setPanes,
       log: setLogArea,
@@ -3593,17 +3594,22 @@ async function openSettings() {
         return tunSet;
       },
     },
-    // Reset to defaults: wipe every persisted shell knob and reload.
-    // Favorites are data, not settings — they survive. The Go-side
-    // preferences (logsettings.json, appsettings.json) reset through
-    // their bindings — file logging to off (its default), tuning 0s.
-    reset: () => {
-      const favs = localStorage.getItem('s3b-favs');
-      localStorage.clear();
-      if (favs !== null) localStorage.setItem('s3b-favs', favs);
-      try { api.SetLogSettings('off', '', [], [], []); } catch { /* best effort */ }
-      try { api.SetTuning(0, 0, 0, 0, 0, 0); } catch { /* best effort */ }
-      window.location.reload();
+    // Staged-reset target: the boot fallbacks, mirroring every state
+    // thunk above. Reset stages these into the dialog's draft; nothing
+    // touches disk until Save. (The old reset wiped ALL localStorage and
+    // reloaded — column widths and window geometry, state this dialog
+    // never owns, now survive a reset by design.)
+    defaults: {
+      theme: 'auto', lang: 'en', autoRefreshMs: 0, refreshOnFocus: false,
+      panes: false, log: false, conflict: 'ask', throttle: 0,
+      showThrottle: false, editChooseApp: true, copyVersions: true,
+      cols: [...DEFAULT_COLS], colsLocal: [...DEFAULT_COLS],
+      showHidden: false, showMarkers: false, showVersions: false,
+      delWindow: true, delTypeConfirm: false, delAutoConfirm: false,
+      explorerClip: true, xferWin: true, popoutCenter: 'display',
+      popoutPersist: true, localSync: false,
+      tuning: { listingTimeoutMs: 0, compareTimeoutMs: 0, retryAttempts: 0, partSizeMiB: 0, partConcurrency: 0, stallAfterMs: 0 },
+      logCfg: { mode: 'off', dir: '', levels: [], scopes: [], sources: [] },
     },
   });
 }

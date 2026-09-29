@@ -16,7 +16,7 @@ const root = () => document.getElementById('modal-root');
 // that opened it, never out through it.
 const modalStack = [];
 
-export function openModal({ title, body, buttons = [], wide = false, cls = '', onClose }) {
+export function openModal({ title, body, buttons = [], wide = false, cls = '', onClose, onBeforeClose }) {
   const r = root();
   const prevFocus = document.activeElement;
   r.classList.remove('hidden');
@@ -35,8 +35,9 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
 
   let open = true; // close is idempotent — the footer, the X, Escape and
                    // a programmatic close can all fire for one modal
+  let guarding = false; // an undecided onBeforeClose swallows re-entrant closes
   const entry = {};
-  const close = (result) => {
+  const doClose = (result) => {
     if (!open) return;
     open = false;
     const idx = modalStack.indexOf(entry);
@@ -57,6 +58,26 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
       prevFocus?.focus?.();
     }
     onClose?.(result);
+  };
+  // onBeforeClose gates every close path (footer, X, Escape, backdrop):
+  // false — or a promise of it — vetoes. The Settings sheet uses it
+  // to confirm before discarding a dirty draft; the confirm it opens
+  // stacks as a child modal, so this box's own Escape stays suspended
+  // while the question is on screen.
+  const close = (result) => {
+    if (!open || guarding) return;
+    if (!onBeforeClose) return doClose(result);
+    let ok = false;
+    try { ok = onBeforeClose(); } catch { ok = false; }
+    if (ok && typeof ok.then === 'function') {
+      guarding = true;
+      ok.then(
+        (yes) => { guarding = false; if (yes) doClose(result); },
+        () => { guarding = false; },
+      );
+      return;
+    }
+    if (ok) doClose(result);
   };
   const esc = (e) => { if (e.key === 'Escape') close(null); };
   // Focus trap: Tab (and Shift+Tab) cycle inside the modal (a11y).

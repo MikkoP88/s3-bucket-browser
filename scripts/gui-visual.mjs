@@ -2230,25 +2230,35 @@ await step('settings-dialog', async () => {
       && sel.value === (localStorage.getItem('s3b-theme') || 'auto');
   }));
   await ok('settings rows rendered', evalPage(() => document.querySelectorAll('#modal-root .set-row').length >= 7));
+  await ok('save disabled on a clean draft', evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === true));
   await ok('speed-limit visibility toggle offered', evalPage(() => Array.from(document.querySelectorAll('#modal-root .set-row'))
     .some((r) => /speed limit when transferring/i.test(r.textContent))));
   await shot('settings');
-  // theme switch applies live
+  // draft model: a change enables Save without touching anything,
+  // reverting it re-disables Save, and Save applies once and closes
   const darkSel = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root select'))
     .find((s) => Array.from(s.options).some((o) => o.value === 'dark')) || null);
   await ok('theme select present', !!darkSel);
   if (darkSel) {
     await darkSel.asElement().selectOption('dark');
-    await ok('dark theme applied live', evalPage(() => document.documentElement.dataset.theme === 'dark'));
-    await shot('settings-dark');
+    await ok('change enables save', evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
+    await ok('staged theme not applied yet', evalPage(() => document.documentElement.dataset.theme !== 'dark'
+      && localStorage.getItem('s3b-theme') !== 'dark'));
+    await shot('settings-draft-dirty');
     await darkSel.asElement().selectOption('light');
+    await ok('revert re-disables save', evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === true));
+    await darkSel.asElement().selectOption('dark');
+    await shot('settings-dark');
+    await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+    await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').classList.contains('hidden'))), 4000, 'save closes');
+    await ok('dark theme applied on save', evalPage(() => localStorage.getItem('s3b-theme') === 'dark'
+      && document.documentElement.dataset.theme === 'dark'));
   }
   // Auto is the unset-key default (the VS 2026 "use system setting"):
   // clear s3b-theme, reopen the dialog — the select is built from the
   // live thunk and must read Auto — then hand the preference back to
   // the shim's pinned light via the select itself
   await evalPage(() => localStorage.removeItem('s3b-theme'));
-  await closeModal();
   await openSettings();
   await ok('unset theme key defaults the select to auto', evalPage(() => {
     const sel = Array.from(document.querySelectorAll('#modal-root select.set-ctl'))
@@ -2258,10 +2268,14 @@ await step('settings-dialog', async () => {
   const lightBack = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root select'))
     .find((s) => Array.from(s.options).some((o) => o.value === 'auto')) || null);
   if (lightBack) await lightBack.asElement().selectOption('light');
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').classList.contains('hidden'))), 4000, 'save closes');
   await ok('shim theme preference restored', evalPage(() => localStorage.getItem('s3b-theme') === 'light'
     && document.documentElement.dataset.theme === 'light'));
+  await openSettings();
   // new rows: the edit open-with toggle, the file-log multi-select filters,
-  // and Reset to defaults (presence only — clicking it would wipe the run)
+  // and Reset to defaults (presence here; the staging walk at the end of
+  // this step clicks it for real — the deferred reset wipes nothing)
   await ok('edit open-with toggle offered', evalPage(() => Array.from(document.querySelectorAll('#modal-root .set-row'))
     .some((r) => /ask which app/i.test(r.textContent))));
   await ok('file-log multi-select filters present', evalPage(() => document.querySelectorAll('#modal-root .ms-btn').length >= 2));
@@ -2281,8 +2295,9 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /explorer copy & paste/i.test(x));
   }));
   // engine tuning: the Network page carries the timeout/retry rows and the
-  // File-transfers page the Transfer-engine group; changing a select rides
-  // the WHOLE snapshot to SetTuning (zero fields = Default/Auto)
+  // File-transfers page the Transfer-engine group; changing a select
+  // stages the WHOLE snapshot (zero fields = Default/Auto) and rides it to
+  // SetTuning once, on the Save at the end of this step
   await ok('network page carries the engine-tuning rows', evalPage(() => {
     const p = document.querySelector('#modal-root .set-page[data-cat="network"]');
     if (!p) return false;
@@ -2301,6 +2316,7 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /parts in flight/i.test(x))
       && rows.some((x) => /stall threshold/i.test(x));
   }));
+  await resetCalls();
   await evalPage(() => {
     const p = document.querySelector('#modal-root .set-page[data-cat="network"]');
     const sel = Array.from(p.querySelectorAll('select'))
@@ -2310,11 +2326,10 @@ await step('settings-dialog', async () => {
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   });
-  await waitFor(async () => (await findCall('SetTuning')) !== null, 4000, 'SetTuning on listing-timeout change');
-  const tc = await findCall('SetTuning');
-  await ok('listing-timeout change rides the whole tuning snapshot', tc
-    && tc.args[0] === 60000 && tc.args[1] === 300000 && tc.args[2] === 3
-    && tc.args[3] === 0 && tc.args[5] === 10000);
+  await sleep(150);
+  await ok('tuning change stages without a backend call', evalPage(() =>
+    !(window.__shim.calls || []).some((x) => x.m === 'SetTuning')
+    && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
   await shot('settings-new-rows');
   // Search: typing flattens the book — matching rows from every category
   // visible in one list, per-category match counts in the nav, non-matching
@@ -2400,8 +2415,8 @@ await step('settings-dialog', async () => {
     return Math.abs(b.height - s.height) <= 2 && b.width > 0 && b.width < 140;
   }));
   // badge rows default OFF (the shim wipes every s3b-* key at boot): tick
-  // both icon toggles — the apply thunk persists the keys and re-renders
-  // the grid, which the version-marker-badges / marker-window walks assert
+  // both icon toggles — staged here, applied by the Save at the end of
+  // this step, which the version-marker-badges / marker-window walks assert
   await ok('version + marker badges default off', evalPage(() => localStorage.getItem('s3b-show-versions') === null
     && localStorage.getItem('s3b-show-markers') === null));
   const tick = (needle) => evalPage((q) => {
@@ -2413,8 +2428,9 @@ await step('settings-dialog', async () => {
     return true;
   }, needle);
   await ok('both icon toggles ticked', await tick('version count icons') && await tick('delete marker icons'));
-  await ok('toggles persisted', evalPage(() => localStorage.getItem('s3b-show-versions') === '1'
-    && localStorage.getItem('s3b-show-markers') === '1'));
+  await ok('toggles stage without applying', evalPage(() => localStorage.getItem('s3b-show-versions') === null
+    && localStorage.getItem('s3b-show-markers') === null
+    && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
   // secure-storage section (Settings → Security): the status readout and
   // the global toggle round-tripping the recorded backend call
   await ok('security section + toggle row rendered', evalPage(() => {
@@ -2446,9 +2462,10 @@ await step('settings-dialog', async () => {
   // not the top of an unrelated section
   await ok('nav walks to the security page', await navTo('security'));
   await shotModalSection('settings-secure-on', 'security');
-  // ticking a level in the file-log filter persists via SetLogSettings;
-  // the current mode rides along unchanged (file-only filters). Back to
-  // the logging page so the pickers act on visible controls.
+  // ticking a level in the file-log filter stages into the draft (the
+  // current mode rides along unchanged — file-only filters; one
+  // SetLogSettings carries it on the Save at the end of this step). Back
+  // to the logging page so the pickers act on visible controls.
   await ok('nav walks back to the logging page', await navTo('logging'));
   await resetCalls();
   await evalPage(() => document.querySelector('#modal-root .ms-btn').click());
@@ -2458,14 +2475,14 @@ await step('settings-dialog', async () => {
     const opt = Array.from(pop.querySelectorAll('.ms-opt')).find((l) => /^warn/.test(l.textContent.trim()));
     opt.querySelector('input').click();
   });
-  await waitFor(async () => (await findCall('SetLogSettings')) !== null, 4000, 'SetLogSettings on level tick');
-  const ls = await findCall('SetLogSettings');
-  await ok('level selection rides on SetLogSettings (file log only)', ls
-    && ls.args[0] === 'default' && Array.isArray(ls.args[2]) && ls.args[2].includes('warn')
-    && Array.isArray(ls.args[3]) && ls.args[3].length === 0);
+  await sleep(60);
+  await ok('level tick stages without a backend call', evalPage(() =>
+    !(window.__shim.calls || []).some((x) => x.m === 'SetLogSettings')
+    && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
   // the source picker mirrors the drawer's source filter for the FILE log
   // only: its options come from the backend (allSources) and its selection
-  // rides as SetLogSettings' 5th argument, together with the level filter
+  // stages with the level filter, riding as SetLogSettings' 5th argument
+  // on Save
   await ok('file-log sources row rendered with the file-only hint', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#modal-root .set-row'));
     return rows.some((r) => {
@@ -2489,13 +2506,70 @@ await step('settings-dialog', async () => {
     const opt = pop && Array.from(pop.querySelectorAll('.ms-opt')).find((l) => l.textContent.trim() === 'team-files');
     opt?.querySelector('input').click();
   });
-  await waitFor(async () => (await findCall('SetLogSettings')) !== null, 4000, 'SetLogSettings on source tick');
-  const lsrc = await findCall('SetLogSettings');
-  await ok('source selection rides on SetLogSettings 5th arg (file log only)', lsrc
-    && lsrc.args[0] === 'default' && Array.isArray(lsrc.args[4]) && lsrc.args[4].includes('team-files')
-    && Array.isArray(lsrc.args[2]) && lsrc.args[2].includes('warn'));
-  await closeModal();
-  await ok('modal closed', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
+  await sleep(60);
+  await ok('source tick stages without a backend call', evalPage(() =>
+    !(window.__shim.calls || []).some((x) => x.m === 'SetLogSettings')));
+  // Save commits the whole staged draft at once: one SetTuning with the
+  // full snapshot, one SetLogSettings carrying both filters, the badge
+  // keys persisted — and the sheet closes
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').classList.contains('hidden'))), 4000, 'save closes');
+  const tc = await findCall('SetTuning');
+  await ok('save rides the whole tuning snapshot', tc
+    && tc.args[0] === 60000 && tc.args[1] === 300000 && tc.args[2] === 3
+    && tc.args[3] === 0 && tc.args[5] === 10000);
+  const ls = await findCall('SetLogSettings');
+  await ok('save sends one SetLogSettings with both filters', ls
+    && ls.args[0] === 'default' && Array.isArray(ls.args[2]) && ls.args[2].includes('warn')
+    && Array.isArray(ls.args[3]) && ls.args[3].length === 0
+    && Array.isArray(ls.args[4]) && ls.args[4].includes('team-files'));
+  await ok('badge toggles applied by save', evalPage(() => localStorage.getItem('s3b-show-versions') === '1'
+    && localStorage.getItem('s3b-show-markers') === '1'));
+  // Reset to defaults is staged, never destructive: no confirm, every
+  // control re-rendered at the defaults, nothing on disk until Save —
+  // and a dirty Escape hits the discard gate, which leaves the run state
+  // exactly as the Save above left it
+  await openSettings();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root button'))
+      .find((x) => /reset to defaults/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await sleep(80);
+  await ok('reset needs no confirmation', evalPage(() => {
+    const open = !document.getElementById('modal-root').classList.contains('hidden')
+      && document.querySelector('#modal-root .set-nav-item') !== null;
+    const themeSel = Array.from(document.querySelectorAll('#modal-root select.set-ctl'))
+      .find((s) => Array.from(s.options).some((o) => o.value === 'auto'));
+    return open && themeSel?.value === 'auto';
+  }));
+  await ok('reset stages defaults without applying', evalPage(() => localStorage.getItem('s3b-theme') === 'light'
+    && localStorage.getItem('s3b-show-versions') === '1'));
+  await ok('controls re-render at the defaults', evalPage(() => {
+    const unchecked = (q) => {
+      const row = Array.from(document.querySelectorAll('#modal-root .set-row'))
+        .find((x) => (x.querySelector('.set-name')?.textContent || '').includes(q));
+      const cb = row?.querySelector('input[type=checkbox]');
+      return !!cb && !cb.checked;
+    };
+    return unchecked('version count icons') && unchecked('delete marker icons');
+  }));
+  await shot('settings-reset-staged');
+  await page.keyboard.press('Escape');
+  await sleep(80);
+  await ok('dirty escape opens the discard gate', evalPage(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .some((b) => /^discard$/i.test(b.textContent.trim()))));
+  await shot('settings-discard-gate');
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root button'))
+      .find((x) => /^discard$/i.test(x.textContent.trim()));
+    if (b) b.click();
+    return !!b;
+  });
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').classList.contains('hidden'))), 4000, 'discard closes');
+  await ok('discard closes without applying', evalPage(() => localStorage.getItem('s3b-theme') === 'light'
+    && localStorage.getItem('s3b-show-versions') === '1'));
 });
 
 await step('window-size-tiers', async () => {
@@ -5602,15 +5676,39 @@ await step('popout-center-setting', async () => {
     const vals = [...sel.options].map((o) => o.value);
     return vals.length === 2 && vals[0] === 'display' && vals[1] === 'app' && sel.value === 'display';
   }));
-  const pick = async (v) => p7.evaluate((val) => {
+  const pick = (v) => p7.evaluate((val) => {
     const sel = Array.from(document.querySelectorAll('#modal-root .set-row'))
       .find((x) => /popout windows open centered on/i.test(x.querySelector('.set-name')?.textContent || ''))?.querySelector('select');
     sel.value = val;
     sel.dispatchEvent(new Event('change', { bubbles: true }));
-    return localStorage.getItem('s3b-popout-center');
+    return true;
   }, v);
-  await ok('switch to app persists', (await pick('app')) === 'app');
-  await ok('switch back to display persists', (await pick('display')) === 'display');
+  const closed = () => p7.waitForFunction(() => document.getElementById('modal-root').classList.contains('hidden'), null, { timeout: 4000 });
+  const reopen = async () => {
+    await p7.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
+    await p7.waitForFunction(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .some((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')), null, { timeout: 4000 });
+    await p7.evaluate(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => /settings/i.test(i.textContent) && !i.classList.contains('has-sub')).click());
+    await p7.waitForFunction(() => document.querySelector('#modal-root .set-row') !== null, null, { timeout: 4000 });
+  };
+  // draft model: the choice defers until Save, and a dirty Escape must
+  // pass the discard gate — the saved choice survives a discard
+  await pick('app');
+  await ok('deferred: not persisted before save', await p7.evaluate(() => localStorage.getItem('s3b-popout-center') === null));
+  await p7.evaluate(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await closed();
+  await ok('switch to app persists on save', await p7.evaluate(() => localStorage.getItem('s3b-popout-center') === 'app'));
+  await reopen();
+  await pick('display');
+  await ok('reverted choice still deferred', await p7.evaluate(() => localStorage.getItem('s3b-popout-center') === 'app'));
+  await p7.keyboard.press('Escape');
+  await p7.waitForFunction(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .some((b) => /^discard$/i.test(b.textContent.trim())), null, { timeout: 4000 });
+  await p7.evaluate(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((x) => /^discard$/i.test(x.textContent.trim())).click());
+  await closed();
+  await ok('discard keeps the saved choice', await p7.evaluate(() => localStorage.getItem('s3b-popout-center') === 'app'));
   await p7.evaluate(() => localStorage.removeItem('s3b-popout-center')); // leave clean
   await p7.close();
 });
