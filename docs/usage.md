@@ -197,6 +197,13 @@ directory compare) with S3 and the local pane.
   is no second title bar or close icon.
 - **Light/dark theme** and 15 built-in languages (English default,
   auto-detect optional) — switchable in Settings.
+- **Settings commit on an explicit Save** — every control in the
+  Settings dialog stages into a draft until you press Save (disabled
+  until something changes; Save applies everything and closes the
+  dialog). Closing with unsaved changes asks before discarding, and
+  Reset to defaults stages the defaults without applying anything. The
+  Security page is the one live control — enabling it rewrites the
+  store on the spot.
 - **Engine tuning in Settings** — Settings → Network sets the *Listing
   timeout* (cuts off listings, object stats, share-link generation and
   source tests on a silent endpoint; every page of data resets the clock

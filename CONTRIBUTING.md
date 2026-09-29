@@ -44,18 +44,25 @@ CGO_ENABLED=0 go test -tags s3b_headless ./... # CLI/core without GUI libraries
 ./scripts/js-check.sh              # frontend logic tests
 ```
 
+On a Windows autocrlf checkout, `gofmt -l .` also lists every
+CRLF-checked-out file as a whole-file rewrite — that is checkout noise,
+not a finding; only single-hunk diffs are real. CI checks out LF and is
+authoritative.
+
 CI (`.github/workflows/ci.yml`) runs the same plus `-race` on Linux, the
-build matrix, an NSIS-compile check and a docs-freshness check. Optional,
-needs Docker: `./scripts/e2e-minio.sh` runs the full end-to-end suite
-against a local MinIO — it never touches your real profile store.
+build matrix, an NSIS-compile check and a docs-freshness check. Optional:
+`./scripts/e2e-minio.sh` runs the full end-to-end suite against a local
+MinIO — `scripts/start-minio.sh` fetches the pinned GitHub-release
+binary (no Docker, no account) — and it never touches your real
+profile store.
 
 ## Cutting a release
 
 Releases are tag-driven: pushing a `v*` tag runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which
-builds the linux/windows artifacts and the SBOM from the tagged
-commit, signs the Windows binaries, and attaches everything to a GitHub
-release.
+builds the Linux (amd64 and arm64 GUI, arm64 headless CLI), Windows
+and SBOM artifacts from the tagged commit, signs the Windows binaries,
+and attaches everything to a GitHub release.
 
 For manual macOS distribution, follow the [signing and notarization guide](docs/macos-build.md#notarization-with-protected-apple-credentials).
 It uses interactive credential entry and a local Keychain profile; never

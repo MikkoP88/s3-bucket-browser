@@ -4,6 +4,68 @@ All notable changes to S3 Bucket Browser are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Grid columns: resize, reorder and two new data columns.** Drag a
+  header edge to resize (double-click resets; the boundary edge grabs
+  from both sides) and the header itself to reorder — widths and order
+  persist per pane. **Date created** (bucket views, WebDAV
+  creationdate, Windows local birth times) and **Mode** (local and
+  SFTP permission bits) join the opt-in set, and the Type column now
+  names common file types ("PNG image", "Text document") in the UI
+  language — on by default.
+
+- **The speed-limit setting covers fast links: 50–1000 MB/s tiers**
+  (the 256 kB/s floor and every step beneath are unchanged).
+
+- **Import S3 Credential accumulates picks** — files and service
+  entries can be combined across multiple rounds of picking in one
+  import, so a mixed fleet (a shared credentials file plus Vault
+  entries, say) lands in one pass.
+
+- **Linux arm64 is a first-class desktop platform.** CI builds and
+  tests the GTK3 GUI natively on an arm64 runner, and releases ship a
+  `linux-arm64` GUI tarball next to the arm64 headless-CLI portable.
+
+### Changed
+
+- **Settings apply on Save, not on click.** The dialog is now a draft:
+  every control stages until Save (disabled until something changes),
+  Save applies the whole diff and closes, a dirty close asks before
+  discarding, and Reset to defaults stages the defaults instead of
+  wiping live. The Security page stays live — enabling it rewrites the
+  store, and the log rows re-sync from what the backend then reports.
+
+- **Save logs to file defaults to off.** File logging joins the rest
+  of the log controls as opt-in: a fresh install writes no log file, a
+  v2-era store that persisted the then-default is migrated to off
+  (deliberate off and custom-folder choices always survive), and Reset
+  to defaults leaves logging off instead of reverting to the
+  pre-v1 App-settings-folder mode.
+
+- **CI hardened and self-sufficient.** Actions bumped to node24
+  runtimes, runners pinned to ubuntu-24.04 (the -latest label moves to
+  Ubuntu 26 in October 2026), e2e fixture images digest-pinned, per-job
+  timeouts and concurrency cancellation added, release permissions
+  dropped to least privilege. The e2e MinIO fixture now runs from a
+  pinned GitHub-release binary — quay.io's refusal of anonymous pulls
+  had broken both e2e jobs despite beta.21's login workaround; no
+  Docker and no account are needed at all now. The settings battery
+  walks every control and default end to end, and Import S3 Credential
+  is verified against a real Vault.
+
+### Fixed
+
+- Column-resize drags no longer misbehave at the edges: the boundary
+  between two columns grabs from both sides, and a rightward drag in
+  narrow panes no longer snaps the column to the 48 px floor.
+
+- The macOS Help menu no longer carries Wails' default "Learn More"
+  item, which navigated the app window itself to wails.io (thanks
+  @Tapiolavi — PR #2).
+
 ## [1.1.0-beta.21] — 2026-09-27
 
 ### Fixed

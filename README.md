@@ -4,7 +4,7 @@
 
 **A Windows-Explorer-style desktop app + CLI for S3-compatible cloud storage and remote file servers — S3 buckets and objects, SFTP/SCP, FTP/FTPS, WebDAV and local folders — with first-class versioning, bucket administration and security.**
 
-> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.19).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
+> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.21).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
 
 ![Main window](docs/screenshots/main-view.png)
 
@@ -14,7 +14,7 @@
 
 | | |
 |---|---|
-| **Easy to use** | True Windows-Explorer semantics: multi-select (Ctrl/Shift, Ctrl+A, Ctrl+I, marquee, type-to-jump), drag & drop everywhere, context menus, breadcrumbs, folder tree, sortable details grid with pickable columns, dual-pane local browser, keyboard-first operation (F1 shows the full map). A guarded exit never silently drops running transfers or unsaved profile work. |
+| **Easy to use** | True Windows-Explorer semantics: multi-select (Ctrl/Shift, Ctrl+A, Ctrl+I, marquee, type-to-jump), drag & drop everywhere, context menus, breadcrumbs, folder tree, sortable details grid with pickable, resizable, reorderable columns, dual-pane local browser, keyboard-first operation (F1 shows the full map). A guarded exit never silently drops running transfers or unsaved profile work. |
 | **Every source, one app** | S3-compatible (AWS, MinIO, Wasabi, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, IBM COS, Hetzner, Ceph, Dell ECS, StorageGRID), SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs and local folders — color-coded in one sidebar, browsable with the same UI and `NAME://` URIs on the CLI. |
 | **Migration across sources** | Any-to-any transfers: drag rows between sources, panes or the tree, or `s3b cp s3://bucket/ vault://dst/ -r` on the terminal. Same-source S3 copies run server-side; cross-source copies stream through the same transfer manager with conflict pre-checks and throttling. |
 | **S3 versioning done right** | Per-object timelines with restore-as-latest and text diffs, one-click undo delete for markers, a three-way marker / keep-current / permanent Delete Window, version- and marker-count badges, folder-level version overviews, bulk purge of noncurrent versions, force-emptying of versioned buckets. |
@@ -78,7 +78,7 @@ arguments:
 ```
 
 - **Data sources**: color-coded connections in one sidebar hierarchy — S3 sources (account-wide, or bucket-scoped via `--bucket` / `s3b source add s3://bucket`), SFTP/SCP, FTP/FTPS servers, WebDAV/WebDAVs shares and local folders, all browsable with the same Explorer UI. **Import credentials** from files or KMS/secrets services — with a live bucket-count test; the very first import, straight from the welcome screen, opens the imported bucket's content.
-- **Explorer layout**: toolbar, back/forward/up history, breadcrumb (type `source://bucket/prefix` to jump), folder tree sidebar, sortable details grid with per-column visibility, status bar, favorites.
+- **Explorer layout**: toolbar, back/forward/up history, breadcrumb (type `source://bucket/prefix` to jump), folder tree sidebar, sortable details grid — per-column visibility, drag-to-resize headers (double-click resets), drag-to-reorder, friendly type names plus optional Date created and Mode columns — status bar, favorites.
 - **Multi-select everything**: click / Ctrl+click / Shift+click / Ctrl+A / Ctrl+I (invert), marquee drag-select, type-to-jump, full keyboard map (F1 in-app).
 - **Drag & drop + OS interop**: drop files or folders from the OS to upload; drag rows onto folders or the tree to move (same bucket) or copy (cross bucket); drag rows **out of the window** to Explorer, Finder or the desktop — a plain, unmodified drag hands the selection to the OS as real files (staged and streamed by the transfer engine), and a release back over the app is an internal move/copy (in the browser/server build, rows drag out as downloadable URLs instead); Ctrl+C mirrors the selection to the real OS clipboard and Ctrl+V uploads files copied in Explorer/Finder; **Copy name / Copy path / Copy S3 URI** put plain text on the clipboard.
 - **Upload**: one **Upload ▸** flyout everywhere — **Files… (Ctrl+U)** for the native multi-select dialog, **Folder…** for a whole directory tree.
@@ -91,6 +91,7 @@ arguments:
 - **Connection doctor**: DNS → TCP → TLS → auth → policy/ACL checks with plain-language remediation (`s3b doctor`).
 - **Open in external editor**: edit remote files in your editor of choice; s3b watches for saves and re-uploads automatically.
 - **Secure Storage** (Settings → Security): the shared-host hardening that encrypts the whole store, protects temp workspaces and auto-clears pre-signed URLs from the clipboard — see [docs/security.md](docs/security.md).
+- **Settings that commit on Save**: every Settings change stages until you press Save — Save is disabled until something changes, a dirty close asks before discarding, and Reset to defaults stages the defaults instead of wiping live (the Security page, which rewrites the store, stays live).
 - **Light/dark theme**, 15 languages built in (English default, optional auto-detect), accessibility pass (ARIA roles, focus trap), portable mode (`s3b-portable` marker keeps config beside the binary).
 
 ## Quickstart (CLI)
@@ -263,7 +264,7 @@ go build -tags server -o s3b ./cmd/s3b && ./s3b
 
 ## Install
 
-Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows/Linux — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
+Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows and Linux (amd64 and arm64) — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
 
 ## Documentation
 
