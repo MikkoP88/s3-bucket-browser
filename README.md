@@ -8,19 +8,13 @@
 
 ## Key Features of S3 Bucket Browser(s3b)
 
----
-
 ### ✔ Cross‑platform
 - **Windows, Linux, macOS** — native desktop app  
 - **Browser‑driven mode** — optional windowless UI accessible from any OS
 
----
-
 ### ✔ Source‑available
 - **PolyForm Internal Use** license  
 - Transparent codebase, no proprietary lock‑in
-
----
 
 ### ✔ True Windows‑Explorer semantics
 - Multi‑select: **Ctrl/Shift**, **Ctrl+A**, **Ctrl+I**, marquee selection  
@@ -31,8 +25,6 @@
 - Keyboard‑first operation (**F1** shows the full map)  
 - Guarded exit: never drops running transfers or unsaved profile work
 
----
-
 ### ✔ Every source in one app
 - **S3‑compatible:** AWS, MinIO, Wasabi, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, IBM COS, Hetzner, Ceph, Dell ECS, StorageGRID  
 - **Remote servers:** SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs  
@@ -40,16 +32,12 @@
 - All color‑coded in one sidebar  
 - Same UI and same CLI (`NAME://` URIs)
 
----
-
 ### ✔ Migration across storage types
 - Any‑to‑any transfers: drag rows between sources, panes, or the tree  
 - CLI: `s3b cp s3://bucket/ sftp://dst/ -r`  
 - Same‑source S3 copies run **server‑side**  
 - Cross‑source copies stream through one transfer manager  
 - Conflict pre‑checks, throttling, resumable operations
-
----
 
 ### ✔ S3 versioning done right
 - Per‑object timelines with restore‑as‑latest  
@@ -61,8 +49,6 @@
 - Bulk purge of noncurrent versions  
 - Force‑empty versioned buckets
 
----
-
 ### ✔ Import your credentials
 - AWS shared files (`~/.aws/credentials`, `~/.aws/config`)  
   - `endpoint_url` → auto‑mapped to MinIO/R2/Wasabi/etc.  
@@ -71,15 +57,11 @@
 - Fully custom HTTP endpoints  
 - Live bucket‑count test before saving
 
----
-
 ### ✔ Savable encrypted profiles
 - **Ctrl+S** saves the entire workspace  
 - All sources + connections stored in one encrypted `.s3bprofile`  
 - **scrypt + AES‑256‑GCM**  
 - Reopen, keep, or share securely
-
----
 
 ### ✔ Security
 - Secrets stored in OS keyring:  
@@ -92,8 +74,6 @@
   - Hardens temp workspaces  
 - **Zero telemetry**  
 - See `docs/security.md`
-
----
 
 ### ✔ Fast at scale
 - Streaming page‑by‑page listings (Go holds one page at a time)  
