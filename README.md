@@ -158,6 +158,10 @@ recipe in [Build from source → macOS](#macos-13-intel-or-apple-silicon)
   [Build from source](#build-from-source);
   developer workflows live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Install
+
+Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows and Linux (amd64 and arm64) — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
+
 ## Screenshots of S3 Bucket Browser(s3b)
 
 ![Main window](docs/screenshots/main-view.png)
@@ -366,10 +370,6 @@ run it and open the URL it logs.
 ```bash
 go build -tags server -o s3b ./cmd/s3b && ./s3b
 ```
-
-## Install
-
-Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows and Linux (amd64 and arm64) — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
 
 ## Documentation
 
