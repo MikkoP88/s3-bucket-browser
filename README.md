@@ -162,6 +162,16 @@ recipe in [Build from source → macOS](#macos-13-intel-or-apple-silicon)
 
 Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows and Linux (amd64 and arm64) — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
 
+## Documentation
+
+- **[Usage guide](docs/usage.md)** — the full walkthrough with screenshots (same content as the in-app guide)
+- **[Mac build](docs/macos-build.md)** — local toolchain, build and launch
+- **[CLI reference](docs/cli.md)** — every command, generated from the cobra tree
+- **[Security model](docs/security.md)** — keyring, Secure Storage, safety ladder, supply chain
+- **[Verification reports](docs/verification/)** — per-release evidence: the build, the OS, and the full action-verification matrix behind every tag
+- **[Competitive comparison](docs/comparison.md)** — the S3-browser landscape, fact-checked
+- **[CHANGELOG](CHANGELOG.md)** · **[CONTRIBUTING](CONTRIBUTING.md)** · **[Portable edition](README-portable.md)**
+
 ## Screenshots of S3 Bucket Browser(s3b)
 
 ![Main window](docs/screenshots/main-view.png)
@@ -370,16 +380,6 @@ run it and open the URL it logs.
 ```bash
 go build -tags server -o s3b ./cmd/s3b && ./s3b
 ```
-
-## Documentation
-
-- **[Usage guide](docs/usage.md)** — the full walkthrough with screenshots (same content as the in-app guide)
-- **[Mac build](docs/macos-build.md)** — local toolchain, build and launch
-- **[CLI reference](docs/cli.md)** — every command, generated from the cobra tree
-- **[Security model](docs/security.md)** — keyring, Secure Storage, safety ladder, supply chain
-- **[Verification reports](docs/verification/)** — per-release evidence: the build, the OS, and the full action-verification matrix behind every tag
-- **[Competitive comparison](docs/comparison.md)** — the S3-browser landscape, fact-checked
-- **[CHANGELOG](CHANGELOG.md)** · **[CONTRIBUTING](CONTRIBUTING.md)** · **[Portable edition](README-portable.md)**
 
 ## Relationship to s3-bucket-tester
 
