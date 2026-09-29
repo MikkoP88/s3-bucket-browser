@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"sync"
 	"time"
 
@@ -140,6 +141,17 @@ func Run(version string) error {
 		},
 		OnShutdown: func() { app.Shutdown(context.Background()) },
 	})
+	if runtime.GOOS == "darwin" {
+		// Keep the standard macOS menus without Wails' default Help menu,
+		// whose Learn More action navigates the app window to wails.io.
+		menu := application.NewMenu()
+		menu.AddRole(application.AppMenu)
+		menu.AddRole(application.FileMenu)
+		menu.AddRole(application.EditMenu)
+		menu.AddRole(application.ViewMenu)
+		menu.AddRole(application.WindowMenu)
+		app3.Menu.Set(menu)
+	}
 	mainWindow := app3.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:           "main",
 		Title:          "S3 Bucket Browser",
