@@ -67,10 +67,13 @@ jobs:
           # tag (the GUI is the default build); `production` strips
           # devtools. Linux GUI: Wails v3 defaults to GTK4/webkitgtk-6.0,
           # but ubuntu-latest (24.04) ships webkit2gtk 4.1 — pass the gtk3
-          # tag against libgtk-3/libwebkit2gtk-4.1. arm64 ships as the
-          # headless CLI (-tags s3b_headless, no GTK deps). darwin GUI
-          # needs Cocoa/WebKit: build on a macOS runner.
+          # tag against libgtk-3/libwebkit2gtk-4.1. arm64 GUI builds
+          # natively on the arm64 runner (ubuntu-24.04-arm keeps the
+          # webkit 4.1 stack aligned with the amd64 leg); the headless
+          # CLI (-tags s3b_headless, no GTK deps) stays for servers.
+          # darwin GUI needs Cocoa/WebKit: build on a macOS runner.
           - { os: ubuntu-latest, goos: linux, goarch: amd64, tags: "production,gtk3", artifact: s3b-linux-amd64 }
+          - { os: ubuntu-24.04-arm, goos: linux, goarch: arm64, tags: "production,gtk3", artifact: s3b-linux-arm64 }
           - { os: ubuntu-latest, goos: linux, goarch: arm64, tags: "s3b_headless", artifact: s3b-linux-arm64-cli }
           - { os: ubuntu-latest, goos: windows, goarch: amd64, tags: "production", artifact: s3b-windows-amd64.exe }
           - { os: ubuntu-latest, goos: windows, goarch: arm64, tags: "production", artifact: s3b-windows-arm64.exe }

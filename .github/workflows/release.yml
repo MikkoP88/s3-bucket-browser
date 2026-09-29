@@ -70,6 +70,41 @@ jobs:
           name: release-linux
           path: dist/*.tar.gz
 
+  # arm64 GUI builds natively on the arm64 runner — same gtk3/webkit 4.1
+  # stack as the amd64 leg, so the artifact is a glibc twin of it. The
+  # headless CLI tarball stays in the linux job (pure Go, any host).
+  linux-arm:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GUI build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Build linux-arm64 (GUI) tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/pkg
+          go build -tags production,gtk3 -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg/s3b ./cmd/s3b
+          cp LICENSE README.md dist/pkg/
+          # Artifact sanity: must be an arm64 ELF dynamically linked
+          # against the webkit 4.1 stack this runner installed.
+          file dist/pkg/s3b | grep -q 'ARM aarch64'
+          ldd dist/pkg/s3b | grep -q webkit2gtk-4.1
+          tar -C dist/pkg -czf "dist/s3b-${VERSION}-linux-arm64.tar.gz" s3b LICENSE README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-arm
+          path: dist/*.tar.gz
+
   windows:
     runs-on: ubuntu-latest
     env:
@@ -199,7 +234,7 @@ jobs:
           path: dist/s3b-dependencies.txt
 
   release:
-    needs: [linux, windows, sbom]
+    needs: [linux, linux-arm, windows, sbom]
     runs-on: ubuntu-latest
     steps:
       # The verification report is committed under docs/verification/; the

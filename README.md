@@ -42,8 +42,8 @@ arguments opens the desktop app; with arguments it is the CLI).
 |---|---|---|
 | **Windows 10/11** | amd64, arm64 | Microsoft Edge WebView2 (preinstalled on current Windows 10/11; a machine without it needs the free Evergreen runtime from Microsoft first) |
 | **macOS 13+ (source build)** | arm64, amd64, universal | System WebKit; local execution verified on macOS 15.2 / arm64 |
-| **Linux desktop** | amd64 | GTK3 + WebKitGTK 4.1 (what Ubuntu 24.04+, Mint and current Fedora ship) |
-| **Linux servers / arm64** | amd64, arm64 | none — the `-tags s3b_headless` build is a pure-Go CLI with no GUI libraries |
+| **Linux desktop** | amd64, arm64 | GTK3 + WebKitGTK 4.1 (what Ubuntu 24.04+, Mint and current Fedora ship) |
+| **Linux servers (headless CLI)** | amd64, arm64 | none — the `-tags s3b_headless` build is a pure-Go CLI with no GUI libraries |
 | **Any OS, browser-driven** | `-tags server` | none on the host — the same stack runs windowless and serves the UI over HTTP |
 
 - Some operating system versions especially **beta** or **pre‑release** builds may still exhibit compatibility issues.  

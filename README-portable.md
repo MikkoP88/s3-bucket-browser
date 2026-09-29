@@ -53,6 +53,7 @@ and recovery paths.
 - `linux-amd64` is the full GUI build and needs the usual webkit2gtk
   runtime libraries installed (the ones Ubuntu/Mint/Fedora desktops
   already ship).
-- `linux-arm64` is the headless CLI build — it works on servers and
-  containers without any GUI libraries.
+- `linux-arm64-cli-portable` is the headless CLI build — it works on
+  servers and containers without any GUI libraries. (The arm64 GUI ships
+  as the regular `linux-arm64` tarball, not a portable edition.)
 - Windows builds (amd64, arm64) are the full GUI + CLI in one binary.
