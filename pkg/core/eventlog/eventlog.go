@@ -69,6 +69,7 @@ type Settings struct {
 //     default, so a plain "default" is that old default, not a choice;
 //   - v2: written after off became the default — its "default" was a
 //     deliberate pick from that era, re-decided to off by v3.
+//
 // Deliberate off and custom-folder modes always survive, re-stamped.
 const settingsVer = 3
 
