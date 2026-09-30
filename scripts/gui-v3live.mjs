@@ -22,7 +22,7 @@
 // doctor → help popouts (in-page: server flag gates native windows off) →
 // transfer manager → dual pane → New folder → DnD upload → versions →
 // conflict overwrite → A/B diff → DnD download (bytes verified) → rename →
-// deep Find → remote engines (sftp/ftp/webdav round-trip + cross-engine) →
+// Search → remote engines (sftp/ftp/webdav round-trip + cross-engine) →
 // fault lab (scripts/faultproxy.mjs: latency/throttle/reset/blackhole in
 // front of the same MinIO — skeleton states, classified error vs watchdog
 // timeout, Retry recovery) →
@@ -905,18 +905,18 @@ async function walk() {
     await ok('renamed to live-renamed.txt', true);
   });
 
-  await step('deep Find (Ctrl+Shift+F)', async () => {
+  await step('Search (Ctrl+Shift+F)', async () => {
     await page.keyboard.press('Control+Shift+F');
-    await waitFor(() => modalVisible(), 5000, 'find dialog');
-    await ok('find dialog opens', true);
-    await shot('24-find');
-    const input = page.locator('#modal-root .modal input.input').first();
+    await waitFor(() => evalPage(() => !!document.querySelector('#popout-root .popout[data-pop="search"]')), 5000, 'search window');
+    await ok('search window opens (a floating popout)', true);
+    await shot('24-search');
+    const input = page.locator('#popout-root .popout[data-pop="search"] .sr-top input.input').first();
     if (await input.count()) {
       await input.fill('live-a');
-      const btn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'))
-        .find((b) => /^(find|search|start)$/i.test(b.textContent.trim())) || null);
-      if (btn) { await btn.asElement().click(); await sleep(1500); }
-      await shot('25-find-results');
+      const btn = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop="search"] .modal-foot .btn'))
+        .find((b) => /^(find|search|start|stop)$/i.test(b.textContent.trim())) || null);
+      if (btn) { await btn.asElement().click(); await sleep(2000); }
+      await shot('25-search-results');
     }
   });
 

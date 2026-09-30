@@ -87,11 +87,12 @@ s3b bucket policy put s3://b policy.json  # also: cors | lifecycle |
 s3b bucket tags put s3://b team=infra     #      encryption | pab | website
 ```
 
-## Deep search
+## Search
 
 ```bash
 s3b find s3://b --name 'backup*'          # substring or glob over the key
 s3b find s3://b/photos/ --larger 10MB --older 90d
+s3b find s3://b --kind file               # only files (kind: file|dir)
 s3b find s3://b --class GLACIER --limit 100
 ```
 

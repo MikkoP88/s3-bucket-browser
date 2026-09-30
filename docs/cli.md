@@ -64,7 +64,7 @@ described here. The same engine backs both.
 - [s3b cp](#s3b-cp) — Copy files (local↔S3, S3→S3 server-side)
 - [s3b doctor](#s3b-doctor) — Diagnose connectivity: DNS, TCP, TLS, auth, bucket policy, ACL
 - [s3b du](#s3b-du) — Count objects and total size under a prefix or source folder
-- [s3b find](#s3b-find) — Deep search objects by name, size, age or storage class
+- [s3b find](#s3b-find) — Search objects by name, size, age, kind or storage class
 - [s3b help](#s3b-help) — Help about any command
 - [s3b license](#s3b-license) — Show the software license and manage its acceptance
   - [s3b license accept](#s3b-license-accept) — Record acceptance of the license
@@ -1558,13 +1558,14 @@ s3b du s3://bucket[/prefix] | NAME://dir
 
 ## s3b find
 
-Deep search objects by name, size, age or storage class
+Search objects by name, size, age, kind or storage class
 
 ### Synopsis
 
 Streams every object under the prefix and prints the ones matching all filters.
 --name is a substring, or a glob when it contains * or ? (matched against the full key,
-so 'backup*' also matches nested paths). Sizes accept 10MB / 1.5GB forms; ages 30d / 24h.
+so 'backup*' also matches nested paths). Sizes accept 10MB / 1.5GB forms; ages 30d / 24h;
+--kind file|dir keeps only files or folders.
 
 ```
 s3b find s3://bucket[/prefix] [flags]
@@ -1574,6 +1575,7 @@ s3b find s3://bucket[/prefix] [flags]
 
 ```
       --class string     exact storage class (e.g. GLACIER)
+      --kind string      match only files or only folders (file|dir; folders are keys ending in /)
       --larger string    match objects larger than this (e.g. 10MB)
       --limit int        stop after N matches (0 = unlimited)
   -n, --name string      substring or glob to match against the key

@@ -1,5 +1,5 @@
-// find_cmd.go implements `s3b find` (M5): cancelable deep search across a
-// bucket/prefix by name glob, size, age or storage class. Results stream
+// find_cmd.go implements `s3b find` (M5): cancelable search across a
+// bucket/prefix by name glob, size, age, kind or storage class. Results stream
 // as they are found; the summary line goes to stderr so stdout stays
 // parseable.
 package cli
@@ -15,14 +15,15 @@ import (
 )
 
 func findCmd() *cobra.Command {
-	var pattern, larger, smaller, older, newer, class string
+	var pattern, larger, smaller, older, newer, class, kind string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "find s3://bucket[/prefix]",
-		Short: "Deep search objects by name, size, age or storage class",
+		Short: "Search objects by name, size, age, kind or storage class",
 		Long: "Streams every object under the prefix and prints the ones matching all filters.\n" +
 			"--name is a substring, or a glob when it contains * or ? (matched against the full key,\n" +
-			"so 'backup*' also matches nested paths). Sizes accept 10MB / 1.5GB forms; ages 30d / 24h.",
+			"so 'backup*' also matches nested paths). Sizes accept 10MB / 1.5GB forms; ages 30d / 24h;\n" +
+			"--kind file|dir keeps only files or folders.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
@@ -33,7 +34,10 @@ func findCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			f := search.Filter{Pattern: pattern, Class: class, Limit: limit}
+			if kind != "" && !strings.EqualFold(kind, "file") && !strings.EqualFold(kind, "dir") {
+				return usageErr("--kind must be file or dir")
+			}
+			f := search.Filter{Pattern: pattern, Kind: kind, Class: class, Limit: limit}
 			if larger != "" {
 				if f.LargerThan, err = search.ParseSize(larger); err != nil {
 					return usageErr("--larger: %v", err)
@@ -85,6 +89,7 @@ func findCmd() *cobra.Command {
 	f.StringVar(&older, "older", "", "last modified longer ago than this (e.g. 30d)")
 	f.StringVar(&newer, "newer", "", "last modified within this (e.g. 24h)")
 	f.StringVar(&class, "class", "", "exact storage class (e.g. GLACIER)")
+	f.StringVar(&kind, "kind", "", "match only files or only folders (file|dir; folders are keys ending in /)")
 	f.IntVar(&limit, "limit", 0, "stop after N matches (0 = unlimited)")
 	return cmd
 }

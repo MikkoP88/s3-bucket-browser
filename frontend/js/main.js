@@ -1,13 +1,13 @@
 // S3 Bucket Browser — application shell (Explorer layout).⁠​‌‌‌​​‌‌​​‌‌​​‌‌​‌‌​​​‌​​​‌​‌‌​‌​‌‌‌​​​​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌‌​​‌‌​​​‌‌​‌‌​​‌​‌​​‌​‌‌​‌​‌‌‌​‌‌​​​‌‌​​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​​​​‌‌​‌‌​‌‌‌‌​‌‌‌​​​​​‌‌‌‌​​‌​‌‌‌​​‌​​‌‌​‌​​‌​‌‌​​‌‌‌​‌‌​‌​​​​‌‌‌​‌​​​​‌​​​​​​​‌​‌​​​​‌‌​​​‌‌​​‌​‌​​‌​​‌​​​​​​​‌‌​​‌​​​‌‌​​​​​​‌‌​​‌​​​‌‌​‌‌​​​‌​​​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​​‌​​​​​​‌​‌​​​​​‌‌​​‌​‌​‌‌‌​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​​‌​​​​​​​‌​‌​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​‌​​​​​‌‌​‌‌‌‌​‌‌​‌‌​​​‌‌‌‌​​‌​‌​​​‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​​‌‌​‌‌​‌​​‌​​​​​​‌​​‌​​‌​‌‌​‌‌‌​​‌‌‌​‌​​​‌‌​​‌​‌​‌‌‌​​‌​​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌​​​​‌​​​​​​‌​‌​‌​‌​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​‌​​‌‌​​​‌‌​‌​​‌​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​​‌‌​​​‌​​‌​‌‌‌​​​‌‌​​​​​​‌​‌‌‌​​​‌‌​​​​​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌‌​​‌‌‌​‌‌​‌​​‌​‌‌‌​‌​​​‌‌​‌​​​​‌‌‌​‌​‌​‌‌​​​‌​​​‌​‌‌‌​​‌‌​​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌​‌​​‌​‌‌‌‌​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌‌‌‌​‌‌‌​​‌‌​​‌‌​​‌‌​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​‌​‌​‌‌​​​‌‌​‌‌​‌​‌‌​‌‌​​‌​‌​‌‌‌​‌​​​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌‌​‌‌‌​​‌‌​‌‌​​‌​‌​‌‌‌​​‌​⁠
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, basename, debounce, srcIconEl } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
 import { Tree } from './tree.js';
 import {
   confirm, prompt, properties, doctorDialog, transferManager, runningTasks,
   sourceEditor, helpSheet, resolveTransferOpts, presignDialog, presignListDialog, toast, openModal,
-  versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, findDialog, classDialog, lockDialog,
+  versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, searchWindow, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   renderPopoutView, licenseGate,
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile,
@@ -76,7 +76,7 @@ if (window.wails?.Call?.ByName) {
 // Streaming listing state (M5): generation counter + active stream token.
 let listSeq = 0;
 let listStream = { token: null, off: null };
-let pendingSelect = null; // {bucket, prefix, key} — row to select after load
+let pendingSelect = null; // {bucket, prefix, key} on S3, {path, key} on remote — row to select after load
 
 // View-load generation: guards the non-streaming listing paths (buckets,
 // remote folders) against the navigate-away race — a response that lands
@@ -590,6 +590,10 @@ async function loadView(loc, { silent = false } = {}) {
       currentEntries = entries;
       hideEmpty();
       grid.setRows(entries);
+      if (pendingSelect && (pendingSelect.path ?? '/') !== (loc.path || '/')) {
+        pendingSelect = null; // user navigated elsewhere
+      }
+      consumePendingSelect();
       if (!currentEntries.length) {
         showEmpty(t('emptyFolder'), t('emptyFolderSub'), []);
       }
@@ -788,7 +792,8 @@ async function decorateVersionMarkers(loc, seq) {
 }
 
 // consumePendingSelect focuses a row requested by an earlier action
-// (deep-search "open location") once its listing finished.
+// (search "open location") once its listing finished — objects and remote
+// views alike.
 function consumePendingSelect() {
   if (!pendingSelect) return;
   const key = pendingSelect.key;
@@ -802,11 +807,32 @@ function consumePendingSelect() {
   grid.render(true);
 }
 
-// openSearchResult navigates to a deep-search result's folder and marks
-// the object row for selection.
-function openSearchResult(loc) {
-  pendingSelect = loc;
-  nav.to({ kind: 'objects', source: viewSource, bucket: loc.bucket, prefix: loc.prefix });
+// gotoSearchHit opens a search result's location (a Search window pick, or
+// the search:open relay from a floating window). Files navigate to the
+// parent folder and select the row; folders open themselves. Remote hits
+// (source set, no bucket) use the remote engine's own nav shape.
+function gotoSearchHit(r) {
+  if (!r?.key) return;
+  // An S3 folder placeholder arrives as a plain key with a trailing slash —
+  // Entry carries no IsDir for it, so derive dir-ness from the key.
+  const isDir = r.isDir || String(r.key).endsWith('/');
+  if (r.source && !r.bucket) {
+    if (isDir) {
+      nav.to({ kind: 'remote', source: r.source, path: r.key });
+      return;
+    }
+    const parent = parentRemoteDir(r.key);
+    pendingSelect = { key: r.key, path: parent };
+    nav.to({ kind: 'remote', source: r.source, path: parent });
+    return;
+  }
+  if (isDir) {
+    nav.to({ kind: 'objects', source: r.source || viewSource, bucket: r.bucket, prefix: r.key });
+    return;
+  }
+  const parent = parentPrefix(r.key);
+  pendingSelect = { key: r.key, bucket: r.bucket, prefix: parent };
+  nav.to({ kind: 'objects', source: r.source || viewSource, bucket: r.bucket, prefix: parent });
 }
 
 function refreshCurrent(silent = false) {
@@ -1377,7 +1403,7 @@ function showContextMenu(e, rows) {
     const b = rows[0];
     items.push(['Open', 'Enter', () => nav.to({ kind: 'objects', source: loc.source, bucket: b.key, prefix: '' })]);
     items.push([isFavorite(b.key) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(b.key)]);
-    items.push(['Find in bucket\u2026', '', () => findDialog(b.key, '', openSearchResult)]);
+    items.push(['Search in bucket\u2026', '', () => searchWindow({ preset: { mode: 's3', source: loc.source || viewSource, bucket: b.key, prefix: '' }, onOpen: gotoSearchHit })]);
     items.push(null);
     items.push(['Copy name', '', () => copyAsText(rows, 'name')]);
     items.push(['Copy S3 URI', '', () => copyAsText(rows, 'uri')]);
@@ -1457,9 +1483,9 @@ function showContextMenu(e, rows) {
     }
     if (sel) items.push(['Storage class\u2026', '', () => classDialog(loc.bucket, rows, refreshCurrent)]);
     if (sel && !rows.some((r) => r.isDir) && g?.lockEnabled) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows, refreshCurrent)]);
-    // Find targets a folder: the single selected one (its own subtree), or
+    // Search targets a folder: the single selected one (its own subtree), or
     // via the empty-area menu the folder already open. Files never offer it.
-    if (sel === 1 && rows[0].isDir) items.push(['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, rows[0].key, openSearchResult)]);
+    if (sel === 1 && rows[0].isDir) items.push(['Search in this folder\u2026', 'Ctrl+Shift+F', () => searchWindow({ preset: { mode: 's3', source: loc.source || viewSource, bucket: loc.bucket, prefix: rows[0].key }, onOpen: gotoSearchHit })]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties()]);
   }
   openMenu(e, items);
@@ -1503,7 +1529,7 @@ function showEmptyAreaMenu(e) {
     ['New file\u2026', 'Shift+F4', () => newFile(), !st.canNewFolder],
     null,
     ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
-    ['Find in this folder\u2026', 'Ctrl+Shift+F', () => findDialog(loc.bucket, loc.prefix || '', openSearchResult), !st.canFind],
+    ['Search in this folder\u2026', 'Ctrl+Shift+F', () => searchWindow({ preset: { mode: 's3', source: loc.source || viewSource, bucket: loc.bucket, prefix: loc.prefix || '' }, onOpen: gotoSearchHit }), !st.canFind],
     null,
     ['Refresh', 'F5', () => refreshCurrent()],
     ['Properties', '', () => folderProperties()],
@@ -1619,7 +1645,7 @@ function showTreeMenu(e, node) {
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
       ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && pasteReady())],
       null,
-      ['Find in bucket\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, '', openSearchResult)), !st.hasProfile],
+      ['Search in bucket\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: '' }, onOpen: gotoSearchHit })), !st.hasProfile],
       ['Admin panel\u2026', '', goThen(() => adminDialog(node.bucket, refreshCurrent)), !st.hasProfile],
       ['Doctor\u2026', '', goThen(() => runDoctor(node.bucket)), !st.hasProfile],
       ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
@@ -1708,7 +1734,7 @@ function showTreeMenu(e, node) {
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
       ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && pasteReady())],
       null,
-      ['Find in bucket\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, '', openSearchResult)), !st.hasProfile],
+      ['Search in bucket\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: '' }, onOpen: gotoSearchHit })), !st.hasProfile],
       ['Admin panel\u2026', '', goThen(() => adminDialog(node.bucket, refreshCurrent)), !st.hasProfile],
       ['Doctor\u2026', '', goThen(() => runDoctor(node.bucket)), !st.hasProfile],
       ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
@@ -1737,7 +1763,7 @@ function showTreeMenu(e, node) {
     // row behind (and the view inside a deleted prefix).
     ['Delete\u2026', 'Del', async () => { if (await deleteSelection(node.bucket, [node.prefix], node.source)) tree.reloadParentOf(node); }, !st.hasProfile],
     null,
-    ['Find here\u2026', 'Ctrl+Shift+F', goThen(() => findDialog(node.bucket, node.prefix, openSearchResult)), !st.hasProfile],
+    ['Search here\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: node.prefix }, onOpen: gotoSearchHit })), !st.hasProfile],
     ['Properties', '', goThen(() => treeProperties(node)), !st.hasProfile],
   ]);
 }
@@ -3341,7 +3367,7 @@ function wireToolbar() {
   $('btn-upload').onclick = () => openMenu($('btn-upload'), uploadChoices(uploadFiles, uploadFolder));
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = togglePanes;
-  $('btn-find').onclick = findFromHere;
+  $('btn-find').onclick = openSearch;
   $('btn-newfolder').onclick = newFolder;
   $('btn-newfile').onclick = newFile;
   $('btn-theme').onclick = toggleTheme;
@@ -3361,18 +3387,35 @@ function wireToolbar() {
   });
 }
 
-// findFromHere opens the deep-search dialog for the current folder, the
-// selected bucket (buckets view), or the current bucket.
-function findFromHere() {
+// searchScopes narrows the Search window's scope dropdown to where the
+// app stands: this folder (and its bucket) on an objects view, the
+// selected bucket on the buckets view, the open remote source on a remote
+// view. All data sources always sits first as the default.
+function searchScopes() {
   const loc = nav.current;
-  if (!loc) return;
+  if (!loc) return [];
   if (loc.kind === 'objects') {
-    findDialog(loc.bucket, loc.prefix || '', openSearchResult);
-    return;
+    const src = loc.source || viewSource;
+    const out = [];
+    if (loc.prefix) out.push({ label: `s3://${loc.bucket}/${loc.prefix}`, scope: { mode: 's3', source: src, bucket: loc.bucket, prefix: loc.prefix } });
+    out.push({ label: `s3://${loc.bucket}/`, scope: { mode: 's3', source: src, bucket: loc.bucket, prefix: '' } });
+    return out;
   }
-  const row = grid.selectedRows()[0];
-  if (row) findDialog(row.key, '', openSearchResult);
-  else toast('Open a bucket first — or select one');
+  if (loc.kind === 'buckets') {
+    const row = grid.selectedRows()[0];
+    if (row) return [{ label: `s3://${row.key}/`, scope: { mode: 's3', source: loc.source || viewSource, bucket: row.key, prefix: '' } }];
+    return [];
+  }
+  if (loc.kind === 'remote') {
+    const p = (loc.path || '/').replace(/^\/+|\/+$/g, '');
+    return [{ label: `${loc.source}:/${p}`, scope: { mode: 'remote', source: loc.source, prefix: loc.path || '/' } }];
+  }
+  return [];
+}
+
+// openSearch opens the Search window (toolbar, Ctrl+Shift+F, View menu).
+function openSearch() {
+  searchWindow({ scopes: searchScopes(), onOpen: gotoSearchHit });
 }
 
 // ============================ profile file session (M8) ============================
@@ -3718,6 +3761,7 @@ function mountMenubar() {
         { label: t('menu.theme'), action: toggleTheme },
         { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
         { label: t('menu.log'), kbd: 'Ctrl+L', action: toggleLogArea },
+        { label: t('menu.search'), action: () => openSearch() },
         { label: t('menu.transfers'), action: () => transferManager() },
         { label: t('menu.tasks'), action: () => runningTasks() },
         { label: t('menu.filter'), kbd: 'Ctrl+F', action: () => { $('filter').focus(); $('filter').select(); } },
@@ -4070,7 +4114,7 @@ function wireKeys() {
     if (ctrl && e.key.toLowerCase() === 'c') { copySelection(); return; }
     if (ctrl && e.key.toLowerCase() === 'x') { cutSelection(); return; }
     if (ctrl && e.key.toLowerCase() === 'v') { e.preventDefault(); paste(); return; }
-    if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); findFromHere(); return; }
+    if (ctrl && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); openSearch(); return; }
     if (ctrl && e.key.toLowerCase() === 'f') { e.preventDefault(); $('filter').focus(); $('filter').select(); return; }
     if (ctrl && e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLogArea(); return; }
     if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); uploadFiles(); return; }
@@ -4124,6 +4168,10 @@ function wireEvents() {
     updateEditingStatus();
   });
   onEvent('log:line', (l) => logArea.append(l));
+  // A result picked in a floating Search window relays through the backend
+  // (the app event bus is the only channel that crosses OS windows) and
+  // lands here: navigate to it in the main window.
+  onEvent('search:open', gotoSearchHit);
   // Guarded exit: the backend refused an exit that would lose work (the X
   // button or File → Exit while transfers run / the profile is dirty) and
   // asks here. "Exit anyway" force-quits through ConfirmExit.

@@ -4169,9 +4169,9 @@ async function guiBattery() {
     return 'non-conflicting file uploaded under skip policy; existing one kept; finished job pruned by id';
   });
 
-  await verify({ id: 'GUI-40', area: 'objects', action: 'Deep search: token + CancelSearch contract', ds: 'S3 (MinIO)', scenario: 'DeepSearch returns a live token and registers a search task; CancelSearch stops it without error, and canceling an UNKNOWN token must also resolve cleanly — a bogus cancel may never throw or wedge the registry', face: 'GUI' }, async () => {
-    const tok = await call('DeepSearch', BUCKET, 'verify-gui/', { pattern: 'zzz-verify-none', limit: 10 });
-    need(typeof tok === 'string' && tok.length > 0, `DeepSearch returned no token: ${JSON.stringify(tok)}`);
+  await verify({ id: 'GUI-40', area: 'objects', action: 'Search: token + CancelSearch contract', ds: 'S3 (MinIO)', scenario: 'Search returns a live token and registers a search task; CancelSearch stops it without error, and canceling an UNKNOWN token must also resolve cleanly — a bogus cancel may never throw or wedge the registry', face: 'GUI' }, async () => {
+    const tok = await call('Search', { mode: 's3', bucket: BUCKET, prefix: 'verify-gui/' }, { pattern: 'zzz-verify-none', limit: 10 });
+    need(typeof tok === 'string' && tok.length > 0, `Search returned no token: ${JSON.stringify(tok)}`);
     await sleep(300);
     await call('CancelSearch', tok);
     await call('CancelSearch', 'verify-bogus-token');
@@ -4497,8 +4497,8 @@ async function guiBattery() {
   });
 
   await verify({ id: 'GUI-48', area: 'objects', action: 'Task registry: running view + ClearFinishedTasks', ds: 'S3 (MinIO)', scenario: 'a deep search registers as a running task (kind search); once finished, ClearFinishedTasks(null) prunes EVERY finished row (null means all — an empty list is a no-op by contract) — the registry mirrors live work and forgets dead work on command', face: 'GUI' }, async () => {
-    const tok = await call('DeepSearch', BUCKET, 'verify-gui/', { pattern: 'gui-', limit: 50 });
-    need(typeof tok === 'string' && tok.length > 0, 'DeepSearch returned no token');
+    const tok = await call('Search', { mode: 's3', bucket: BUCKET, prefix: 'verify-gui/' }, { pattern: 'gui-', limit: 50 });
+    need(typeof tok === 'string' && tok.length > 0, 'Search returned no token');
     let sawRunning = false;
     for (let i = 0; i < 15 && !sawRunning; i++) {
       sawRunning = ((await call('RunningTasks')) || []).some((t) => t.kind === 'search');

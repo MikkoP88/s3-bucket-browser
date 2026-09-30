@@ -60,6 +60,25 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Deep search is now Search — a real window across every data
+  source.** The one-bucket modal becomes a floating Search window
+  (Ctrl+Shift+F, the toolbar button, View → Search) with the same
+  multi-window behavior as Running tasks and Transfers: draggable,
+  resizable, remembers its place, one instance that refocuses instead
+  of stacking. It defaults to searching every data source — every
+  bucket of every S3 source plus every remote source (local, SFTP,
+  FTP, WebDAV) from root — with a scope dropdown to narrow to this
+  folder, bucket or source; context-menu *Search in this folder…*
+  presets it. Name is always visible and Enter starts the search from
+  any field; the rest — larger/smaller, older/newer, a new Kind
+  filter (any/files/folders), storage class, limit — fold out under
+  *More filters*. Results stream in with source badges and stay
+  cancelable; clicking a hit navigates to the object and selects it
+  (a hit clicked in a native popout window relays through the main
+  window). A storage-class filter skips remote sources — they carry
+  no class — and the summary says so. The CLI gains the same kind
+  filter: `s3b find --kind file|dir`.
+
 - **Settings apply on Save, not on click.** The dialog is now a draft:
   every control stages until Save (disabled until something changes),
   Save applies the whole diff and closes, a dirty close asks before

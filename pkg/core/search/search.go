@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -22,6 +23,7 @@ import (
 // Filter describes one deep search. Zero fields mean "no restriction".
 type Filter struct {
 	Pattern     string        `json:"pattern,omitempty"`     // substring, or glob when it has * or ?
+	Kind        string        `json:"kind,omitempty"`        // "" any, "file", "dir" (case-insensitive)
 	LargerThan  int64         `json:"largerThan,omitempty"`  // bytes, strict >
 	SmallerThan int64         `json:"smallerThan,omitempty"` // bytes, strict <
 	OlderThan   time.Duration `json:"olderThan,omitempty"`   // matches LastModified older than now-X
@@ -34,18 +36,26 @@ type Filter struct {
 // reporting an error.
 var ErrStop = fmt.Errorf("stop search")
 
-// Result is one match.
+// Result is one match. Bucket is set on S3 runs, Source on every run the
+// bridge launches (the S3 account or remote engine's source name) so hits
+// from a multi-source search stay routable to their origin.
 type Result struct {
 	listing.Entry
 	Bucket string `json:"bucket"`
+	Source string `json:"source,omitempty"`
 }
 
 // Match reports whether one object passes the filter. key is the full
 // object key (globs are unanchored, so "backup*" also hits nested paths).
 // mod may be nil (treated as unknown; age filters skip).
-func Match(f Filter, key string, size int64, mod *time.Time, class string, now time.Time) bool {
+func Match(f Filter, key string, isDir bool, size int64, mod *time.Time, class string, now time.Time) bool {
 	if f.Pattern != "" {
 		if !matchPattern(f.Pattern, key) {
+			return false
+		}
+	}
+	if f.Kind != "" {
+		if strings.EqualFold(f.Kind, "dir") != isDir {
 			return false
 		}
 	}
@@ -117,11 +127,43 @@ func Run(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, prefix s
 	err := listing.Walk(ctx, client, bucket, prefix, func(o s3types.Object) error {
 		st.Scanned++
 		key := aws.ToString(o.Key)
-		if !Match(f, key, aws.ToInt64(o.Size), o.LastModified, string(o.StorageClass), now) {
+		// A trailing-slash key is an S3 folder placeholder — the only
+		// "directory" an object listing ever surfaces, so Kind=dir finds
+		// exactly those.
+		if !Match(f, key, strings.HasSuffix(key, "/"), aws.ToInt64(o.Size), o.LastModified, string(o.StorageClass), now) {
 			return nil
 		}
 		st.Matched++
 		if err := fn(Result{Entry: listing.FromObject(o, prefix), Bucket: bucket}); err != nil {
+			return err
+		}
+		if f.Limit > 0 && st.Matched >= f.Limit {
+			return ErrStop
+		}
+		return nil
+	})
+	if err == ErrStop {
+		return st, nil
+	}
+	return st, err
+}
+
+// RunRemote is Run over a remote filesystem tree (local/SFTP/FTP/WebDAV
+// engines): every entry under root, depth-first, matched against the same
+// filter. Remote trees carry no storage class — entries never match a
+// Class filter (the bridge skips remote scopes entirely when one is set).
+// Result keys are anchored full paths (directories keep their trailing
+// slash), the shape the remote views navigate by.
+func RunRemote(ctx context.Context, fs remotefs.FS, root string, f Filter, fn func(Result) error) (Stats, error) {
+	st := Stats{}
+	now := time.Now()
+	err := remotefs.Walk(ctx, fs, root, func(e listing.Entry) error {
+		st.Scanned++
+		if !Match(f, e.Key, e.IsDir, e.Size, e.LastModified, "", now) {
+			return nil
+		}
+		st.Matched++
+		if err := fn(Result{Entry: e}); err != nil {
 			return err
 		}
 		if f.Limit > 0 && st.Matched >= f.Limit {

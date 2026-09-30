@@ -1,7 +1,7 @@
 // Modal framework + every dialog: confirmations (L1/L2 ladder), prompts,
 // properties, doctor, profile editor, transfer manager, help sheet.
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, parentPrefix, basename } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename } from './util.js';
 import { t } from './i18n.js';
 import { LICENSE } from './license.js';
 
@@ -564,6 +564,14 @@ function installAutoHeight(id, box, p) {
 // window's #popout-root, full-bleed (body.popout-win, app.css). The
 // window keeps its geometry remembered — moves fire no DOM event, so a
 // cheap poll supplements beforeunload (which a native destroy may skip).
+// searchPresetFromQS rebuilds the scope a ?popout=search window opened
+// with (searchWindow wrote it into the query).
+const searchPresetFromQS = (qs) => {
+  if (qs.get('bucket')) return { mode: 's3', bucket: qs.get('bucket'), prefix: qs.get('prefix') || '' };
+  if (qs.get('source')) return { mode: 'remote', source: qs.get('source'), prefix: qs.get('prefix') || '/' };
+  return undefined;
+};
+
 export function renderPopoutView(kind, qs) {
   const bucket = qs.get('bucket') || '';
   const id = kind === 'doctor' ? `doctor${bucket ? `:${bucket}` : ''}` : kind;
@@ -590,6 +598,7 @@ export function renderPopoutView(kind, qs) {
   else if (kind === 'guide') usageGuideDialog();
   else if (kind === 'license') licenseDialog();
   else if (kind === 'sources') sourcesInfoDialog();
+  else if (kind === 'search') searchWindow({ preset: searchPresetFromQS(qs) });
   else document.body.textContent = `Unknown popout: ${kind}`;
 }
 
@@ -1858,7 +1867,7 @@ export function taskKindVerb(j) {
   return null;
 }
 
-// runningTasks is the everything-monitor: transfer jobs, deep searches,
+// runningTasks is the everything-monitor: transfer jobs, searches,
 // bulk deletes/purges/conversions — every tracked action with a Cancel
 // for whatever hangs or runs too long. Modeled on the transfer manager
 // (same floating-window contract: no mask, one instance, live redraw).
@@ -2392,7 +2401,7 @@ export function helpSheet() {
     ['Ctrl+A', 'Select all'],
     ['Ctrl+I', 'Invert selection'],
     ['Ctrl+F', 'Filter'],
-    ['Ctrl+Shift+F', 'Deep find — search everything under the open bucket/folder'],
+    ['Ctrl+Shift+F', 'Search — every data source at once, or narrowed to the open folder/bucket/source; Enter runs it'],
     ['F5', 'Refresh'],
     ['Alt+\u2190 / \u2192', 'Back / forward'],
     ['Alt+\u2191, Backspace', 'Go to parent'],
@@ -2441,7 +2450,7 @@ const GUIDE_SECTIONS = [
     ['Two-way Explorer clipboard', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. The other direction works too — Ctrl+C here quietly stages small selections onto the OS clipboard (a hidden download that never shows in File transfers) so Ctrl+V in Explorer pastes them; pasting inside the app still uses the reference copy and runs the real transfer then. Cut never mirrors — an Explorer paste of a cut would move. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
     ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 1000 MB/s).'],
     ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle.'],
-    ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, deep searches, bulk deletes, version purges, folder and file creation, bucket deletes, pane compares, doctor runs — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
+    ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, searches, bulk deletes, version purges, folder and file creation, bucket deletes, pane compares, doctor runs — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
   ]],
   ['Versions & safety', [
     ['Versioning', 'Buckets with versioning show a 🔄 icon in the tree. Open an object\u2019s context menu → Versions for the timeline: restore a previous version as latest, view text diffs, or purge old versions.'],
@@ -2456,7 +2465,7 @@ const GUIDE_SECTIONS = [
     ['Properties', 'Context menu → Properties shows full metadata for buckets, folders, objects and sources — provider, region, versioning, lock, encryption, policy state.'],
   ]],
   ['Tips & tricks', [
-    ['Find anything', 'Ctrl+Shift+F deep-searches every object under the open bucket/folder by name glob, size, age or storage class; results stream in and are cancelable.'],
+    ['Search anywhere', 'Ctrl+Shift+F opens the Search window — every data source at once, or narrowed to the open folder, bucket or remote source. Filter by name glob, kind, size, age or storage class (extra filters hide behind More filters), press Enter to run; results stream in and are cancelable.'],
     ['Local log', 'Ctrl+L toggles the event log; Settings can mirror it to a file.'],
     ['Portable mode', 'Drop an empty s3b-portable marker file next to the binary and all settings stay beside it — perfect for USB sticks.'],
     ['Same binary, full CLI', 's3b on the terminal drives the same engine: ls, cp, sync, find, doctor, bucket admin and more — see `s3b --help`.'],
@@ -3696,21 +3705,73 @@ export function editingDialog(onChanged) {
   draw();
 }
 
-// ---------- deep search (M5) ----------
-// findDialog streams matches of a cancelable deep search under
-// bucket/prefix. onOpen({bucket, prefix, key}) navigates to a result.
-export function findDialog(bucket, prefix = '', onOpen) {
+// ---------- search (M5: floating window, every data source) ----------
+// searchWindow is the popout twin of the transfer manager: one floating
+// Search window (a native OS window in the desktop shell, the DOM
+// fallback inside one), reopen focuses, close cancels a running search.
+// opts.scopes feeds the scope dropdown ({label, scope} each; a scope is
+// {mode: "all"|"s3"|"remote", source, bucket, prefix} — prefix doubles as
+// the remote root path, mirroring the backend SearchScope); opts.preset
+// preselects one; onOpen(hit) navigates to a picked result — inside a
+// native popout window there is no nav, so picks relay through
+// api.SearchGoto and land in the main window's search:open handler.
+export function searchWindow(opts = {}) {
+  const all = { label: t('search.scopeAll'), scope: { mode: 'all' } };
+  const scopes = [all, ...(opts.scopes || [])];
+  if (opts.preset && !scopes.some((x) => sameScope(x.scope, opts.preset))) {
+    scopes.push({ label: searchScopeLabel(opts.preset), scope: opts.preset });
+  }
+  const sel = Math.max(0, scopes.findIndex((x) => sameScope(x.scope, opts.preset)));
+  const p = scopes[sel].scope;
+  let q = 'popout=search';
+  if (p.mode === 's3' && p.bucket) {
+    q += `&bucket=${encodeURIComponent(p.bucket)}`;
+    if (p.prefix) q += `&prefix=${encodeURIComponent(p.prefix)}`;
+  } else if (p.mode === 'remote' && p.source) {
+    q += `&source=${encodeURIComponent(p.source)}`;
+    if (p.prefix && p.prefix !== '/') q += `&prefix=${encodeURIComponent(p.prefix)}`;
+  }
+  if (maybeNativePopout({
+    id: 'search', query: q, title: t('findTitle'),
+    w: 560, h: 560, minW: 460, minH: 380,
+    domOpen: () => searchWindowDom(scopes, sel, opts.onOpen),
+  })) {
+    return { close: () => api.ClosePopout('search') };
+  }
+  return searchWindowDom(scopes, sel, opts.onOpen);
+}
+
+function sameScope(a, b) {
+  return !!a && !!b && a.mode === (b.mode || 'all') && (a.source || '') === (b.source || '')
+    && (a.bucket || '') === (b.bucket || '') && (a.prefix || '') === (b.prefix || '');
+}
+
+function searchScopeLabel(s) {
+  if (s?.mode === 's3') return `s3://${s.bucket || ''}/${s.prefix || ''}`;
+  if (s?.mode === 'remote') return `${s.source}:/${(s.prefix || '/').replace(/^\/+/, '')}`;
+  return t('search.scopeAll');
+}
+
+function searchWindowDom(scopes, selIdx, onOpen) {
+  // inside a native popout window the main app never booted: picks relay
+  // through the backend event bus instead of navigating
+  const inWin = document.body.classList.contains('popout-win');
   const f = {
     name: el('input', { class: 'input mono', placeholder: 'report*', spellcheck: 'false' }),
     larger: el('input', { class: 'input mono', placeholder: '10MB', spellcheck: 'false' }),
     smaller: el('input', { class: 'input mono', placeholder: '500KB', spellcheck: 'false' }),
     older: el('input', { class: 'input mono', placeholder: '30d', spellcheck: 'false' }),
     newer: el('input', { class: 'input mono', placeholder: '24h', spellcheck: 'false' }),
+    kind: el('select', { class: 'input' },
+      ['', 'file', 'dir'].map((k) => el('option', { value: k },
+        t(k === 'file' ? 'search.kindFile' : k === 'dir' ? 'search.kindFolder' : 'search.kindAny')))),
     class: el('select', { class: 'input' },
       ['', 'STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE']
-        .map((c) => el('option', { value: c }, c || '— any —'))),
+        .map((c) => el('option', { value: c }, c || '\u2014 any \u2014'))),
     limit: el('input', { class: 'input', type: 'number', min: '0', value: '0' }),
   };
+  const scopeSel = el('select', { class: 'input sr-scope' },
+    scopes.map((x, i) => el('option', { value: String(i), selected: i === selIdx }, x.label)));
   const status = el('div', { class: 'dlg-status' });
   const list = el('div', { class: 'ver-list', role: 'list' });
   let token = null;
@@ -3718,17 +3779,44 @@ export function findDialog(bucket, prefix = '', onOpen) {
   let offPage = null;
   let offDone = null;
 
+  // Everything past the name hides behind "More filters": the name box is
+  // the one field most searches ever touch, the rest stay one click away.
+  let moreOpen = false;
+  const moreBox = el('div', { class: 'sr-params' },
+    el('div', {}, el('label', { class: 'field', text: t('findLarger') }), f.larger),
+    el('div', {}, el('label', { class: 'field', text: t('findSmaller') }), f.smaller),
+    el('div', {}, el('label', { class: 'field', text: t('findOlder') }), f.older),
+    el('div', {}, el('label', { class: 'field', text: t('findNewer') }), f.newer),
+    el('div', {}, el('label', { class: 'field', text: t('search.kind') }), f.kind),
+    el('div', {}, el('label', { class: 'field', text: t('class') }), f.class),
+    el('div', {}, el('label', { class: 'field', text: t('findLimit') }), f.limit),
+  );
+  const moreBtn = el('button', { class: 'sr-more', type: 'button',
+    onclick: () => { moreOpen = !moreOpen; syncMore(); } });
+  function syncMore() {
+    moreBox.style.display = moreOpen ? '' : 'none';
+    moreBtn.textContent = `${t('search.more')} ${moreOpen ? '\u25B4' : '\u25BE'}`;
+    moreBtn.setAttribute('aria-expanded', String(moreOpen));
+  }
+  syncMore();
+
   const fmtRes = (r) => el('div', {
     class: 'ver-row',
     role: 'listitem',
-    onclick: () => onOpen?.({ bucket: r.bucket || bucket, prefix: parentPrefix(r.key), key: r.key }),
+    onclick: () => openHit(r),
   },
-    el('span', { class: 'ver-icon', text: '\u{1F50D}' }),
+    el('span', { class: 'ver-icon', text: (r.isDir || String(r.key).endsWith('/')) ? '\u{1F4C1}' : '\u{1F50D}' }),
     el('span', { class: 'ver-main' },
       el('div', { class: 'mono', text: r.key }),
-      el('div', { class: 'ver-sub', text: `${fmtBytes(r.size || 0)} — ${r.storageClass || 'STANDARD'}${r.lastModified ? ` — ${fmtDate(r.lastModified)}` : ''}` }),
+      el('div', { class: 'ver-sub', text: `${fmtBytes(r.size || 0)}${r.storageClass && r.storageClass !== 'STANDARD' ? ` \u2014 ${r.storageClass}` : ''}${r.lastModified ? ` \u2014 ${fmtDate(r.lastModified)}` : ''}` }),
     ),
+    el('span', { class: 'sr-src mono', text: r.bucket ? `s3://${r.bucket}` : (r.source || '') }),
   );
+
+  function openHit(r) {
+    if (inWin) { api.SearchGoto(r); return; }
+    onOpen?.(r);
+  }
 
   function stop() {
     if (token) { api.CancelSearch(token); token = null; }
@@ -3736,98 +3824,120 @@ export function findDialog(bucket, prefix = '', onOpen) {
     offPage?.();
     offDone?.();
     offPage = offDone = null;
+    syncRun();
   }
 
-  openModal({
-    title: `${t('findTitle')} — s3://${bucket}/${prefix || ''}`,
-    body: el('div', {},
-      el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:10px' },
-        el('div', { style: 'grid-column:1/-1' }, el('label', { class: 'field', text: t('findName') }), f.name),
-        el('div', {}, el('label', { class: 'field', text: t('findLarger') }), f.larger),
-        el('div', {}, el('label', { class: 'field', text: t('findSmaller') }), f.smaller),
-        el('div', {}, el('label', { class: 'field', text: t('findOlder') }), f.older),
-        el('div', {}, el('label', { class: 'field', text: t('findNewer') }), f.newer),
-        el('div', {}, el('label', { class: 'field', text: t('class') }), f.class),
-        el('div', {}, el('label', { class: 'field', text: t('findLimit') }), f.limit),
+  const pop = openPopout({
+    id: 'search',
+    title: t('findTitle'),
+    body: el('div', { class: 'sr-body' },
+      el('div', { class: 'sr-top' },
+        el('label', { class: 'field', text: t('search.scope') }), scopeSel,
+        el('label', { class: 'field', text: t('findName') }), f.name,
       ),
+      moreBtn,
+      moreBox,
       status,
       list,
     ),
     wide: true,
-    buttons: [
-      {
-        label: t('findCancel'),
-        onclick: (c) => { stop(); },
-      },
-      {
-        label: t('findStart'),
-        class: 'primary',
-        onclick: async () => {
-          let opts;
-          try {
-            opts = {
-              pattern: f.name.value.trim(),
-              largerThan: parseSizeStr(f.larger.value) || 0,
-              smallerThan: parseSizeStr(f.smaller.value) || 0,
-              olderThanSec: parseDurStr(f.older.value) || 0,
-              newerThanSec: parseDurStr(f.newer.value) || 0,
-              class: f.class.value,
-              limit: parseInt(f.limit.value, 10) || 0,
-            };
-          } catch (err) {
-            status.textContent = String(err);
-            status.style.color = 'var(--danger)';
-            return;
-          }
-          status.style.color = 'var(--text-dim)';
-          status.textContent = t('findRunning', { matched: 0 });
-          list.replaceChildren();
-          stop(); // cancel any previous run
-          running = true;
-          // Subscribe BEFORE the call: a search over a small bucket can
-          // finish (search:done) before the call resolving with the token
-          // reaches the page, and events dispatched to no listener would
-          // leave the dialog stuck on "running". Early events buffer and
-          // replay once the token is known; foreign tokens drop out.
-          const onPage = (p) => {
-            for (const r of p.entries || []) list.appendChild(fmtRes(r));
-            status.textContent = t('findRunning', { matched: p.matched });
-            list.scrollTop = list.scrollHeight;
-          };
-          const onDone = (d) => {
-            token = null;
-            running = false;
-            status.textContent = d.error
-              ? d.error
-              : t('findDone', { matched: d.matched, scanned: d.scanned, bucket, prefix: prefix || '' });
-            if (d.error) status.style.color = 'var(--danger)';
-          };
-          const early = [];
-          let tok = null;
-          offPage = onEvent('search:page', (p) => {
-            if (tok === null) { early.push({ page: p }); return; }
-            if (p.token === tok) onPage(p);
-          });
-          offDone = onEvent('search:done', (d) => {
-            if (tok === null) { early.push({ done: d }); return; }
-            if (d.token === tok) onDone(d);
-          });
-          const myToken = await api.DeepSearch(bucket, prefix, opts);
-          tok = myToken;
-          if (!running) { api.CancelSearch(myToken); return; } // closed meanwhile
-          token = myToken;
-          for (const e of early.splice(0)) {
-            if (e.page) onPage(e.page); else onDone(e.done);
-          }
-        },
-      },
-      { label: 'Close', onclick: (c) => { stop(); c(); } },
-    ],
+    buttons: [{ label: t('findStart'), class: 'primary', onclick: () => (running ? stop() : start()) }],
     onClose: () => stop(),
   });
-  f.name.focus();
-}
+  const btnEl = pop.btns[0];
+  function syncRun() {
+    if (btnEl) btnEl.textContent = running ? t('findStop') : t('findStart');
+  }
+  syncRun();
+  // already floating: focus() did the work — the first instance owns the
+  // events and its button, a second subscription would leak (btnEl is
+  // undefined here: no new DOM was created, and the declarations above
+  // keep close() → onClose → stop() clear of the const TDZ)
+  if (!pop.fresh) return { close: pop.close };
 
+  // Enter anywhere in the form runs the search
+  const enterRuns = (input) => input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); if (!running) start(); }
+  });
+  [f.name, f.larger, f.smaller, f.older, f.newer, f.limit].forEach(enterRuns);
+  f.name.focus();
+
+  async function start() {
+    let opts;
+    try {
+      opts = {
+        pattern: f.name.value.trim(),
+        kind: f.kind.value,
+        largerThan: parseSizeStr(f.larger.value) || 0,
+        smallerThan: parseSizeStr(f.smaller.value) || 0,
+        olderThanSec: parseDurStr(f.older.value) || 0,
+        newerThanSec: parseDurStr(f.newer.value) || 0,
+        class: f.class.value,
+        limit: parseInt(f.limit.value, 10) || 0,
+      };
+    } catch (err) {
+      status.textContent = String(err);
+      status.style.color = 'var(--danger)';
+      return;
+    }
+    status.style.color = 'var(--text-dim)';
+    status.textContent = t('findRunning', { matched: 0 });
+    list.replaceChildren();
+    stop(); // cancel any previous run
+    running = true;
+    syncRun();
+    const scope = scopes[parseInt(scopeSel.value, 10) || 0].scope;
+    // Subscribe BEFORE the call: a search over a small source can finish
+    // (search:done) before the call resolving with the token reaches the
+    // page, and events dispatched to no listener would leave the window
+    // stuck on "running". Early events buffer and replay once the token
+    // is known; foreign tokens drop out.
+    const onPage = (p) => {
+      for (const r of p.entries || []) list.appendChild(fmtRes(r));
+      status.textContent = t('findRunning', { matched: p.matched });
+      list.scrollTop = list.scrollHeight;
+    };
+    const onDone = (d) => {
+      token = null;
+      running = false;
+      syncRun();
+      let done = d.error
+        ? d.error
+        : t('findDone', { matched: d.matched, scanned: d.scanned, sources: d.sources ?? 1 });
+      if (d.skipped > 0) done += ` \u2014 ${t('search.skipped', { n: d.skipped })}`;
+      status.textContent = done;
+      status.style.color = d.error ? 'var(--danger)' : 'var(--text-dim)';
+      status.title = d.sourceErrors || '';
+    };
+    const early = [];
+    let tok = null;
+    offPage = onEvent('search:page', (p) => {
+      if (tok === null) { early.push({ page: p }); return; }
+      if (p.token === tok) onPage(p);
+    });
+    offDone = onEvent('search:done', (d) => {
+      if (tok === null) { early.push({ done: d }); return; }
+      if (d.token === tok) onDone(d);
+    });
+    try {
+      tok = await api.Search(scope, opts);
+    } catch (err) {
+      offPage?.();
+      offDone?.();
+      offPage = offDone = null;
+      running = false;
+      syncRun();
+      status.textContent = String(err);
+      status.style.color = 'var(--danger)';
+      return;
+    }
+    token = tok;
+    if (!running) { api.CancelSearch(tok); return; } // closed meanwhile
+    for (const e of early.splice(0)) {
+      if (e.page) onPage(e.page); else onDone(e.done);
+    }
+  }
+}
 // ---------- storage-class conversion (M5) ----------
 export function classDialog(bucket, rows, onChanged) {
   if (!rows?.length) return;

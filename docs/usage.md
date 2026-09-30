@@ -168,11 +168,19 @@ directory compare) with S3 and the local pane.
   `source://path` for any source — to jump directly. Back / forward /
   up history works like Explorer.
 - **Favorites** — star buckets and folders for one-click jumps.
-- **Deep search** — Ctrl+Shift+F filters every object under the open
-  bucket/folder by name glob, size, age or storage class; results
-  stream in, are cancelable, and clicking one jumps to the object.
+- **Search** — Ctrl+Shift+F opens the Search window (also the toolbar
+  button, View → Search, or *Search in this folder…* from a context
+  menu — the menu presets the scope). It searches **every data
+  source** by default — every bucket of every S3 source plus every
+  remote source (local, SFTP, FTP, WebDAV) from its root — or the
+  scope dropdown narrows to this folder, bucket or source. Name takes
+  a substring or glob and Enter runs it from any field; size, age,
+  kind (any/files/folders), storage class and result limit fold out
+  under *More filters*. Results stream in with source badges, a
+  running search can be stopped from the window, and clicking a hit
+  jumps to the object and selects it.
 
-![Deep search](screenshots/deep-search.png)
+![Search](screenshots/search.png)
 
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
   *New file…* in the context menu opens a small dialog for a file name
@@ -194,7 +202,7 @@ directory compare) with S3 and the local pane.
 ![Dual pane with directory compare](screenshots/dual-pane-compare.png)
 
 - **Floating windows** — the views you keep an eye on — File transfers,
-  Running tasks, the User guide, the keyboard map, the sources overview,
+  Running tasks, Search, the User guide, the keyboard map, the sources overview,
   the license information, the connection Doctor — open as draggable
   non-modal popouts: no
   grey-out mask, the app underneath stays fully usable while a transfer
@@ -304,7 +312,7 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   indicator) is the everything-monitor. The ⚙ indicator always shows
   a live count of active tasks (e.g. "⚙ 2 tasks — search 3/10") and
   clicking it opens the Running tasks window. The list covers transfer
-  jobs, deep searches, bulk deletes, version purges, bucket emptying,
+  jobs, searches, bulk deletes, version purges, bucket emptying,
   storage-class conversions, folder and file creation, bucket deletes,
   pane compares, doctor runs — every action
   the app is taking, each with progress and a **Cancel** button. Kill a
@@ -457,7 +465,7 @@ you'll use daily:
 | Keys | Action |
 |---|---|
 | Ctrl+F | focus quick filter |
-| Ctrl+Shift+F | deep search |
+| Ctrl+Shift+F | search window |
 | Ctrl+U / Ctrl+D | upload files / download selection |
 | Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste (in-app paste runs the real transfer; copy also mirrors small selections onto Explorer's clipboard) |
 | Ctrl+A / Ctrl+I | select all / invert selection |

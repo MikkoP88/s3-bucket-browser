@@ -917,6 +917,30 @@ kbd {
 /* all-deleted children in the Content Versions window */
 .ver-row.ghost { opacity: .55; font-style: italic; }
 
+/* ================= Search window ================= */
+/* Floating popout: scope + name always visible, the remaining filters
+   behind the expander, streamed results fill the rest. */
+.sr-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.sr-top { display: grid; grid-template-columns: max-content 1fr; gap: 4px 8px; align-items: center; }
+.sr-top label.field { margin: 0; }
+.sr-more {
+  align-self: flex-start;
+  background: none; border: none; padding: 0;
+  color: var(--accent); font-size: 12px; cursor: pointer;
+}
+.sr-more:hover { text-decoration: underline; }
+.sr-params { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px 12px; }
+.sr-params label.field { margin: 0; }
+/* results list: inside the search popout the fixed .ver-list height gives
+   way to flex-fill — the window itself is the height contract */
+.popout[data-pop="search"] .ver-list { flex: 1; height: auto; min-height: 120px; margin-top: 0; }
+/* origin badge on each result row (s3://bucket or source name) */
+.sr-src {
+  flex: none; max-width: 40%;
+  font-size: 11px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ================= Content Versions window ================= */
 /* The header is a one-line version count (same format as the Delete
    Marker window); per-child rows render via the shared .ver-list rules. */

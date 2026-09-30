@@ -256,19 +256,28 @@ function shim() {
   // leaked 's3b-panes' from a previous run's dual-pane step opens the side
   // pane at boot (boot-time LocalHome/ListLocal) and shifts every later
   // pane assertion.
-  // One-shot escape hatch for the settings-honor language walk: the Save
-  // that applies a language choice reloads the window and the reboot must
-  // read what it applied, not the deterministic 'en' seed. The flag lives
-  // in localStorage (window state dies with the old document) and clears
-  // itself on the next boot, so every other load keeps the old contract.
+  // One-shot escape hatches, both self-clearing at the next boot so every
+  // unflagged load keeps the old contract:
+  // - s3b-shim-keep-lang (settings-honor language walk): the Save that
+  //   applies a language choice reloads the window and the reboot must read
+  //   what it applied, not the deterministic 'en' seed — preserves s3b-lang
+  //   only. The flag lives in localStorage because window state dies with
+  //   the old document.
+  // - s3b-shim-keep (search-window walk): preserves EVERY s3b-* key across
+  //   one load. That walk reloads for its localized-title check; its final
+  //   back-to-en reboot must still carry the badge opt-ins the settings
+  //   walk ticked (grid.showVersions/showMarkers are read at boot — the
+  //   version-marker-badges walk depends on them surviving that reload).
   const keepLang = localStorage.getItem('s3b-shim-keep-lang') === '1';
   if (keepLang) localStorage.removeItem('s3b-shim-keep-lang');
+  const keepAll = localStorage.getItem('s3b-shim-keep') === '1';
+  if (keepAll) localStorage.removeItem('s3b-shim-keep');
   for (const k of Object.keys(localStorage)) {
-    if (k.startsWith('s3b-') && !(keepLang && k === 's3b-lang')) localStorage.removeItem(k);
+    if (k.startsWith('s3b-') && !(keepLang && k === 's3b-lang') && !keepAll) localStorage.removeItem(k);
   }
   localStorage.setItem('s3b-conflict', 'overwrite');
   localStorage.setItem('s3b-theme', 'light');
-  if (!keepLang) localStorage.setItem('s3b-lang', 'en');
+  if (!keepLang && !keepAll) localStorage.setItem('s3b-lang', 'en');
   // NOTE: s3b-autorefresh is deliberately NOT set — auto refresh is off by
   // default; the boot path with no stored key is exactly what the walk
   // asserts (and the auto-refresh step re-enables it explicitly).
@@ -892,18 +901,97 @@ function shim() {
       };
       return JSON.parse(JSON.stringify(world.secure));
     },
-    DeepSearch: (bucket, prefix) => {
+    // ---- search (every data source, streamed + cancelable) ----
+    // Mirrors the Go bridge over the fixture world: substring-or-unanchored-
+    // glob name match (case-insensitive), kind, strict size bounds, age,
+    // class; scope modes all/s3/remote; done stats count unique sources
+    // searched and the remote sources a class filter skipped. A
+    // world.fault.searchDelayMs parks the run so Stop is testable.
+    Search: (scope = {}, opts = {}) => {
       const t = token();
-      emit('search:page', {
-        token: t, matched: 2,
-        entries: [
-          { bucket, key: 'docs/notes.md', size: 900, storageClass: 'STANDARD', lastModified: daysAgo(2) },
-          { bucket, key: 'readme.md', size: 1234, storageClass: 'STANDARD', lastModified: daysAgo(1) },
-        ],
-      });
-      emit('search:done', { token: t, matched: 2, scanned: 41 });
+      const run = () => {
+        const nowMs = Date.now();
+        const toMs = (x) => (x ? new Date(x).getTime() : 0);
+        const matchPattern = (pattern, key) => {
+          if (!key) return false;
+          if (!/[*?]/.test(pattern)) return key.toLowerCase().includes(pattern.toLowerCase());
+          let g = '';
+          for (const c of pattern) g += c === '*' ? '.*' : c === '?' ? '.' : c.replace(/[^A-Za-z0-9_]/g, (ch) => '\\' + ch);
+          try { return new RegExp(g, 'i').test(key); } catch { return false; }
+        };
+        const matches = (e) => {
+          if (opts.pattern && !matchPattern(opts.pattern, e.key)) return false;
+          if (opts.kind && (String(opts.kind).toLowerCase() === 'dir') !== !!e.isDir) return false;
+          if (opts.largerThan > 0 && !((e.size || 0) > opts.largerThan)) return false;
+          if (opts.smallerThan > 0 && !((e.size || 0) < opts.smallerThan)) return false;
+          if (opts.class && String(e.storageClass || '').toLowerCase() !== String(opts.class).toLowerCase()) return false;
+          if (opts.olderThanSec > 0 && !(toMs(e.lastModified) > 0 && toMs(e.lastModified) < nowMs - opts.olderThanSec * 1000)) return false;
+          if (opts.newerThanSec > 0 && !(toMs(e.lastModified) > 0 && toMs(e.lastModified) > nowMs - opts.newerThanSec * 1000)) return false;
+          return true;
+        };
+        const hits = [];
+        let scanned = 0;
+        let skipped = 0;
+        const searched = new Set();
+        const atLimit = () => opts.limit > 0 && hits.length >= opts.limit;
+        const walkS3 = (name, bucket, prefix) => {
+          searched.add(name);
+          for (const e of world.objects[bucket] || []) {
+            if (!e.key.startsWith(prefix || '')) continue;
+            scanned += 1;
+            if (matches(e)) hits.push(Object.assign(JSON.parse(JSON.stringify(e)), { bucket, source: name }));
+            if (atLimit()) return;
+          }
+        };
+        const walkRemote = (name, root) => {
+          searched.add(name);
+          for (const e of world.remote[name] || []) {
+            if (!e.key.startsWith(root || '/')) continue;
+            scanned += 1;
+            if (matches(e)) hits.push(Object.assign(JSON.parse(JSON.stringify(e)), { source: name }));
+            if (atLimit()) return;
+          }
+        };
+        const mode = scope.mode || 'all';
+        if (mode === 's3') {
+          if (!scope.bucket) throw new Error('bucket required');
+          let name = scope.source || world.viewSource || 'hetzner';
+          const src = world.sources.find((x) => x.name === name || x.id === scope.source);
+          if (src) name = src.name;
+          walkS3(name, scope.bucket, scope.prefix || '');
+        } else if (mode === 'remote') {
+          if (opts.class) throw new Error('remote sources carry no storage class — drop the class filter or search S3 only');
+          const name = world.remote[scope.source] ? scope.source
+            : (world.sources.find((x) => x.id === scope.source) || {}).name;
+          if (!name) throw new Error('unknown remote source');
+          walkRemote(name, scope.prefix || '/');
+        } else if (mode === 'all') {
+          for (const src of world.sources) {
+            if (atLimit()) break;
+            if (src.type === 's3') {
+              for (const b of (src.bucket ? [src.bucket] : world.buckets.map((x) => x.name))) {
+                walkS3(src.name, b, '');
+                if (atLimit()) break;
+              }
+              continue;
+            }
+            if (opts.class) { skipped += 1; continue; }
+            walkRemote(src.name, '/');
+          }
+        } else {
+          throw new Error('unknown search scope "' + mode + '"');
+        }
+        emit('search:page', { token: t, matched: hits.length, entries: hits });
+        emit('search:done', { token: t, matched: hits.length, scanned, sources: searched.size, skipped });
+      };
+      const delay = ((world.fault || {}).searchDelayMs) | 0;
+      if (delay > 0) setTimeout(run, delay);
+      else run();
       return t;
     },
+    // a pick in a floating search window has no nav to run there — it
+    // relays through the event bus to the main window
+    SearchGoto: (hit) => { emit('search:open', hit); },
     CancelSearch: () => ({}),
     // ---- view-source context + source-pinned ops (M11) ----
     SetViewSource: (idOrName) => {
@@ -1435,14 +1523,14 @@ await step('file-ctxmenu-versions', async () => {
   if (!has) console.log(`  menu items: ${items.join(' | ')}`);
   await ok('menu offers Versions', has);
   // deep-sweep gating: Object lock only on lock-enabled buckets (the
-  // team-files guard has it on); Find in this folder targets folders only
-  await ok('file menu: Object lock offered, Find targets folders only',
+  // team-files guard has it on); Search in this folder targets folders only
+  await ok('file menu: Object lock offered, Search targets folders only',
     items.some((x) => /object lock/i.test(x))
-      && !items.some((x) => /find in this folder/i.test(x)));
+      && !items.some((x) => /search in this folder/i.test(x)));
   await shot('ctx-file');
   await closeCtx();
   // negative: logs-2026 has versioning Suspended and no object lock — its
-  // file menu must drop Versions / markers / lock / Find and keep the rest
+  // file menu must drop Versions / markers / lock / Search and keep the rest
   // (Storage class stays: folders and files support it on any S3 bucket)
   await navObjects('logs-2026');
   await dblClickRow('app');
@@ -1451,19 +1539,19 @@ await step('file-ctxmenu-versions', async () => {
   await openCtx('app-2026-09-11.log');
   const items2 = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
     .map((i) => i.textContent.trim()));
-  await ok('suspended bucket: file menu drops versions / markers / lock / find',
-    !items2.some((x) => /versions/i.test(x) || /object lock/i.test(x) || /find in this folder/i.test(x))
+  await ok('suspended bucket: file menu drops versions / markers / lock / search',
+    !items2.some((x) => /versions/i.test(x) || /object lock/i.test(x) || /search in this folder/i.test(x))
       && items2.some((x) => /storage class/i.test(x)));
   await closeCtx();
-  // folder menu in the same bucket: Find in this folder IS offered (a single
+  // folder menu in the same bucket: Search in this folder IS offered (a single
   // dir selection targets that folder); Versions stays correctly absent
   await page.keyboard.press('Backspace'); // up from app/ to the bucket root
   await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('app/')), 4000, 'back to bucket root');
   const n2 = await openCtx('app');
   const items3 = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
     .map((i) => i.textContent.trim()));
-  await ok('folder menu keeps Find, drops versions (suspended)', n2 >= 3
-    && items3.some((x) => /find in this folder/i.test(x))
+  await ok('folder menu keeps Search, drops versions (suspended)', n2 >= 3
+    && items3.some((x) => /search in this folder/i.test(x))
     && !items3.some((x) => /versions/i.test(x)));
   await closeCtx();
   await navObjects('team-files'); // back for the folder-ctxmenu walk below
@@ -2426,7 +2514,7 @@ await step('about-keysheet', async () => {
   await page.keyboard.press('F1');
   await waitFor(() => popoutVisible('keys'), 4000, 'keysheet');
   await ok('keysheet lists shortcuts', waitFor(async () => (await evalPage(() => document.querySelectorAll('#popout-root .help-grid .row').length)) >= 18, 4000, 'keys rows'));
-  await ok('keysheet covers deep find', evalPage(() => Array.from(document.querySelectorAll('#popout-root .help-grid .row kbd')).some((k) => k.textContent.includes('Ctrl+Shift+F'))));
+  await ok('keysheet covers search', evalPage(() => Array.from(document.querySelectorAll('#popout-root .help-grid .row kbd')).some((k) => k.textContent.includes('Ctrl+Shift+F'))));
   await ok('keysheet uses the wide size class', evalPage(() => document.querySelector('#popout-root .popout.wide') !== null));
   await ok('keysheet layout clean', (await layoutAudit()).ok);
   await shot('keysheet');
@@ -3261,23 +3349,245 @@ await step('admin-panel', async () => {
   await closeModal();
 });
 
-await step('deep-search', async () => {
-  // Find opens from an objects view (or a selected row) only — anywhere else
-  // it just toasts "Open a bucket first"
+await step('search-window', async () => {
+  // Search is the popout twin of the transfers manager: every data source
+  // at once by default, the remaining filters behind an expander, Enter
+  // runs it, results stream and stay cancelable, picks navigate.
+  // The reloads below re-run the shim init, which wipes every s3b-*
+  // localStorage key on load — snapshot the store and put it back at the
+  // end so later steps still read what the settings walk ticked.
+  const store0 = await evalPage(() => JSON.parse(JSON.stringify(
+    Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith('s3b-'))))));
   await navObjects('team-files');
   await page.click('#btn-find');
-  await waitFor(modalVisible, 4000, 'search modal');
-  const start = await elOrNull(() => document.querySelector('#modal-root button.primary') || null);
-  await ok('search start button present', !!start);
-  if (start) {
-    await start.asElement().click();
-    await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('readme.md'), 4000, 'results');
-    await ok('search results rendered', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('docs/notes.md'));
-  }
-  await ok('deep-search sits at the 720 wide tier', evalPage(() =>
-    Math.abs(document.querySelector('#modal-root .modal.wide').getBoundingClientRect().width - 720) <= 1));
-  await shotOf('deep-search', '#modal-root .modal');
-  await closeModal();
+  await waitFor(() => popoutVisible('search'), 4000, 'search popout');
+  await ok('search opens as a floating window, not a modal', evalPage(() =>
+    document.getElementById('modal-root').classList.contains('hidden')
+    && !!document.querySelector('#popout-root .popout[data-pop="search"]')));
+  const S = '#popout-root .popout[data-pop="search"]';
+  await sleep(250); // let the entrance animation settle before measuring
+  await ok('search sits at the 720 wide tier', evalPage((s) =>
+    Math.abs(document.querySelector(s).getBoundingClientRect().width - 720) <= 1, S));
+  await ok('toolbar tooltip renamed', evalPage(() =>
+    document.getElementById('btn-find').title.includes('Search')
+    && !document.getElementById('btn-find').title.includes('Deep')));
+  await ok('scope defaults to all data sources', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    return !!sel && sel.selectedIndex === 0 && /all data sources/i.test(sel.options[0].textContent);
+  }, S));
+  await ok('the open bucket is offered as a narrower scope', evalPage((s) => {
+    const labels = Array.from(document.querySelectorAll(s + ' .sr-scope option')).map((o) => o.textContent.trim());
+    return labels.includes('s3://team-files/');
+  }, S));
+  await ok('params hide behind More filters until opened', evalPage((s) => {
+    const box = document.querySelector(s + ' .sr-params');
+    const btn = document.querySelector(s + ' .sr-more');
+    return !!box && !!btn && box.style.display === 'none' && btn.getAttribute('aria-expanded') === 'false';
+  }, S));
+
+  // Enter in the name field runs the search — every source at once
+  const runSearch = async (pattern) => {
+    await evalPage(([s, p]) => {
+      const inp = document.querySelector(s + ' .sr-top input.input');
+      inp.focus();
+      inp.value = p;
+    }, [S, pattern]);
+    await page.keyboard.press('Enter');
+    await sleep(150);
+  };
+  await runSearch('*.md');
+  await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 'all'), 4000, 'all-sources Search call');
+  await ok('Enter launched an all-sources search', true);
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 2, S), 4000, 'results');
+  await ok('S3 results carry a source badge', evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(s + ' .ver-row'));
+    const badges = Array.from(document.querySelectorAll(s + ' .sr-src')).map((b) => b.textContent);
+    const txt = rows.map((r) => r.textContent).join('|');
+    return txt.includes('readme.md') && txt.includes('docs/notes.md')
+      && badges.length === 2 && badges.every((b) => b === 's3://team-files');
+  }, S));
+  await ok('done stats count the sources searched', waitFor(() => evalPage((s) =>
+    /in 5 source\(s\)/.test(document.querySelector(s + ' .dlg-status').textContent), S), 4000, 'done stats'));
+
+  // remote engines are in "all" too: a remote hit opens the remote view
+  await runSearch('*.csv');
+  await waitFor(() => evalPage((s) => Array.from(document.querySelectorAll(s + ' .sr-src'))
+    .some((b) => b.textContent === 'backup-box'), S), 4000, 'remote hit');
+  await ok('remote engines are searched too', evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(s + ' .ver-row'));
+    return rows.length === 1 && rows[0].textContent.includes('/docs/inventory.csv');
+  }, S));
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(s + ' .ver-row'))
+      .find((r) => r.textContent.includes('/docs/inventory.csv')).click();
+  }, S);
+  await waitFor(async () => (await rowKeys()).includes('/docs/inventory.csv'), 5000, 'remote hit location');
+  await ok('remote hit: parent folder open, row selected', evalPage(() => {
+    const sel = document.querySelector('#grid-body .grid-row.sel');
+    return !!sel && sel.textContent.includes('inventory.csv');
+  }));
+
+  // singleton: reopening while floating focuses the one window
+  await navObjects('team-files');
+  await page.click('#btn-find');
+  await ok('reopen focuses the one floating window', evalPage(() =>
+    document.querySelectorAll('#popout-root .popout[data-pop="search"]').length === 1));
+  await closePopout('search');
+
+  // context-menu preset: scope preselected to the folder, args exact
+  await resetCalls();
+  await openCtx('docs');
+  await ctxItem(/Search in this folder/);
+  await waitFor(() => popoutVisible('search'), 4000, 'preset popout');
+  await ok('folder preset preselects the scoped entry', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    return !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/';
+  }, S));
+  await runSearch('old');
+  await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 's3'), 4000, 'scoped Search call');
+  const presetCall = await findCall('Search');
+  await ok('preset scope reaches the backend exactly', !!presetCall
+    && presetCall.args[0].mode === 's3' && presetCall.args[0].bucket === 'team-files'
+    && presetCall.args[0].prefix === 'docs/' && presetCall.args[0].source === 'hetzner'
+    && presetCall.args[1].pattern === 'old');
+  await waitFor(() => evalPage((s) => Array.from(document.querySelectorAll(s + ' .ver-row'))
+    .some((r) => r.textContent.includes('docs/legacy/old.txt')), S), 4000, 'scoped result');
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(s + ' .ver-row'))
+      .find((r) => r.textContent.includes('docs/legacy/old.txt')).click();
+  }, S);
+  await waitFor(async () => (await rowKeys()).includes('docs/legacy/old.txt'), 5000, 'hit location');
+  await ok('S3 hit: parent folder open, row selected', evalPage(() => {
+    const sel = document.querySelector('#grid-body .grid-row.sel');
+    return !!sel && sel.textContent.includes('old.txt');
+  }));
+
+  // the expander reveals the remaining filters — Kind splits files/folders
+  await evalPage((s) => { document.querySelector(s + ' .sr-more').click(); }, S);
+  await ok('More filters opens the params grid', evalPage((s) => {
+    const box = document.querySelector(s + ' .sr-params');
+    return box.style.display === '' && document.querySelector(s + ' .sr-more').getAttribute('aria-expanded') === 'true';
+  }, S));
+  await evalPage((s) => { document.querySelector(s + ' .sr-scope').value = '0'; }, S);
+  const setSelect = (optionText, value) => evalPage(([s, o, v]) => {
+    const sel = Array.from(document.querySelectorAll(s + ' .sr-params select'))
+      .find((x) => Array.from(x.options).some((op) => op.textContent.trim() === o));
+    if (!sel) return false;
+    sel.value = v;
+    return sel.value === v;
+  }, [S, optionText, value]);
+  await ok('Kind filter present (any/files/folders)', await setSelect('Files only', 'file'));
+  await runSearch('');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 8, S), 4000, 'kind results');
+  await ok('Kind=files lists only file rows across sources', evalPage((s) => {
+    const icons = Array.from(document.querySelectorAll(s + ' .ver-icon')).map((i) => i.textContent);
+    return icons.length >= 8 && icons.every((i) => i === '\u{1F50D}');
+  }, S));
+  await ok('Kind=folders lists only folder rows', (async () => {
+    if (!(await setSelect('Files only', 'dir'))) return false;
+    await runSearch('');
+    await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 8, S), 4000, 'folder rows');
+    return evalPage((s) => {
+      const icons = Array.from(document.querySelectorAll(s + ' .ver-icon')).map((i) => i.textContent);
+      return icons.length >= 8 && icons.every((i) => i === '\u{1F4C1}');
+    }, S);
+  })());
+
+  // class filter: remote sources cannot match — they are skipped and said so
+  await setSelect('Files only', '');
+  await setSelect('GLACIER', 'GLACIER');
+  await evalPage((s) => { document.querySelector(s + ' .sr-scope').value = '0'; }, S);
+  await runSearch('');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length === 1, S), 4000, 'class results');
+  await ok('class filter narrows to the one GLACIER object', evalPage((s) => {
+    const rows = document.querySelectorAll(s + ' .ver-row');
+    return rows.length === 1 && rows[0].textContent.includes('video-final.mp4');
+  }, S));
+  await ok('skipped sources surface in the done line', waitFor(() => evalPage((s) =>
+    /2 source\(s\) skipped/.test(document.querySelector(s + ' .dlg-status').textContent), S), 4000, 'skipped note'));
+  await shotOf('search-window', S);
+
+  // Stop cancels a long search
+  await resetCalls();
+  await evalPage(() => { window.__shim.world.fault = { searchDelayMs: 20000 }; });
+  await runSearch('x');
+  await ok('running search flips the button to Stop', evalPage((s) =>
+    document.querySelector(s + ' .modal-foot button.primary').textContent.trim() === 'Stop', S));
+  await evalPage((s) => { document.querySelector(s + ' .modal-foot button.primary').click(); }, S);
+  await waitFor(() => findCall('CancelSearch').then((c) => !!c), 4000, 'CancelSearch recorded');
+  await ok('Stop cancels the running search', true);
+  await ok('button returns to Search after the stop', evalPage((s) =>
+    document.querySelector(s + ' .modal-foot button.primary').textContent.trim() === 'Search', S));
+  await evalPage(() => { window.__shim.world.fault = {}; });
+  await closePopout('search');
+
+  // a native search window is its own webview at ?popout=search: renders
+  // full-bleed with the preset scope, and a pick relays via SearchGoto
+  const sp = await context.newPage();
+  sp.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  const seedSearchWin = () => {
+    window.wails = { Call: { ByName: () => Promise.resolve() }, Events: { On: () => () => {} } };
+    if (!window.__shim) return;
+    window.__shim.world.desktop = true;
+  };
+  await sp.addInitScript(shim);
+  await sp.addInitScript(seedSearchWin);
+  await sp.goto(BASE + '?popout=search&bucket=team-files&prefix=docs/');
+  await sp.waitForSelector('.sr-body', { timeout: 8000 });
+  await ok('native window: search renders full-bleed with the preset scope', await sp.evaluate(() => {
+    const sel = document.querySelector('#popout-root .sr-scope');
+    return document.body.classList.contains('popout-win')
+      && !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/';
+  }));
+  await sp.evaluate(() => {
+    const inp = document.querySelector('.sr-top input.input');
+    inp.focus();
+    inp.value = 'notes';
+  });
+  await sp.keyboard.press('Enter');
+  await sp.waitForFunction(() => Array.from(document.querySelectorAll('.ver-row'))
+    .some((r) => r.textContent.includes('docs/notes.md')), null, { timeout: 8000 });
+  await ok('native window: results stream into the OS window', true);
+  await sp.evaluate(() => {
+    Array.from(document.querySelectorAll('.ver-row'))
+      .find((r) => r.textContent.includes('docs/notes.md')).click();
+  });
+  await ok('pick in the OS window relays through SearchGoto', await sp.evaluate(() =>
+    window.__shim.calls.some((c) => c.m === 'SearchGoto' && c.args[0] && c.args[0].key === 'docs/notes.md')));
+  await sp.screenshot({ path: 'testartifacts/gui/popout-win-search.png' });
+  await sp.close();
+
+  // the relay lands in the main window: search:open navigates and selects
+  await evalPage(() => window.__shim.emit('search:open', {
+    key: 'docs/notes.md', bucket: 'team-files', source: 'hetzner', isDir: false, size: 900,
+  }));
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 5000, 'relay navigation');
+  await ok('search:open relay navigates the main window and selects the row', evalPage(() => {
+    const sel = document.querySelector('#grid-body .grid-row.sel');
+    return !!sel && sel.textContent.includes('notes.md');
+  }));
+
+  // the window title is localized (fi: Haku), like every other surface
+  await evalPage(() => {
+    localStorage.setItem('s3b-shim-keep-lang', '1');
+    localStorage.setItem('s3b-lang', 'fi');
+  });
+  await page.goto(BASE);
+  await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'boot (fi)');
+  await page.click('#btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'search popout (fi)');
+  await ok('window title is localized (fi: Haku)', evalPage((s) =>
+    document.querySelector(s + ' .modal-head span').textContent.trim() === 'Haku', S));
+  await closePopout('search');
+  // storage back exactly as this step found it, restored BEFORE the
+  // reload and carried through it by the one-shot keep hatch — the reboot
+  // re-reads the badge opt-ins at boot, which is the whole point
+  await evalPage((d) => {
+    for (const [k, v] of Object.entries(d)) localStorage.setItem(k, String(v));
+    localStorage.setItem('s3b-lang', 'en');
+    localStorage.setItem('s3b-shim-keep', '1');
+  }, store0);
+  await page.goto(BASE);
 });
 
 await step('versions-diff', async () => {
