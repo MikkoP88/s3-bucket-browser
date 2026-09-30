@@ -281,10 +281,11 @@ func (a *App) RemoteRename(idOrName, path, newName string) error {
 // reports what a delete would remove. Paths that do not exist are counted
 // as errors — the caller decides how loud to be.
 type RemoteDeletePreview struct {
-	Files   int64    `json:"files"`
-	Folders int64    `json:"folders"`
-	Bytes   int64    `json:"bytes"`
-	Errors  []string `json:"errors,omitempty"`
+	Files      int64    `json:"files"`
+	Folders    int64    `json:"folders"`
+	Bytes      int64    `json:"bytes"`
+	RequiresL2 bool     `json:"requiresL2"` // files above the force threshold — the Delete Window escalates
+	Errors     []string `json:"errors,omitempty"`
 }
 
 func (a *App) RemoteDeletePreview(idOrName string, paths []string) (*RemoteDeletePreview, error) {
@@ -327,6 +328,7 @@ func (a *App) RemoteDeletePreview(idOrName string, paths []string) (*RemoteDelet
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: %v", cleaned, err))
 		}
 	}
+	out.RequiresL2 = out.Files > deleteForceThreshold
 	return out, nil
 }
 
@@ -343,7 +345,13 @@ type RemoteDeleteResult struct {
 // versions — deletion is permanent, like `rm -rf`). Tracked as a task:
 // tree deletes over SFTP/FTP are serial and can run long — the row shows
 // per-path progress and a working Cancel.
-func (a *App) RemoteRemove(idOrName string, paths []string) (out *RemoteDeleteResult, err error) {
+// RemoteRemove deletes the listed paths on a remote source. The GUI
+// previews with RemoteDeletePreview and confirms first; like every other
+// destructive act the count is re-taken here at act time — more than
+// deleteForceThreshold files refuses without force (the Delete Window's
+// typed confirmation), so a stale preview can never silently wipe a large
+// tree. Remote filesystems have no trash and no versions: this is final.
+func (a *App) RemoteRemove(idOrName string, paths []string, force bool) (out *RemoteDeleteResult, err error) {
 	src, fs, err := a.remoteSource(idOrName)
 	if err != nil {
 		return nil, err
@@ -355,6 +363,40 @@ func (a *App) RemoteRemove(idOrName string, paths []string) (out *RemoteDeleteRe
 	defer func() { task.finish(err, false) }()
 	unlock := a.lockSrcs(src.ID)
 	defer unlock()
+
+	// Server-side re-count (the preview may be stale by the time the user
+	// confirms): files under every listed tree, counted the same way
+	// RemoteDeletePreview counts them.
+	if !force {
+		var files int64
+		for _, p := range paths {
+			cleaned := remotefs.CleanPath(p)
+			if cleaned == "/" {
+				continue // the act loop reports the root refusal as a per-item error
+			}
+			st, err := fs.Stat(ctx, cleaned)
+			if err != nil {
+				continue // the act loop below reports missing paths honestly
+			}
+			if !st.IsDir {
+				files++
+				continue
+			}
+			if err := remotefs.Walk(ctx, fs, cleaned, func(e listing.Entry) error {
+				if !e.IsDir {
+					files++
+				}
+				return nil
+			}); err != nil {
+				return out, fmt.Errorf("counting %s failed: %w", cleaned, err)
+			}
+		}
+		if files > deleteForceThreshold {
+			return out, fmt.Errorf(
+				"%d file(s) selected — typed confirmation (force) required", files)
+		}
+	}
+
 	done := 0
 	for _, p := range paths {
 		if ctx.Err() != nil {

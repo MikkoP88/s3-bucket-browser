@@ -266,9 +266,42 @@ func (a *App) LocalDeletePreview(paths []string) (DeletePreview, error) {
 // LocalRemove deletes the listed local paths (files or whole directory
 // trees). Deletion is permanent — the OS trash is not involved; the GUI
 // previews with LocalDeletePreview and confirms first (typed confirmation
-// above the L2 threshold, same ladder as S3).
-func (a *App) LocalRemove(paths []string) (transfer.DeleteResult, error) {
+// above the L2 threshold, same ladder as S3). Like the S3 delete path, the
+// count is re-taken HERE at act time and gated server-side: more than
+// deleteForceThreshold files refuses without force, so a stale preview (or
+// any caller that skipped it) can never silently wipe a large tree.
+func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, error) {
 	var out transfer.DeleteResult
+	// Server-side re-count (the preview may be stale by the time the user
+	// confirms), mirroring RemoteRemove: skipped entirely once force is
+	// presented, and refused roots are never walked — a root operand must
+	// fail fast, not after a full-drive walk that only ends in refusal.
+	if !force {
+		count := 0
+		for _, root := range paths {
+			if isFsRoot(root) {
+				continue // the act loop below reports the root refusal
+			}
+			st, err := os.Stat(root)
+			if err != nil {
+				continue // the act loop below reports missing paths honestly
+			}
+			if !st.IsDir() {
+				count++
+				continue
+			}
+			_ = filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
+				if err == nil && !d.IsDir() {
+					count++
+				}
+				return nil // unreadable entries still count as not-deleted below
+			})
+		}
+		if count > deleteForceThreshold {
+			return out, fmt.Errorf(
+				"%d file(s) selected — typed confirmation (force) required", count)
+		}
+	}
 	for _, root := range paths {
 		if isFsRoot(root) {
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: refusing to delete a filesystem root", root))

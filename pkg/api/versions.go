@@ -414,12 +414,18 @@ func (a *App) purgePermanent(ctx context.Context, c *s3client.Client, bucket, ke
 
 // EmptyBucketAllVersions removes every version and delete marker (L2+L3 in
 // the GUI: typed bucket name + permanent warning). Used before bucket
-// removal on versioned buckets and by the "Empty bucket" tool. Runs as a
-// tracked task — the one purge that can legitimately run for a long time.
-func (a *App) EmptyBucketAllVersions(bucket string) (res transfer.DeleteResult, err error) {
+// removal on versioned buckets and by the "Empty bucket" tool. The typed
+// bucket-name dialog is the confirmation; force is its server-side shadow —
+// the call refuses without it, exactly like DeleteBucket. Runs as a tracked
+// task — the one purge that can legitimately run for a long time.
+func (a *App) EmptyBucketAllVersions(bucket string, force bool) (res transfer.DeleteResult, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
+	}
+	if !force {
+		return transfer.DeleteResult{}, fmt.Errorf(
+			"emptying every version of s3://%s requires typed confirmation (force)", bucket)
 	}
 	task := a.tasks.add("empty", fmt.Sprintf("s3://%s (all versions)", bucket))
 	ctx := task.ctx

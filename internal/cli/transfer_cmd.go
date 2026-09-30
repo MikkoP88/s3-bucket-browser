@@ -520,7 +520,8 @@ func rmCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.BoolVarP(&recursive, "recursive", "r", false, "delete everything under the prefix")
 	f.BoolVar(&force, "force", false,
-		fmt.Sprintf("allow deleting more than %d objects (L1 safety gate)", rmForceThreshold))
+		fmt.Sprintf("allow deleting more than %d objects, or destroying a >%d-version timeline with --versions (L1 safety gate)",
+			rmForceThreshold, rmForceThreshold))
 	f.BoolVar(&dryRun, "dry-run", false, "list what would be deleted, do nothing")
 	f.BoolVar(&versions, "versions", false,
 		"permanently destroy every version and delete marker too (L3: unrecoverable)")
@@ -529,11 +530,28 @@ func rmCmd() *cobra.Command {
 
 // runRmVersions implements `rm --versions`: an exact key destroys its whole
 // timeline; a prefix (with --recursive) purges every version beneath it.
+// Both are L3 and both count first — an exact key with a deep timeline hits
+// the same L1 threshold gate as a prefix purge.
 func runRmVersions(ctx context.Context, c *s3client.Client, u s3URI, recursive, force, dryRun bool) error {
 	if !u.IsPrefix && !recursive {
+		vers, err := versioning.ListForObject(ctx, c.S3, u.Bucket, u.Key)
+		if err != nil {
+			return opErr(err)
+		}
+		n := len(vers)
 		if dryRun {
-			fmt.Printf("would permanently delete every version of s3://%s/%s\n", u.Bucket, u.Key)
+			if flagJSON {
+				return printJSON(map[string]any{"wouldDestroy": n, "bucket": u.Bucket, "key": u.Key})
+			}
+			fmt.Printf("would permanently delete every version of s3://%s/%s (%d version(s)/marker(s))\n", u.Bucket, u.Key, n)
+			if n > rmForceThreshold && !force {
+				col.dim.Printf("note: running it requires --force (> %d)\n", rmForceThreshold)
+			}
 			return nil
+		}
+		if n > rmForceThreshold && !force {
+			return opErr(fmt.Errorf(
+				"would permanently delete %d version(s) of s3://%s/%s — pass --force to proceed", n, u.Bucket, u.Key))
 		}
 		res, err := versioning.DeleteAllVersions(ctx, c.S3, u.Bucket, u.Key)
 		if err != nil {
@@ -579,13 +597,14 @@ func runRmVersions(ctx context.Context, c *s3client.Client, u s3URI, recursive, 
 }
 
 func syncCmd() *cobra.Command {
-	var del, dryRun bool
+	var del, dryRun, force bool
 	cmd := &cobra.Command{
 		Use:   "sync SRC DST",
 		Short: "Sync a local folder with an S3 prefix (either direction)",
 		Long: "One operand must be s3://bucket/prefix/, the other a local directory.\n" +
 			"Uploads/downloads files whose size differs or that are missing on the target;\n" +
-			"--delete also removes extra files on the target.",
+			"--delete also removes extra files on the target (--force required above the\n" +
+			fmt.Sprintf("safety threshold of %d files).", rmForceThreshold),
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
@@ -599,9 +618,9 @@ func syncCmd() *cobra.Command {
 			}
 			var res syncResult
 			if srcS3 {
-				res, err = syncDownload(cmd.Context(), c, args[0], args[1], del, dryRun)
+				res, err = syncDownload(cmd.Context(), c, args[0], args[1], del, dryRun, force)
 			} else {
-				res, err = syncUpload(cmd.Context(), c, args[0], args[1], del, dryRun)
+				res, err = syncUpload(cmd.Context(), c, args[0], args[1], del, dryRun, force)
 			}
 			if err != nil {
 				return opErr(err)
@@ -616,6 +635,8 @@ func syncCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.BoolVar(&del, "delete", false, "remove files that no longer exist at the source")
 	f.BoolVar(&dryRun, "dry-run", false, "show planned actions, transfer nothing")
+	f.BoolVar(&force, "force", false,
+		fmt.Sprintf("with --delete: allow removing more than %d files (L1 safety gate)", rmForceThreshold))
 	return cmd
 }
 
@@ -669,7 +690,7 @@ func collectRemoteFiles(ctx context.Context, c *s3client.Client, bucket, prefix 
 	return out, err
 }
 
-func syncUpload(ctx context.Context, c *s3client.Client, localDir, dst string, del, dryRun bool) (syncResult, error) {
+func syncUpload(ctx context.Context, c *s3client.Client, localDir, dst string, del, dryRun, force bool) (syncResult, error) {
 	res := syncResult{Direction: "upload"}
 	u, err := parseS3URI(dst)
 	if err != nil {
@@ -706,7 +727,16 @@ func syncUpload(ctx context.Context, c *s3client.Client, localDir, dst string, d
 	if dryRun {
 		printSyncPlan("upload", uploads, prefix, u.Bucket, deletes)
 		res.Uploaded, res.Deleted = len(uploads), len(deletes)
+		syncGateNote(len(deletes), force)
 		return res, nil
+	}
+	// The --delete half is gated exactly like rm: refuse above the L1
+	// threshold without --force, before any upload runs (fail fast — a
+	// scripted sync must not half-apply a plan it will then refuse).
+	if len(deletes) > rmForceThreshold && !force {
+		return res, fmt.Errorf(
+			"sync --delete would remove %d object(s) from s3://%s/%s — pass --force to proceed",
+			len(deletes), u.Bucket, prefix)
 	}
 	for _, rel := range uploads {
 		key := joinKeyNoSlash(prefix, rel)
@@ -730,7 +760,7 @@ func syncUpload(ctx context.Context, c *s3client.Client, localDir, dst string, d
 	return res, nil
 }
 
-func syncDownload(ctx context.Context, c *s3client.Client, src, localDir string, del, dryRun bool) (syncResult, error) {
+func syncDownload(ctx context.Context, c *s3client.Client, src, localDir string, del, dryRun, force bool) (syncResult, error) {
 	res := syncResult{Direction: "download"}
 	u, err := parseS3URI(src)
 	if err != nil {
@@ -767,7 +797,15 @@ func syncDownload(ctx context.Context, c *s3client.Client, src, localDir string,
 	if dryRun {
 		printSyncPlan("download", downloads, prefix, u.Bucket, deletes)
 		res.Uploaded, res.Deleted = len(downloads), len(deletes)
+		syncGateNote(len(deletes), force)
 		return res, nil
+	}
+	// Same L1 gate as the upload direction: local deletions above the
+	// threshold refuse without --force, before anything transfers.
+	if len(deletes) > rmForceThreshold && !force {
+		return res, fmt.Errorf(
+			"sync --delete would remove %d local file(s) under %s — pass --force to proceed",
+			len(deletes), localDir)
 	}
 	for _, rel := range downloads {
 		localPath := filepath.Join(localDir, filepath.FromSlash(rel))
@@ -783,6 +821,14 @@ func syncDownload(ctx context.Context, c *s3client.Client, src, localDir string,
 		res.Deleted++
 	}
 	return res, nil
+}
+
+// syncGateNote is the --dry-run half of the sync --delete L1 gate: it names
+// the threshold a real run would enforce, without deleting anything.
+func syncGateNote(deletes int, force bool) {
+	if deletes > rmForceThreshold && !force {
+		col.dim.Printf("note: deleting them requires --force (> %d files)\n", rmForceThreshold)
+	}
 }
 
 func printSyncPlan(direction string, transfers []string, prefix, bucket string, deletes []string) {

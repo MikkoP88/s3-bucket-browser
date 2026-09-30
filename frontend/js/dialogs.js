@@ -3580,7 +3580,7 @@ export function adminDialog(bucket, onChanged) {
                   });
                   if (go === null) return;
                   try {
-                    const res = await api.EmptyBucketAllVersions(bucket);
+                    const res = await api.EmptyBucketAllVersions(bucket, true);
                     toast(`Emptied ${res.deleted} version(s)`, 'ok');
                     onChanged?.();
                   } catch (e) {

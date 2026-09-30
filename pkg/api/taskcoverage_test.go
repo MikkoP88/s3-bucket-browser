@@ -77,7 +77,7 @@ func TestRemoteRemoveRegistersTask(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := a.RemoteRemove("lab", []string{"/readme.md", "/junk.txt"})
+	res, err := a.RemoteRemove("lab", []string{"/readme.md", "/junk.txt"}, false)
 	if err != nil {
 		t.Fatalf("RemoteRemove: %v", err)
 	}

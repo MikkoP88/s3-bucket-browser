@@ -1034,9 +1034,11 @@ async function walk() {
     const opts = await langSel.first().evaluate((s) => Array.from(s.options).map((o) => o.value));
     process.stdout.write(`   language options: [${opts.join(', ')}]\n`);
     await ok(`language picker present (${opts.length} options incl. auto)`, opts.includes('auto') && opts.includes('fi'));
-    // onchange persists the choice and reloads (setLanguage); the reload
-    // can race the select action itself, so a throw here is still success.
+    // the deferred-Save model stages the choice; the Save click applies it
+    // and setLanguage reloads the app localized — the reload can race the
+    // click itself, so a throw from the select is still success.
     await langSel.first().selectOption('fi').catch(() => {});
+    await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
     await waitFor(() => evalPage(() => localStorage.getItem('s3b-lang') === 'fi'
       && Array.from(document.querySelectorAll('#menubar .mb-title')).some((t) => /Asetukset/.test(t.textContent))), 20000, 'Finnish UI after reload');
     await ok('language switched to fi (menubar shows Asetukset)', true);
@@ -1060,27 +1062,38 @@ async function walk() {
     const rows = await evalPage(() => document.querySelectorAll('#modal-root .set-row').length);
     await ok(`settings dialog renders (${rows} rows)`, rows >= 3);
     if (isTheme) {
+      // staging + Save per theme: Save applies and closes, so reopen for light
       await themeSel.selectOption('dark');
-      await sleep(150);
+      await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
       await ok('dark theme applied', await evalPage(() => document.documentElement.dataset.theme === 'dark'));
       await shot('27-settings-dark');
+      await menuClick(/^settings$/i, /settings/i);
+      await waitFor(() => page.locator('#modal-root .set-page select').count().then((n) => n > 0), 5000, 'settings dialog');
       await themeSel.selectOption('light');
-      await sleep(150);
+      await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
       await ok('light theme applied', await evalPage(() => (document.documentElement.dataset.theme || 'light') === 'light'));
     }
     // engine tuning: Network page → listing timeout 10 s; File transfers →
     // Transfer-engine group → part size 8 MiB. Both ride SetTuning and the
     // stored truth comes back — and the blackhole step later proves the
     // 10 s watchdog this sets is honored live.
+    // reopen (the light-theme Save closed the dialog), stage both tuning
+    // fields in one draft, then ONE Save — the deferred model applies the
+    // whole snapshot in a single SetTuning call
+    if (!(await modalVisible())) {
+      await menuClick(/^settings$/i, /settings/i);
+      await waitFor(() => page.locator('#modal-root .set-page select').count().then((n) => n > 0), 5000, 'settings dialog');
+    }
     await page.locator('#modal-root .set-nav-item').filter({ hasText: 'Network' }).click();
     await page.locator('#modal-root .set-row').filter({ hasText: 'Listing timeout' }).locator('select').selectOption('10000');
-    await waitFor(async () => (await call('GetTuning')).listingTimeoutMs === 10000, 5000, 'GetTuning 10 s');
-    await ok('listing timeout set to 10 s (round-trips the binding)', true);
     await page.locator('#modal-root .set-nav-item').filter({ hasText: 'File transfers' }).click();
     await page.locator('#modal-root .set-row').filter({ hasText: 'Multipart part size' }).locator('select').selectOption('8');
+    await shot('28-settings');
+    await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+    await waitFor(async () => (await call('GetTuning')).listingTimeoutMs === 10000, 5000, 'GetTuning 10 s');
+    await ok('listing timeout set to 10 s (round-trips the binding)', true);
     await waitFor(async () => (await call('GetTuning')).partSizeMiB === 8, 5000, 'GetTuning 8 MiB');
     await ok('multipart part size set to 8 MiB (engine group round-trips)', true);
-    await shot('28-settings');
     await closeModal();
   });
 

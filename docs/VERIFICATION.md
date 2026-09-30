@@ -162,7 +162,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Cross-engine move (mv) | SFTP → FTP | `mv -r` sftp tree → ftp; source gone; destination byte-identical | ✅ CLI-X-07 | — (sweep: cross-engine DnD keeps the tree, SWEEP-LIVE-01) | Win 11 x64 |
 | **Hostile filenames cross-engine** | **SFTP/FTP/WebDAV/S3** | names that stress protocol and shell escaping — spaces, `# & % + ^ $ !`, apostrophes, brackets, semicolons, CJK, a 120-char name — round-trip through EVERY live engine and S3 with names and bytes intact (JSON-escaped listing match + full tree diff) | ✅ CLI-X-11 | — | Win 11 x64 |
 | Rename (mv) | S3 (MinIO) | `mv` object → new key; old gone, new stats | ✅ CLI-S3-13 | ✅ GUI-08 (F2 → new name; CLI `stat` sees the new key) | Win 11 x64 |
-| sync (repair / no-op / new / --delete) | S3 (MinIO) | repairs a deletion, reports 0 in sync, 1 after local add, `--delete` removes the extra remote | ✅ CLI-S3-14 | — | Win 11 x64 |
+| sync (repair / no-op / new / --delete) | S3 (MinIO) | repairs a deletion, reports 0 in sync, 1 after local add, `--delete` removes the extra remote — and BOTH directions refuse past the 50-file L1 gate without `--force`: 55 remote stragglers (upload sync) and 55 local files (download sync) are each refused with the store intact, the dry-run JSON counting exactly 55, `--force` completing them | ✅ CLI-S3-14 + ✅ CLI-S3-47 | — | Win 11 x64 |
 | Presign + fetch | S3 (MinIO) | `presign` → plain HTTP GET returns identical bytes | ✅ CLI-S3-15 | — | Win 11 x64 |
 | **Presign expiry: granted TTL + fails closed** | **S3 (MinIO)** | a 2-second grant: the URL carries exactly `X-Amz-Expires=2` and serves while live; after expiry the SAME URL is refused (providers with a clock-skew grace that keep serving record the gap as SKIP) | ✅ CLI-S3-34 | — | Win 11 x64 |
 | **Pre-sign URL dialog (GUI)** | **S3 (MinIO)** | context menu → Pre-sign URL: the dialog exposes a READ-ONLY signed URL that a bare HTTP client outside the app fetches for the exact object bytes | — | ✅ GUI-24 | Win 11 x64 |
@@ -198,7 +198,7 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | Action | Data source | Tested scenario | CLI | GUI | OS |
 |---|---|---|---|---|---|
 | Version timeline: restore + undo | S3 (MinIO) | overwrite → 2 versions; restore v1 as latest; `rm` → marker; `undo` removes the marker and serves v1 bytes | ✅ CLI-S3-16 | ✅ GUI-12 (Versions dialog → Restore as latest on the older one; CLI downloads the restored bytes) | Win 11 x64 |
-| Purge + permanent destroy | S3 (MinIO) | `versions stat`; purge noncurrent — >50 gate demands `--force`, then purges; `versions rm --all` empties the timeline (L3) | ✅ CLI-S3-17 | — (sweep, SWEEP-LIVE-01) | Win 11 x64 |
+| Purge + permanent destroy | S3 (MinIO) | `versions stat`; purge noncurrent — >50 gate demands `--force`, then purges; a 51-version timeline refuses BOTH destroy doors without `--force` (`rm <key> --versions` and `versions rm --all`), the dry-run reporting wouldDestroy: 51 while the refusals leave all 51 alive, and `--force` empties the timeline (L3) | ✅ CLI-S3-17 | — (sweep, SWEEP-LIVE-01) | Win 11 x64 |
 | Versioned migration (cp/mv --versions) | S3 (MinIO) | 2 versions at source; `cp --versions` s3→s3 copies the full timeline; `mv --versions` moves it; unversioned destination refuses (gate) | ✅ CLI-S3-26 | — | Win 11 x64 |
 | **Versions dialog: A/B compare diff + per-version Destroy** | **S3 (MinIO)** | three CLI-seeded text versions: timeline lists all three; oldest as A vs newest as B shows both sides' changed lines in the diff; destroying the oldest through its confirmation window drops the timeline to exactly two, re-read by CLI | — | ✅ GUI-30 | Win 11 x64 |
 | **Versioned copy: the full timeline S3→S3 (the migrator)** | **S3 (MinIO)** | an object with three versions pasted into a fresh versioned bucket: version-choice dialog appears, the GUI carries the ENTIRE timeline across in a background job; destination lists all three versions and the current bytes round-trip | — | ✅ GUI-31 | Win 11 x64 |
@@ -253,7 +253,7 @@ switching; the same S3 source stays connected through it).
 | **Cross-engine delete scope: the out-of-scope prefix is never touched** | SFTP + SCP + FTP + WebDAV | per engine (sftp, scp, ftp, webdav): a 3-file tree copied into a scoped prefix, rm -r --dry-run counts exactly the scoped files, --force removes them, the sibling keep/ prefix survives with its file readable, and a stat on the removed path errors honestly | ✅ CLI-X-13 | — | Win 11 x64 |
 | **Renames refuse occupied targets — file, folder, remote** | S3 (MinIO) | F2 onto a name another object owns REFUSES with both sides byte-intact afterwards (file and folder; the guard checks both key forms plus a prefix walk — an unmarked folder still counts as occupied); a folder rename lands at parent/NEW-name with the old prefix fully gone, never nested inside it; a same-name rename is a clean no-op; remote sources get the same refusal — engine Rename semantics vary, so the target is Stat-checked first | — | ✅ GUI-55 (+ targeted repro: the real F2 flow, refusal toast, both trees intact) | Win 11 x64 |
 | **Editor discard: StopEdit(false) never pushes — and a stopped watcher stays stopped** | S3 (MinIO) | EditObject stages the object locally (the real OS open path); a tampered staged file discarded with upload=false leaves the object byte-original immediately AND past two watcher polls (the zombie-watcher regression: the discard goroutine used to outlive the session and push the discarded edits); StopEdit on an object that is not being edited refuses honestly | — | ✅ GUI-56 | Win 11 x64 |
-| **Local delete ladder: roots refuse, siblings survive, mixed reports honestly** | local disk | LocalDeletePreview and LocalRemove BOTH refuse filesystem roots (C:\) with the directory untouched; a scoped victim tree deletes exactly its own files while the sibling survives byte-identical; a mixed [missing, real] list deletes the real one and reports the missing one as an error — never silently | — | ✅ GUI-57 | Win 11 x64 |
+| **Local delete ladder: roots refuse, siblings survive, mixed reports honestly** | local disk | LocalDeletePreview and LocalRemove BOTH refuse filesystem roots (C:\) IMMEDIATELY — the root operand is never walked first (the round-8 pin: the act-time-gate draft walked all of C:\ to count before refusing) — with the directory untouched; a scoped victim tree deletes exactly its own files while the sibling survives byte-identical; a mixed [missing, real] list deletes the real one and reports the missing one as an error — never silently | — | ✅ GUI-57 | Win 11 x64 |
 | **RemoveSource: the store forgets, the data stays** | FTP | removing a saved source deletes exactly the config/keyring/workspace records (ListSources empty afterwards) while the data itself survives — the CLI face still reads it through a fresh source; source removal is bookkeeping, never data deletion | — | ✅ GUI-58 | Win 11 x64 |
 | **cp/mv S3→local --no-clobber: the skip protects both ends** | S3 (MinIO) | downloading over an existing local file is skipped (a local truncate has no version history to recover from); mv no longer deletes the source object of a skipped download — the copy was refused, so the move may not happen; a fresh mv downloads and removes its source; a mixed recursive move takes only what actually moved | ✅ CLI-S3-46 | — | Win 11 x64 |
 | **cp/mv remote→local --no-clobber: the local file, the remote file AND the folder survive the skip** | SFTP | the same guarantees on the remote engines, plus the emptied-folder prune must not fire while a skipped file still lives in the source tree — recursive engine Remove would have taken the folder and the skipped file with it | ✅ CLI-X-14 | — | Win 11 x64 |
@@ -262,6 +262,8 @@ switching; the same S3 source stays connected through it).
 | **Keep-current purge deletes exactly N-1 versions** | S3 (MinIO) | three seeded versions: DeleteSelectionKeepCurrent reports 2 deleted, the timeline holds exactly 1, and the survivor is the newest payload byte-identical — the irreversible pruning rung never takes more or fewer than reported | — | ✅ GUI-61 | Win 11 x64 |
 | **A delete canceled while still counting deletes nothing** | S3 (MinIO) via faultproxy | the count-then-act ladder's COUNT half is cancellable: a delete through a 1.5 s/chunk delayed source, canceled from the task registry in the count phase, leaves 30/30 objects alive (the act phase never ran), the out-of-scope sibling untouched, and the app healthy enough to finish the job on a direct re-run | — | ✅ GUI-62 | Win 11 x64 |
 | **Canonical path hierarchy: `<source>://<content>` — a data source never repeats its own identity** | **all source types** | every path surface renders `NAME://content`: the navbar path bar, breadcrumbs, properties windows, transfer labels, the dual-pane crumb, and the directory picker. A bucket-scoped S3 source's name already IS the bucket, so the bucket never appears again after `://` (the reported `testijotain://testijotain/…` doubling is gone), and its root crumb stays INSIDE the source's contents — the account bucket list is unreachable from a single data source, by design; legacy account-wide sources keep the bucket as their first content segment; a path copied under the old doubled rendering still navigates (parsePath folds an exact-case repeated bucket away); remote sources render the same hierarchy with no host or port leak; the CLI keeps `NAME://` browsing refused with s3:// guidance while cp/mv accept scoped operands as content-only | ✅ CLI-S3-48 | ✅ GUI-85 + GUI-86 | Win 11 x64 |
+| **Act-time force gates: the bridge re-counts — a replayed window can never authorize scale** | local disk + WebDAV + S3 (MinIO) | the destructive bridges carry the L2 gate server-side: LocalRemove and RemoteRemove on 55 items REFUSE without force with every item still on disk / in the WebDAV tree / in the bucket (the preview flags requiresL2, so the confirmed window at scale IS the typed confirmation — and the backend re-count at act time cannot be bypassed from the bridge), and EmptyBucketAllVersions refuses without its typed-name force while the whole versioned timeline survives | — | ✅ GUI-90 | Win 11 x64 |
+| **S3→S3 paste/drop conflicts: policy, per-file override — and the skipped source survives** | S3 (MinIO) | GUI paste and drop probe CheckConflicts before every server-side copy: skip keeps both sides (and a skipped MOVE keeps its source — nothing vanishes), rename lands the unique `name (1).ext` with the target intact, a per-file decision overrides the policy for that one file, an invalid policy is refused by name, overwrite clobbers, and a skipped folder move keeps its source marker so nothing is orphaned | — | ✅ GUI-91 | Win 11 x64 |
 
 ---
 
@@ -313,30 +315,65 @@ release".
 
 ## Latest verification report
 
-Replaced on every run — this snapshot covers the **round 7 real-KMS
-import closure** (28 Sep 2026, `node scripts/verify.mjs` on Windows
-Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): the Import S3
-Credential ladder verified against a REAL HashiCorp Vault dev-mode
-container — GUI-87/88/89 over the bridge plus the Go live-e2e Flows
-C/D — taking the matrix to 172 rows (round 6's deferred full-matrix
-re-run is folded into the same numbers). Release evidence for
+Replaced on every run — this snapshot covers the **round 8 act-time
+destruction sweep** (30 Sep 2026, `node scripts/verify.mjs` on Windows
+Server 2025 (x64), build `v1.1.0-beta.14-9-wails3`): every mass-delete
+binding now re-counts at act time and refuses without force — GUI-90
+pins LocalRemove / RemoteRemove / EmptyBucketAllVersions over the
+bridge (local disk, a real WebDAV engine, S3) — the L1/L3 CLI legs
+grew both-direction sync gates and both version-destroy doors, and
+S3→S3 paste/drop now carries the full conflict contract (GUI-91: skip /
+rename / overwrite / per-file decisions, a skipped move keeps its
+source and marker). The sweep caught one real defect live: GUI-57
+proved a filesystem-root operand must be refused IMMEDIATELY — the
+act-time-gate draft walked all of C:\ to count before refusing; roots
+are now refused before any counting, pinned by a timing assert and a
+Go unit test. The matrix stands at 174 rows. Release evidence for
 v1.1.0-beta.20 stays at
 [`docs/verification/v1.1.0-beta.20/windows-x64/REPORT.md`](verification/v1.1.0-beta.20/windows-x64/REPORT.md).
 
 ```
-full matrix (172 rows):
-  165 PASS · 7 SKIP · 0 FAIL — 2692 s
+full matrix (174 rows):
+  163 PASS · 7 SKIP · 4 FAIL — 3763 s
+  (every FAIL was diagnosed and fixed in-tree the same round, and the
+   whole GUI face re-ran green standalone on the final tree, below:
+   GUI-57 caught a real defect — the act-time-gate draft walked a
+   filesystem root to count before refusing it; GUI-90/91 were
+   first-draft legs of the new rows; SWEEP-LIVE-01 was a pre-existing
+   walk gap behind the deferred-Save settings model, fixed in
+   gui-v3live.mjs)
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
   SWEEP-VIS-01  gui-visual   722/722 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
   standalone units, same tree:
-  --only gui                        87 PASS · 2 SKIP · 0 FAIL — 1369 s
+  --only gui (final tree)           89 PASS · 2 SKIP · 0 FAIL — 1683 s
   go test ./pkg/api -run TestImportCredentialsE2E   4/4 legs PASS (live Vault + MinIO)
 ```
 
 The rounds in brief:
+
+- Round 8 swept the destructive edges that still lacked act-time
+  proof. The app now holds the line server-side on every mass-delete
+  binding: LocalRemove and RemoteRemove re-count at act time and
+  refuse above 50 without force (the Delete Window's typed
+  confirmation at scale IS force), EmptyBucketAllVersions refuses
+  without the typed-bucket dialog's force, S3→S3 paste and drop probe
+  conflicts before every server-side copy (skip / rename / overwrite /
+  per-file decisions — a skipped move keeps its source and its folder
+  marker, so nothing is orphaned in listings), and `versions rm --all`
+  gained the L1 gate plus --dry-run. New rows pin the gates over the
+  bridge (GUI-90 across local disk, a real WebDAV engine and S3;
+  GUI-91 the full conflict matrix), the CLI legs grew both-direction
+  sync gates (CLI-S3-14/47) and both version-destroy doors
+  (CLI-S3-17), and the Wails v3 bridge's server-side arity enforcement
+  now has every force-carrying call site passing the flag explicitly.
+  The sweep caught one real defect live: GUI-57's root operand was
+  walked for counting before it was refused — a full-drive walk that
+  always ends in refusal, surfacing over the bridge as a dead fetch;
+  roots are now refused before any counting, pinned by a timing
+  assert in the row and a Go unit test.
 
 - Round 7 closed the Import S3 Credential ladder's last unverified
   face: a REAL KMS. A HashiCorp Vault dev-mode container (KV v2, the

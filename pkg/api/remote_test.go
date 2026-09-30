@@ -193,7 +193,7 @@ func TestRemoteNativeOps(t *testing.T) {
 		t.Fatalf("root preview must refuse: %+v err = %v", pv, err)
 	}
 
-	res, err := a.RemoteRemove("lab", []string{"/manuals/deep/", "/intro.md"})
+	res, err := a.RemoteRemove("lab", []string{"/manuals/deep/", "/intro.md"}, false)
 	if err != nil {
 		t.Fatalf("RemoteRemove: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestRemoteNativeOps(t *testing.T) {
 	if err != nil || len(entries) != 1 || entries[0].Name != "manuals" {
 		t.Fatalf("post-delete listing = %+v err = %v", entries, err)
 	}
-	if res, err := a.RemoteRemove("lab", []string{"/"}); err != nil || res.Deleted != 0 || len(res.Errors) != 1 {
+	if res, err := a.RemoteRemove("lab", []string{"/"}, false); err != nil || res.Deleted != 0 || len(res.Errors) != 1 {
 		t.Fatalf("root remove must refuse: %+v err = %v", res, err)
 	}
 

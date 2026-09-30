@@ -420,7 +420,7 @@ async function cliS3() {
     return 'moved + stat ok';
   });
 
-  await verify({ id: 'CLI-S3-14', area: 'transfers', action: 'sync (repair / no-op / new / --delete)', ds: 'S3 (MinIO)', scenario: 'sync repairs the CLI-S3-10 deletion, reports 0 when in sync, 1 after a local add, deletes the extra remote with --delete', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-14', area: 'transfers', action: 'sync (repair / no-op / new / --delete)', ds: 'S3 (MinIO)', scenario: 'sync repairs the CLI-S3-10 deletion, reports 0 when in sync, 1 after a local add, deletes the extra remote with --delete; a --delete that would remove 55 (>50) remote objects refuses without --force, warns in --dry-run, and --force removes exactly them', face: 'CLI' }, async () => {
     const data = path.join(FIX, 'data');
     let r = await cli(['sync', data, `${B}/data/`, '--json']);
     need(r.out.includes('"transferred": 1'), `sync repair (log-01): ${r.out}`);
@@ -433,7 +433,28 @@ async function cliS3() {
     await rm(p, { force: true });
     r = await cli(['sync', data, `${B}/data/`, '--delete', '--json']);
     need(r.out.includes('"deleted": 1'), `sync delete: ${r.out}`);
-    return 'repair/no-op/add/delete all correct';
+    // the L1 gate: --delete aiming at 55 (>50) REMOTE objects must refuse
+    // without --force, the dry-run must warn, --force must remove exactly them
+    const sgs = path.join(ART, 'sync-gate-seed'), sg = path.join(ART, 'sync-gate');
+    for (const x of [sgs, sg]) await rm(x, { recursive: true, force: true });
+    await mkdir(sgs, { recursive: true });
+    for (let i = 0; i < 55; i++) await writeFile(path.join(sgs, `s-${String(i).padStart(2, '0')}.txt`), `sg ${i}\n`);
+    r = await cli(['cp', '-r', sgs, `${B}/sgate/`, '--json']);
+    need(r.code === 0 && r.out.includes('"items": 55'), `sgate seed: ${r.out}${r.err}`);
+    await mkdir(sg, { recursive: true }); // the now-empty local side
+    r = await cli(['sync', sg, `${B}/sgate/`, '--delete', '--json']);
+    need(r.code !== 0 && /--force/.test(r.out + r.err), `sync --delete over the gate must refuse: exit ${r.code} ${r.out}${r.err}`);
+    r = await cli(['ls', `${B}/sgate/`, '--json']);
+    need(r.out.split('\n').filter((x) => x.includes('"name": "s-')).length === 55, `the refused sync --delete removed remote objects: ${r.out.slice(0, 120)}`);
+    r = await cli(['sync', sg, `${B}/sgate/`, '--delete', '--dry-run', '--json']);
+    need(r.code === 0 && /"deleted":\s*55/.test(r.out) && /requires --force/.test(r.out + r.err), `sync --delete dry-run gate note: ${r.out}${r.err}`);
+    r = await cli(['sync', sg, `${B}/sgate/`, '--delete', '--force', '--json']);
+    need(r.code === 0 && /"deleted":\s*55/.test(r.out), `sync --delete --force: ${r.out}${r.err}`);
+    r = await cli(['ls', `${B}/`, '--recursive', '--json']);
+    need(!r.out.includes('sgate/'), 'sgate/ still listed after the forced sync delete');
+    await rm(sgs, { recursive: true, force: true });
+    await rm(sg, { recursive: true, force: true });
+    return 'repair/no-op/add/delete correct; the >50 --delete gate refused, warned, and obeyed --force';
   });
 
   await verify({ id: 'CLI-S3-15', area: 'objects', action: 'Presign + fetch', ds: 'S3 (MinIO)', scenario: 'presign → plain HTTP GET returns identical bytes', face: 'CLI' }, async () => {
@@ -470,7 +491,7 @@ async function cliS3() {
     return 'restore/undo byte-correct';
   });
 
-  await verify({ id: 'CLI-S3-17', area: 'versions', action: 'Purge + permanent destroy', ds: 'S3 (MinIO)', scenario: 'versions stat; purge noncurrent (>50 gate demands --force, then --force purges); versions rm --all empties the timeline (L3)', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-17', area: 'versions', action: 'Purge + permanent destroy', ds: 'S3 (MinIO)', scenario: 'versions stat; purge noncurrent (>50 gate demands --force, then --force purges); versions rm --all empties a small timeline ungated, but a 51-version key refuses --all and rm --versions without --force (dry-run counts, --force destroys) (L3)', face: 'CLI' }, async () => {
     let r = await cli(['versions', 'stat', B]);
     need(/total versions:/.test(r.out), `stat: ${r.out}`);
     r = await cli(['versions', 'purge', B, '--mode', 'noncurrent', '--dry-run']);
@@ -484,7 +505,31 @@ async function cliS3() {
     need(/deleted/.test(r.out), `versions rm: ${r.out}`);
     r = await cli(['versions', 'ls', `${B}/ver.txt`, '--json']);
     need(countLines(r.out, '"versionId"') === 0, 'timeline not destroyed');
-    return 'purged and destroyed';
+    // a deep timeline (51 versions of ONE key) trips the same L1 gate through
+    // BOTH doors: rm --versions (exact key) and versions rm --all
+    const deep = path.join(ART, 'deep.txt');
+    for (let i = 0; i < 51; i++) {
+      await writeFile(deep, `deep ${i}\n`);
+      await cli(['cp', deep, `${B}/deep.txt`]);
+    }
+    let lv = await cli(['versions', 'ls', `${B}/deep.txt`, '--json']);
+    need(countLines(lv.out, '"versionId"') === 51, `deep seed: ${lv.out.slice(0, 120)}`);
+    let rr = await cli(['rm', `${B}/deep.txt`, '--versions']);
+    need(rr.code !== 0 && /--force/.test(rr.out + rr.err), `rm --versions over the gate must refuse: exit ${rr.code} ${rr.out}${rr.err}`);
+    rr = await cli(['versions', 'rm', `${B}/deep.txt`, '--all']);
+    need(rr.code !== 0 && /--force/.test(rr.out + rr.err), `versions rm --all over the gate must refuse: exit ${rr.code} ${rr.out}${rr.err}`);
+    rr = await cli(['versions', 'rm', `${B}/deep.txt`, '--all', '--dry-run']);
+    need(rr.code === 0 && /would permanently delete every version/.test(rr.out) && /requires --force/.test(rr.out + rr.err), `gate dry-run: ${rr.out}${rr.err}`);
+    rr = await cli(['versions', 'rm', `${B}/deep.txt`, '--all', '--dry-run', '--json']);
+    need(rr.code === 0 && /"wouldDestroy":\s*51/.test(rr.out), `gate dry-run JSON: ${rr.out}${rr.err}`);
+    lv = await cli(['versions', 'ls', `${B}/deep.txt`, '--json']);
+    need(countLines(lv.out, '"versionId"') === 51, 'a refused or dry-run destroy touched the timeline');
+    rr = await cli(['rm', `${B}/deep.txt`, '--versions', '--force']);
+    need(rr.code === 0 && /51/.test(rr.out), `rm --versions --force: ${rr.out}${rr.err}`);
+    lv = await cli(['versions', 'ls', `${B}/deep.txt`, '--json']);
+    need(countLines(lv.out, '"versionId"') === 0, 'the forced destroy left versions behind');
+    await rm(deep, { force: true });
+    return 'purged and destroyed; both version-destroy doors gated, warned, and obeyed --force';
   });
 
   await verify({ id: 'CLI-S3-18', area: 'objects', action: 'Storage-class conversion', ds: 'S3 (MinIO)', scenario: 'sc single → REDUCED_REDUNDANCY visible + find --class; recursive dry-run gate', face: 'CLI' }, async () => {
@@ -1268,7 +1313,7 @@ async function cliS3() {
     await cli(['rm', '-r', `${P}/`, '--force']);
     return 'skips protected the local bytes; mv never deleted a skipped source; fresh moves complete';
   });
-  await verify({ id: 'CLI-S3-47', area: 'transfers', action: 'sync S3→local: repair, and --delete aims ONLY at the extra local file', ds: 'S3 (MinIO)', scenario: 'the download direction points --delete at the LOCAL tree — the side with no version history to recover from: a drifted prefix repairs byte-identical; without --delete a local-only file SURVIVES; --dry-run plans the removal but touches nothing on disk; the real --delete removes exactly the extra file while every synced file and an out-of-scope sibling directory stay intact; both-s3:// and both-local operand pairs are refused as usage errors', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-47', area: 'transfers', action: 'sync S3→local: repair, and --delete aims ONLY at the extra local file', ds: 'S3 (MinIO)', scenario: 'the download direction points --delete at the LOCAL tree — the side with no version history to recover from: a drifted prefix repairs byte-identical; without --delete a local-only file SURVIVES; --dry-run plans the removal but touches nothing on disk; the real --delete removes exactly the extra file while every synced file and an out-of-scope sibling directory stay intact; both-s3:// and both-local operand pairs are refused as usage errors; a --delete that would remove 55 local files refuses without --force and obeys it', face: 'CLI' }, async () => {
     const d = path.join(ART, 'syncdl'), sib = path.join(ART, 'syncdl-sib'), P = `${B}/syncdl/`;
     const exists = async (p) => { try { await readFile(p, 'utf8'); return true; } catch { return false; } };
     await rm(d, { recursive: true, force: true });
@@ -1308,13 +1353,28 @@ async function cliS3() {
       need((await readFile(path.join(d, f), 'utf8')) === want, `${f} was disturbed by the --delete pass`);
     }
     need((await readFile(path.join(sib, 'precious.txt'), 'utf8')) === 'sibling PRECIOUS\n', 'sync reached outside its destination directory');
+    // the L1 gate on the LOCAL side: --delete aiming at 55 (>50) local files
+    // must refuse without --force (the local tree has no version history)
+    const df = path.join(ART, 'syncdl-force');
+    await rm(df, { recursive: true, force: true });
+    await mkdir(df, { recursive: true });
+    for (let i = 0; i < 55; i++) await writeFile(path.join(df, `d-${String(i).padStart(2, '0')}.txt`), `dl ${i}\n`);
+    let dr = await cli(['sync', `${B}/dl-force/`, df, '--delete', '--json']);
+    need(dr.code !== 0 && /--force/.test(dr.out + dr.err), `sync --delete at 55 local files must refuse: exit ${dr.code} ${dr.out}${dr.err}`);
+    need(await exists(path.join(df, 'd-00.txt')), 'the refused sync --delete removed local files anyway');
+    dr = await cli(['sync', `${B}/dl-force/`, df, '--delete', '--dry-run', '--json']);
+    need(dr.code === 0 && /"deleted":\s*55/.test(dr.out), `local gate dry-run: ${dr.out}${dr.err}`);
+    dr = await cli(['sync', `${B}/dl-force/`, df, '--delete', '--force', '--json']);
+    need(dr.code === 0 && /"deleted":\s*55/.test(dr.out), `local gate --force: ${dr.out}${dr.err}`);
+    need((await readdir(df)).length === 0, '--force left local files behind');
+    await rm(df, { recursive: true, force: true });
     // operand-kind gate: never two s3:// or two local operands
     r = await cli(['sync', P, `${B}/other/`]);
     need(r.code !== 0 && /exactly one/i.test(r.out + r.err), `two s3:// operands accepted: exit ${r.code} ${r.out}${r.err}`);
     r = await cli(['sync', d, sib]);
     need(r.code !== 0 && /exactly one/i.test(r.out + r.err), `two local operands accepted: exit ${r.code} ${r.out}${r.err}`);
     await cli(['rm', '-r', P, '--force']);
-    return 'download repair exact; --delete removed exactly the extra local file; dry-run and operand gates held';
+    return 'download repair exact; --delete removed exactly the extra local file; dry-run, operand, and 55-file force gates held';
   });
 
 }
@@ -4371,7 +4431,7 @@ async function guiBattery() {
     const prev = await call('LocalDeletePreview', [f2]);
     need(prev && prev.count === 1 && prev.objects === 1 && prev.folders === 0 && prev.bytes === 3,
       `the preview miscounted one 3-byte file: ${JSON.stringify(prev)?.slice(0, 160)}`);
-    await call('LocalRemove', [f2]);
+    await call('LocalRemove', [f2], false);
     let gone = false;
     try { await readFile(f2); } catch { gone = true; }
     need(gone, 'LocalRemove left the file on disk (Node fs still reads it)');
@@ -4954,16 +5014,19 @@ async function guiBattery() {
     return 'discard held past two watcher polls; double-stop refused';
   });
 
-  await verify({ id: 'GUI-57', area: 'deletion', action: 'Local delete ladder: roots refused, exact scope, honest missing-path errors', ds: 'local disk', scenario: 'LocalDeletePreview and LocalRemove must BOTH refuse a filesystem root (C:\\) with nothing on disk touched — proven from OUTSIDE via Node fs; a scoped delete takes exactly the victim tree leaving the sibling witness intact; a missing path inside a batch produces an honest per-path error while its deletable batch-mate still goes — never a silent skip, never a partial lie', face: 'GUI' }, async () => {
-    // leg 1 — the filesystem root is untouchable on BOTH rungs
+  await verify({ id: 'GUI-57', area: 'deletion', action: 'Local delete ladder: roots refused, exact scope, honest missing-path errors', ds: 'local disk', scenario: 'LocalDeletePreview and LocalRemove must BOTH refuse a filesystem root (C:\\) with nothing on disk touched — proven from OUTSIDE via Node fs; a scoped delete takes exactly the victim tree leaving the sibling witness intact; a missing path inside a batch produces an honest per-path error while its deletable batch-mate still goes — never a silent skip, never a partial lie — and the root refusal is IMMEDIATE: the root operand is never walked (counted) before it is refused', face: 'GUI' }, async () => {
+    // leg 1 — the filesystem root is untouchable on BOTH rungs — and the
+    // refusal is immediate: a root operand is never walked before it is refused
+    const t0 = Date.now();
     let refused = null;
     try { await call('LocalDeletePreview', ['C:\\']); refused = false; } catch (e) { refused = String(e); }
     need(refused !== false && /root/i.test(refused), `preview must refuse the root: ${refused}`);
-    const rootRes = await call('LocalRemove', ['C:\\']);
+    const rootRes = await call('LocalRemove', ['C:\\'], false);
     need(rootRes && (rootRes.errors || []).length === 1 && rootRes.deleted === 0 && /root/i.test(rootRes.errors[0]), `remove must refuse the root: ${JSON.stringify(rootRes)}`);
     let entries = [];
     try { entries = fs.readdirSync('C:\\'); } catch { /* permission-shaped environments */ }
     need(entries.length > 0, 'C:\\ became unreadable after the refused delete');
+    need(Date.now() - t0 < 10000, `the root refusal walked the drive first (${Date.now() - t0} ms)`);
     // leg 2 — exact scope with a sibling witness
     const d = path.join(ART, 'gui-ladder');
     await rm(d, { recursive: true, force: true });
@@ -4974,7 +5037,7 @@ async function guiBattery() {
     await writeFile(path.join(d, 'sibling', 's.txt'), 's');
     const prev = await call('LocalDeletePreview', [path.join(d, 'victim')]);
     need(prev && prev.count === 2 && prev.folders >= 2, `preview: ${JSON.stringify(prev)}`);
-    const res = await call('LocalRemove', [path.join(d, 'victim')]);
+    const res = await call('LocalRemove', [path.join(d, 'victim')], false);
     need(res && res.deleted === 1 && !(res.errors || []).length, `remove: ${JSON.stringify(res)}`);
     let vGone = false;
     try { await readFile(path.join(d, 'victim', 'v.txt')); } catch { vGone = true; }
@@ -4984,13 +5047,13 @@ async function guiBattery() {
     const miss = path.join(d, 'no-such-path', 'x.txt');
     const real = path.join(d, 'sibling', 'extra.txt');
     await writeFile(real, 'extra');
-    const mix = await call('LocalRemove', [miss, real]);
+    const mix = await call('LocalRemove', [miss, real], false);
     need(mix && (mix.errors || []).length === 1 && mix.errors[0].includes('no-such-path') && mix.deleted === 1, `mixed batch: ${JSON.stringify(mix)}`);
     let rGone = false;
     try { await readFile(real); } catch { rGone = true; }
     need(rGone, 'the deletable batch-mate was not deleted');
     await rm(d, { recursive: true, force: true });
-    return 'root refused on both rungs (C:\\ readable outside); exact scope; missing path honest';
+    return 'root refused on both rungs (C:\\ readable outside), immediately — no drive walk to decide; exact scope; missing path honest';
   });
 
   await verify({ id: 'GUI-59', area: 'objects', action: 'Remote rename guard: an occupied name is refused, never merged into', ds: 'FTP', scenario: 'renaming a remote folder onto an existing sibling must be refused (engine MOVE semantics overwrite or merge silently — the pre-rename Stat guard is the only defense); renaming to its own name is a no-op; a free name lands — driven through the bridge bindings exactly as the grid calls them, on the engine whose MOVE is least defined', face: 'GUI' }, async () => {
@@ -5016,7 +5079,7 @@ async function guiBattery() {
     let bGone = false;
     try { await call('RemoteStat', F, `/${u}-b`); } catch { bGone = true; }
     need(bGone, 'the renamed-away folder b is still there');
-    const res = await call('RemoteRemove', F, [`/${u}-a`, `/${u}-c`]);
+    const res = await call('RemoteRemove', F, [`/${u}-a`, `/${u}-c`], false);
     need(res && res.deleted === 2 && !(res.errors || []).length, `cleanup: ${JSON.stringify(res)}`);
     return 'occupied rename refused (both folders intact); no-op clean; free rename landed';
   });
@@ -5314,7 +5377,7 @@ async function guiBattery() {
     // empty SUCCESS (exit 0, no output) — gone means nonzero OR nothing.
     need(l.code !== 0 || !l.out.trim(), 'the deleted folder still lists');
     // teardown — the parent folder and the survivor, nothing else
-    const res = await call('RemoteRemove', F, [`/${u}`]);
+    const res = await call('RemoteRemove', F, [`/${u}`], false);
     need(res && res.deleted >= 1 && !(res.errors || []).length, `cleanup: ${JSON.stringify(res)}`);
     return 'root refused; Cancel kept every byte; execute removed exactly sub/';
   });
@@ -5364,7 +5427,7 @@ async function guiBattery() {
     r = await cli(['stat', `xf://${RUNID}/gui/born.txt`]);
     need(r.code === 0 && /size:\s*0/i.test(r.out), `born.txt not an empty file on the engine: ${r.out}${r.err}`);
     // teardown
-    const res = await call('RemoteRemove', F, [`/${RUNID}/gui/made-${RUNID}`, `/${RUNID}/gui/born.txt`]);
+    const res = await call('RemoteRemove', F, [`/${RUNID}/gui/made-${RUNID}`, `/${RUNID}/gui/born.txt`], false);
     need(res && res.deleted === 2 && !(res.errors || []).length, `cleanup: ${JSON.stringify(res)}`);
     return 'cancels created nothing; folder + empty file landed once each';
   });
@@ -6344,7 +6407,7 @@ async function guiBattery() {
       need(up, 'the faultproxy control channel never came up');
       await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
-      const killing = call('RemoteRemove', P, KEYS);
+      const killing = call('RemoteRemove', P, KEYS, false);
       let id = null;
       for (let i = 0; i < 3000 && !id; i++) {
         const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
@@ -6396,7 +6459,7 @@ async function guiBattery() {
       need(up, 'the faultproxy control channel never came up');
       await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
-      const killing = call('RemoteRemove', P, KEYS);
+      const killing = call('RemoteRemove', P, KEYS, false);
       let id = null;
       for (let i = 0; i < 3000 && !id; i++) {
         const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
@@ -6420,7 +6483,7 @@ async function guiBattery() {
       need(gone <= res.deleted + res.errors.length, `${gone - res.deleted} path(s) gone past counter+errors — unaccounted destruction`);
       // the wire heals; a re-run removes exactly what is left
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'direct', delayMs: 0 }) });
-      const rerun = await call('RemoteRemove', P, KEYS);
+      const rerun = await call('RemoteRemove', P, KEYS, false);
       need(rerun && rerun.deleted >= 1 && (await remaining()) === 0, 'the healed re-run left files behind');
       return `wire-death mid-remote-delete: ${res.deleted} deleted + ${res.errors.length} error(s) recorded (never silent), counter == registry, the re-run removed the rest`;
     } finally {
@@ -6556,7 +6619,7 @@ async function guiBattery() {
       need(up, 'the faultproxy control channel never came up');
       await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
-      const killing = call('RemoteRemove', P, KEYS);
+      const killing = call('RemoteRemove', P, KEYS, false);
       let id = null;
       for (let i = 0; i < 3000 && !id; i++) {
         const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
@@ -6904,6 +6967,123 @@ async function guiBattery() {
     need(l.code === 0 && /readme/.test(l.out), `engine data lost with the source: ${l.out.slice(0, 120)}${l.err}`);
     await navCertGui();
     return 'store entry gone; engine data intact through the CLI face';
+  });
+
+  await verify({ id: 'GUI-90', area: 'deletion', action: 'Backend force gates at scale: LocalRemove / RemoteRemove / EmptyBucketAllVersions refuse without force', ds: 'WebDAV + S3 (MinIO) + local disk', scenario: 'the GUI dialogs confirm first, but the BACKEND must hold the line on its own: every mass-delete binding re-counts at act time and refuses above the 50-file threshold without the force flag — nothing is deleted on refusal, proven from outside; with force the victim goes exactly; the preview flags the same selection RequiresL2 so the Delete Window escalates; and EmptyBucketAllVersions (L3, no undo) refuses without force unconditionally', face: 'GUI' }, async () => {
+    // local: 55 files under one victim tree
+    const d = path.join(ART, 'gui-force');
+    const victim = path.join(d, 'victim');
+    await rm(d, { recursive: true, force: true });
+    await mkdir(victim, { recursive: true });
+    for (let i = 0; i < 55; i++) await writeFile(path.join(victim, `f-${String(i).padStart(2, '0')}.txt`), `gf ${i}\n`);
+    let refused = null;
+    try { await call('LocalRemove', [victim], false); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /force/i.test(refused), `LocalRemove over the gate must refuse: ${refused}`);
+    need(fs.existsSync(path.join(victim, 'f-00.txt')), 'the refused LocalRemove deleted files anyway');
+    let res = await call('LocalRemove', [victim], true);
+    need(res && res.deleted === 1 && !(res.errors || []).length, `forced LocalRemove: ${JSON.stringify(res)}`);
+    need(!fs.existsSync(victim), 'the forced LocalRemove left the tree behind');
+    // remote: a REAL non-S3 engine (S3 sources are browsed through the S3
+    // pipeline and rightly refused by RemoteRemove — their act-time gate is
+    // GUI-54's execute-time re-count): 55 files under one WebDAV tree — the
+    // preview flags RequiresL2, the binding refuses without force, deletes
+    // exactly with it
+    if (!(await portOpen(WEBDAV_PORT))) return skip('WebDAV :7070 not reachable');
+    const W = 'verify-w90', u = `w90-${RUNID}`;
+    await cli(['source', 'add', W, `webdav://${E2E_USER}:${E2E_PASS}@127.0.0.1:${WEBDAV_PORT}/`]).catch(() => {});
+    await call('SaveSource', { name: W, type: 'webdav', host: '127.0.0.1', port: WEBDAV_PORT, username: E2E_USER, password: E2E_PASS, root: '/' });
+    const rseed = path.join(ART, 'gate90-r');
+    await rm(rseed, { recursive: true, force: true });
+    await mkdir(rseed, { recursive: true });
+    for (let i = 0; i < 55; i++) await writeFile(path.join(rseed, `w-${String(i).padStart(2, '0')}.txt`), `w90 ${i}\n`);
+    let rr = await cli(['cp', '-r', rseed, `${W}://${u}/victim`, '--json']);
+    need(rr.code === 0 && rr.out.includes('"items": 55'), `gate90 webdav seed: ${rr.out}${rr.err}`);
+    const rcount = async () => (await cli(['ls', `${W}://${u}/victim/`, '--json'])).out.split('\n').filter((x) => x.includes('"name": "w-')).length;
+    need((await rcount()) === 55, 'the webdav seed did not land whole');
+    const rpv = await call('RemoteDeletePreview', W, [`${u}/victim`]);
+    need(rpv && rpv.files === 55 && rpv.requiresL2 === true, `remote preview must flag RequiresL2: ${JSON.stringify(rpv)?.slice(0, 160)}`);
+    refused = null;
+    try { await call('RemoteRemove', W, [`${u}/victim`], false); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /force/i.test(refused), `RemoteRemove over the gate must refuse: ${refused}`);
+    need((await rcount()) === 55, 'the refused RemoteRemove deleted files anyway');
+    res = await call('RemoteRemove', W, [`${u}/victim`], true);
+    need(res && !(res.errors || []).length, `forced RemoteRemove: ${JSON.stringify(res)}`);
+    need((await rcount()) === 0, 'the forced RemoteRemove left files behind');
+    await cli(['rm', '-r', `${W}://${u}`, '--force']);
+    await call('RemoveSource', W).catch(() => {});
+    await cli(['source', 'remove', W]).catch(() => {});
+    // L3: emptying EVERY version of a bucket refuses without force — always
+    refused = null;
+    try { await call('EmptyBucketAllVersions', BUCKET, false); refused = false; } catch (e) { refused = String(e); }
+    need(refused !== false && /force|typed confirmation/i.test(refused), `EmptyBucketAllVersions must refuse without force: ${refused}`);
+    const l3 = await s3(['ls', `s3://${BUCKET}/`, '--recursive', '--json']);
+    need(l3.out.split('\n').filter((x) => x.trim().startsWith('{')).length > 0, 'the refused empty-all-versions destroyed bucket content');
+    await rm(rseed, { recursive: true, force: true });
+    await rm(d, { recursive: true, force: true });
+    return 'all three mass-delete bindings refused without force (nothing touched) and deleted exactly with it';
+  });
+
+  await verify({ id: 'GUI-91', area: 'transfers', action: 'S3→S3 CopySelection conflict matrix: skip, rename, overwrite, per-file decisions, move taint', ds: 'S3 (MinIO)', scenario: 'the server-side copy behind the GUI paste and drop must honor the conflict contract instead of silently clobbering: skip keeps BOTH sides (a skipped move keeps its source — nothing moved); rename lands at a free name (n).ext with the occupied destination untouched; overwrite replaces the bytes; a per-file decision overrides the policy for exactly that key; an unknown policy is refused outright; a folder move with one skipped child never deletes the source marker (no orphaned objects in listings)', face: 'GUI' }, async () => {
+    const base = 'verify-gui/cp91';
+    const A = 'cp91-a\n', B = 'cp91-b\n';
+    const sf = path.join(ART, 'cp91');
+    await rm(sf, { recursive: true, force: true });
+    await mkdir(path.join(sf, 'src2'), { recursive: true });
+    await writeFile(path.join(sf, 'a.txt'), A);
+    await writeFile(path.join(sf, 'b.txt'), B);
+    await writeFile(path.join(sf, 'src2', 'm1.txt'), 'm1-src\n');
+    await writeFile(path.join(sf, 'src2', 'm2.txt'), 'm2-src\n');
+    await s3(['rm', '-r', `s3://${BUCKET}/${base}/`, '--force']).catch(() => {});
+    for (const [f, k] of [['a.txt', 'src/a.txt'], ['b.txt', 'src/b.txt'], ['b.txt', 'dst/a.txt'], ['a.txt', 'dst/b.txt'], ['a.txt', 'dst2/src2/m2.txt']]) {
+      const r = await s3(['cp', path.join(sf, f), `s3://${BUCKET}/${base}/${k}`]);
+      need(r.code === 0, `cp91 seed ${k}: ${r.out}${r.err}`);
+    }
+    let r = await s3(['cp', '-r', path.join(sf, 'src2'), `s3://${BUCKET}/${base}/src2/`, '--json']);
+    need(r.code === 0, `cp91 seed src2: ${r.out}${r.err}`);
+    const get = async (k) => { // k is the ABSOLUTE key (base included) — never prefix it again
+      const f = path.join(ART, 'cp91-get');
+      await rm(f, { force: true });
+      const r = await s3(['cp', `s3://${BUCKET}/${k}`, f]);
+      need(r.code === 0, `cp91 get ${k}: ${r.out}${r.err}`);
+      return readFile(f, 'utf8');
+    };
+    // skip: both sides survive
+    let res = await call('CopySelection', BUCKET, [`${base}/src/a.txt`], BUCKET, `${base}/dst/`, false, 'skip', null);
+    need(res && res.copied === 0 && res.skipped === 1 && !(res.errors || []).length, `skip: ${JSON.stringify(res)}`);
+    need((await get(`${base}/dst/a.txt`)) === B, 'skip clobbered the occupied destination');
+    // a per-file decision overrides the overwrite policy for exactly that key
+    res = await call('CopySelection', BUCKET, [`${base}/src/b.txt`], BUCKET, `${base}/dst/`, false, 'overwrite', { [`${base}/dst/b.txt`]: 'skip' });
+    need(res && res.copied === 0 && res.skipped === 1, `decision skip: ${JSON.stringify(res)}`);
+    need((await get(`${base}/dst/b.txt`)) === A, 'the per-file decision was ignored');
+    // rename: lands at a free name, the occupied destination untouched
+    res = await call('CopySelection', BUCKET, [`${base}/src/a.txt`], BUCKET, `${base}/dst/`, false, 'rename', null);
+    need(res && res.copied === 1 && !(res.errors || []).length, `rename: ${JSON.stringify(res)}`);
+    need((await get(`${base}/dst/a.txt`)) === B, 'rename clobbered the occupied destination');
+    need((await get(`${base}/dst/a (1).txt`)) === A, 'the renamed copy is missing or wrong');
+    // an unknown policy is refused outright
+    let bad = null;
+    try { await call('CopySelection', BUCKET, [`${base}/src/a.txt`], BUCKET, `${base}/dst/`, false, 'bogus', null); bad = false; } catch (e) { bad = String(e); }
+    need(bad !== false && /invalid conflict policy/i.test(bad), `unknown policy accepted: ${bad}`);
+    // overwrite (the legacy default): replaces the bytes
+    res = await call('CopySelection', BUCKET, [`${base}/src/a.txt`], BUCKET, `${base}/dst/`, false, '', null);
+    need(res && res.copied === 1 && !res.skipped, `overwrite: ${JSON.stringify(res)}`); // skipped is omitempty: absent means 0
+    need((await get(`${base}/dst/a.txt`)) === A, 'overwrite did not replace the bytes');
+    // a skipped MOVE keeps its source — nothing moved
+    res = await call('CopySelection', BUCKET, [`${base}/src/a.txt`], BUCKET, `${base}/dst/`, true, 'skip', null);
+    need(res && res.copied === 0 && res.skipped === 1 && res.moved === 0, `move-skip: ${JSON.stringify(res)}`);
+    let st = await s3(['stat', `s3://${BUCKET}/${base}/src/a.txt`]);
+    need(st.code === 0, 'the skipped move deleted its source anyway');
+    // a folder move with one skipped child: the free child lands and leaves,
+    // the skipped child AND the source marker stay (nothing orphaned)
+    res = await call('CopySelection', BUCKET, [`${base}/src2/`], BUCKET, `${base}/dst2/`, true, 'skip', null);
+    need(res && res.copied === 1 && res.skipped === 1 && res.moved === 1 && !(res.errors || []).length, `folder move-skip: ${JSON.stringify(res)}`);
+    need((await get(`${base}/dst2/src2/m1.txt`)) === 'm1-src\n', 'the free child did not land');
+    need((await get(`${base}/dst2/src2/m2.txt`)) === A, 'the skipped folder child clobbered the destination');
+    const ls2 = await s3(['ls', `s3://${BUCKET}/${base}/src2/`, '--json']);
+    need(ls2.out.includes('m2.txt') && !ls2.out.includes('m1.txt'), `the source folder is wrong after the partial move: ${ls2.out}`);
+    await s3(['rm', '-r', `s3://${BUCKET}/${base}/`, '--force']);
+    await rm(sf, { recursive: true, force: true });
+    return 'skip/rename/overwrite/decisions all honored; skipped moves keep their source and marker';
   });
 
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {

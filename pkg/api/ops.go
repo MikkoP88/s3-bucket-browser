@@ -253,7 +253,7 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s refused: %v", key, err))
 			return err
 		}
-		res, err := a.copyMove(ctx, c, bucket, []string{key}, bucket, parent, true, nil, newName)
+		res, err := a.copyMove(ctx, c, bucket, []string{key}, bucket, parent, true, nil, newName, PolicyOverwrite, nil)
 		if err != nil {
 			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s failed: %v", key, err))
 			return err
@@ -298,16 +298,29 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 type CopyResult struct {
 	Copied int      `json:"copied"`
 	Moved  int      `json:"moved"`
+	Skipped int     `json:"skipped,omitempty"` // existing destinations kept under the skip policy
 	Errors []string `json:"errors,omitempty"`
 }
 
 // CopySelection server-side copies (or moves) a selection into dstBucket/
 // dstPrefix. Sources are copied first and only deleted afterwards when
-// moving (count-then-act). Runs as a tracked task (Running tasks window).
-func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix string, move bool) (res CopyResult, err error) {
+// moving (count-then-act). policy is the conflict contract the rest of the
+// transfer matrix already honors (overwrite | skip | rename); decisions
+// optionally overrides it per DESTINATION key (the conflict dialog's
+// decisionKeys). The empty policy means overwrite — the historical
+// behavior — kept valid for programmatic callers. Runs as a tracked task
+// (Running tasks window).
+func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix string, move bool, policy string, decisions map[string]string) (res CopyResult, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return CopyResult{}, err
+	}
+	switch policy {
+	case "", PolicyOverwrite:
+		policy = PolicyOverwrite
+	case PolicySkip, PolicyRename:
+	default:
+		return CopyResult{}, fmt.Errorf("invalid conflict policy %q (use overwrite, skip or rename)", policy)
 	}
 	kind := "copy"
 	if move {
@@ -321,7 +334,7 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 		len(keys), bucket, dstBucket, dirPrefix(dstPrefix)))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
-	res, err = a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move, task, "")
+	res, err = a.copyMove(ctx, c, bucket, keys, dstBucket, dirPrefix(dstPrefix), move, task, "", policy, decisions)
 	verb := "copied"
 	if move {
 		verb = "moved"
@@ -350,7 +363,10 @@ func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix s
 // task may be nil (the single-key rename path runs without a task row).
 // renameName is non-empty only for the F2 folder rename: the destination
 // name is then the NEW name instead of the source's own.
-func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, keys []string, dstBucket, dstPrefix string, move bool, task *taskHandle, renameName string) (CopyResult, error) {
+// policy/decisions carry the conflict contract (see CopySelection); the
+// skip policy keeps the destination AND its move source (nothing moved),
+// rename lands the file at a free "name (n).ext" key.
+func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, keys []string, dstBucket, dstPrefix string, move bool, task *taskHandle, renameName, policy string, decisions map[string]string) (CopyResult, error) {
 	res := CopyResult{}
 	var toDelete []string
 
@@ -416,11 +432,30 @@ func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, k
 				continue
 			}
 		}
+		groupMoved := true // false once any pair is skipped: the group's source stays
 		for _, p := range g.pairs {
 			if task != nil {
 				task.setCurrent(p.src)
 			}
-			if err := transfer.Copy(ctx, c.S3, bucket, p.src, dstBucket, p.dst); err != nil {
+			dst := p.dst
+			switch filePolicy(decisions, dst, policy) {
+			case PolicySkip:
+				if transfer.ObjectExists(ctx, c.S3, dstBucket, dst) {
+					res.Skipped++
+					groupMoved = false
+					continue
+				}
+			case PolicyRename:
+				if transfer.ObjectExists(ctx, c.S3, dstBucket, dst) {
+					alt, err := uniqueRemoteKey(ctx, c, dstBucket, dst)
+					if err != nil {
+						res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", p.src, err))
+						continue
+					}
+					dst = alt
+				}
+			}
+			if err := transfer.Copy(ctx, c.S3, bucket, p.src, dstBucket, dst); err != nil {
 				res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", p.src, err))
 				continue
 			}
@@ -433,8 +468,11 @@ func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, k
 				toDelete = append(toDelete, p.src)
 			}
 		}
-		if move && g.marker != "" {
-			toDelete = append(toDelete, g.src) // the old marker too
+		// The old marker goes only when the whole group moved — a skipped
+		// pair keeps its source object, and removing the marker would
+		// orphan it in listings.
+		if move && g.marker != "" && groupMoved && len(res.Errors) == 0 {
+			toDelete = append(toDelete, g.src)
 		}
 	}
 

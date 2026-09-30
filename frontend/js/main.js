@@ -2304,13 +2304,15 @@ async function deleteRemoteSelection(overrideSource, overrideKeys, presetMode = 
     const desc = `${p.files} file(s), ${p.folders} folder(s)${p.bytes ? ` (${fmtBytes(p.bytes)})` : ''}`;
     const mode = await runDeleteWindow({
       target: keys.length === 1 ? `${source}:${keys[0]}` : `${source}:${loc?.path || '/'}`,
-      summary: { files: p.files, folders: p.folders, bytes: p.bytes },
+      summary: { files: p.files, folders: p.folders, bytes: p.bytes, requiresL2: p.requiresL2 },
       mode: presetMode,
       classicTyped: true, // no undo on remotes: classic mode types the word when the setting is on
       classicMsg: `You are about to delete ${desc}.\nRemote sources have no trash or versions — this cannot be undone.`,
     });
     if (mode === null) return false;
-    const res = await api.RemoteRemove(source, keys);
+    // force mirrors the S3 delete contract: the confirmed window at scale
+    // IS the typed confirmation; the backend re-counts and refuses without it.
+    const res = await api.RemoteRemove(source, keys, !!p.requiresL2);
     reportDeleteResult(res, (n) => `Deleted ${n} item(s)`);
     refreshCurrent();
     return true;
@@ -2471,10 +2473,17 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
       { kind: 's3', source: '', bucket: dest.bucket, dir: prefix },
       move,
       async () => {
+        // Same conflict contract as every other transfer: probe the
+        // destination first (Settings 'ask' default opens the conflict
+        // dialog) instead of silently overwriting what already lives there.
+        const opts = await resolveTransferOpts(move ? 'move' : 'copy', `s3://${dest.bucket}/${prefix || ''}`,
+          () => api.CheckConflicts(clipboard.keys.map((k) => ({ source: '', bucket: clipboard.bucket, key: k, size: 0, isDir: k.endsWith('/') })),
+            null, { kind: 's3', source: dest.source || '', bucket: dest.bucket, dir: prefix }));
+        if (!opts) return;
         try {
-          const res = await api.CopySelection(clipboard.bucket, clipboard.keys, dest.bucket, prefix, move);
+          const res = await api.CopySelection(clipboard.bucket, clipboard.keys, dest.bucket, prefix, move, opts.policy, opts.decisions || null);
           if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-          else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} item(s)`, 'ok');
+          else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} item(s)${res.skipped ? ` (${res.skipped} skipped)` : ''}`, 'ok');
           if (move) clipboard.keys = [];
           updateCommandState();
           refreshCurrent();
@@ -2899,10 +2908,15 @@ async function dropToTarget(target, data, e) {
       { kind: 's3', source: '', bucket: dest.bucket, dir: dest.dir || '' },
       move,
       async () => {
+        // Conflict probe before the server-side copy (see the paste path).
+        const opts = await resolveTransferOpts(move ? 'move' : 'copy', `s3://${dest.bucket}/${dest.dir || ''}`,
+          () => api.CheckConflicts(data.keys.map((k) => ({ source: '', bucket: srcBucket, key: k, size: 0, isDir: k.endsWith('/') })),
+            null, { kind: 's3', source: dest.source || '', bucket: dest.bucket, dir: dest.dir || '' }));
+        if (!opts) return;
         try {
-          const res = await api.CopySelection(srcBucket, data.keys, dest.bucket, dest.dir || '', move);
+          const res = await api.CopySelection(srcBucket, data.keys, dest.bucket, dest.dir || '', move, opts.policy, opts.decisions || null);
           if (res.errors?.length) toast(`Errors: ${res.errors.slice(0, 3).join('; ')}`, 'error');
-          else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} object(s)`, 'ok');
+          else toast(`${move ? 'Moved' : 'Copied'} ${res.copied} object(s)${res.skipped ? ` (${res.skipped} skipped)` : ''}`, 'ok');
           refreshCurrent();
         } catch (err) {
           toast(`Drag & drop ${move ? 'move' : 'copy'} failed: ${err}`, 'error');
@@ -3016,7 +3030,8 @@ async function deleteLocalSelection(paths) {
       classicMsg: `You are about to delete ${desc}.\nLocal deletion is permanent — the Recycle Bin is not used.`,
     });
     if (mode === null) return;
-    const res = await api.LocalRemove(paths);
+    // requiresL2 comes from the preview; the backend re-counts at act time.
+    const res = await api.LocalRemove(paths, !!p.requiresL2);
     reportDeleteResult(res, (n) => `Deleted ${n} item(s)`);
     localPane.refresh();
   } catch (err) {

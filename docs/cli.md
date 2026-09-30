@@ -2312,7 +2312,7 @@ s3b rm s3://bucket[/prefix] | NAME://path [flags]
 
 ```
       --dry-run     list what would be deleted, do nothing
-      --force       allow deleting more than 50 objects (L1 safety gate)
+      --force       allow deleting more than 50 objects, or destroying a >50-version timeline with --versions (L1 safety gate)
   -r, --recursive   delete everything under the prefix
       --versions    permanently destroy every version and delete marker too (L3: unrecoverable)
 
@@ -2687,7 +2687,8 @@ Sync a local folder with an S3 prefix (either direction)
 
 One operand must be s3://bucket/prefix/, the other a local directory.
 Uploads/downloads files whose size differs or that are missing on the target;
---delete also removes extra files on the target.
+--delete also removes extra files on the target (--force required above the
+safety threshold of 50 files).
 
 ```
 s3b sync SRC DST [flags]
@@ -2698,6 +2699,7 @@ s3b sync SRC DST [flags]
 ```
       --delete    remove files that no longer exist at the source
       --dry-run   show planned actions, transfer nothing
+      --force     with --delete: allow removing more than 50 files (L1 safety gate)
 
 ```
 
@@ -2943,6 +2945,8 @@ s3b versions rm s3://bucket/key (--version-id ID | --all) [flags]
 
 ```
       --all                 destroy every version and delete marker of the key
+      --dry-run             count what --all would destroy, delete nothing
+      --force               with --all: allow destroying more than 50 versions (L1 safety gate)
       --version-id string   destroy exactly this version
 
 ```

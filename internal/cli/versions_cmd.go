@@ -157,7 +157,7 @@ func versionsUndoCmd() *cobra.Command {
 
 func versionsRmCmd() *cobra.Command {
 	var versionID string
-	var all bool
+	var all, dryRun, force bool
 	cmd := &cobra.Command{
 		Use:   "rm s3://bucket/key (--version-id ID | --all)",
 		Short: "Destroy version(s) permanently — unrecoverable, even from history (L3)",
@@ -187,6 +187,28 @@ func versionsRmCmd() *cobra.Command {
 				col.ok.Printf("destroyed version %s of s3://%s/%s\n", versionID, bucket, key)
 				return nil
 			}
+			// --all destroys the key's whole timeline: count first, then the
+			// same L1 threshold gate as versions purge (a key can carry
+			// thousands of versions — one flag away from all of them).
+			vers, err := versioning.ListForObject(cmd.Context(), c.S3, bucket, key)
+			if err != nil {
+				return opErr(err)
+			}
+			n := len(vers)
+			if dryRun {
+				if flagJSON {
+					return printJSON(map[string]any{"wouldDestroy": n, "bucket": bucket, "key": key})
+				}
+				fmt.Printf("would permanently delete every version of s3://%s/%s (%d version(s)/marker(s))\n", bucket, key, n)
+				if n > rmForceThreshold && !force {
+					col.dim.Printf("note: running it requires --force (> %d)\n", rmForceThreshold)
+				}
+				return nil
+			}
+			if n > rmForceThreshold && !force {
+				return opErr(fmt.Errorf(
+					"would destroy %d version(s) of s3://%s/%s — pass --force to proceed", n, bucket, key))
+			}
 			res, err := versioning.DeleteAllVersions(cmd.Context(), c.S3, bucket, key)
 			if err != nil {
 				return opErr(err)
@@ -201,6 +223,9 @@ func versionsRmCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&versionID, "version-id", "", "destroy exactly this version")
 	f.BoolVar(&all, "all", false, "destroy every version and delete marker of the key")
+	f.BoolVar(&dryRun, "dry-run", false, "count what --all would destroy, delete nothing")
+	f.BoolVar(&force, "force", false,
+		fmt.Sprintf("with --all: allow destroying more than %d versions (L1 safety gate)", rmForceThreshold))
 	return cmd
 }
 
