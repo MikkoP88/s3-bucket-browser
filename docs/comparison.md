@@ -7,6 +7,31 @@
 > Corrections to any row are welcome — this page is meant to stay honest,
 > not to win.
 
+## At a glance
+
+Legend: ✔️ full support · ◑ partial · ❌ none · – not applicable or not
+researched. Rclone's ◑ platform cells mean CLI-only (no desktop GUI);
+its web UI serves any OS.
+
+| Capability | s3b | S3 Browser | Cyberduck | MSP360 | WinSCP | FileZilla Pro | Transmit | Rclone | MinIO Console | AWS Console |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Windows | ✔️ | ✔️ | ✔️ | ✔️ | ✔️ | ✔️ | ❌ | ◑ | ❌ | ❌ |
+| Linux desktop | ✔️ | ❌ | ❌ | ❌ | ❌ | ✔️ | ❌ | ◑ | ❌ | ❌ |
+| macOS | ✔️ | ❌ | ✔️ | ✔️ | ❌ | ✔️ | ✔️ | ◑ | ❌ | ❌ |
+| Browser-driven | ✔️ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ◑ Web UI | ✔️ | ✔️ |
+| GUI + CLI in one binary | ✔️ | ❌ | ❌ Separate | ❌ | ◑ Scripting | ◑ Paid CLI | ◑ | ◑ CLI-only | ❌ | – |
+| S3 administration | ✔️ Deep | ✔️ Deep | ◑ Medium | ◑ Medium | ◑ Low | ◑ Medium | ◑ Medium | ◑ Config-level | ✔️ MinIO-flavored | ✔️ Full |
+| Version management | ✔️ First-class | ◑ | ◑ | ◑ | ❌ | ◑ | ◑ | ❌ | ✔️ | ◑ Clunky |
+| Remote file servers (SFTP/FTP/WebDAV) | ✔️ | ❌ | ✔️ | ❌ | ✔️ | ✔️ | ✔️ | ✔️ | ❌ | ❌ |
+| Source-available | ✔️ PolyForm | ❌ Freeware | ✔️ GPL | ❌ | ✔️ GPL | ❌ | ❌ | ✔️ MIT | ✔️ AGPL | – |
+| Telemetry | None | Unknown | ✔️ Yes | ✔️ Yes | – | – | – | None | – | ✔️ Yes |
+
+Full detail, verification dates and per-tool sources follow in the
+landscape below; the [README](../README.md#why-another-s3-browser)
+carries the same styling for the five best-known tools.
+
+## The detailed landscape
+
 | Tool | Platforms | License | S3 admin depth | Versioning UX | CLI | Main weakness |
 |---|---|---|---|---|---|---|
 | **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock); SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs and local sources ride the same UI and CLI | First-class (timeline, restore, undo delete, three-way marker / keep-current / permanent Delete Window, version- and marker-count badges, purge, force-empty versioned buckets) | Yes — same binary, same engine | Beta: Windows artifacts are Authenticode-signed with a self-signed "s3b Project" certificate (public key at scripts/certs/s3b-signing.cer; a CA cert drops in via repo secrets); SBOM + SHA256SUMS ship per release; no CloudFront/KMS consoles; single maintainer |

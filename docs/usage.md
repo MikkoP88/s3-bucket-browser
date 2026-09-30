@@ -1,9 +1,11 @@
-# Usage guide
+# GUI usage guide
 
-Everything you need to drive s3b day to day — in the GUI and on the
-terminal. The same content lives in the app (Help → **User guide**, F1)
-and in the supported-sources overview (Help → **Supported data
-sources**); this page is the long-form version with screenshots.
+Everything you need to drive the s3b desktop app day to day. The same
+content lives in the app (Help → **User guide**, F1) and in the
+supported-sources overview (Help → **Supported data sources**); this
+page is the long-form version with screenshots. The terminal face of
+the same binary has its own [CLI quickstart](cli-quickstart.md) and
+[CLI reference](cli.md).
 
 ```
 Table of contents
@@ -22,8 +24,8 @@ Table of contents
 
 ## 1. Getting started
 
-Install the [release artifact](../../releases) for your platform (or
-[build from source](../README.md#build-from-source)) and start it: `s3b`
+Install the [release artifact](https://github.com/MikkoP88/s3-bucket-browser/releases) for your platform (or
+[build from source](build.md)) and start it: `s3b`
 with no arguments opens the desktop app, `s3b <args>` is the CLI —
 one binary, same engine.
 
@@ -448,7 +450,8 @@ you'll use daily:
 ## 9. CLI quick reference
 
 Same binary, same engine, same sources — `s3b` with arguments is the
-CLI. The complete tree is in [cli.md](cli.md); the shape of it:
+CLI. The guided tour is the [CLI quickstart](cli-quickstart.md); the
+complete tree is in [cli.md](cli.md). The shape of it:
 
 ```bash
 s3b profile add lab --endpoint http://localhost:9000 \

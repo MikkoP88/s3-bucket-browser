@@ -23,6 +23,10 @@ Go 1.26+. The frontend is vanilla JS/CSS embedded via `go:embed`
 mark; regenerate and commit the PNG set, .ico and .icns together when it
 changes.
 
+Full per-OS recipes — Windows icon and version stamping, macOS bundles,
+the headless CLI and browser-driven builds — live in
+[docs/build.md](docs/build.md).
+
 On macOS, install Go and Xcode or Command Line Tools, then run `make mac`
 and `open "dist/S3 Bucket Browser.app"`. `make mac-universal` builds both
 architectures. See [the Mac build guide](docs/macos-build.md) for setup and

@@ -102,6 +102,8 @@ Because none of the existing ones do it all:
 | **Connection doctor** | ✔️ Yes | ❌ No | ❌ No | ❌ No | ❌ No |
 | **Telemetry** | None | Unknown | ✔️ Yes | ✔️ Yes | ✔️ Yes |
 
+Legend: ✔️ full support · ◑ partial · ❌ none.
+
 See [docs/comparison.md](docs/comparison.md) for the full landscape and gap analysis.
 
 ## Supported operating systems & requirements
@@ -122,9 +124,9 @@ arguments opens the desktop app; with arguments it is the CLI).
 - Verification focuses on **application functionality**, not full OS‑level compatibility across all distributions.
 
 **macOS: local source builds.** The release workflow does not currently
-produce macOS artifacts. See the tested local build
-recipe in [Build from source → macOS](#macos-13-intel-or-apple-silicon)
-— and the [local verification notes](docs/macos-build.md).
+produce macOS artifacts. See the tested local build recipe in
+[Build from source → macOS](docs/build.md#macos-13-intel-or-apple-silicon)
+and the [local verification notes](docs/macos-build.md).
 
 - **To run**: the portable editions need no install and no admin rights —
   releases ship an NSIS installer (machine-wide, elevated) and portable
@@ -134,19 +136,21 @@ recipe in [Build from source → macOS](#macos-13-intel-or-apple-silicon)
 - **To build from source**: Go **1.26+**, git and the platform compiler/libraries — the frontend is
   vanilla JS/CSS embedded via `go:embed` (no npm install, no bundler).
   Linux GUI builds additionally need `libgtk-3-dev` and
-  `libwebkit2gtk-4.1-dev`. Per-OS recipes:
-  [Build from source](#build-from-source);
+  `libwebkit2gtk-4.1-dev`. Per-OS recipes for every flavor — desktop
+  GUI, headless CLI, browser-driven — live in
+  [Build from source](docs/build.md);
   developer workflows live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Install
 
-Prebuilt artifacts are attached to every [`v*` release](../../releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows and Linux (amd64 and arm64) — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or build from source as shown above; releases stamp the version into `s3b version`.
+Prebuilt artifacts are attached to every [`v*` release](https://github.com/MikkoP88/s3-bucket-browser/releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows and Linux (amd64 and arm64) — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or [build from source](docs/build.md); releases stamp the version into `s3b version`.
 
 ## Documentation
 
-- **[Usage guide](docs/usage.md)** — the full walkthrough with screenshots (same content as the in-app guide)
-- **[Mac build](docs/macos-build.md)** — local toolchain, build and launch
+- **[GUI usage guide](docs/usage.md)** — the full walkthrough with screenshots (same content as the in-app guide)
+- **[CLI quickstart](docs/cli-quickstart.md)** — connect, browse, transfer and the safety ladder, one guided page
 - **[CLI reference](docs/cli.md)** — every command, generated from the cobra tree
+- **[Build from source](docs/build.md)** — every flavor: Windows, Linux, macOS, headless CLI, browser-driven
 - **[Security model](docs/security.md)** — keyring, Secure Storage, safety ladder, supply chain
 - **[Verification reports](docs/verification/)** — per-release evidence: the build, the OS, and the full action-verification matrix behind every tag
 - **[Competitive comparison](docs/comparison.md)** — the S3-browser landscape, fact-checked
@@ -164,101 +168,7 @@ More screenshots:
 | ![Versions](docs/screenshots/versions.png) | ![Delete window](docs/screenshots/delete-window.png) |
 | ![Admin panel](docs/screenshots/admin-panel.png) | ![Dark theme](docs/screenshots/dark-theme.png) |
 
-The full tour with screenshots lives in the **[usage guide](docs/usage.md)**; the app carries the same guide (Help → User guide, F1).
-
-## Build from source
-
-Everything below builds from a plain checkout: **Go 1.26+, git and the platform compiler/libraries** —
-the frontend is vanilla JS/CSS embedded via `go:embed` (no npm install, no
-bundler) and the brand assets (`build/`) are committed. The `production`
-tag strips Wails v3's devtools; stamp the version any build reports with
-`-ldflags "-X main.version=$(git describe --tags --always)"`.
-
-### Linux (desktop GUI)
-
-```bash
-# Ubuntu 24.04+/Debian/Mint — GTK3 + WebKitGTK 4.1, the webkit Wails v3's
-# gtk3 tag builds against (its GTK4 default needs webkitgtk-6.0)
-sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
-# current Fedora: sudo dnf install gtk3-devel webkit2gtk4.1-devel
-go build -tags production,gtk3 -o s3b ./cmd/s3b && ./s3b
-```
-
-### Windows 10/11 (amd64 or arm64)
-
-Plain dev build — works out of the box, no icon or version stamp:
-
-```bash
-go build -tags production -o s3b.exe ./cmd/s3b
-```
-
-Release-style build — GUI subsystem (native, console-flash-free launch;
-the CLI still prints normally — it re-attaches the parent terminal on
-demand) plus the version stamp and the brand icon embedded as the exe's
-RT_GROUP_ICON resource, which is what the taskbar, Alt-Tab and the NSIS
-installer show:
-
-```bash
-VER="$(git describe --tags --always)"
-go run ./tools/versioninfo -version "${VER#v}" -arch amd64 -icon build/icon.ico
-go build -tags production -ldflags "-s -w -X main.version=${VER#v} -H windowsgui" -o s3b.exe ./cmd/s3b
-rm -f cmd/s3b/*.syso   # stale syso poisons the next build of the other arch
-```
-
-(arm64: `-arch arm64`. Strip the tag's leading `v` — the UI prefixes its
-own, or the About box shows "vv1.2.3".)
-
-### macOS 13+ (Intel or Apple Silicon)
-
-Build on the Mac in Terminal. Install Go and Apple's compiler tools:
-
-```bash
-brew install go
-# Only if neither Xcode nor Command Line Tools is installed:
-xcode-select --install
-```
-
-After Xcode finishes installing, open it once to complete its setup. Verify
-`go version` (1.26+) and `xcrun --find clang`, then from this checkout:
-
-```bash
-make mac
-open "dist/S3 Bucket Browser.app"
-"dist/S3 Bucket Browser.app/Contents/MacOS/s3b" version
-```
-
-`make mac` builds for this Mac, packages the icon and Info.plist, and applies
-and verifies a local ad-hoc signature. No Node, Wails CLI, paid developer
-account or Xcode project is needed. Xcode supplies clang and the macOS SDK;
-Go drives the build. `make build` builds just `bin/s3b` (GUI and CLI).
-
-For both architectures in one bundle, run `make mac-universal`. Intel
-execution still needs testing on an Intel Mac; compiling a slice does not
-verify its runtime compatibility. The configured deployment target is
-macOS 13.0, not a claim that every older OS version has been tested.
-
-See **[Mac build instructions](docs/macos-build.md)** for setup,
-troubleshooting, verification results and the distinction between local
-signing and distributing a notarized application. macOS release artifacts
-remain disabled; this change provides a local source-build workflow.
-
-### Linux servers / any OS (headless CLI)
-
-Pure-Go CLI with no GUI libraries — for servers, arm64 boards and
-keyring-less hosts:
-
-```bash
-go build -tags s3b_headless -o s3b ./cmd/s3b
-```
-
-### Any OS (browser-driven, windowless)
-
-The same stack without a window: the app serves its UI over HTTP —
-run it and open the URL it logs.
-
-```bash
-go build -tags server -o s3b ./cmd/s3b && ./s3b
-```
+The full tour with screenshots lives in the **[GUI usage guide](docs/usage.md)**; the app carries the same guide (Help → User guide, F1).
 
 ## Relationship to s3-bucket-tester
 
