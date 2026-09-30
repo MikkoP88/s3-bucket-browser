@@ -330,6 +330,10 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
   display: flex; align-items: center; gap: 6px; height: 100%;
 }
 .gc.num { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+/* columns beyond the default four wash their values in quiet gray; row
+   states (hover/selection/focus) paint the row behind and stay visible
+   through the translucent tint */
+.gc.extra { background: rgba(128, 132, 141, .12); }
 .gc .icon { flex: none; width: 16px; text-align: center; }
 /* name-cell badges (versioned buckets): ⟲ version count, ⛔ delete-marker
    count; clicking opens the Versions / Delete Marker windows */
@@ -1198,12 +1202,20 @@ kbd {
 .pill.on { background: rgba(27, 127, 59, .14); color: var(--ok); }
 .pill.off { background: rgba(107, 116, 132, .18); color: var(--text-dim); }
 
-/* Sidebar resize splitter */
+/* Sidebar resize splitter: an 11px grab strip carrying a thin seam down
+   its middle — wide enough to hit without aiming, subtle enough to
+   ignore. The strip overlaps its neighbors 3px per side so the layout
+   slot stays 5px; pointer capture (main.js) holds the drag past the
+   edge. */
 .side-split {
-  flex: none; width: 5px; cursor: col-resize;
-  background: transparent; z-index: 3;
+  flex: none; width: 11px; margin: 0 -3px; cursor: col-resize;
+  background: transparent; z-index: 3; touch-action: none; position: relative;
 }
-.side-split:hover, body.col-resizing .side-split { background: var(--accent-soft); }
+.side-split::after {
+  content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px;
+  border-radius: 2px; background: var(--border);
+}
+.side-split:hover::after, body.col-resizing .side-split::after { background: var(--accent); }
 body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* Directory browser dialog (Path on… pickers) */

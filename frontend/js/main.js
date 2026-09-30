@@ -369,31 +369,48 @@ async function probeSources() {
 }
 
 // initSidebarResize wires the splitter between sidebar and main area: drag
-// to resize (140px..half the window), persisted in localStorage.
+// to resize (140px..half the window), persisted in localStorage. Pointer
+// events with capture keep the drag alive however far the pointer strays
+// (and un-stick cleanly if the capture is lost), and the grab strip is
+// wider than the visible seam so a grab never depends on pixel-perfect
+// aim. A stale saved width wider than half the window clamps on boot.
 function initSidebarResize() {
   const split = $('side-split');
   const aside = $('sidebar');
   if (!split || !aside) return;
+  const clamp = (w) => Math.min(Math.max(140, w), Math.ceil(window.innerWidth / 2));
   const apply = (w) => {
     document.documentElement.style.setProperty('--sidebar-w', `${w}px`);
   };
   const saved = parseInt(localStorage.getItem('s3b-sidebar-w') || '', 10);
-  if (saved >= 140) apply(saved);
-  split.addEventListener('mousedown', (e) => {
+  if (saved >= 140) apply(clamp(saved));
+  split.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
     e.preventDefault();
+    split.setPointerCapture?.(e.pointerId); // the drag survives leaving the strip
     document.body.classList.add('col-resizing');
+    // the boundary keeps its offset from the grab point, so pressing the
+    // middle of the strip and dragging N px moves the edge exactly N px
+    const grabOff = e.clientX - aside.getBoundingClientRect().right;
     const onMove = (ev) => {
-      const w = Math.min(Math.max(140, ev.clientX), Math.ceil(window.innerWidth / 2));
+      const w = clamp(ev.clientX - grabOff);
       apply(w);
       localStorage.setItem('s3b-sidebar-w', String(w));
     };
-    const onUp = () => {
+    const stop = () => {
       document.body.classList.remove('col-resizing');
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      split.removeEventListener('pointermove', onMove);
+      split.removeEventListener('pointerup', stop);
+      split.removeEventListener('pointercancel', stop);
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    split.addEventListener('pointermove', onMove);
+    split.addEventListener('pointerup', stop);
+    split.addEventListener('pointercancel', stop);
+  });
+  // a capture lost without pointerup (app switch, system gesture) must
+  // not leave the resize cursor stuck on the body
+  split.addEventListener('lostpointercapture', () => {
+    document.body.classList.remove('col-resizing');
   });
   split.addEventListener('dblclick', () => {
     localStorage.removeItem('s3b-sidebar-w');
@@ -1324,21 +1341,28 @@ function mergeColOrder(g, onIds) {
 // localStorage persistence key.
 function columnMenu(e, g, lsKey) {
   const cur = new Set(g.visibleCols().map((c) => c.id));
-  openMenu(e, COLUMNS.map((c) => {
-    const on = cur.has(c.id);
-    return [
-      `${on ? '\u2713 ' : ''}${t(c.labelKey)}`,
-      '',
-      () => {
-        const next = new Set(cur);
-        if (on) next.delete(c.id);
-        else next.add(c.id);
-        g.setColumns([...next]);
-        saveColState(lsKey, g.visibleCols().map((x) => x.id), g.widths);
-      },
-      c.id === 'name', // the identity column is always visible
-    ];
-  }));
+  openMenu(e, [
+    ...COLUMNS.map((c) => {
+      const on = cur.has(c.id);
+      return [
+        `${on ? '\u2713 ' : ''}${t(c.labelKey)}`,
+        '',
+        () => {
+          const next = new Set(cur);
+          if (on) next.delete(c.id);
+          else next.add(c.id);
+          g.setColumns([...next]);
+          saveColState(lsKey, g.visibleCols().map((x) => x.id), g.widths);
+        },
+        c.id === 'name', // the identity column is always visible
+      ];
+    }),
+    null, // separator — layout recovery, not a column toggle
+    [t('col.reset'), '', () => {
+      g.resetCols();
+      saveColState(lsKey, g.visibleCols().map((x) => x.id), g.widths);
+    }],
+  ]);
 }
 
 function showContextMenu(e, rows) {

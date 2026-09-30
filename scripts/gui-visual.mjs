@@ -969,15 +969,35 @@ const sideRow = (label) => elOrNull((l) => Array.from(document.querySelectorAll(
 const treeRow = (label) => elOrNull((l) => Array.from(document.querySelectorAll('#tree .tnode'))
   .find((r) => r.querySelector('.tlabel')?.textContent === l) || null, label);
 
+// rowClickPoint finds a point on the row that hits plain row area. The
+// blind element-center click can land on an inline control: the version
+// and marker badges are buttons that stop propagation (the click opens
+// the badge window instead of selecting), and with a squeezed pane plus
+// a reordered name column a badge can sit exactly at the center.
+async function rowClickPoint(h) {
+  return h.asElement().evaluate((row) => {
+    const r = row.getBoundingClientRect();
+    for (const fx of [0.5, 0.35, 0.65, 0.2, 0.8, 0.1]) {
+      const x = r.x + r.width * fx;
+      const y = r.y + r.height / 2;
+      const at = document.elementFromPoint(x, y);
+      if (at && (at === row || row.contains(at))
+        && !at.closest('.mbadge, .vbadge, input, button')) {
+        return { x: Math.round(r.width * fx), y: Math.round(r.height / 2) };
+      }
+    }
+    return { x: Math.round(r.width / 2), y: Math.round(r.height / 2) };
+  });
+}
 async function clickRow(label) {
   const h = await gridRow(label);
   if (!h) throw new Error(`no grid row "${label}"`);
-  await h.asElement().click();
+  await h.asElement().click({ position: await rowClickPoint(h) });
 }
 async function dblClickRow(label) {
   const h = await gridRow(label);
   if (!h) throw new Error(`no grid row "${label}"`);
-  await h.asElement().dblclick();
+  await h.asElement().dblclick({ position: await rowClickPoint(h) });
 }
 async function clickTree(label) {
   const h = await treeRow(label);
@@ -1433,90 +1453,206 @@ await step('header-column-menu', async () => {
 });
 
 await step('column-resize-reorder', async () => {
-  // resize: drag the Type boundary handle 120px wider (the overlay
-  // handle floats above the cells, centered on the column's right edge)
-  const h = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  });
-  const w0 = await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width);
-  const s0 = await evalPage(() => {
-    const cells = Array.from(document.querySelectorAll('#grid-head .gh')).map((c) => c.getBoundingClientRect());
+  const colRects = () => evalPage(() => {
+    const cells = Array.from(document.querySelectorAll('#grid-head .gh[data-col]'));
     const b = document.getElementById('grid-body');
-    return { next: { l: cells[3].left, w: cells[3].width }, last: cells[4].left, bodyW: b.clientWidth };
+    return {
+      cols: cells.map((c) => ({
+        id: c.dataset.col,
+        l: Math.round(c.getBoundingClientRect().left),
+        w: Math.round(c.getBoundingClientRect().width),
+      })),
+      bodyW: b.clientWidth, scrollW: b.scrollWidth,
+    };
   });
-  await page.mouse.move(h.x, h.y);
-  await page.mouse.down();
-  await page.mouse.move(h.x + 120, h.y, { steps: 8 });
-  await page.mouse.up();
-  await sleep(80);
-  await ok('dragging the header edge widens the column',
-    Math.abs((await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width)) - (w0 + 120)) <= 3);
-  await ok('user width persisted as JSON', evalPage(() => {
-    try { return (JSON.parse(localStorage.getItem('s3b-cols') || '{}').widths || {}).type === 270; }
-    catch { return false; }
-  }));
-  await ok('pooled rows follow the resized template', evalPage(() =>
-    Math.abs(document.querySelector('#grid-canvas .grid-row .gc.type').getBoundingClientRect().width - 270) <= 3));
-  await ok('rightward drag keeps the following columns in place', evalPage((s) => {
-    const cells = Array.from(document.querySelectorAll('#grid-head .gh')).map((c) => c.getBoundingClientRect());
-    return Math.abs(cells[3].left - s.next.l) <= 1 && Math.abs(cells[3].width - s.next.w) <= 1
-      && Math.abs(cells[4].left - s.last) <= 1;
-  }, s0));
-  await ok('widening never pushes the rows into horizontal scroll', evalPage((s) =>
-    document.getElementById('grid-body').scrollWidth <= s.bodyW + 1, s0));
-  const hReset = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
+  const handle = (id) => evalPage((col) => {
+    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="' + col + '"]').getBoundingClientRect();
     return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, id);
+  const dragHandle = async (id, dx, steps = 8) => {
+    const h = await handle(id);
+    await page.mouse.move(h.x, h.y);
+    await page.mouse.down();
+    await page.mouse.move(h.x + dx, h.y, { steps });
+    await page.mouse.up();
+    await sleep(80);
+  };
+  const resetHandle = async (id) => {
+    const h = await handle(id);
+    await page.mouse.click(h.x, h.y, { clickCount: 2 });
+    await sleep(80);
+  };
+  const ai = (o, id) => o.cols.findIndex((c) => c.id === id);
+
+  // A. default layout: a rightward drag must move the GRABBED edge. The
+  // classic failure mode was the stretch column absorbing the growth
+  // mid-template — the dragged edge stood still while every boundary
+  // between it and the stretch column slid around ("resize moves all the
+  // columns"). The first resize pins the stretch column; growth then
+  // lands in the trailing filler, and past that in honest overflow.
+  const a0 = await colRects();
+  const at = ai(a0, 'type');
+  await dragHandle('type', 80);
+  const a1 = await colRects();
+  await ok('rightward drag widens the grabbed column by the drag amount',
+    Math.abs(a1.cols[at].w - a0.cols[at].w - 80) <= 1);
+  await ok('the dragged edge follows the pointer',
+    Math.abs((a1.cols[at].l + a1.cols[at].w) - (a0.cols[at].l + a0.cols[at].w) - 80) <= 1);
+  await ok('the stretch column is pinned at its rendered width, not squeezed',
+    Math.abs(a1.cols[ai(a1, 'name')].w - a0.cols[ai(a0, 'name')].w) <= 1);
+  await ok('columns after the dragged one shift with the edge',
+    Math.abs(a1.cols[at + 1].l - a0.cols[at + 1].l - 80) <= 1);
+  await ok('growth past the space the pane has overflows into horizontal scroll',
+    a1.scrollW >= a1.bodyW + 79);
+  await ok('user width persisted as JSON', evalPage((w) => {
+    try { return Math.abs((JSON.parse(localStorage.getItem('s3b-cols') || '{}').widths || {}).type - w) <= 1; }
+    catch { return false; }
+  }, a1.cols[at].w));
+  await ok('pooled rows follow the resized template', evalPage((w) =>
+    Math.abs(document.querySelector('#grid-canvas .grid-row .gc.type').getBoundingClientRect().width - w) <= 3, a1.cols[at].w));
+  await ok('head scrolls in lockstep with the rows under overflow', evalPage(() => {
+    const b = document.getElementById('grid-body');
+    const head = document.getElementById('grid-head');
+    b.scrollLeft = 50;
+    b.dispatchEvent(new Event('scroll'));
+    const sync = head.style.transform === 'translateX(-50px)'
+      && head.style.width === b.clientWidth + 'px';
+    b.scrollLeft = 0;
+    b.dispatchEvent(new Event('scroll'));
+    return sync;
+  }));
+  await dragHandle('type', -80);
+  const a2 = await colRects();
+  await ok('dragging back narrows the column and the overflow disappears',
+    Math.abs(a2.cols[at].w - a0.cols[at].w) <= 1 && a2.scrollW <= a2.bodyW + 1);
+
+  // B. reorder: drag the Size header in front of Type — then the moved
+  // column and its neighbors must still resize (the second failure mode:
+  // resizing after a reorder went dead or walked the whole row)
+  const d = await evalPage(() => {
+    const cells = Array.from(document.querySelectorAll('#grid-head .gh'));
+    const src = cells[3].getBoundingClientRect(); // Size (cells[0] = checkbox column)
+    const dst = cells[2].getBoundingClientRect(); // drop just inside Type
+    return { x: src.x + 12, y: src.y + src.height / 2, tx: dst.x + 4, ty: dst.y + dst.height / 2 };
   });
-  await page.mouse.click(hReset.x, hReset.y, { clickCount: 2 }); // double-click resets
-  await sleep(80);
-  const w2 = await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width);
-  await ok('double-click on the edge resets the width', Math.abs(w2 - w0) <= 3 && evalPage(() => {
-    try { return !(JSON.parse(localStorage.getItem('s3b-cols') || '{}').widths || {}).type; }
+  await page.mouse.move(d.x, d.y);
+  await page.mouse.down();
+  await page.mouse.move(d.tx, d.ty, { steps: 12 });
+  await page.mouse.up();
+  await sleep(120);
+  await ok('dragging a header reorders the columns', evalPage(() =>
+    JSON.stringify(Array.from(document.querySelectorAll('#grid-head .gh[data-col]')).map((c) => c.dataset.col))
+      === JSON.stringify(['name', 'size', 'type', 'lastModified'])));
+  await ok('rows follow the reordered layout', evalPage(() => {
+    const row = document.querySelector('#grid-canvas .grid-row');
+    return row.children[1].classList.contains('name') && row.children[2].classList.contains('size')
+      && row.children[3].classList.contains('type') && row.children[4].classList.contains('lastModified');
+  }));
+  await ok('reordered column set persisted', evalPage(() => {
+    try { return JSON.stringify(JSON.parse(localStorage.getItem('s3b-cols') || '{}').cols)
+      === JSON.stringify(['name', 'size', 'type', 'lastModified']); }
     catch { return false; }
   }));
-  // boundary ownership (regression: the in-cell handle was clipped by the
-  // cell's overflow:hidden on the boundary side, so grabbing a couple of px
-  // right of the edge hit the NEXT header — sorting or reordering it
-  // instead of resizing; the overlay handle owns both sides of the edge)
+
+  // C. resize the MOVED column, then its neighbor: both edges follow
+  const c0 = await colRects();
+  const cs = ai(c0, 'size');
+  await dragHandle('size', 70);
+  const c1 = await colRects();
+  await ok('the moved column resizes under the pointer after the reorder',
+    Math.abs(c1.cols[cs].w - c0.cols[cs].w - 70) <= 1
+    && Math.abs((c1.cols[cs].l + c1.cols[cs].w) - (c0.cols[cs].l + c0.cols[cs].w) - 70) <= 1);
+  await ok('the pinned stretch column is untouched by the neighbor resize',
+    Math.abs(c1.cols[ai(c1, 'name')].w - c0.cols[ai(c0, 'name')].w) <= 1);
+  const ct = ai(c1, 'type');
+  await dragHandle('type', -40);
+  const c2 = await colRects();
+  await ok('the neighbor narrows under the pointer after the reorder',
+    Math.abs(c2.cols[ct].w - c1.cols[ct].w + 40) <= 1
+    && Math.abs((c2.cols[ct].l + c2.cols[ct].w) - (c1.cols[ct].l + c1.cols[ct].w) + 40) <= 1);
+  await resetHandle('size');
+  await resetHandle('type');
+
+  // D. the stretch column dragged INTO the middle: resizing on either
+  // side of it must behave identically (previously the side mattered —
+  // the tell that the flex track, not the edge, owned the movement)
+  const d2 = await evalPage(() => {
+    const cells = Array.from(document.querySelectorAll('#grid-head .gh'));
+    const src = cells[1].getBoundingClientRect(); // Name
+    const dst = cells[3].getBoundingClientRect(); // drop just inside Type
+    return { x: src.x + 30, y: src.y + src.height / 2, tx: dst.x + 4, ty: dst.y + dst.height / 2 };
+  });
+  await page.mouse.move(d2.x, d2.y);
+  await page.mouse.down();
+  await page.mouse.move(d2.tx, d2.ty, { steps: 12 });
+  await page.mouse.up();
+  await sleep(120);
+  await ok('the stretch column can be dragged into the middle', evalPage(() =>
+    JSON.stringify(Array.from(document.querySelectorAll('#grid-head .gh[data-col]')).map((c) => c.dataset.col))
+      === JSON.stringify(['size', 'name', 'type', 'lastModified'])));
+  const e0 = await colRects();
+  await dragHandle('size', 50);
+  const e1 = await colRects();
+  await ok('resizing left of the stretch column follows the pointer',
+    Math.abs(e1.cols[ai(e1, 'size')].w - e0.cols[ai(e0, 'size')].w - 50) <= 1
+    && Math.abs(e1.cols[ai(e1, 'name')].w - e0.cols[ai(e0, 'name')].w) <= 1);
+  await dragHandle('type', 50);
+  const e2 = await colRects();
+  await ok('resizing right of the stretch column follows the pointer',
+    Math.abs(e2.cols[ai(e2, 'type')].w - e1.cols[ai(e1, 'type')].w - 50) <= 1
+    && Math.abs(e2.cols[ai(e2, 'name')].w - e1.cols[ai(e1, 'name')].w) <= 1);
+  await resetHandle('size');
+  await resetHandle('type');
+  await shot('columns-drag');
+
+  // E. the edge itself: grab zone centered on the boundary and hit-testable
+  // a couple of px past it (regression: the in-cell handle was clipped by
+  // the cell's overflow:hidden, so a grab just right of the edge hit the
+  // NEXT header — sorting or reordering it instead of resizing)
   await ok('handle grab zone is centered on the boundary and hit-testable past it', evalPage(() => {
     const cell = document.querySelector('#grid-head .gh[data-col="type"]').getBoundingClientRect();
     const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
     return Math.abs((r.left + r.right) / 2 - cell.right) < 1 && Math.abs(r.width - 10) < 0.6
       && document.elementFromPoint(cell.right + 2, cell.top + cell.height / 2)?.classList.contains('gh-resize') === true;
   }));
-  const own0 = await evalPage(() => Array.from(document.querySelectorAll('#grid-head .gh[data-col]'))
-    .map((c) => ({ id: c.dataset.col, w: c.getBoundingClientRect().width })));
-  await page.mouse.move(h.x + 2, h.y); // just past the edge: the old dead zone
+  await ok('every column edge is grabbable along the whole header height', evalPage(() => {
+    const grab = (x, y) => {
+      const h = document.elementFromPoint(x, y);
+      return !!h && (h.classList.contains('gh-resize') || !!h.closest('.gh-resize'));
+    };
+    return Array.from(document.querySelectorAll('#grid-head .gh-handles .gh-resize')).every((h) => {
+      const r = h.getBoundingClientRect();
+      return grab(r.x + r.width / 2, r.y + r.height / 2) // mid header
+        && grab(r.x + r.width / 2, r.top + 2) // along the top edge
+        && grab(r.x + r.width / 2, r.bottom - 2); // along the bottom edge
+    });
+  }));
+  const f0 = await colRects();
+  const gE = await handle('type');
+  await page.mouse.move(gE.x + 2, gE.y); // just past the edge: the old dead zone
   await page.mouse.down();
-  await page.mouse.move(h.x + 62, h.y, { steps: 6 });
+  await page.mouse.move(gE.x + 62, gE.y, { steps: 6 });
   await page.mouse.up();
   await sleep(80);
-  await ok('grabbing past the edge resizes the column, not its neighbor', evalPage((o) => {
-    const now = Array.from(document.querySelectorAll('#grid-head .gh[data-col]'))
-      .map((c) => ({ id: c.dataset.col, w: c.getBoundingClientRect().width }));
-    if (now.length !== o.length || now.some((c, i) => c.id !== o[i].id)) return false; // no reorder
-    const dw = now.map((c, i) => c.w - o[i].w);
-    const t = o.findIndex((c) => c.id === 'type');
-    const n = o.findIndex((c) => c.id === 'name'); // flex column absorbs the gain
-    return dw.every((d, i) => (i === t || i === n) || Math.abs(d) <= 1)
-      && Math.abs(dw[t] - 60) <= 2 && Math.abs(dw[n] + 60) <= 2;
-  }, own0));
-  let rh = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  });
-  await page.mouse.click(rh.x, rh.y, { clickCount: 2 }); // back to the catalog width
-  await sleep(60);
-  // keyboard resize: handles are focusable separators; arrows nudge, aria tracks
+  const f1 = await colRects();
+  await ok('grabbing past the edge resizes the column, not its neighbor', (() => {
+    if (f0.cols.length !== f1.cols.length || f0.cols.some((c, i) => c.id !== f1.cols[i].id)) return false; // no reorder, no sort flip
+    const t = ai(f0, 'type');
+    const dw = f1.cols.map((c, i) => c.w - f0.cols[i].w);
+    return Math.abs(dw[t] - 60) <= 2 && dw.every((x, i) => i === t || Math.abs(x) <= 1);
+  })());
+  await resetHandle('type');
+
+  // F. keyboard resize: handles are focusable separators; arrows nudge,
+  // aria tracks the same bounds a drag respects
   const k0 = await evalPage(() => document.querySelector('#grid-head .gh[data-col="type"]').getBoundingClientRect().width);
   await ok('handle is a focusable aria separator', evalPage((k) => {
     const rz = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]');
     return rz.tabIndex === 0 && rz.getAttribute('role') === 'separator'
       && rz.getAttribute('aria-orientation') === 'vertical'
       && rz.getAttribute('aria-valuenow') === String(Math.round(k))
-      && rz.getAttribute('aria-valuemin') === '48';
+      && rz.getAttribute('aria-valuemin') === '48'
+      && Number(rz.getAttribute('aria-valuemax')) >= Math.round(k);
   }, k0));
   await page.evaluate(() => document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').focus());
   await page.keyboard.press('ArrowRight');
@@ -1526,20 +1662,13 @@ await step('column-resize-reorder', async () => {
     document.querySelector('#grid-head .gh[data-col="type"]').getBoundingClientRect().width)) - (k0 + 40)) <= 2
     && evalPage((k) => document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]')
       .getAttribute('aria-valuenow') === String(Math.round(k + 40)), k0));
-  rh = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  });
-  await page.mouse.click(rh.x, rh.y, { clickCount: 2 }); // reset the keyboard nudge too
-  await sleep(60);
-  // flex column floors at exactly its template minimum (regression:
+  await resetHandle('type');
+
+  // G. flex column floors at exactly its template minimum (regression:
   // minmax(200px, <200px) silently resolved to 200px, leaving the last
   // stretch of a narrowing drag inert under the pointer)
   const nameW0 = await evalPage(() => document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().width);
-  const nh = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="name"]').getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  });
+  const nh = await handle('name');
   await page.mouse.move(nh.x, nh.y);
   await page.mouse.down();
   await page.mouse.move(nh.x - 600, nh.y, { steps: 10 });
@@ -1555,83 +1684,101 @@ await step('column-resize-reorder', async () => {
   await sleep(80);
   await ok('the minimum holds on further narrowing', Math.abs((await evalPage(() =>
     document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().width)) - 200) <= 1);
-  const nh2 = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="name"]').getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  });
-  await page.mouse.click(nh2.x, nh2.y, { clickCount: 2 });
-  await sleep(80);
+  await resetHandle('name');
   await ok('double-click restores the flex column to fill the pane', Math.abs((await evalPage(() =>
     document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().width)) - nameW0) <= 3);
-  // narrow pane: the column set's minimums exceed the head — a rightward
-  // drag must stay inert (regression: the degenerate ceiling used to snap the
-  // column to the 48px clamp on the first move and shift everything after it)
+
+  // H. narrow pane: the column set's minimums already overflow — growth
+  // still tracks the pointer into the scrollbar, narrowing works, and
+  // nothing snaps on the first move (regression: the old pane-fit ceiling
+  // clamped the column down and shifted everything after it)
   const vp = page.viewportSize();
   await page.setViewportSize({ width: 720, height: 600 });
   await sleep(150);
-  const n0 = await evalPage(() => {
-    const cells = Array.from(document.querySelectorAll('#grid-head .gh')).map((c) => c.getBoundingClientRect());
-    return { w: cells[2].width, nextL: cells[3].left };
+  // scroll the pane so the type boundary is on screen — in a window
+  // this narrow the boundary sits past the pane edge, and no pointer
+  // can reach an off-screen handle; a real user scrolls, then drags
+  await evalPage(() => {
+    const b = document.getElementById('grid-body');
+    b.scrollLeft = Math.min(130, b.scrollWidth - b.clientWidth);
+    b.dispatchEvent(new Event('scroll'));
   });
-  const t = await evalPage(() => {
-    const r = document.querySelector('#grid-head .gh-handles .gh-resize[data-col="type"]').getBoundingClientRect();
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-  });
-  await page.mouse.move(t.x, t.y);
-  await page.mouse.down();
-  await page.mouse.move(t.x + 80, t.y, { steps: 8 });
-  await page.mouse.up();
-  await sleep(80);
-  await ok('narrow pane: rightward drag does not snap the column', evalPage((n) => {
-    const cells = Array.from(document.querySelectorAll('#grid-head .gh')).map((c) => c.getBoundingClientRect());
-    return Math.abs(cells[2].width - n.w) <= 1 && Math.abs(cells[3].left - n.nextL) <= 1;
-  }, n0));
-  await page.mouse.move(t.x, t.y);
-  await page.mouse.down();
-  await page.mouse.move(t.x - 40, t.y, { steps: 8 });
-  await page.mouse.up();
-  await sleep(80);
+  await sleep(120);
+  const n0 = await colRects();
+  const nt = ai(n0, 'type');
+  await dragHandle('type', 80);
+  const n1 = await colRects();
+  await ok('narrow pane: rightward drag tracks the pointer (no snap-down)',
+    Math.abs(n1.cols[nt].w - n0.cols[nt].w - 80) <= 1
+    && Math.abs((n1.cols[nt].l + n1.cols[nt].w) - (n0.cols[nt].l + n0.cols[nt].w) - 80) <= 1);
+  await ok('narrow pane: the growth lands in the scrollbar, not in other columns',
+    n1.scrollW >= n0.scrollW + 79
+    && n1.cols.every((c, i) => i === nt || Math.abs(c.w - n0.cols[i].w) <= 1));
+  await dragHandle('type', -40);
+  const n2 = await colRects();
   await ok('narrow pane: narrowing still works',
-    Math.abs((await evalPage(() => document.querySelectorAll('#grid-head .gh')[2].getBoundingClientRect().width)) - (n0.w - 40)) <= 3);
+    Math.abs(n2.cols[nt].w - n1.cols[nt].w + 40) <= 1);
   await ok('head scrolls in lockstep with the rows', evalPage(() => {
     const b = document.getElementById('grid-body');
+    const head = document.getElementById('grid-head');
     b.scrollLeft = 100;
     b.dispatchEvent(new Event('scroll'));
-    const head = document.getElementById('grid-head');
-    const okSync = head.style.transform === 'translateX(-100px)'
-      && head.style.width === `${b.clientWidth}px`;
+    const sync = head.style.transform === 'translateX(-100px)'
+      && head.style.width === b.clientWidth + 'px';
     b.scrollLeft = 0;
     b.dispatchEvent(new Event('scroll'));
-    return okSync;
+    return sync;
   }));
-  await evalPage(() => localStorage.removeItem('s3b-cols'));
   await page.setViewportSize(vp);
   await sleep(150);
-  // reorder: drag the Size header in front of Type
-  const d = await evalPage(() => {
-    const cells = Array.from(document.querySelectorAll('#grid-head .gh'));
-    const src = cells[3].getBoundingClientRect(); // Size (cells[0] = checkbox column)
-    const dst = cells[2].getBoundingClientRect(); // drop just inside Type
-    return { x: src.x + 12, y: src.y + src.height / 2, tx: dst.x + 4, ty: dst.y + dst.height / 2 };
-  });
-  await page.mouse.move(d.x, d.y);
-  await page.mouse.down();
-  await page.mouse.move(d.tx, d.ty, { steps: 12 });
-  await page.mouse.up();
+
+  // I. columns beyond the default four: their values carry a quiet gray
+  // wash (class "extra") so opt-in columns read as overlay data
+  await page.locator('#grid-head .gh[data-col="type"]').click({ button: 'right' });
+  await sleep(80);
+  await ok('header right-click opens the column picker', evalPage(() =>
+    !document.getElementById('ctxmenu').classList.contains('hidden')
+    && document.getElementById('ctxmenu').textContent.includes('Mode')));
+  await page.locator('#ctxmenu .item', { hasText: 'Mode' }).first().click();
   await sleep(120);
-  await ok('dragging a header reorders the columns', evalPage(() => {
-    const known = ['check', 'name', 'type', 'mode', 'size', 'lastModified', 'created', 'storageClass', 'etag'];
-    const got = Array.from(document.querySelector('#grid-canvas .grid-row').children)
-      .map((c) => known.find((k) => c.classList.contains(k)));
-    return JSON.stringify(got) === JSON.stringify(['check', 'name', 'size', 'type', 'lastModified']);
+  await ok('opt-in column cells get the gray overlay wash', evalPage(() => {
+    const row = document.querySelector('#grid-canvas .grid-row');
+    if (!row) return false;
+    const mode = row.querySelector('.gc.mode');
+    const name = row.querySelector('.gc.name');
+    const type = row.querySelector('.gc.type');
+    return !!mode && mode.classList.contains('extra')
+      && getComputedStyle(mode).backgroundColor !== 'rgba(0, 0, 0, 0)'
+      && !name.classList.contains('extra') && !type.classList.contains('extra')
+      && getComputedStyle(name).backgroundColor === 'rgba(0, 0, 0, 0)';
   }));
-  await ok('reordered column set persisted', evalPage(() => {
-    try { return JSON.stringify(JSON.parse(localStorage.getItem('s3b-cols') || '{}').cols)
-      === JSON.stringify(['name', 'size', 'type', 'lastModified']); }
-    catch { return false; }
+  await shot('columns-extra');
+  await page.locator('#grid-head .gh[data-col="type"]').click({ button: 'right' });
+  await sleep(80);
+  await page.locator('#ctxmenu .item', { hasText: 'Mode' }).first().click(); // toggle back off
+  await sleep(120);
+
+  // J. the picker's "Reset columns" restores the out-of-box layout —
+  // visible set, order AND widths — so a scrambled pane recovers in one
+  // click (and the rest of the battery runs on default geometry, not
+  // the layout this step leaves behind)
+  await page.locator('#grid-head .gh[data-col="type"]').click({ button: 'right' });
+  await sleep(80);
+  await page.locator('#ctxmenu .item', { hasText: 'Reset columns' }).first().click();
+  await sleep(120);
+  const j0 = await colRects();
+  await ok('reset restores the out-of-box column order',
+    j0.cols.map((c) => c.id).join(',') === 'name,type,size,lastModified');
+  await ok('reset thaws the stretch column to fill the pane again',
+    Math.abs((await evalPage(() =>
+      document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().width)) - nameW0) <= 3);
+  await ok('reset persists the default layout', evalPage(() => {
+    try {
+      const st = JSON.parse(localStorage.getItem('s3b-cols') || 'null');
+      return !!st && (st.cols || []).join(',') === 'name,type,size,lastModified'
+        && (!st.widths || Object.keys(st.widths).length === 0);
+    } catch { return false; }
   }));
-  await shot('columns-drag');
-  await evalPage(() => localStorage.removeItem('s3b-cols')); // back to boot defaults
 });
 
 await step('invert-selection', async () => {
@@ -5411,22 +5558,69 @@ await step('breadcrumb-path-nav', async () => {
 
 await step('sidebar-resize', async () => {
   const w0 = await evalPage(() => document.getElementById('sidebar').getBoundingClientRect().width);
-  await evalPage(() => {
-    const split = document.getElementById('side-split');
-    split.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    window.dispatchEvent(new MouseEvent('mousemove', { clientX: 380 }));
-    window.dispatchEvent(new MouseEvent('mouseup'));
+  // the grab strip is a real hit target wider than the visible seam,
+  // not a 5px pixel-perfect line
+  const sp = await evalPage(() => {
+    const s = document.getElementById('side-split');
+    const r = s.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.x + r.width / 2, r.y + 40);
+    return { x: r.x + r.width / 2, y: r.y + 40, w: r.width,
+      hit: hit ? (hit.id || hit.className) : null };
   });
+  await ok('splitter grab strip is hit-testable at its center', sp.hit === 'side-split' && sp.w >= 9);
+  await page.mouse.move(sp.x, sp.y);
+  await page.mouse.down();
+  await page.mouse.move(sp.x + 120, sp.y, { steps: 8 });
+  await page.mouse.up();
   await sleep(80);
   const w1 = await evalPage(() => document.getElementById('sidebar').getBoundingClientRect().width);
-  await ok('splitter drag resizes the sidebar', Math.round(w1) === 380);
-  await ok('width persisted', evalPage(() => localStorage.getItem('s3b-sidebar-w') === '380'));
+  await ok('real-mouse drag resizes the sidebar', Math.abs(w1 - (w0 + 120)) <= 1);
+  await ok('width persisted', evalPage((w) =>
+    localStorage.getItem('s3b-sidebar-w') === String(Math.round(w)), w0 + 120));
   await shot('sidebar-resized');
+  // clamp: dragging past half the window stops at the ceiling and
+  // persists the clamped value. The strip is re-measured (it moved with
+  // the drag above) and the far target stays inside the viewport — the
+  // browser clamps out-of-view pointer coordinates, which would land
+  // the width just under the ceiling this check asserts
+  const spc = await evalPage(() => {
+    const r = document.getElementById('side-split').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + 40, far: window.innerWidth - 20 };
+  });
+  await page.mouse.move(spc.x, spc.y);
+  await page.mouse.down();
+  await page.mouse.move(spc.far, spc.y, { steps: 10 });
+  await page.mouse.up();
+  await sleep(80);
+  await ok('dragging past half the window clamps at the ceiling', evalPage(() =>
+    Math.abs(Math.round(document.getElementById('sidebar').getBoundingClientRect().width)
+      - Math.ceil(window.innerWidth / 2)) <= 1
+    && localStorage.getItem('s3b-sidebar-w') === String(Math.ceil(window.innerWidth / 2))));
+  // pointer capture: the drag keeps tracking with the pointer far
+  // outside the strip, and releasing there un-sticks cleanly
+  const sp3 = await evalPage(() => {
+    const r = document.getElementById('side-split').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + 40 };
+  });
+  await page.mouse.move(sp3.x, sp3.y);
+  await page.mouse.down();
+  await page.mouse.move(sp3.x - 999, sp3.y - 300, { steps: 6 });
+  await page.mouse.up();
+  await sleep(80);
+  await ok('capture holds the drag outside the strip and un-sticks cleanly', evalPage(() => {
+    const w = Math.round(document.getElementById('sidebar').getBoundingClientRect().width);
+    return w >= 139 && w <= Math.ceil(window.innerWidth / 2) + 1
+      && !document.body.classList.contains('col-resizing');
+  }));
   // double-click resets to the default
-  await evalPage(() => document.getElementById('side-split').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+  const sp2 = await evalPage(() => {
+    const r = document.getElementById('side-split').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + 40 };
+  });
+  await page.mouse.click(sp2.x, sp2.y, { clickCount: 2 });
   await sleep(60);
-  const w2 = await evalPage(() => document.getElementById('sidebar').getBoundingClientRect().width);
-  await ok('double-click resets the width', evalPage(() => localStorage.getItem('s3b-sidebar-w') === null) && Math.abs(w2 - w0) < 2);
+  await ok('double-click resets the width', evalPage(() => localStorage.getItem('s3b-sidebar-w') === null)
+    && Math.abs((await evalPage(() => document.getElementById('sidebar').getBoundingClientRect().width)) - w0) < 2);
 });
 
 await step('os-copy-mirror', async () => {

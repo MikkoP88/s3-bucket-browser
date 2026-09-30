@@ -156,7 +156,7 @@ export class Grid {
     this.showMarkers = true; // delete-marker badges on (Settings toggle)
     this.on = {}; // callbacks: select, activate, context, dragstart, drop, badgeV, badgeM
     this.setColumns(DEFAULT_COLS);
-    this.body.addEventListener('scroll', () => { this.syncHeadScroll(); this.render(); });
+    this.body.addEventListener('scroll', () => { this.syncHeadScroll(); this.positionHandles(); this.render(); });
     // pane width changes (split drag, window resize) and the scrollbar
     // appearing/disappearing (row count changes) both re-lock the head width
     // and re-seat the boundary handles
@@ -211,15 +211,26 @@ export class Grid {
     this.setColumns(st && st.cols.length ? st.cols : DEFAULT_COLS);
   }
 
+  // resetCols restores the out-of-box layout — the default visible set,
+  // in the default order, at catalog widths with the stretch column
+  // absorbing the leftover width again (the header picker's
+  // "Reset columns": one click recovers a scrambled pane).
+  resetCols() {
+    this.widths = {};
+    this.setColumns(DEFAULT_COLS);
+  }
+
   // gridTemplate is the CSS grid-template-columns for head + rows. The flex
-  // column (name) absorbs the remaining width until the user sizes it; a
-  // user-sized flex column becomes capped (minmax up to that width) and a
-  // trailing filler track takes the rest, so the last column never stretches.
+  // column (name) absorbs the remaining width until it is sized — by the
+  // user, or by freezeStretch pinning it at the first neighbor resize. A
+  // sized flex column becomes a FIXED track (a minmax(minW, w) cap would
+  // still absorb shrinkage from growing neighbors, sliding boundaries
+  // instead of overflowing honestly) and a trailing filler track takes the
+  // rest, so the last column never stretches.
   gridTemplate() {
     const parts = this.cols.map((c) => {
       if (c.flex && !this.widths[c.id]) return `minmax(${c.minW}px,3fr)`;
-      const w = Math.round(this.widths[c.id] || c.w);
-      return c.flex ? `minmax(${c.minW}px,${w}px)` : `${w}px`;
+      return `${Math.round(this.widths[c.id] || c.w)}px`;
     });
     if (this.cols.some((c) => c.flex && this.widths[c.id])) parts.push('minmax(0,1fr)');
     return `34px ${parts.join(' ')}`;
@@ -228,9 +239,22 @@ export class Grid {
   // colWidth is a column's current effective width (user-set or catalog).
   colWidth(c) { return this.widths[c.id] || c.w; }
 
-  // colFloor is the width a column must keep while another one is being
-  // resized: fixed columns their current width, the flex one its minimum.
-  colFloor(c) { return c.flex ? c.minW : this.colWidth(c); }
+  // freezeStretch pins the stretch column at its current rendered width
+  // the first time any other column is resized. While the flex track is
+  // live mid-template, growing a neighbor steals from it — the dragged
+  // edge stands still and every boundary between the two slides instead
+  // (the classic "resize moves all the columns" trap). Pinned, the
+  // template ends with a filler track: the dragged edge follows the
+  // pointer, growth eats the filler first, and only real overflow
+  // scrolls. Double-clicking the flex column's own handle thaws it
+  // again (resetWidth) so it resumes absorbing the leftover width.
+  freezeStretch() {
+    const flex = this.cols.find((c) => c.flex && this.widths[c.id] === undefined);
+    if (!flex) return;
+    const i = this.cols.indexOf(flex);
+    this.widths[flex.id] = Math.min(4000,
+      Math.round(this.headCols[i].getBoundingClientRect().width));
+  }
 
   // resizeFloor is the least width a drag may give a column: the flex
   // column bottoms out at its template minimum, fixed columns at
@@ -240,17 +264,14 @@ export class Grid {
   // dead while the pointer keeps moving.
   resizeFloor(c) { return c.flex ? c.minW : MIN_COL_W; }
 
-  // resizeCeiling is the most a column may take in this pane: everything
-  // the grid has (checkbox track included) once the other columns keep
-  // their floors. The rows area is the truth — it loses the scrollbar
-  // width. Floored at the column's current width so a rightward drag in a
-  // layout already overflowing its minimums stays inert instead of
-  // snapping the column down to the ceiling — and shifting every column
-  // after it — on the first move.
-  resizeCeiling(c, curW) {
-    const bound = Math.min(this.headClip.clientWidth, this.body.clientWidth);
-    return Math.max(curW, bound - 34
-      - this.cols.reduce((sum, x) => (x === c ? sum : sum + this.colFloor(x)), 0));
+  // resizeCeiling caps a column at the rows pane's own width — growth
+  // past the remaining space is honest overflow (the grid scrolls
+  // sideways, the head riding along in lockstep), never width stolen
+  // from the other columns. Floored at the column's current width so a
+  // rightward drag in an already-overflowing layout tracks the pointer
+  // instead of snapping the column down on its first move.
+  resizeCeiling(curW) {
+    return Math.max(curW, Math.round(this.body.clientWidth));
   }
 
   // syncHeadWidth locks the head to the rows' layout width: the fr/flex
@@ -339,13 +360,24 @@ export class Grid {
   // (cell rects minus the head's own rect, so a translated head needs no
   // special casing). Runs after any template change — including each live
   // drag move, so a handle follows its boundary while the column resizes.
+  // A boundary flush with the pane's right edge (grid exactly full, or
+  // scrolled to the end) would clip the handle's outer half out of the
+  // window — half the grip gone, and with it the guarantee that every
+  // edge is grabbable. Such a handle is pulled fully inside; a boundary
+  // scrolled past the edge keeps its handle with it, out of sight.
   positionHandles() {
     const layer = this.head.querySelector('.gh-handles');
     if (!layer) return;
     const hl = this.head.getBoundingClientRect().left;
+    const paneW = this.headClip.clientWidth;
+    const sl = this.body.scrollLeft || 0;
     this.headCols.forEach((cell, i) => {
       const h = layer.children[i];
-      if (h) h.style.left = `${cell.getBoundingClientRect().right - hl - RZ_HIT_W / 2}px`;
+      if (!h) return;
+      const b = cell.getBoundingClientRect().right - hl; // head-local content x
+      const v = b - sl; // where the boundary shows in the pane right now
+      const seated = v <= paneW ? Math.min(v, paneW - RZ_HIT_W / 2) : v;
+      h.style.left = `${seated - RZ_HIT_W / 2}px`;
     });
   }
 
@@ -359,7 +391,7 @@ export class Grid {
       const h = layer.children[i];
       const w = Math.round(this.headCols[i].getBoundingClientRect().width);
       h.setAttribute('aria-valuemin', String(this.resizeFloor(c)));
-      h.setAttribute('aria-valuemax', String(this.resizeCeiling(c, w)));
+      h.setAttribute('aria-valuemax', String(this.resizeCeiling(w)));
       h.setAttribute('aria-valuenow', String(w));
       h.setAttribute('aria-valuetext', `${w}px`);
     });
@@ -431,17 +463,19 @@ export class Grid {
 
   // startResize tracks a boundary-handle drag: the column width follows the
   // pointer live (head + pooled rows restyle per move — a pool is ~40 rows,
-  // one inline style each), clamped to the column's own floor below and to
-  // the width the other columns must keep above. Pointerup persists via
-  // on.colsChanged.
+  // one inline style each), clamped to the column's own floor below and the
+  // rows pane's width above. Whatever the drag adds or removes lands in the
+  // template's trailing filler first; only past that does the grid scroll.
+  // Pointerup persists via on.colsChanged.
   startResize(e, c, rz) {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
+    if (!c.flex) this.freezeStretch(); // pin the stretch column: the edge must follow the pointer
     const startW = this.headCols[this.cols.indexOf(c)].getBoundingClientRect().width;
     const startX = e.clientX;
     const floor = this.resizeFloor(c);
-    const maxW = this.resizeCeiling(c, startW);
+    const maxW = this.resizeCeiling(startW);
     rz.setPointerCapture?.(e.pointerId); // keep the drag alive past the window edge
     rz.classList.add('dragging');
     document.body.classList.add('col-resize-active');
@@ -469,10 +503,11 @@ export class Grid {
   // nudge by 8px (Shift ×4), Home/End jump to the bounds — all clamped to
   // the same floor/ceiling a pointer drag respects.
   keyResize(e, c) {
+    if (!c.flex) this.freezeStretch(); // same edge-follows-pointer contract as a drag
     const cell = this.headCols[this.cols.indexOf(c)];
     const cur = Math.round(cell.getBoundingClientRect().width);
     const floor = this.resizeFloor(c);
-    const max = this.resizeCeiling(c, cur);
+    const max = this.resizeCeiling(cur);
     let w;
     if (e.key === 'ArrowLeft') w = cur - (e.shiftKey ? 32 : 8);
     else if (e.key === 'ArrowRight') w = cur + (e.shiftKey ? 32 : 8);
@@ -699,7 +734,10 @@ export class Grid {
           el('span', { class: 'vbadge', role: 'button' }),
           el('span', { class: 'mbadge', role: 'button' })));
       } else {
-        row.appendChild(el('div', { class: `gc${c.num ? ' num' : ''} ${c.id}` }));
+        // columns beyond the default four carry their values on a quiet
+        // gray wash so opt-in columns read as overlay data at a glance
+        const extra = DEFAULT_COLS.includes(c.id) ? '' : ' extra';
+        row.appendChild(el('div', { class: `gc${c.num ? ' num' : ''} ${c.id}${extra}` }));
       }
     }
     this.wireRow(row);

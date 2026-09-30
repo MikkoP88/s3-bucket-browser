@@ -126,7 +126,8 @@ directory compare) with S3 and the local pane.
 - **Sidebar tree** — sources → buckets → folders. Click to navigate;
   right-click a node for Properties, the Admin panel, transfers and
   more. Folders expand lazily; buckets with versioning carry a 🔄 icon,
-  object-lock buckets a 🔒 icon.
+  object-lock buckets a 🔒 icon. Drag the sidebar's right edge to
+  resize it (double-click resets).
 - **Grid** — Windows-Explorer selection: click, Ctrl+click, Shift+click,
   Ctrl+A (all), Ctrl+I (invert), marquee drag-select, type-to-jump. The
   funnel row under the header filters per column; right-click the header
@@ -138,9 +139,15 @@ directory compare) with S3 and the local pane.
   modified. Opt-in columns: Date created (bucket views, WebDAV
   creationdate, Windows local birth times), Mode (local and SFTP
   permission bits), Storage class and ETag — via the header menu or
-  Settings. Columns resize by dragging a header edge (double-click
-  resets) and reorder by dragging the header itself; widths and order
-  persist per pane.
+  Settings. Columns resize by dragging a header edge — the edge
+  follows the pointer exactly, and growth beyond what the pane has
+  becomes the horizontal scrollbar rather than squeezing the other
+  columns (double-click resets; Arrow keys resize a focused edge) —
+  and reorder by dragging the header itself; widths and order persist
+  per pane, and the header picker's Reset columns brings the
+  out-of-box set, order and widths back in one click. Columns beyond
+  the default four carry their values on a quiet gray wash, so opt-in
+  data reads as an overlay at a glance.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and type a path like `s3://bucket/folder/` — or
   `source://path` for any source — to jump directly. Back / forward /

@@ -9,14 +9,26 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Grid columns: resize, reorder and two new data columns.** Drag a
-  header edge to resize (double-click resets; the boundary edge grabs
-  from both sides) and the header itself to reorder — widths and order
-  persist per pane. **Date created** (bucket views, WebDAV
+  header edge to resize and the header itself to reorder — widths and
+  order persist per pane. The dragged edge follows the pointer
+  exactly: the first resize pins the stretch column, growth beyond
+  what the pane has becomes the horizontal scrollbar instead of
+  squeezing other columns, and every boundary keeps a whole grab
+  strip even when it sits flush with the pane's right edge
+  (double-click resets; Arrow keys resize a focused edge). The header
+  picker gains **Reset columns** — one click restores the out-of-box
+  set, order and widths. Columns beyond the default four carry their
+  values on a quiet gray wash.
+  **Date created** (bucket views, WebDAV
   creationdate, Windows local birth times) and **Mode** (local and
   SFTP permission bits) join the opt-in set, and the Type column now
   names common file types ("PNG image", "Text document") in the UI
   language — on by default.
 
+- **The sidebar splitter is a real grab strip.** Pointer capture keeps
+  the drag alive past the window edge, the boundary keeps its offset
+  from the grab point (N pixels dragged, N pixels moved), a stale
+  saved width clamps on boot, and double-click resets.
 - **The speed-limit setting covers fast links: 50–1000 MB/s tiers**
   (the 256 kB/s floor and every step beneath are unchanged).
 
