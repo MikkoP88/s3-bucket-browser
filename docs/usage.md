@@ -148,6 +148,21 @@ directory compare) with S3 and the local pane.
   out-of-box set, order and widths back in one click. Columns beyond
   the default four carry their values on a quiet gray wash, so opt-in
   data reads as an overlay at a glance.
+- **Content size bar** — the strip along the bottom of the content
+  view always answers *how much is really here*: with nothing
+  selected it is the real recursive size of everything listed; select
+  rows and it is the recursive size of the selection — a folder
+  always counts its whole interior, WinSCP-style. It works on every
+  source type the view hosts — bucket lists, S3 folders (versioned,
+  suspended or plain) and every remote engine (SFTP, SCP, FTP(S),
+  WebDAV, local) — always for the one source you are browsing, never
+  an aggregate across data sources. On buckets with versioning the
+  history is priced in next to the live content (noncurrent version
+  bytes and delete markers — the real storage bill). Walks run in
+  the background ("calculating…" meanwhile), are cached per folder
+  so revisiting is instant, and a failed walk falls back to
+  listing-level sums marked *partial — at least this much* with the
+  error on hover.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and type a path like `s3://bucket/folder/` — or
   `source://path` for any source — to jump directly. Back / forward /

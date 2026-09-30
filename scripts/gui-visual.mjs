@@ -393,6 +393,21 @@ function shim() {
         { name: 'notes.md', isDir: false, versions: 2, markers: 0, allDeleted: false },
       ],
     },
+    // old version timeline the usage walks aggregate on top of the live
+    // rows: noncurrent versions + delete markers, per bucket — mirrors
+    // what the backend ListObjectVersions walk sees beyond the current
+    // listing (team-files versioned, logs-2026 suspended)
+    usage: {
+      'team-files': [
+        { key: 'readme.md', versionId: 'ver-0002', size: 1100 },
+        { key: 'readme.md', versionId: 'ver-0001', size: 900 },
+        { key: 'readme.md', versionId: 'dm-0001', marker: true },
+        { key: 'docs/notes.md', versionId: 'ver-0001', size: 400 },
+      ],
+      'logs-2026': [
+        { key: 'app/app-2026-09-10.log', versionId: 'ver-0001', size: 5000000 },
+      ],
+    },
     // Non-empty world boots with a saved (encrypted) profile file open —
     // the realistic steady state, and what the status bar should show in
     // screenshots (🔐 work.s3bprofile, not "unsaved sources" walk debris).
@@ -515,6 +530,46 @@ function shim() {
     const name = world.remote[source] ? source : world.sources.find((s) => s.id === source)?.name;
     return children(world.remote[name] || [], dir || '/', true);
   };
+  // s3UsageStat mirrors the backend WalkVersions aggregation over the
+  // LIVE fixtures: current rows from world.objects (a dir row is a folder
+  // marker — one current version and a folder, never a file), the old
+  // timeline from world.usage, versioning from world.guards. root is a
+  // folder prefix (trailing '/') or an exact file key; the root marker
+  // is not content, and a file root walks its exact key only.
+  const s3UsageStat = (bucket, root) => {
+    const st = { key: root, files: 0, dirs: 0, currentBytes: 0, versionBytes: 0,
+      versionCount: 0, markerCount: 0, versioned: false, partial: false, error: '' };
+    const guard = world.guards[bucket];
+    st.versioned = !!guard && guard.versioning !== 'Off';
+    const rows = world.objects[bucket] || [];
+    const olds = (world.usage || {})[bucket] || [];
+    const isFile = root !== '' && !root.endsWith('/');
+    const dirs = new Set();
+    for (const r of rows) {
+      if (isFile ? r.key !== root : (r.key === root || !r.key.startsWith(root))) continue;
+      st.versionCount++;
+      if (r.isDir) {
+        if (!isFile) dirs.add(r.key); // the marker names the folder itself
+        continue;
+      }
+      st.files++;
+      st.currentBytes += r.size || 0;
+      if (isFile) continue;
+      // implicit folders along the path below the root
+      const rest = r.key.slice(root.length);
+      for (let i = rest.indexOf('/'); i !== -1; i = rest.indexOf('/', i + 1)) {
+        dirs.add(root + rest.slice(0, i + 1));
+      }
+    }
+    for (const v of olds) {
+      if (isFile ? v.key !== root : (v.key === root || !v.key.startsWith(root))) continue;
+      if (v.marker) { st.markerCount++; continue; }
+      st.versionCount++;
+      st.versionBytes += v.size || 0;
+    }
+    st.dirs = dirs.size;
+    return st;
+  };
   // composeName mirrors the backend's composeFileName rule: the created
   // shims return the same key the Go side would
   const composeName = (name, ext) => {
@@ -625,6 +680,48 @@ function shim() {
       return t;
     },
     CancelList: () => ({}),
+    // content size bar walks (usage.go contract): S3Usage aggregates a
+    // folder's children or the whole prefix, BucketUsage whole buckets,
+    // RemoteUsage remote paths — all fault-injectable (usageDelayMs /
+    // usageError) so the bar's busy, error-fallback and stale-drop
+    // paths are observable
+    S3Usage: async (bucket, prefix, children) => {
+      const f = world.fault || {};
+      if (f.usageDelayMs) await new Promise((r) => setTimeout(r, f.usageDelayMs));
+      if (f.usageError) throw new Error(f.usageError);
+      if (children && children.length) return children.map((k) => s3UsageStat(bucket, k));
+      const root = prefix && !prefix.endsWith('/') ? prefix + '/' : prefix;
+      return [s3UsageStat(bucket, root)];
+    },
+    BucketUsage: async (buckets) => {
+      const f = world.fault || {};
+      if (f.usageDelayMs) await new Promise((r) => setTimeout(r, f.usageDelayMs));
+      if (f.usageError) throw new Error(f.usageError);
+      return (buckets || []).map((b) => ({ ...s3UsageStat(b, ''), key: b }));
+    },
+    RemoteUsage: async (source, path, children) => {
+      const f = world.fault || {};
+      if (f.usageDelayMs) await new Promise((r) => setTimeout(r, f.usageDelayMs));
+      if (f.usageError) throw new Error(f.usageError);
+      const name = world.remote[source] ? source : world.sources.find((s) => s.id === source)?.name;
+      const rows = world.remote[name] || [];
+      const stat = (p) => {
+        const st = { key: p, files: 0, dirs: 0, currentBytes: 0, versionBytes: 0,
+          versionCount: 0, markerCount: 0, versioned: false, partial: false, error: '' };
+        if (!p.endsWith('/')) { // a file child is stated, not walked
+          const e = rows.find((r) => r.key === p);
+          if (e && !e.isDir) { st.files = 1; st.currentBytes = e.size || 0; return st; }
+        }
+        const dir = p.endsWith('/') ? p : p + '/';
+        for (const r of rows) {
+          if (r.key === dir || !r.key.startsWith(dir)) continue; // not the root itself
+          if (r.isDir) st.dirs++; else { st.files++; st.currentBytes += r.size || 0; }
+        }
+        return st;
+      };
+      if (children && children.length) return children.map(stat);
+      return [stat(path || '/')];
+    },
     RemoteList: async (source, dir) => {
       const f = world.fault || {};
       if (f.remoteDelayMs) await new Promise((r) => setTimeout(r, f.remoteDelayMs));
@@ -6386,6 +6483,280 @@ await step('download-selection', async () => {
   await ok('Ctrl+D downloads through DownloadRefs', c && c.args[0] === 'team-files'
     && c.args[1]?.[0]?.key === 'readme.md' && /Downloads$/.test(c.args[2] || ''));
   await shot('download');
+});
+
+await step('size-bar', async () => {
+  // The content viewer's bottom bar (#grid-status): real recursive
+  // sizes of the listing or the selection on every source type — S3
+  // objects (versioned / suspended / plain), the buckets view (single
+  // source only), remote engines — plus the busy, error-fallback,
+  // stale-drop, cache and geometry contracts. Every number is pinned
+  // byte-exact against the world fixtures.
+  const barTxt = () => txt('#grid-status');
+  const barHas = (s) => waitFor(async () => (await barTxt()).includes(s), 5000, 'bar shows "' + s + '"')
+    .catch(async (e) => {
+      throw new Error(`${e.message} — bar: "${await barTxt()}" · selection: "${await txt('#status-selection')}"`);
+    });
+  const ctrlClick = async (label) => {
+    const h = await gridRow(label);
+    if (!h) throw new Error("no grid row \"" + label + "\"");
+    await h.asElement().click({ position: await rowClickPoint(h), modifiers: ['Control'] });
+  };
+
+  // 1. versioned whole listing (team-files, nothing selected): 10 live
+  //    files = 227861215 B, 4 folders, old versions 1100+900+400 = 2400 B
+  //    over 17 versions (10 files + 4 folder markers + 3 old), 1 marker
+  await navObjectsOf('hetzner', 'team-files');
+  await barHas('217 MB');
+  const t1 = await barTxt();
+  await ok('versioned whole: files/folders/bytes + version split',
+    t1 === '10 file(s), 4 folder(s), 217 MB — old versions: 2.3 KB (17 version(s), 1 marker(s))');
+  await shot('sizebar-versioned');
+
+  // 2. folder selection docs/: everything inside — its own marker is the
+  //    folder, not content (900 + 53248 + 10, notes.md old 400)
+  await ctrlClick('docs');
+  await barHas('52.9 KB');
+  const t2 = await barTxt();
+  await ok('folder selection walks the whole interior',
+    t2 === '1 selected — 3 file(s), 1 folder(s), 52.9 KB — old versions: 400 B (5 version(s), 0 marker(s))');
+
+  // 3. mixed multi-select adds a file child (readme.md: 1234 + 2000 old)
+  await ctrlClick('readme.md');
+  await barHas('54.1 KB');
+  const t3 = await barTxt();
+  await ok('mixed folder+file selection sums both walks',
+    t3 === '2 selected — 4 file(s), 1 folder(s), 54.1 KB — old versions: 2.3 KB (8 version(s), 1 marker(s))');
+
+  // 4. file selections: a history-less file first (no version part),
+  //    then the versioned readme.md — the exact key timeline. Both are
+  //    plain clicks on UNselected rows: a plain click on a row already
+  //    in the selection is a no-op, so scan.png is what replaces it.
+  await clickRow('scan.png');
+  await barHas('200 KB');
+  const t4 = await barTxt();
+  await ok('plain file selection: no version part',
+    t4 === '1 selected — 1 file(s), 200 KB');
+  await clickRow('readme.md');
+  await barHas('1.2 KB');
+  const t4b = await barTxt();
+  await ok('file selection walks the exact key timeline',
+    t4b === '1 selected — 1 file(s), 1.2 KB — old versions: 2.0 KB (3 version(s), 1 marker(s))');
+
+  // 5. cache: a re-selected row never walks again. A cold cache is
+  //    not observable here — earlier battery steps already ran this
+  //    bar and warmed the bucket — so invalidate bucket-scoped
+  //    first (exactly what a delete in this bucket does), let the
+  //    still-selected row re-walk, and count from there: one walk
+  //    for budget, zero more for the then-cached children
+  await evalPage(() => window.__shim.emit('s3:changed', { bucket: 'team-files' }));
+  await waitFor(async () => (await calls()).some((c) => c.m === 'S3Usage'
+    && (c.args[2] || []).includes('readme.md')), 6000, 'invalidated selection re-walks');
+  await resetCalls();
+  await clickRow('budget-2026.xlsx');
+  await barHas('47.1 KB');
+  await clickRow('readme.md');
+  await barHas('1.2 KB');
+  await clickRow('budget-2026.xlsx');
+  await barHas('47.1 KB');
+  const usageCalls = async () => (await calls()).filter((c) => c.m === 'S3Usage');
+  await ok('cached children answer without a second walk',
+    (await usageCalls()).filter((c) => (c.args[2] || []).includes('budget-2026.xlsx')).length === 1
+    && (await usageCalls()).filter((c) => (c.args[2] || []).includes('readme.md')).length === 0);
+
+  // 6. never-versioned bucket (no guard): no version part at all
+  await navObjectsOf('hetzner', 'media-assets');
+  await barHas('8.0 KB');
+  const t6 = await barTxt();
+  await ok('unversioned bucket: no version part',
+    t6 === '1 file(s), 1 folder(s), 8.0 KB');
+
+  // 7. suspended bucket: the enabled-era history still counts
+  await navObjectsOf('hetzner', 'logs-2026');
+  await barHas('19.5 MB');
+  const t7 = await barTxt();
+  await ok('suspended bucket: old versions priced in',
+    t7 === '2 file(s), 1 folder(s), 19.5 MB — old versions: 4.8 MB (4 version(s), 0 marker(s))');
+
+  // 8. empty bucket: zero is information too
+  await clickTree('archive-cold');
+  await waitFor(async () => (await barTxt()) === '0 B', 5000, 'empty bucket bar');
+  await ok('empty bucket reads an exact 0 B', (await barTxt()) === '0 B');
+
+  // 9. buckets view root: the SOURCE total — the four buckets of the
+  //    browsed source only, never an aggregate across data sources
+  await resetCalls();
+  await clickTree('hetzner');
+  await barHas('4 bucket(s)');
+  // this step already passed through the buckets view on its way
+  // into team-files, so the four whole-bucket walks answer from
+  // cache here. Invalidate the way a cross-bucket mass delete
+  // would — a per-bucket s3:changed — and the re-walk must ask for
+  // exactly this source's buckets
+  await evalPage(() => ['archive-cold', 'logs-2026', 'media-assets', 'team-files']
+    .forEach((b) => window.__shim.emit('s3:changed', { bucket: b })));
+  // a silent refresh keeps the bar's previous text on screen, so a
+  // text wait here would pass off the pre-invalidation paint — the
+  // re-walk is observed on the wire: the debounced bar run must ask
+  // for exactly this source's buckets again
+  await waitFor(async () => {
+    const asked = new Set((await calls())
+      .filter((c) => c.m === 'BucketUsage')
+      .flatMap((c) => c.args[0] || []));
+    return asked.size === 4;
+  }, 6000, 'invalidated buckets re-walk');
+  // the SET of bucket names asked for is the contract (single
+  // source, all of its buckets, never another source's); the order
+  // is whatever the grid is sorted by
+  const names = new Set((await calls())
+    .filter((c) => c.m === 'BucketUsage')
+    .flatMap((c) => c.args[0] || []));
+  await ok('buckets bar walks only the browsed source bucket list',
+    names.size === 4 && [...names].sort().join() === 'archive-cold,logs-2026,media-assets,team-files');
+  const t9exp = '4 bucket(s) — 13 file(s), 6 folder(s), 237 MB — old versions: 4.8 MB (23 version(s), 1 marker(s))';
+  await waitFor(async () => (await barTxt()) === t9exp, 6000, 're-walked source total paints');
+  await ok('buckets root: the single-source recursive total', (await barTxt()) === t9exp);
+
+  // 10. one bucket selected at the root: that bucket alone
+  await clickRow('team-files');
+  await barHas('1 selected — 10 file(s)');
+  const t10 = await barTxt();
+  await ok('bucket selection narrows to that bucket',
+    t10 === '1 selected — 10 file(s), 4 folder(s), 217 MB — old versions: 2.3 KB (17 version(s), 1 marker(s))');
+
+  // 11. remote SFTP: whole listing, then one folder child. Earlier
+  //     battery steps deleted /upload/ and created files in this
+  //     source; restore the pristine rows so the exact totals below
+  //     are the contract (the battery's direct world-write idiom)
+  await evalPage(() => {
+    window.__shim.world.remote['backup-box'] = [
+      { key: '/docs/', isDir: true },
+      { key: '/upload/', isDir: true },
+      { key: '/backup.sh', size: 4096 },
+      { key: '/db.dump', size: 52428800 },
+      { key: '/docs/inventory.csv', size: 2048 },
+    ];
+  });
+  await clickTree('backup-box');
+  await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box listing');
+  await barHas('50.0 MB');
+  const t11 = await barTxt();
+  await ok('sftp whole listing: real recursive size',
+    t11 === '3 file(s), 2 folder(s), 50.0 MB');
+  await clickRow('docs');
+  await barHas('2.0 KB');
+  const t11b = await barTxt();
+  await ok('sftp folder selection walks the interior',
+    t11b === '1 selected — 1 file(s), 2.0 KB');
+  await shot('sizebar-remote');
+
+  // 12. remote WebDAV: a file child is stated, not walked
+  await clickTree('dav-claims');
+  await waitFor(async () => (await rowKeys()).includes('/claim-2026-08.pdf'), 6000, 'dav-claims listing');
+  await clickRow('claim-2026-08.pdf');
+  await barHas('89.0 KB');
+  const t12 = await barTxt();
+  await ok('webdav file selection states the file',
+    t12 === '1 selected — 1 file(s), 89.0 KB');
+
+  // 13. busy state: a slow walk shows calculating…, then the answer
+  await evalPage(() => { window.__shim.world.fault = { usageDelayMs: 900 }; });
+  await navObjectsOf('hetzner', 'team-files');
+  await dblClickRow('photos');
+  await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('/img-001.jpg')), 6000, 'photos listing');
+  let sawBusy = false;
+  await waitFor(async () => {
+    sawBusy = sawBusy || ((await evalPage(() => document.getElementById('grid-status').classList.contains('busy')))
+      && (await barTxt()).includes('calculating…'));
+    return sawBusy;
+  }, 5000, 'busy placeholder');
+  await ok('slow walk paints the busy placeholder', sawBusy);
+  await barHas('3.0 MB');
+  await ok('the answer replaces the placeholder',
+    (await barTxt()) === '2 file(s), 3.0 MB');
+  await evalPage(() => { window.__shim.world.fault = null; });
+
+  // 14. error state: fallback level sums, partial stated, error in title
+  await evalPage(() => { window.__shim.world.fault = { usageError: 'usage walk failed' }; });
+  await navObjectsOf('hetzner', 'team-files');
+  await dblClickRow('reports');
+  await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('/q4-summary.pdf')), 6000, 'reports listing');
+  await barHas('partial');
+  const t14 = await barTxt();
+  const err14 = await evalPage(() => document.getElementById('grid-status').title || '');
+  await ok('failed walk falls back to level sums, says so, carries the error',
+    t14 === '1 file(s), 11.5 KB — partial — at least this much'
+    && err14.includes('usage walk failed'));
+  await shot('sizebar-error');
+  await evalPage(() => { window.__shim.world.fault = null; });
+
+  // 15. stale drop: a walk resolved after navigating away never paints
+  //     (docs/ whole would read 52.9 KB — it must never appear)
+  await navObjectsOf('hetzner', 'team-files');
+  await evalPage(() => { window.__shim.world.fault = { usageDelayMs: 800 }; });
+  await dblClickRow('docs');
+  await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('/notes.md')), 6000, 'docs listing');
+  await sleep(350); // the delayed walk is in flight
+  await navObjectsOf('hetzner', 'team-files'); // away: seq ages the walk out
+  await sleep(600); // the stale result lands here — and is dropped
+  await ok('stale walk never paints', !(await barTxt()).includes('52.9 KB'));
+  await barHas('217 MB'); // the fresh view's own (delayed) walk paints
+  await ok('the current view paints its own numbers',
+    (await barTxt()).includes('217 MB') && !(await barTxt()).includes('52.9 KB'));
+  await evalPage(() => { window.__shim.world.fault = null; });
+
+  // 16. geometry: the bar spans the content area only — right of the
+  //     sidebar, ending at the window edge; with the side pane open it
+  //     ends at the pane boundary (never full window width). Earlier
+  //     steps may have left the pane open — settle a closed baseline
+  //     first so both measurements mean what they say
+  await evalPage(() => {
+    const p = document.getElementById('local-pane');
+    if (!p.classList.contains('hidden')) document.getElementById('btn-panes').click();
+  });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed baseline');
+  const geo1 = await evalPage(() => {
+    const bar = document.getElementById('grid-status').getBoundingClientRect();
+    const wrap = document.getElementById('grid-wrap').getBoundingClientRect();
+    const side = document.getElementById('sidebar').getBoundingClientRect();
+    return { bl: bar.left, br: bar.right, bb: bar.bottom, wl: wrap.left, wr: wrap.right, wb: wrap.bottom, sr: side.right, vw: innerWidth };
+  });
+  await ok('bar bottom-aligns with the content area, right of the sidebar',
+    Math.abs(geo1.br - geo1.wr) < 2 && Math.abs(geo1.bl - geo1.wl) < 2 && geo1.wl > geo1.sr - 2
+    && geo1.br > geo1.vw - 40 && Math.abs(geo1.bb - geo1.wb) < 2);
+  await page.click('#btn-panes');
+  await waitFor(() => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane open');
+  const geo2 = await evalPage(() => {
+    const bar = document.getElementById('grid-status').getBoundingClientRect();
+    const wrap = document.getElementById('grid-wrap').getBoundingClientRect();
+    const pane = document.getElementById('local-pane').getBoundingClientRect();
+    return { br: bar.right, wr: wrap.right, pl: pane.left, pr: pane.right, vw: innerWidth };
+  });
+  await ok('with the pane open the bar ends at the pane boundary',
+    Math.abs(geo2.br - geo2.wr) < 2 && Math.abs(geo2.wr - geo2.pl) < 2
+    && geo2.pr > geo2.vw - 40);
+  await page.click('#btn-panes'); // close: later steps expect a single pane
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed');
+
+  // 17. localized bar: a second page booted in Finnish (the main page
+  //     keeps its state; the shim keep-lang escape hatch preserves the
+  //     choice through that boot only)
+  await evalPage(() => {
+    localStorage.setItem('s3b-lang', 'fi');
+    localStorage.setItem('s3b-shim-keep-lang', '1');
+  });
+  const p8 = await context.newPage();
+  p8.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await p8.addInitScript(shim);
+  await p8.goto(BASE);
+  await p8.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await p8.waitForFunction(() => /bucketia/.test(document.getElementById('grid-status')?.textContent || ''), null, { timeout: 8000 });
+  const fi = await p8.evaluate(() => document.getElementById('grid-status')?.textContent || '');
+  await ok('Finnish bar: localized counts and version part',
+    fi.includes('4 bucketia') && fi.includes('tiedosto(a)') && fi.includes('kansio(ta)')
+    && fi.includes('vanhat versiot:') && fi.includes('poistomerkintää'));
+  await p8.close();
+  await evalPage(() => localStorage.setItem('s3b-lang', 'en'));
 });
 
 await step('shortcut-keys', async () => {

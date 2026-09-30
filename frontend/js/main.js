@@ -538,6 +538,7 @@ async function loadView(loc, { silent = false } = {}) {
   // clobber the one the user actually opened (the classic A→B race).
   const seq = ++viewSeq;
   if (!silent) grid.clearSelection();
+  if (!silent) resetSizeBar(); // clean bar; previous view's walk is stale
   updateNavButtons();
   if (!silent) renderBreadcrumb();
   tree.markCurrent(loc);
@@ -582,6 +583,7 @@ async function loadView(loc, { silent = false } = {}) {
     } else if (loc.kind === 'remote') {
       // sftp/scp/ftp/ftps/webdav/local source browsed through its remotefs
       // engine; rows carry the same shape as S3 listings
+      usageDropPrefix(`${loc.source}|`);
       const entries = await api.RemoteList(loc.source, loc.path || '/');
       if (seq !== viewSeq) return; // superseded — drop the stale rows
       landed = true;
@@ -4093,7 +4095,13 @@ function wireEvents() {
   onEvent('s3:changed', (data) => {
     const loc = nav.current;
     if (!loc) return;
-    if (loc.kind === 'buckets' || data?.bucket === loc.bucket) refreshCurrent(true);
+    if (loc.kind === 'buckets' || data?.bucket === loc.bucket) {
+      // the size bar's cached walks of that bucket (object children and
+      // the buckets view's whole-bucket stat) are stale now
+      usageDropPrefix(`${viewSource}|${data?.bucket}|`);
+      usageDropPrefix(`${viewSource}||${data?.bucket}`);
+      refreshCurrent(true);
+    }
   });
   onEvent('transfer:update', (j) => {
     showTransfersBadge();
@@ -4208,20 +4216,225 @@ function updateStatus() {
   const total = grid.rows.length;
   let text;
   if (sel) {
-    // Selection summary bar (M10.3): count, folders/files, total size.
+    // Selection count summary. Sizes live one floor down, in the
+    // content size bar, where they are real recursive totals — this
+    // footer's old byte part summed level files only, which was a
+    // number that read as a total without being one.
     const folders = selRows.filter((r) => r.isDir).length;
     const files = sel - folders;
-    const bytes = selRows.reduce((s, r) => s + (!r.isDir ? (r.size || 0) : 0), 0);
     const parts = [];
     if (folders) parts.push(`${folders} folder(s)`);
     if (files) parts.push(`${files} file(s)`);
-    if (bytes > 0) parts.push(fmtBytes(bytes));
     text = `${sel} of ${total} ${t('items')} ${t('selected')}${parts.length ? ` \u2014 ${parts.join(', ')}` : ''}`;
   } else {
     text = `${total} ${total === 1 ? t('item') : t('items')}`;
   }
   $('status-selection').textContent = text;
   updateCommandState();
+  scheduleSizeBar(); // same moments as the footer: selection, pages, done
+}
+
+// ====================== content size bar ======================
+// The content viewer's bottom bar (WinSCP-style): the real recursive
+// size of everything listed, or of the selection — folders always
+// count their whole interior — for the ONE source being browsed,
+// never an aggregate across data sources. On versioned S3 buckets the
+// old versions and delete markers are summed next to the live
+// content, so the bar also shows what the history really costs.
+// Walks are Properties-dialog-class backend calls (quickCtx-bounded),
+// cached per source|bucket|key, invalidated by s3:changed and source
+// switches; stale walks never paint (sizeBarSeq).
+
+const usageCache = new Map(); // cacheKey -> UsageStat (FIFO-bounded)
+const usageInflight = new Map(); // cacheKey -> whole-listing walk in flight
+const USAGE_CACHE_MAX = 200;
+const USAGE_WHOLE = '\u0000'; // whole-listing key suffix — no key can contain NUL
+let sizeBarSeq = 0;
+
+function usageCacheKey(loc, key) {
+  if (loc.kind === 'remote') return `${loc.source}|${loc.path || '/'}|${key}`;
+  return `${viewSource}|${loc.bucket || ''}|${key}`;
+}
+
+function usageCachePut(key, stat) {
+  if (usageCache.size >= USAGE_CACHE_MAX) usageCache.delete(usageCache.keys().next().value);
+  usageCache.delete(key); // re-insertion refreshes the FIFO position
+  usageCache.set(key, stat);
+}
+
+// usageDropPrefix forgets every cached walk under one key prefix (the
+// s3:changed invalidation is bucket-scoped; remote views drop the
+// whole source, having no mutation events to be narrower).
+function usageDropPrefix(prefix) {
+  for (const k of [...usageCache.keys()]) {
+    if (k.startsWith(prefix)) usageCache.delete(k);
+  }
+}
+
+// resetSizeBar blanks the bar and ages out every in-flight walk: a
+// fresh navigation must never paint the previous view's numbers.
+function resetSizeBar() {
+  sizeBarSeq++;
+  usageInflight.clear();
+  const bar = $('grid-status');
+  if (bar) {
+    bar.textContent = '';
+    bar.className = 'grid-status';
+    bar.removeAttribute('title');
+  }
+}
+
+const scheduleSizeBar = debounce(runSizeBar, 200);
+
+function sumUsage(stats) {
+  const tot = {
+    files: 0, dirs: 0, currentBytes: 0,
+    versionBytes: 0, versionCount: 0, markerCount: 0,
+    partial: false, error: '',
+  };
+  for (const s of stats) {
+    if (!s) continue;
+    tot.files += s.files || 0;
+    tot.dirs += s.dirs || 0;
+    tot.currentBytes += s.currentBytes || 0;
+    tot.versionBytes += s.versionBytes || 0;
+    tot.versionCount += s.versionCount || 0;
+    tot.markerCount += s.markerCount || 0;
+    if (s.partial) tot.partial = true;
+    if (s.error && !tot.error) tot.error = s.error;
+  }
+  return tot;
+}
+
+function sizeBarText(head, tot) {
+  const parts = [];
+  if (tot.files) parts.push(t('sizeBar.files', { n: tot.files }));
+  if (tot.dirs) parts.push(t('sizeBar.folders', { n: tot.dirs }));
+  parts.push(fmtBytes(tot.currentBytes)); // "0 B" is information too
+  let text = `${head ? `${head} — ` : ''}${parts.join(', ')}`;
+  if (tot.versionBytes > 0 || tot.markerCount > 0) {
+    text += tot.versionBytes > 0
+      ? ` — ${t('sizeBar.oldVersions', { size: fmtBytes(tot.versionBytes), n: tot.versionCount, m: tot.markerCount })}`
+      : ` — ${t('sizeBar.markers', { m: tot.markerCount })}`;
+  }
+  if (tot.partial) text += ` — ${t('sizeBar.partial')}`;
+  return text;
+}
+
+function paintSizeBar(tot, { head = '', busy = false, error = '' } = {}) {
+  const bar = $('grid-status');
+  if (!bar) return;
+  if (!tot) {
+    bar.textContent = t('sizeBar.calculating');
+  } else {
+    bar.textContent = sizeBarText(head, tot);
+    if (error || tot.error) bar.title = String(error || tot.error);
+    else bar.removeAttribute('title');
+  }
+  bar.classList.toggle('busy', busy);
+}
+
+// sizeBarFallback: the honest floor when the real walk failed — plain
+// level sums off the rows (folder interiors unknown), error carried in
+// the title, partial stated in the text.
+function sizeBarFallback(selRows) {
+  const rows = selRows.length ? selRows : grid.rows;
+  const tot = {
+    files: 0, dirs: 0, currentBytes: 0,
+    versionBytes: 0, versionCount: 0, markerCount: 0,
+    partial: true, error: '',
+  };
+  for (const r of rows) {
+    if (r.isDir) tot.dirs++;
+    else { tot.files++; tot.currentBytes += r.size || 0; }
+  }
+  return tot;
+}
+
+// usageOf resolves an item list cache-first; every uncached key goes
+// through ONE backend call (fetchMissing receives the raw identifiers
+// and answers stats in that order).
+async function usageOf(loc, items, fetchMissing) {
+  const stats = [];
+  const missing = [];
+  for (const it of items) {
+    const hit = usageCache.get(it.ck);
+    if (hit) stats.push(hit);
+    else missing.push(it);
+  }
+  if (!missing.length) return stats;
+  paintSizeBar(null, { busy: true }); // a walk is starting — say so
+  const got = await fetchMissing(missing.map((m) => m.key)) || [];
+  missing.forEach((m, i) => { if (got[i]) usageCachePut(m.ck, got[i]); });
+  stats.push(...got);
+  return stats;
+}
+
+// usageWhole resolves the whole-listing stat: cached, or one walk. A
+// walk already in flight is AWAITED, not restarted: every caller rides
+// the same promise, so the freshest caller — the one whose seq still
+// matches — paints the shared result. (A null-answer dedupe would
+// strand the bar on "calculating…" whenever the listing paged while
+// the walk ran: the fresh caller would paint the placeholder, the
+// original caller's seq would go stale, and nobody would paint.)
+async function usageWhole(loc, fetch) {
+  const ck = usageCacheKey(loc, (loc.kind === 'objects' ? loc.prefix || '' : '') + USAGE_WHOLE);
+  const hit = usageCache.get(ck);
+  if (hit) return [hit];
+  paintSizeBar(null, { busy: true }); // the walk is starting/joined
+  const pending = usageInflight.get(ck);
+  if (pending) return [await pending];
+  const p = (async () => {
+    const got = await fetch();
+    if (got?.[0]) usageCachePut(ck, got[0]);
+    return got?.[0] || null;
+  })();
+  usageInflight.set(ck, p);
+  try {
+    return [await p];
+  } finally {
+    usageInflight.delete(ck);
+  }
+}
+
+async function runSizeBar() {
+  const loc = nav.current;
+  const bar = $('grid-status');
+  if (!loc || !bar) return;
+  const seq = ++sizeBarSeq;
+  const selRows = grid.selectedRows();
+  const sel = selRows.length > 0;
+  let head = '';
+  try {
+    if (loc.kind === 'objects') {
+      head = sel ? t('sizeBar.selected', { n: selRows.length }) : '';
+      const items = selRows.map((r) => ({ key: r.key, ck: usageCacheKey(loc, r.key) }));
+      const stats = sel
+        ? await usageOf(loc, items, (keys) => api.S3Usage(loc.bucket, loc.prefix || '', keys))
+        : await usageWhole(loc, () => api.S3Usage(loc.bucket, loc.prefix || '', []));
+      if (seq !== sizeBarSeq) return; // the view moved on
+      paintSizeBar(sumUsage(stats), { head });
+    } else if (loc.kind === 'buckets') {
+      // never cross-source: only this source's buckets, from the rows
+      const names = (sel ? selRows : grid.rows).map((r) => r.key);
+      head = sel ? t('sizeBar.selected', { n: selRows.length }) : t('sizeBar.buckets', { n: names.length });
+      const items = names.map((nm) => ({ key: nm, ck: usageCacheKey(loc, nm) }));
+      const stats = await usageOf(loc, items, (keys) => api.BucketUsage(keys));
+      if (seq !== sizeBarSeq) return;
+      paintSizeBar(sumUsage(stats), { head });
+    } else if (loc.kind === 'remote') {
+      head = sel ? t('sizeBar.selected', { n: selRows.length }) : '';
+      const items = selRows.map((r) => ({ key: r.key, ck: usageCacheKey(loc, r.key) }));
+      const stats = sel
+        ? await usageOf(loc, items, (keys) => api.RemoteUsage(loc.source, loc.path || '/', keys))
+        : await usageWhole(loc, () => api.RemoteUsage(loc.source, loc.path || '/', []));
+      if (seq !== sizeBarSeq) return;
+      paintSizeBar(sumUsage(stats), { head });
+    }
+  } catch (err) {
+    if (seq !== sizeBarSeq) return;
+    paintSizeBar(sizeBarFallback(selRows), { head, error: err });
+  }
 }
 
 function showEmpty(title, sub, actions = []) {

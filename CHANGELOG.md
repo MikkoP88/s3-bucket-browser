@@ -8,6 +8,23 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Content size bar: the real recursive size, every source type,
+  version-aware.** The content viewer gains a WinSCP-style bottom
+  bar: with nothing selected it shows the real recursive size of
+  everything listed; with a selection, the recursive size of the
+  selected items — folders always count their whole interior. It
+  works on every source type the viewer hosts (bucket lists, S3
+  folders — versioned, suspended or plain — and every remote engine),
+  always for the single source being browsed, never across data
+  sources. Versioned buckets additionally price the history in:
+  noncurrent version bytes and delete-marker counts next to the live
+  content. Walks run in the background (a busy placeholder while
+  calculating, cached per folder, stale results never paint) and a
+  failed walk degrades honestly to listing-level sums marked
+  *partial* with the error on hover. The footer's old byte count —
+  a non-recursive level sum that read like a total — is gone (its
+  counts stay).
+
 - **Grid columns: resize, reorder and two new data columns.** Drag a
   header edge to resize and the header itself to reorder — widths and
   order persist per pane. The dragged edge follows the pointer

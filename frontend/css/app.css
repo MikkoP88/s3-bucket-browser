@@ -865,6 +865,19 @@ kbd {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Content size bar (main viewer bottom, WinSCP-style): the lp-status
+   recipe scoped to #grid-wrap — the content area only, never the
+   window width. :empty keeps it out of the layout until it has
+   something to say. */
+.grid-status {
+  padding: 3px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.grid-status.busy { opacity: .6; }
+.grid-status:empty { display: none; }
+
 /* Directory-compare decorations (data-cmp from CompareDir) */
 .grid-row[data-cmp="same"], .grid-row[data-cmp="same-sub"] { color: var(--text-dim); }
 .grid-row:not(.sel):not(.focus)[data-cmp="diff-below"],
