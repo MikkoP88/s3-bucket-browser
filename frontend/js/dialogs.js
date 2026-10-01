@@ -3741,7 +3741,7 @@ export function searchWindow(opts = {}) {
   }
   if (maybeNativePopout({
     id: 'search', query: q, title: t('findTitle'),
-    w: 660, h: 600, minW: 520, minH: 460,
+    w: 760, h: 600, minW: 520, minH: 460,
     domOpen: () => searchWindowDom(scopes, sel, opts.onOpen),
   })) {
     return { close: () => api.ClosePopout('search') };
@@ -3942,13 +3942,11 @@ function searchWindowDom(scopes, selIdx, onOpen) {
   });
 
   // addPage streams one results page in: rows land in arrival order (or
-  // the chosen sort), and the list follows the tail only while the user
-  // already sits near it — an inspection scroll is never yanked away
+  // the chosen sort). The viewport never moves itself — the status line
+  // counts the stream and scrolling stays the user's own act
   function addPage(entries) {
-    const stick = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
     hits.push(...entries);
     renderRows();
-    if (stick) body.scrollTop = body.scrollHeight;
   }
 
   function openHit(r) {

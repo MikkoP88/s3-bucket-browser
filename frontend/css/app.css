@@ -701,10 +701,11 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
   animation: modal-in .14s ease-out;
 }
 .popout.wide { width: 720px; }
-/* the Search window rides slightly wider than the shared wide tier —
-   its results table breathes (WinSCP's Find dialog is the roomiest of
-   the set); the native window path opens at a matching default */
-.popout[data-pop="search"] { width: 760px; }
+/* the Search window rides wider than the shared wide tier — its
+   four-column results table breathes (WinSCP's Find dialog is the
+   roomiest of the set); the native window path opens at a matching
+   default */
+.popout[data-pop="search"] { width: 860px; }
 /* Auto-height monitoring windows (File transfers, Running tasks): the
    Windows file-transfer footprint — a 490px default width that is also
    the floor (the user may never shrink below it; neither tier ever
@@ -1065,8 +1066,13 @@ kbd {
 .sr-results {
   flex: 1; min-height: 220px; min-width: 0; position: relative;
   display: flex; flex-direction: column;
-  border-top: 1px solid var(--border); background: var(--panel);
-  padding: 0 16px;
+  /* the app's standard content-panel frame — the same hairline the
+     local pane and the bordered panels wear — seated at the form's
+     own side inset; head band, rows and status bar run full-bleed
+     inside it */
+  margin: 0 16px 12px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--panel);
 }
 /* the main grid seats rows absolutely for its virtualizer; here they
    flow — same cells, same hairlines, no pool */
@@ -1077,10 +1083,9 @@ kbd {
    to the window — it anchors below the header row like the main one */
 .sr-results .empty-state { justify-content: flex-start; padding-top: 48px; }
 .sr-results .empty-icon { width: 34px; opacity: .75; }
-/* full-bleed vertically: the popout body is one pane — the form pads
-   itself and the results own the seam to the footer; the results pad
-   their sides to the form's own 16px, so the Name row, the columns and
-   the status bar all share one edge */
+/* full-bleed body: the popout is one pane — the form pads itself and
+   the framed results panel seats at the form's side inset, breathing
+   above the footer */
 .popout[data-pop="search"] .modal-body { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
 /* ================= Content Versions window ================= */
 /* The header is a one-line version count (same format as the Delete

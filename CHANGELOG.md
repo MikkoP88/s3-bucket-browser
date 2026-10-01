@@ -147,13 +147,15 @@ follow [Semantic Versioning](https://semver.org/).
   *More filters* chip that counts the active filters, every one of
   them working the same across S3 and remote sources (storage
   class never could, so it left the window — the CLI keeps
-  --class). The window rides its own slightly-wider tier and the
-  results wear the main view's own content-area chrome — the same
-  column header, hairline rows and bottom bar — inset to the form's
-  side padding, with type-matched icons, a click-to-sort header
+  --class). The window rides its own wide tier and the results wear
+  the main view's own content-area chrome — the same column header,
+  hairline rows and bottom bar — framed as a content panel by the
+  app's standard hairline border at the form's side inset, with
+  type-matched icons, a click-to-sort header
   (ascending, then descending) and a **Source** column that appears
   only when the run spans origins, parked last on the row; only the
-  results scroll; **Clear** resets the form and results stay
+  results scroll — streaming pages land without ever auto-scrolling
+  the view; **Clear** resets the form and results stay
   cancelable; clicking a hit navigates to the object and selects it
   (a hit clicked in a native popout window relays through the main
   window). The CLI gains the same filters: `s3b find

@@ -3637,21 +3637,25 @@ await step('search-window', async () => {
     && !!document.querySelector('#popout-root .popout[data-pop="search"]')));
   const S = '#popout-root .popout[data-pop="search"]';
   await sleep(250); // let the entrance animation settle before measuring
-  await ok('search rides its own slightly-wider 760 tier', evalPage((s) =>
-    Math.abs(document.querySelector(s).getBoundingClientRect().width - 760) <= 1, S));
-  await ok('results inset to the form: columns and status share the Name row edges', evalPage((s) => {
+  await ok('search rides its own wider 860 tier', evalPage((s) =>
+    Math.abs(document.querySelector(s).getBoundingClientRect().width - 860) <= 1, S));
+  await ok('results framed as a content panel at the form\'s side inset', evalPage((s) => {
     const pop = document.querySelector(s);
     const row = pop.querySelector('.sr-row').getBoundingClientRect();
+    const res = pop.querySelector('.sr-results');
+    const rs = getComputedStyle(res);
     const head = pop.querySelector('.grid-headclip').getBoundingClientRect();
     const list = pop.querySelector('.sr-list').getBoundingClientRect();
-    const pf = getComputedStyle(pop.querySelector('.sr-form')).paddingLeft;
-    const res = pop.querySelector('.sr-results');
-    const pr = getComputedStyle(res).paddingLeft;
-    return pf === pr && pf === '16px'
-      && Math.abs(row.left - head.left) <= .5 && Math.abs(row.right - head.right) <= .5
-      && Math.abs(row.left - list.left) <= .5 && Math.abs(row.right - list.right) <= .5
-      // the status bar rides the same padded box — hidden while empty
-      // (:empty), so its edge is pinned through the box it will fill
+    // the frame seats exactly at the form's side inset and wears the
+    // app's standard hairline; head band, rows and status bar run
+    // full-bleed inside it — one shared edge from band to bar (the
+    // bar hides while empty, so its edge is pinned through its parent)
+    return rs.marginLeft === '16px' && rs.marginRight === '16px'
+      && getComputedStyle(pop.querySelector('.sr-form')).paddingLeft === '16px'
+      && rs.borderLeftWidth === '1px' && rs.borderLeftStyle === 'solid'
+      && Math.abs(res.getBoundingClientRect().left - row.left) <= 1
+      && Math.abs(res.getBoundingClientRect().right - row.right) <= 1
+      && Math.abs(head.left - list.left) <= .5 && Math.abs(head.right - list.right) <= .5
       && pop.querySelector('.sr-status').parentElement === res;
   }, S));
   await ok('toolbar tooltip renamed', evalPage(() =>
@@ -3735,6 +3739,15 @@ await step('search-window', async () => {
   }, S));
   await ok('done stats count the sources searched', waitFor(() => evalPage((s) =>
     /in 5 source\(s\)/.test(document.querySelector(s + ' .sr-status').textContent), S), 4000, 'done stats'));
+
+  // streaming never moves the viewport: a broad run overflows the list
+  // and the scroll position stays exactly where the user left it
+  await runSearch('*');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 12, S), 4000, 'broad results');
+  await ok('pages land without auto-scrolling — the viewport stays put', evalPage((s) => {
+    const list = document.querySelector(s + ' .sr-list');
+    return list.scrollHeight > list.clientHeight && list.scrollTop === 0;
+  }, S));
 
   // remote engines are in "all" too: a remote hit opens the remote view
   await runSearch('*.csv');

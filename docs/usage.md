@@ -220,9 +220,9 @@ directory compare) with S3 and the local pane.
   menu — the menu presets the scope): WinSCP's Find window,
   modernized — a filter form pinned on top, and below it a results
   area wearing the app's own content-area chrome: the same column
-  header, hairline rows and bottom bar as the main view, inset to the
-  form's side padding so the input, the columns and the status bar
-  share one edge. **Name**
+  header, hairline rows and bottom bar as the main view, framed as a
+  content panel by the app's standard hairline border, seated at the
+  form's side inset. **Name**
   and **Sources** sit side by side, always in view: Name is a
   substring or glob (Enter runs the search from any field),
   Sources is a flat list with no grouping — *All data sources*
