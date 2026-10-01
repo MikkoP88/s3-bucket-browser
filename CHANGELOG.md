@@ -100,6 +100,18 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **A parent-directory strip ("..") pinned at the top of the content
+  area.** Every content view — buckets, S3 folders, remote sources —
+  gains the WinSCP-style one-click climb to the directory above: the
+  strip rides above the column header, outside the grid, so it never
+  joins selection, counts, the size bar, sorting or filters; it stays
+  present over an empty folder, is greyed where nothing sits above it
+  (a source's top level) and hides only while an information panel owns
+  the area (loading skeleton, errors, first-run). The toolbar's Up
+  button is retired — Alt+↑ and Backspace still climb from the
+  keyboard — and back / forward wear proper arrow icons from the app's
+  icon family.
+
 - **Deep search is now Search — a real window across every data
   source.** The one-bucket modal becomes a floating Search window
   (Ctrl+Shift+F, the toolbar button, View → Search) with the same

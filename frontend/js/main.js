@@ -847,14 +847,16 @@ async function loadView(loc, { silent = false } = {}) {
       // always feed the tree — the legacy bucket level tracks the live
       // bucket set (created/deleted), even down to zero
       tree.refresh(src, buckets, loc);
-      $('btn-up').disabled = true;
+      setUpbar('greyed'); // a content view, but nothing above it
     } else if (loc.kind === 'objects') {
       await setViewSourceFor(loc);
       if (seq !== viewSeq) return;
       await loadObjectsStream(loc, silent);
       tree.reveal(loc).catch(() => {});
       localPane.syncTo(loc.prefix || '');
-      $('btn-up').disabled = false;
+      // no setUpbar here: stream.begin resolves at token registration,
+      // long before the first page on a slow source — the strip returns
+      // with the rows (loadObjectsStream's first-page leg below)
     } else if (loc.kind === 'remote') {
       // sftp/scp/ftp/ftps/webdav/local source browsed through its remotefs
       // engine; rows carry the same shape as S3 listings
@@ -875,7 +877,7 @@ async function loadView(loc, { silent = false } = {}) {
       }
       tree.reveal(loc).catch(() => {});
       tree.updateRemoteDir(loc.source, loc.path || '/', entries);
-      $('btn-up').disabled = !parentOf(loc);
+      setUpbar(parentOf(loc) ? 'on' : 'greyed');
     }
     if (landed) viewLandedHealthy(landedName);
   } catch (err) {
@@ -926,8 +928,10 @@ async function loadObjectsStream(loc, silent = false) {
       } else {
         // First data landed: the skeleton/loading overlay has done its
         // job — rows now tell the story (idempotent, so every page can
-        // call it without layout cost once hidden).
+        // call it without layout cost once hidden). The parent strip
+        // comes back with the rows, for the same reason.
         hideEmpty();
+        setUpbar('on');
         currentEntries.push(...p.entries);
         grid.appendRows(p.entries);
       }
@@ -1121,6 +1125,16 @@ function refreshCurrent(silent = false) {
 function updateNavButtons() {
   $('btn-back').disabled = !nav.canBack();
   $('btn-forward').disabled = !nav.canForward();
+}
+// setUpbar drives the parent strip (the WinSCP-style ".." at the top of the
+// content area): 'on' = one click climbs to parentOf(current), 'greyed' = a
+// content view with nothing above it (a source's top level), 'off' = an
+// information panel owns the area (loading, error, onboarding). The
+// has-upbar class also lowers the empty-state panel below the strip.
+function setUpbar(state) {
+  $('upbar').classList.toggle('hidden', state === 'off');
+  $('grid-wrap').classList.toggle('has-upbar', state !== 'off');
+  $('upbar').disabled = state === 'greyed';
 }
 
 function renderBreadcrumb() {
@@ -3621,7 +3635,9 @@ function startMarquee(e) {
 function wireToolbar() {
   $('btn-back').onclick = () => { if (nav.canBack()) nav.back(); };
   $('btn-forward').onclick = () => { if (nav.canForward()) nav.forwardGo(); };
-  $('btn-up').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
+  $('upbar').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
+  $('upbar').title = t('upParent');
+  $('upbar').setAttribute('aria-label', t('upParent'));
   // () => : a bare `onclick = refreshCurrent` would pass the MouseEvent in
   // as `silent` (truthy) — the button refresh would silently skip the
   // loading state and bury errors as stale-row toasts. Manual refresh is
@@ -4753,6 +4769,7 @@ function hideEmpty() {
 // navigation — the user must never see a blank panel (which reads as
 // "empty folder") while data is still arriving.
 function showLoading() {
+  setUpbar('off'); // the skeleton owns the area — nothing to climb from yet
   $('empty-title').textContent = t('loading');
   $('empty-sub').textContent = '';
   $('empty-actions').replaceChildren();
@@ -4765,6 +4782,7 @@ function showLoading() {
 // connection) AND connection failures (the source is not connected), and
 // one-click actions — Reconnect re-probes and heals, Retry re-lists.
 function showListError(err) {
+  setUpbar('off'); // the error panel owns the area
   const msg = String(err?.message ?? err);
   const timedOut = /timed?\s?[\s-]?out|timeout|deadline exceeded|context deadline/i.test(msg);
   const connErr = timedOut || isConnError(msg);

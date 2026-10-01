@@ -3,6 +3,7 @@
 
 :root {
   --row-h: 28px;
+  --upbar-h: 26px; /* the parent strip ("..") above the column header */
   --sidebar-w: 240px;
   --accent: #0b63ce;
   --accent-soft: rgba(11, 99, 206, .12);
@@ -71,7 +72,8 @@ body {
 
 /* Micro-transitions: one uniform, fast curve for every interactive surface. */
 .tb-btn, .btn, .crumb, .mb-title, .mb-item, .ctxmenu .item, .tab,
-.tnode, .fav-row, .side-add, .bd-row, .doc-row-top, .ver-row, .gh-filter {
+.tnode, .fav-row, .side-add, .bd-row, .doc-row-top, .ver-row, .gh-filter,
+.upbar {
   transition: background-color .1s ease, color .1s ease,
     border-color .1s ease, filter .1s ease, opacity .15s ease;
 }
@@ -109,6 +111,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .tb-btn:disabled { color: var(--text-dim); opacity: .5; cursor: default; }
 .tb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 .tb-spacer { flex: 1; }
+.tb-btn svg { display: block; }
+/* one canonical arrow glyph, three directions: forward mirrors it, the
+   parent strip rotates it into a climb */
+svg.flip { transform: scaleX(-1); }
+svg.rotup { transform: rotate(90deg); }
 
 /* ================= Menu bar ================= */
 .menubar {
@@ -388,6 +395,25 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 .gc.check input, .gh.check input { accent-color: var(--accent); cursor: pointer; }
 .grid-row.dragging { opacity: .4; }
 
+/* ================= Parent strip ================= */
+/* The WinSCP-style ".." pinned to the top of the content area — above the
+   column header, outside the grid. Present in every content view (even an
+   empty folder), greyed at a source's top level where nothing is above,
+   hidden while an information panel (loading, error, onboarding) owns the
+   area. */
+.upbar {
+  display: flex; align-items: center; gap: 7px;
+  width: 100%; height: var(--upbar-h); padding: 0 10px;
+  font: var(--font); color: var(--text); text-align: left;
+  background: var(--panel); border: none;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+.upbar:hover:not(:disabled) { background: var(--hover); }
+.upbar:disabled { color: var(--text-dim); opacity: .55; cursor: default; }
+.upbar svg { display: block; flex: none; }
+.upbar .up-label { font: var(--mono); }
+
 /* ================= Empty state ================= */
 .empty-state {
   position: absolute; inset: var(--row-h) 0 0 0;
@@ -395,6 +421,9 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
   gap: 8px; background: var(--panel); text-align: center; padding: 20px;
   animation: fade-in .18s ease-out;
 }
+/* The parent strip sits above the header: while it is shown, the absolute
+   panel anchors below strip + header instead of the header alone. */
+.grid-wrap.has-upbar .empty-state { inset: calc(var(--row-h) + var(--upbar-h)) 0 0 0; }
 .empty-icon { width: 46px; height: auto; opacity: .9; user-select: none; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .empty-title { font-size: 16px; font-weight: 600; }

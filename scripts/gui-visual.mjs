@@ -6931,6 +6931,9 @@ await step('drag-out-native', async () => {
 await step('toolbar-nav', async () => {
   // back/forward/up through BOTH the toolbar buttons and the Alt-key
   // shortcuts, plus F5 — the canonical file-manager navigation set
+  await ok('Up button retired from the toolbar', evalPage(() => !document.getElementById('btn-up')));
+  await ok('back/forward render arrow icons', evalPage(() =>
+    !!document.querySelector('#btn-back svg') && !!document.querySelector('#btn-forward svg')));
   await navObjectsOf('hetzner', 'team-files');
   await dblClickRow('docs');
   await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 6000, 'inside docs');
@@ -6949,6 +6952,89 @@ await step('toolbar-nav', async () => {
   await page.keyboard.press('F5');
   await waitFor(async () => (await findCall('ListObjectsStream')) !== null, 4000, 'F5 ListObjectsStream');
   await ok('F5 refreshes the current view', true);
+});
+
+await step('parent-strip', async () => {
+  // the WinSCP-style ".." strip pinned to the top of the content area:
+  // every content view carries it, an empty folder keeps it, a source's
+  // top level greys it, the information panels (loading, error) drop it,
+  // and a click climbs — while back/forward keep working alongside
+  const strip = () => evalPage(() => {
+    const b = document.getElementById('upbar');
+    return b ? {
+      vis: !b.classList.contains('hidden'),
+      dis: b.disabled,
+      label: (b.querySelector('.up-label') || {}).textContent || '',
+    } : null;
+  });
+  // -- S3 folder: enabled, climbs to the bucket root, pushes history --
+  await navObjectsOf('hetzner', 'team-files');
+  await dblClickRow('docs');
+  // rows, not breadcrumb: the strip returns with the first streamed page
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'inside docs');
+  let s = await strip();
+  await ok('strip visible + enabled inside an S3 folder', !!s && s.vis && !s.dis && s.label === '..');
+  await page.click('#upbar');
+  await waitFor(async () => !(await txt('#breadcrumb')).includes('docs'), 6000, 'strip climbs to bucket root');
+  await ok('strip click climbs to the parent', true);
+  // strip navigation is real history: back returns into docs, forward again
+  await page.click('#btn-back');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'back into docs');
+  await page.click('#btn-forward');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'forward to bucket root');
+  await ok('back/forward work across strip navigation', true);
+  // -- bucket root: still a parent — the buckets view --
+  s = await strip();
+  await ok('strip enabled at a bucket root', !!s && s.vis && !s.dis);
+  await page.click('#upbar');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'strip reaches buckets view');
+  await ok('strip click at bucket root opens the buckets view', true);
+  // -- buckets view: a content view with nothing above — greyed, not gone --
+  s = await strip();
+  await ok('strip greyed (visible + disabled) at the buckets view', !!s && s.vis && s.dis);
+  await shotOf('parent-strip', '#grid-wrap');
+  // -- remote source: root greys it, a subfolder enables it --
+  await clickTree('backup-box');
+  await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box root');
+  s = await strip();
+  await ok('strip greyed at a remote root', !!s && s.vis && s.dis);
+  await dblClickRow('docs');
+  await waitFor(async () => (await rowKeys()).includes('/docs/inventory.csv'), 6000, 'remote subfolder rows');
+  s = await strip();
+  await ok('strip enabled inside a remote subfolder', !!s && s.vis && !s.dis);
+  await page.click('#upbar');
+  await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'strip climbs the remote tree');
+  await ok('strip click climbs a remote folder', true);
+  // -- empty folder: the empty view and the strip coexist --
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('archive-cold'), 6000, 'buckets of hetzner');
+  await dblClickRow('archive-cold');
+  await waitFor(async () => evalPage(() => !document.getElementById('empty-state').classList.contains('hidden')
+    && !document.getElementById('empty-state').classList.contains('is-loading')), 6000, 'empty view');
+  s = await strip();
+  const emptyShown = await evalPage(() => !document.getElementById('empty-state').classList.contains('hidden'));
+  await ok('empty folder: empty view AND strip both visible', !!s && s.vis && !s.dis && emptyShown);
+  await shotOf('parent-strip-empty', '#grid-wrap');
+  // -- information panels: the strip steps aside --
+  await navObjectsOf('hetzner', 'team-files');
+  await evalPage(() => { window.__shim.world.fault = { listDelayMs: 1200 }; });
+  await dblClickRow('docs');
+  // poll for the transient in-flight state: stream.begin resolves at token
+  // registration, so the skeleton window belongs to the pages' delay — poll
+  // until it shows (a point-sample can race the dblclick dispatch)
+  await ok('strip hidden while the loading skeleton owns the area', waitFor(() => evalPage(() =>
+    !document.getElementById('load-skel').classList.contains('hidden')
+    && document.getElementById('upbar').classList.contains('hidden')), 2500, 'skeleton window'));
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'delayed listing lands');
+  await evalPage(() => { window.__shim.world.fault = { listError: 'connection refused' }; });
+  await page.click('#btn-refresh');
+  await waitFor(() => evalPage(() => !document.getElementById('empty-state').classList.contains('hidden')
+    && !document.getElementById('empty-state').classList.contains('is-loading')), 4000, 'error state');
+  await ok('strip hidden while the error panel owns the area', evalPage(() =>
+    document.getElementById('upbar').classList.contains('hidden')));
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await page.click('#btn-refresh');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'rows restored');
 });
 
 await step('crumb-click', async () => {

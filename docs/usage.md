@@ -197,8 +197,13 @@ directory compare) with S3 and the local pane.
   error on hover.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and type a path like `s3://bucket/folder/` — or
-  `source://path` for any source — to jump directly. Back / forward /
-  up history works like Explorer.
+  `source://path` for any source — to jump directly. Back / forward
+  history works like Explorer. The parent-directory strip ("..") pinned
+  above the content climbs one level from any content view — greyed
+  where nothing sits above it, hidden only while a loading, error or
+  first-run panel owns the area. Alt+↑ and Backspace do the same from
+  the keyboard (the toolbar's Up button is retired), and back / forward
+  wear arrow icons.
 - **Favorites** — star buckets and folders for one-click jumps.
 - **Search** — Ctrl+Shift+F opens the Search window (also the toolbar
   button, View → Search, or *Search in this folder…* from a context

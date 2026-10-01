@@ -29,9 +29,8 @@
 
     <!-- ============ Toolbar ============ -->
     <header class="toolbar" id="toolbar">
-      <button class="tb-btn" id="btn-back" title="Back (Alt+Left)" disabled>&#9664;</button>
-      <button class="tb-btn" id="btn-forward" title="Forward (Alt+Right)" disabled>&#9654;</button>
-      <button class="tb-btn" id="btn-up" title="Up (Alt+Up)" disabled>&#9650;</button>
+      <button class="tb-btn" id="btn-back" title="Back (Alt+Left)" disabled><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8"/></svg></button>
+      <button class="tb-btn" id="btn-forward" title="Forward (Alt+Right)" disabled><svg class="flip" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8"/></svg></button>
       <button class="tb-btn" id="btn-refresh" title="Refresh (F5)">&#8635;</button>
       <span class="tb-sep"></span>
       <button class="tb-btn" id="btn-upload" title="Upload files and folders (Ctrl+U)">&#8682; Upload</button>
@@ -86,6 +85,16 @@
           <button class="btn primary cb-act" id="conn-banner-act" type="button"></button>
           <button class="cb-x" id="conn-banner-x" type="button">&#215;</button>
         </div>
+        <!-- parent strip: the WinSCP-style ".." row — one click up from any
+             content view (greyed at a source's top level), present even over
+             an empty folder, absent while an information panel owns the area
+             (loading, errors, onboarding). Never part of the grid, so it
+             cannot join selection, counts or filters. Title from i18n at
+             boot. -->
+        <button class="upbar hidden" id="upbar" type="button">
+          <svg class="rotup" viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8"/></svg>
+          <span class="up-label">..</span>
+        </button>
         <div class="grid-head" id="grid-head" role="row"></div>
         <div class="grid-body" id="grid-body" tabindex="0" role="listbox" aria-label="Objects">
           <div class="grid-canvas" id="grid-canvas"></div>

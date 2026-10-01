@@ -2,7 +2,7 @@
 // currently available and greys out the toolbar buttons accordingly.
 // main.js injects the live sources (grid selection, profile presence) via
 // setCommandContext; nav/clipboard come from state.js directly.
-import { nav, parentOf, clipboard, clipHasItems } from './state.js';
+import { nav, clipboard, clipHasItems } from './state.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,7 +34,6 @@ export function commandState() {
     hasProfile,
     canBack: nav.canBack(),
     canForward: nav.canForward(),
-    canUp: (inObjects || inRemote) && !!parentOf(loc),
     canUpload: (inObjects && hasProfile) || inRemote,
     canDownload: ((inObjects && hasProfile) || inRemote) && sel >= 1,
     canNewFolder: (inObjects && hasProfile) || inRemote,
@@ -58,7 +57,6 @@ export function commandState() {
 const BUTTONS = {
   'btn-back': 'canBack',
   'btn-forward': 'canForward',
-  'btn-up': 'canUp',
   'btn-upload': 'canUpload',
   'btn-download': 'canDownload',
   'btn-newfolder': 'canNewFolder',
