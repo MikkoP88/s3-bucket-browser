@@ -1146,6 +1146,22 @@ function updateNavButtons() {
   $('btn-back').disabled = !nav.canBack();
   $('btn-forward').disabled = !nav.canForward();
 }
+// syncUpbarLayout seats the parent row's ".." in the Name column: the
+// button mirrors the grid's own live column template (grid.js writes it
+// onto the head and every row), so icon and caption land exactly where a
+// folder row's own name sits — checkbox gutter included — and a resize
+// or reorder cannot break the seat. The name cell is placed on the name
+// column's own track, wherever the catalog has dragged it.
+function syncUpbarLayout() {
+  const tpl = $('grid-head').style.gridTemplateColumns;
+  if (!tpl) return;
+  const up = $('upbar');
+  up.style.gridTemplateColumns = tpl;
+  const i = Array.from($('grid-head').querySelectorAll('.gh[data-col]'))
+    .findIndex((c) => c.dataset.col === 'name');
+  if (i >= 0) up.querySelector('.gc.name').style.gridColumn = `${i + 2}`; // +1: the checkbox gutter track
+}
+
 // setUpbar drives the parent row (the WinSCP-style ".." as the first row of
 // the listing, inside the grid body): 'on' = the row shows and one click
 // climbs to parentOf(current), 'off' = nothing above it (a source's top
@@ -1154,6 +1170,7 @@ function updateNavButtons() {
 // nothing above it simply shows no row.
 function setUpbar(state) {
   $('upbar').classList.toggle('hidden', state !== 'on');
+  if (state === 'on') syncUpbarLayout();
 }
 
 function renderBreadcrumb() {
@@ -3662,6 +3679,12 @@ function wireToolbar() {
   // the row lives inside the grid body: its keys stay its own — Enter
   // clicks the row without also driving the grid's keyboard layer
   $('upbar').addEventListener('keydown', (e) => e.stopPropagation());
+  // the Name-column seat stays live: grid.js rewrites the head's style
+  // on every layout change (per-view render, resize, reorder, freeze)
+  // and rebuilds its cells — the mirror re-copies on both
+  new MutationObserver(syncUpbarLayout).observe($('grid-head'),
+    { attributes: true, attributeFilter: ['style'], childList: true });
+  syncUpbarLayout();
   // () => : a bare `onclick = refreshCurrent` would pass the MouseEvent in
   // as `silent` (truthy) — the button refresh would silently skip the
   // loading state and bury errors as stale-row toasts. Manual refresh is

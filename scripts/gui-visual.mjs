@@ -3637,8 +3637,23 @@ await step('search-window', async () => {
     && !!document.querySelector('#popout-root .popout[data-pop="search"]')));
   const S = '#popout-root .popout[data-pop="search"]';
   await sleep(250); // let the entrance animation settle before measuring
-  await ok('search sits at the 720 wide tier', evalPage((s) =>
-    Math.abs(document.querySelector(s).getBoundingClientRect().width - 720) <= 1, S));
+  await ok('search rides its own slightly-wider 760 tier', evalPage((s) =>
+    Math.abs(document.querySelector(s).getBoundingClientRect().width - 760) <= 1, S));
+  await ok('results inset to the form: columns and status share the Name row edges', evalPage((s) => {
+    const pop = document.querySelector(s);
+    const row = pop.querySelector('.sr-row').getBoundingClientRect();
+    const head = pop.querySelector('.grid-headclip').getBoundingClientRect();
+    const list = pop.querySelector('.sr-list').getBoundingClientRect();
+    const pf = getComputedStyle(pop.querySelector('.sr-form')).paddingLeft;
+    const res = pop.querySelector('.sr-results');
+    const pr = getComputedStyle(res).paddingLeft;
+    return pf === pr && pf === '16px'
+      && Math.abs(row.left - head.left) <= .5 && Math.abs(row.right - head.right) <= .5
+      && Math.abs(row.left - list.left) <= .5 && Math.abs(row.right - list.right) <= .5
+      // the status bar rides the same padded box — hidden while empty
+      // (:empty), so its edge is pinned through the box it will fill
+      && pop.querySelector('.sr-status').parentElement === res;
+  }, S));
   await ok('toolbar tooltip renamed', evalPage(() =>
     document.getElementById('btn-find').title.includes('Search')
     && !document.getElementById('btn-find').title.includes('Deep')));
@@ -3702,11 +3717,14 @@ await step('search-window', async () => {
     const txt = rows.map((r) => r.textContent).join('|');
     return rows.length >= 2 && txt.includes('readme.md') && txt.includes('docs/notes.md');
   }, S));
-  await ok('a multi-origin run adds the Source column', evalPage((s) => {
+  await ok('a multi-origin run adds the Source column, parked last', evalPage((s) => {
     const col = document.querySelector(s + ' .gh[data-col="source"]');
     const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((b) => b.textContent);
+    const heads = Array.from(document.querySelectorAll(s + ' .grid-head .gh')).map((h) => h.dataset.col);
+    const last = document.querySelector(s + ' .sr-list .grid-row').lastElementChild;
     return !!col && col.textContent.includes('Source')
-      && cells.length === 2 && cells.every((b) => b === 's3://team-files');
+      && cells.length === 2 && cells.every((b) => b === 's3://team-files')
+      && heads[heads.length - 1] === 'source' && last.classList.contains('source');
   }, S));
   await ok('a click selects the row, a second click moves the selection', evalPage((s) => {
     const rows = document.querySelectorAll(s + ' .sr-list .grid-row');
@@ -7044,7 +7062,10 @@ await step('parent-row', async () => {
       rowH: b.getBoundingClientRect().height,
       over: getComputedStyle(b).zIndex !== 'auto',
       label: (b.querySelector('.up-label') || {}).textContent || '',
-      paths: b.querySelectorAll('svg path').length,
+      glyph: (b.querySelector('.gc.name .icon') || {}).textContent || '',
+      gutter: b.children[0].className,
+      nameL: b.querySelector('.gc.name').getBoundingClientRect().left,
+      headNameL: document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().left,
     } : null;
   });
   // -- placement: a row of the listing, not chrome above it --
@@ -7055,10 +7076,13 @@ await step('parent-row', async () => {
   let s = await row();
   await ok('parent row sits inside the grid body, ahead of the canvas', !!s && s.vis && s.inBody);
   await ok('parent row is row-height like the folder rows around it', !!s && Math.abs(s.rowH - 28) < 1);
-  // the glyph matches WinSCP's parent row: the outline folder with the
-  // up arrow inside it (folder path + arrow path) beside the ".." caption
-  await ok('caption ".." with the folder-with-up-arrow glyph (WinSCP parent row)',
-    !!s && s.label === '..' && s.paths === 2);
+  // the glyph is the folder rows' own — fileIcon's folder — beside the
+  // ".." caption, and the entry rides the Name column exactly where a
+  // folder row's own name sits (checkbox gutter included)
+  await ok('caption ".." beside the folder glyph every folder row wears',
+    !!s && s.label === '..' && s.glyph === '\u{1F4C1}');
+  await ok('the parent entry sits in the Name column like a folder row',
+    !!s && s.gutter.includes('check') && Math.abs(s.nameL - s.headNameL) <= 1);
   await shotOf('winscp-parent', '#grid-wrap');
   await page.click('#upbar');
   await waitFor(async () => !(await txt('#breadcrumb')).includes('docs'), 6000, 'row climbs to bucket root');
@@ -7405,11 +7429,16 @@ await step('size-bar', async () => {
   const t1 = await barTxt();
   await ok('versioned whole: files/folders/bytes + version split',
     t1 === '10 file(s), 4 folder(s), 217 MB — old versions: 2.3 KB (17 version(s), 1 marker(s))');
-  await ok('the source name rides the same bar ahead of the numbers',
+  await ok('the source name parks on the bar right end, WinSCP session-style',
     (await txt('#grid-source')) === 'hetzner'
-      && (await evalPage(() => document.getElementById('grid-status').textContent
-        === document.getElementById('grid-source').textContent
-        + document.getElementById('grid-status-text').textContent)));
+      && (await evalPage(() => {
+        const bar = document.getElementById('grid-status');
+        const src = document.getElementById('grid-source').getBoundingClientRect();
+        const num = document.getElementById('grid-status-text').getBoundingClientRect();
+        return bar.textContent === document.getElementById('grid-source').textContent
+          + document.getElementById('grid-status-text').textContent
+          && num.left < src.left && src.right > num.right;
+      })));
   await shot('sizebar-versioned');
 
   // 2. folder selection docs/: everything inside — its own marker is the

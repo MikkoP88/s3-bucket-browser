@@ -181,8 +181,9 @@ directory compare) with S3 and the local pane.
   per pane, and the header picker's Reset columns brings the
   out-of-box set, order and widths back in one click.
 - **Content bottom bar** — the strip along the bottom of the content
-  view carries the active data source's name in bold, then answers
-  *how much is really here*: with nothing selected it is the real
+  view answers *how much is really here*, with the active data
+  source's name in bold on the bar's right end: with nothing selected
+  it is the real
   recursive size of everything listed; select rows and it is the
   recursive size of the selection — a folder always counts its whole
   interior, WinSCP-style. It works on every source type the view
@@ -206,16 +207,19 @@ directory compare) with S3 and the local pane.
   level — there is no row at all, and it steps aside while a loading,
   error or first-run panel owns the area. Alt+↑ and Backspace do the
   same from the keyboard (the toolbar's Up button is retired), and
-  back / forward wear arrow icons. The row is WinSCP's glyph verbatim:
-  an outline folder with an up arrow inside it beside the `..`
-  caption.
+  back / forward wear arrow icons. The row wears the same folder glyph
+  as every folder row, beside the `..` caption, seated in the Name
+  column exactly where a folder's own name sits — resizing or
+  reordering the columns never breaks the seat.
 - **Favorites** — star buckets and folders for one-click jumps.
 - **Search** — Ctrl+Shift+F opens the Search window (also the toolbar
   button, View → Search, or *Search in this folder…* from a context
   menu — the menu presets the scope): WinSCP's Find window,
   modernized — a filter form pinned on top, and below it a results
   area wearing the app's own content-area chrome: the same column
-  header, hairline rows and bottom bar as the main view. **Name**
+  header, hairline rows and bottom bar as the main view, inset to the
+  form's side padding so the input, the columns and the status bar
+  share one edge. **Name**
   and **Sources** sit side by side, always in view: Name is a
   substring or glob (Enter runs the search from any field),
   Sources is a flat list with no grouping — *All data sources*
@@ -233,7 +237,8 @@ directory compare) with S3 and the local pane.
   with type-matched icons (folder, image, video, archive,
   document …); clicking a column header sorts ascending, again
   descending; a run spanning several origins adds a **Source**
-  column, a single-source run drops it; a double-click (or Enter)
+  column at the end of the row, a single-source run drops it; a
+  double-click (or Enter)
   jumps to the object and selects it. Only the results scroll —
   the form stays put — and a running search can be stopped from
   the window.

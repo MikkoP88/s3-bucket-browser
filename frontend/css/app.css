@@ -111,9 +111,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .tb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 .tb-spacer { flex: 1; }
 .tb-btn svg { display: block; }
-/* forward mirrors the toolbar's canonical arrow; the parent row's
-   glyph is its own composition — the outline folder with the up arrow
-   inside (see #upbar in index.html) */
+/* forward mirrors the toolbar's canonical arrow; the parent row wears
+   the folder rows' own glyph (see #upbar in index.html) */
 svg.flip { transform: scaleX(-1); }
 
 /* ================= Menu bar ================= */
@@ -404,7 +403,12 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
    overlay so an empty folder still shows its parent — the grid's own
    rows are absolutely positioned and never contend for this band. */
 .upbar {
-  display: flex; align-items: center;
+  display: grid; align-items: center;
+  /* a mirror of the grid's own template — main.js copies the live one
+     onto the button so the entry keeps its Name-column seat through
+     every resize and reorder; this fallback only guards the first
+     paint before the copy lands */
+  grid-template-columns: 34px minmax(200px, 3fr);
   position: relative; z-index: 1; /* above the empty-state overlay */
   width: 100%; height: var(--row-h); padding: 0;
   font: var(--font); color: var(--text); text-align: left;
@@ -413,7 +417,6 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
   cursor: pointer;
 }
 .upbar:hover { background: var(--hover); }
-.upbar svg { display: block; flex: none; }
 .upbar .up-label { letter-spacing: .03em; }
 
 /* ================= Empty state ================= */
@@ -681,6 +684,10 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
   animation: modal-in .14s ease-out;
 }
 .popout.wide { width: 720px; }
+/* the Search window rides slightly wider than the shared wide tier —
+   its results table breathes (WinSCP's Find dialog is the roomiest of
+   the set); the native window path opens at a matching default */
+.popout[data-pop="search"] { width: 760px; }
 /* Auto-height monitoring windows (File transfers, Running tasks): the
    Windows file-transfer footprint — a 490px default width that is also
    the floor (the user may never shrink below it; neither tier ever
@@ -949,29 +956,30 @@ kbd {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* Content bottom bar (main viewer, WinSCP-style): the active data
-   source's name beside the real recursive totals of the listing or the
-   selection — the lp-status recipe scoped to #grid-wrap, the content
-   area only, never the window width. Wears the panel background so it
-   matches the Data Sources side-foot: both bottom bars read as one
-   chrome line. The search window's clone of this bar still leans on
-   :empty; this bar hides via .hidden once both name and text are gone. */
+/* Content bottom bar (main viewer, WinSCP-style): the real recursive
+   totals of the listing or the selection on the left, the active data
+   source's name in bold on the bar's right end — where WinSCP's own
+   status bar carries its session name. Scoped to #grid-wrap, the
+   content area only, never the window width. The search window's
+   clone of this bar still leans on :empty; this bar hides via .hidden
+   once both name and text are gone. */
 .grid-status {
+  display: flex; gap: 10px; align-items: baseline;
   padding: 3px 10px;
-  background: var(--panel);
   border-top: 1px solid var(--border);
   font-size: 12px; color: var(--text-dim);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  overflow: hidden;
 }
 .grid-status.busy { opacity: .6; }
 .grid-status:empty { display: none; }
-/* the source name: its own bold span; the ::before seam parts it from
-   the size text without any JS string-building */
-.gs-src { font-weight: 600; color: var(--text); }
-#grid-status .gs-src:not(.hidden) + .gs-text:not(:empty)::before {
-  content: " — ";
-  font-weight: 400; color: var(--text-dim);
-}
+/* the size text keeps the ellipsis — on a flex bar it belongs to the
+   item, not the bar */
+.gs-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the source name: its own bold span, parked past the size text on the
+   bar's right end. The DOM order stays name-then-text (the battery pins
+   the seam-free concatenation), so order:2 flips it past the numbers
+   and margin-left:auto holds the right end whatever else the bar shows */
+.gs-src { order: 2; margin-left: auto; flex: none; font-weight: 600; color: var(--text); }
 
 /* Directory-compare decorations (data-cmp from CompareDir) */
 .grid-row[data-cmp="same"], .grid-row[data-cmp="same-sub"] { color: var(--text-dim); }
@@ -1041,6 +1049,7 @@ kbd {
   flex: 1; min-height: 220px; min-width: 0; position: relative;
   display: flex; flex-direction: column;
   border-top: 1px solid var(--border); background: var(--panel);
+  padding: 0 16px;
 }
 /* the main grid seats rows absolutely for its virtualizer; here they
    flow — same cells, same hairlines, no pool */
@@ -1051,8 +1060,10 @@ kbd {
    to the window — it anchors below the header row like the main one */
 .sr-results .empty-state { justify-content: flex-start; padding-top: 48px; }
 .sr-results .empty-icon { width: 34px; opacity: .75; }
-/* full-bleed: the popout body is one pane — the form pads itself, the
-   results run edge to edge between it and the footer */
+/* full-bleed vertically: the popout body is one pane — the form pads
+   itself and the results own the seam to the footer; the results pad
+   their sides to the form's own 16px, so the Name row, the columns and
+   the status bar all share one edge */
 .popout[data-pop="search"] .modal-body { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
 /* ================= Content Versions window ================= */
 /* The header is a one-line version count (same format as the Delete

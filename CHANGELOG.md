@@ -102,18 +102,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 - **The content bottom bar says whose files it is counting.** The
   active data source's name moves from the app footer to the content
-  area's own bottom bar — bold, ahead of the size text — so the
-  listing's owner and its real recursive totals read as one line; the
-  bar wears the panel background, making it and the Data Sources
-  side-foot read as one chrome line. The app footer keeps jobs and
-  selection state only.
+  area's own bottom bar — bold, on the bar's right end, where
+  WinSCP's own status bar carries its session name — with the size
+  text on the left. The app footer keeps jobs and selection state
+  only.
 
 - **The parent-directory row ("..") is the first row of the listing
   itself — WinSCP Explorer's parent entry.** Every content view —
   buckets, S3 folders, remote sources — carries the one-click climb
   to the directory above as a row inside the grid body, styled like
-  the folder rows around it and wearing WinSCP's own glyph: an
-  outline folder with an up arrow inside it beside the `..` caption.
+  the folder rows around it — the same folder glyph they wear beside
+  the `..` caption, seated in the Name column exactly where a
+  folder's own name sits (the row mirrors the grid's live column
+  template, so resizing or reordering the columns never breaks the
+  seat).
   It scrolls with the content, stays present over an empty folder
   (floating above the empty-state panel), and where nothing sits
   above it — a source's top level — there is no row at all; it also
@@ -142,15 +144,17 @@ follow [Semantic Versioning](https://semver.org/).
   *More filters* chip that counts the active filters, every one of
   them working the same across S3 and remote sources (storage
   class never could, so it left the window — the CLI keeps
-  --class). The results wear the main view's own content-area
-  chrome — the same column header, hairline rows and bottom bar —
-  with type-matched icons, a click-to-sort header (ascending, then
-  descending) and a **Source** column that appears only when the
-  run spans origins; only the results scroll; **Clear** resets the
-  form and results stay cancelable; clicking a hit navigates to
-  the object and selects it (a hit clicked in a native popout
-  window relays through the main window). The CLI gains the same
-  filters: `s3b find --kind file|dir`, `--ext` and `--path`.
+  --class). The window rides its own slightly-wider tier and the
+  results wear the main view's own content-area chrome — the same
+  column header, hairline rows and bottom bar — inset to the form's
+  side padding, with type-matched icons, a click-to-sort header
+  (ascending, then descending) and a **Source** column that appears
+  only when the run spans origins, parked last on the row; only the
+  results scroll; **Clear** resets the form and results stay
+  cancelable; clicking a hit navigates to the object and selects it
+  (a hit clicked in a native popout window relays through the main
+  window). The CLI gains the same filters: `s3b find
+  --kind file|dir`, `--ext` and `--path`.
 
 - **Settings apply on Save, not on click.** The dialog is now a draft:
   every control stages until Save (disabled until something changes),

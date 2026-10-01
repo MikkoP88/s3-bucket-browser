@@ -3741,7 +3741,7 @@ export function searchWindow(opts = {}) {
   }
   if (maybeNativePopout({
     id: 'search', query: q, title: t('findTitle'),
-    w: 620, h: 600, minW: 520, minH: 460,
+    w: 660, h: 600, minW: 520, minH: 460,
     domOpen: () => searchWindowDom(scopes, sel, opts.onOpen),
   })) {
     return { close: () => api.ClosePopout('search') };
@@ -3796,14 +3796,14 @@ function searchWindowDom(scopes, selIdx, onOpen) {
   // WinSCP's Find lists hits in a file-panel control; here the same
   // classes the main grid wears draw the area — head band, header row,
   // hairline rows, status bar. The Source column rides only runs that
-  // span origins (the old per-row pill, promoted to a column); the head
-  // width-locks to the list and slides with its horizontal scroll
-  // exactly like grid.js's clipping band.
+  // span origins (the old per-row pill, promoted to a column) and parks
+  // last, past Modified; the head width-locks to the list and slides
+  // with its horizontal scroll exactly like grid.js's clipping band.
   const SR_COLS = [
     { id: 'name', labelKey: 'col.name', css: 'minmax(220px, 1fr)' },
-    { id: 'source', labelKey: 'col.source', css: '150px' },
     { id: 'size', labelKey: 'col.size', css: '110px', num: true },
     { id: 'lastModified', labelKey: 'col.date', css: '160px' },
+    { id: 'source', labelKey: 'col.source', css: '150px' },
   ];
   let showSource = false; // multi-origin run only (the old pill's rule)
   let sortKey = '';       // '' = arrival order, the streaming default
@@ -3890,9 +3890,10 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     const cells = [el('div', { class: 'gc name' },
       el('span', { class: 'icon', text: fileIcon(r.key, isDirOf(r)) }),
       el('span', { class: 'tname', text: r.key }))];
-    if (showSource) cells.push(el('div', { class: 'gc source', text: originOf(r) }));
     cells.push(el('div', { class: 'gc num', text: isDirOf(r) ? '' : fmtBytes(r.size || 0) }));
     cells.push(el('div', { class: 'gc', text: isDirOf(r) ? '' : (r.lastModified ? fmtDate(r.lastModified) : '') }));
+    // Source parks last — past Modified, the far edge of the row
+    if (showSource) cells.push(el('div', { class: 'gc source', text: originOf(r) }));
     const row = el('div', {
       class: `grid-row${r.key === selKey ? ' sel' : ''}`,
       role: 'option',
