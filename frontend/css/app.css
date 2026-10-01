@@ -397,8 +397,9 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 /* The WinSCP-style ".." as the first row of the listing itself — inside
    the grid body it scrolls with the content, styled like the folder rows
    around it (Explorer's parent entry, not a toolbar strip). One click
-   climbs to the parent; absent at a source's top level (the Data source
-   main view) and while an information panel (loading, error,
+   climbs to the parent; absent at a source's top level — the Data
+   source main view, a bucket-scoped source's root (its home IS the
+   bucket's contents) — and while an information panel (loading, error,
    onboarding) owns the area. The z-index lifts it over the empty-state
    overlay so an empty folder still shows its parent — the grid's own
    rows are absolutely positioned and never contend for this band. */

@@ -204,7 +204,9 @@ directory compare) with S3 and the local pane.
   with the content, one click climbs a level from any content view,
   and it floats over the empty-folder note so even an empty folder
   shows its parent. Where nothing sits above it — a source's top
-  level — there is no row at all, and it steps aside while a loading,
+  level, including a bucket-scoped source's root (its home IS the
+  bucket's contents; the account bucket list is unreachable) — there
+  is no row at all, and it steps aside while a loading,
   error or first-run panel owns the area. Alt+↑ and Backspace do the
   same from the keyboard (the toolbar's Up button is retired), and
   back / forward wear arrow icons. The row wears the same folder glyph

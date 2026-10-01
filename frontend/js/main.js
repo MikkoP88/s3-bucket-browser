@@ -897,7 +897,7 @@ async function loadView(loc, { silent = false } = {}) {
       }
       tree.reveal(loc).catch(() => {});
       tree.updateRemoteDir(loc.source, loc.path || '/', entries);
-      setUpbar(parentOf(loc) ? 'on' : 'off');
+      setUpbar(parentUp(loc) ? 'on' : 'off');
     }
     if (landed) viewLandedHealthy(landedName);
   } catch (err) {
@@ -949,9 +949,10 @@ async function loadObjectsStream(loc, silent = false) {
         // First data landed: the skeleton/loading overlay has done its
         // job — rows now tell the story (idempotent, so every page can
         // call it without layout cost once hidden). The parent row
-        // comes back with the rows, for the same reason.
+        // comes back with the rows, for the same reason — except where
+        // nothing sits above (a bucket-scoped source's root).
         hideEmpty();
-        setUpbar('on');
+        setUpbar(parentUp(loc) ? 'on' : 'off');
         currentEntries.push(...p.entries);
         grid.appendRows(p.entries);
       }
@@ -1164,13 +1165,27 @@ function syncUpbarLayout() {
 
 // setUpbar drives the parent row (the WinSCP-style ".." as the first row of
 // the listing, inside the grid body): 'on' = the row shows and one click
-// climbs to parentOf(current), 'off' = nothing above it (a source's top
-// level, the Data source main view) or an information panel owns the area
+// climbs to parentUp(current), 'off' = nothing above it (a source's top
+// level — the Data source main view, a bucket-scoped source's root) or an
+// information panel owns the area
 // (loading, error, onboarding). The 'greyed' state is retired: a view with
 // nothing above it simply shows no row.
 function setUpbar(state) {
   $('upbar').classList.toggle('hidden', state !== 'on');
   if (state === 'on') syncUpbarLayout();
+}
+
+// parentUp is the climb oracle for every up-driven surface — the parent
+// row's click, Alt+↑, Backspace. It is parentOf plus the one rule the
+// breadcrumb already carries: a bucket-scoped S3 source's home IS the
+// bucket's contents and the account bucket list is unreachable from a
+// single data source, so its objects root has nothing above it.
+function parentUp(loc) {
+  if (loc?.kind === 'objects' && !loc.prefix) {
+    const s = sources.find((x) => x.name === (loc.source || viewSource));
+    if (s?.bucket) return null;
+  }
+  return parentOf(loc);
 }
 
 function renderBreadcrumb() {
@@ -3673,7 +3688,7 @@ function startMarquee(e) {
 function wireToolbar() {
   $('btn-back').onclick = () => { if (nav.canBack()) nav.back(); };
   $('btn-forward').onclick = () => { if (nav.canForward()) nav.forwardGo(); };
-  $('upbar').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
+  $('upbar').onclick = () => { const p = parentUp(nav.current); if (p) nav.to(p); };
   $('upbar').title = t('upParent');
   $('upbar').setAttribute('aria-label', t('upParent'));
   // the row lives inside the grid body: its keys stay its own — Enter
@@ -4413,8 +4428,8 @@ function wireKeys() {
     const ctrl = e.ctrlKey || e.metaKey;
     if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); if (nav.canBack()) nav.back(); return; }
     if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); if (nav.canForward()) nav.forwardGo(); return; }
-    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'Up')) { e.preventDefault(); const p = parentOf(nav.current); if (p) nav.to(p); return; }
-    if (e.key === 'Backspace') { e.preventDefault(); const p = parentOf(nav.current); if (p) nav.to(p); return; }
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'Up')) { e.preventDefault(); const p = parentUp(nav.current); if (p) nav.to(p); return; }
+    if (e.key === 'Backspace') { e.preventDefault(); const p = parentUp(nav.current); if (p) nav.to(p); return; }
     if (e.key === 'F5') { e.preventDefault(); refreshCurrent(); return; }
     if (e.key === 'F2') { e.preventDefault(); renameSelection(); return; }
     if (e.key === 'Delete') { e.preventDefault(); if (e.shiftKey) deletePermanentSelection(); else deleteSelection(); return; }

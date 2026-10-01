@@ -7111,6 +7111,19 @@ await step('parent-row', async () => {
   // -- the Data source main view: nothing above it — no row at all --
   s = await row();
   await ok('no parent row at the Data source main view (nothing above it)', !!s && !s.vis);
+  // -- a bucket-scoped source: its home IS the bucket's contents and the
+  // account bucket list is unreachable from inside it — the root has
+  // nothing above it: no row, and the climb keys die at the top --
+  await clickTree('from-file-photos');
+  await waitFor(async () => (await rowKeys()).includes('img-1.jpg'), 6000, 'from-file-photos root rows');
+  s = await row();
+  await ok('no parent row at a bucket-scoped source\'s root — its home IS the contents', !!s && !s.vis);
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('Alt+ArrowUp');
+  await sleep(150);
+  s = await row();
+  await ok('the climb keys stay put at a scoped root — nothing above to climb to',
+    !!s && !s.vis && (await rowKeys()).includes('img-1.jpg'));
   // -- remote source: root drops it, a subfolder carries it --
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box root');

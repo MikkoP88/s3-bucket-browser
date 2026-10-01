@@ -119,7 +119,9 @@ follow [Semantic Versioning](https://semver.org/).
   seat).
   It scrolls with the content, stays present over an empty folder
   (floating above the empty-state panel), and where nothing sits
-  above it — a source's top level — there is no row at all; it also
+  above it — a source's top level, a bucket-scoped source's root
+  included (its home IS the bucket's contents) — there is no row at
+  all; it also
   steps aside while an information panel owns the area (loading
   skeleton, errors, first-run). As a plain row of the listing it
   never joins selection, counts, the size bar, sorting or filters.
