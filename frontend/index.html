@@ -57,6 +57,15 @@
     <main class="main">
       <aside class="sidebar" id="sidebar" aria-label="Buckets">
         <div class="sidebar-head" id="sidebar-head">Buckets</div>
+        <!-- tree-filter: the funnel's pattern panel (labels come from i18n at boot) -->
+        <div class="tree-filter hidden" id="tree-filter">
+          <div class="tf-row">
+            <input id="tree-filter-input" class="input mono" spellcheck="false" autocomplete="off">
+            <button id="tree-filter-clear" class="tf-x" type="button">&#215;</button>
+          </div>
+          <label class="tf-deep"><input type="checkbox" id="tree-filter-deep"><span id="tree-filter-deep-label"></span></label>
+          <div class="tf-status" role="status"><span id="tree-filter-status"></span><button id="tree-filter-stop" class="tf-stop hidden" type="button"></button></div>
+        </div>
         <div class="fav-section hidden" id="fav-section" aria-label="Favorites">
           <div class="fav-head">&#9733; Favorites</div>
           <div class="favorites" id="favorites" role="list"></div>

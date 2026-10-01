@@ -128,6 +128,20 @@ directory compare) with S3 and the local pane.
   more. Folders expand lazily; buckets with versioning carry a 🔄 icon,
   object-lock buckets a 🔒 icon. Drag the sidebar's right edge to
   resize it (double-click resets).
+- **Data sources filter** — the funnel left of the **+** in the sidebar
+  header narrows every data source at once. A plain word matches
+  anywhere in a row's name (case-insensitive substring); `*` and `?`
+  are wildcards (`prod-*`, `?ightly`); space- or comma-separated
+  patterns OR together. Matches surface through the whole hierarchy —
+  buckets and folders inside sources, not just source names — with
+  pass-through ancestors dimmed, and the pattern narrows the Favorites
+  list to matching buckets too. Everything the tree has loaded filters
+  as you type; **Search all folders** additionally walks the unloaded
+  depths of every source in the background (the status line names the
+  source being scanned and a Stop button cancels), so deep matches
+  appear without opening anything. Enter applies at once, Escape closes
+  the panel but keeps the pattern, and the × clears it. The funnel icon
+  hides itself when there are no data sources.
 - **Grid** — Windows-Explorer selection: click, Ctrl+click, Shift+click,
   Ctrl+A (all), Ctrl+I (invert), marquee drag-select, type-to-jump. The
   funnel row under the header filters per column; right-click the header

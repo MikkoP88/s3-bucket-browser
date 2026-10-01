@@ -40,6 +40,7 @@ const tree = new Tree({
     () => adminDialog(bucket, refreshCurrent),
   ),
   onBuckets: (source, names) => ensureGuards(source, names),
+  onFilterStatus: (st) => updateTreeFilterStatus(st.walking ? st.scanning : undefined),
 });
 const logArea = createLogArea();
 
@@ -155,6 +156,7 @@ async function boot() {
   const ok = await refreshSources();
   if (ok) nav.to(sourceHomeLoc());
   initSidebarResize();
+  initTreeFilterPanel();
   refreshPfState(); // container sessions do not survive restarts; defensive
   if (localStorage.getItem('s3b-panes') === '1') localPane.show();
   osClipAdopt(); // baseline the OS clipboard seq so later Explorer copies are detected
@@ -421,15 +423,30 @@ function initSidebarResize() {
 // renderSidebarHead: the sidebar header is a static "Data sources" label
 // with a persistent "+" add button — it no longer mirrors the active
 // source/bucket (the tree's highlight already marks where you are).
+// Left of the "+" sits the tree-filter funnel once any source exists:
+// with nothing to filter there is no funnel, but "+" stays (it is how
+// the first source arrives).
 function renderSidebarHead() {
   const head = $('sidebar-head');
-  head.replaceChildren(
-    document.createTextNode(t('sourcesTitle')),
-    el('button', {
-      class: 'side-add', text: '+', title: t('addSource'),
-      onclick: () => sourceEditor(null, afterSourceSaved),
-    }),
-  );
+  const tools = el('span', { class: 'side-tools' });
+  if (sources.length) {
+    const funnel = el('button', {
+      class: 'side-filter' + (treeMatcher ? ' on' : ''),
+      title: t('treeFilter'),
+      'aria-label': t('treeFilter'),
+      'aria-expanded': String(!$('tree-filter').classList.contains('hidden')),
+      onclick: () => toggleTreeFilterPanel(),
+    });
+    funnel.innerHTML = FUNNEL_SVG;
+    tools.appendChild(funnel);
+  } else {
+    $('tree-filter').classList.add('hidden'); // nothing to filter: no panel either
+  }
+  tools.appendChild(el('button', {
+    class: 'side-add', text: '+', title: t('addSource'),
+    onclick: () => sourceEditor(null, afterSourceSaved),
+  }));
+  head.replaceChildren(document.createTextNode(t('sourcesTitle')), tools);
 }
 
 function showOnboarding() {
@@ -474,6 +491,108 @@ function afterSourceSaved(saved) {
   toast('Source saved', 'ok');
 }
 
+// ============================ tree filter ============================
+// The sidebar funnel: one pattern narrows every data source at once.
+// compileTreeFilter turns the query into a label matcher — patterns split
+// on whitespace/commas (OR); a plain word is a case-insensitive substring
+// test; anything carrying * or ? is an anchored glob. The same feel as
+// the app-wide Search, applied to single row names.
+const FUNNEL_SVG = '<svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">'
+  + '<path d="M1.5 2.5h13l-5 6.2V14L6.5 12V8.7l-5-6.2z" fill="currentColor"/></svg>';
+let treeMatcher = null; // null = unfiltered; shared with renderFavorites
+
+function compileTreeFilter(q) {
+  const parts = String(q || '').split(/[\s,]+/).filter(Boolean);
+  if (!parts.length) return null;
+  const tests = parts.map((p) => {
+    if (!/[*?]/.test(p)) {
+      const needle = p.toLowerCase();
+      return (lbl) => lbl.toLowerCase().includes(needle);
+    }
+    const re = new RegExp('^' + p.replace(/[{}()|[\]\\.+^$]/g, '\\$&')
+      .replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
+    return (lbl) => re.test(lbl);
+  });
+  return (label) => tests.some((fn) => fn(label));
+}
+
+// toggleTreeFilterPanel shows/hides the pattern panel under the header.
+function toggleTreeFilterPanel(force) {
+  const panel = $('tree-filter');
+  const open = force !== undefined ? force : panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !open);
+  const btn = document.querySelector('#sidebar-head .side-filter');
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    const inp = $('tree-filter-input');
+    inp.focus();
+    inp.select();
+  }
+}
+
+// applyTreeFilter compiles and pushes the pattern to the tree (and the
+// favorites list, which narrows by the same matcher).
+function applyTreeFilter(query) {
+  treeMatcher = compileTreeFilter(query);
+  tree.setFilter(treeMatcher, query);
+  renderSidebarHead();
+  renderFavorites();
+  updateTreeFilterStatus();
+}
+
+// updateTreeFilterStatus renders the panel's status line: match count,
+// plus the source being walked and a Stop control while the deep walk
+// runs. The tree drives transitions through onFilterStatus; a direct
+// call (after applying a pattern) falls back to the tree's live walk
+// state so it never clobbers a "Scanning…" line that already started.
+function updateTreeFilterStatus(scanning) {
+  const st = $('tree-filter-status');
+  const stop = $('tree-filter-stop');
+  if (!st) return;
+  if (!treeMatcher) {
+    st.textContent = '';
+    stop.classList.add('hidden');
+    return;
+  }
+  const scan = scanning !== undefined ? scanning : tree.walkingLabel;
+  const n = tree.visibleCount;
+  st.textContent = scan
+    ? t('treeFilterScan', { src: scan }) + ' — ' + t('treeFilterShown', { n })
+    : t('treeFilterShown', { n });
+  stop.classList.toggle('hidden', !scan);
+}
+
+function initTreeFilterPanel() {
+  const inp = $('tree-filter-input');
+  inp.placeholder = t('treeFilterPh');
+  inp.title = t('treeFilter');
+  $('tree-filter-clear').title = t('treeFilterClear');
+  $('tree-filter-deep-label').textContent = t('treeFilterDeep');
+  $('tree-filter-stop').textContent = t('treeFilterStop');
+  // the debounce must read the field WHEN IT FIRES, not when the event
+  // lands: typing a pattern and clearing it quickly (Enter applies at
+  // once, the x button empties the field without an input event) would
+  // otherwise resurrect the typed pattern 250 ms after the clear
+  const debounced = debounce(() => applyTreeFilter(inp.value), 250);
+  inp.addEventListener('input', () => debounced());
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applyTreeFilter(inp.value);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      toggleTreeFilterPanel(false);
+    }
+  });
+  $('tree-filter-clear').onclick = () => {
+    inp.value = '';
+    applyTreeFilter('');
+    inp.focus();
+  };
+  $('tree-filter-deep').addEventListener('change', (e) => tree.setDeep(e.target.checked));
+  $('tree-filter-stop').onclick = () => tree.abortWalk();
+}
+
 // ============================ navigation ============================
 nav.onNavigate((loc) => loadView(loc));
 
@@ -490,7 +609,9 @@ function toggleFavorite(bucket) {
   renderFavorites();
 }
 function renderFavorites() {
-  const favs = favorites();
+  // the tree filter narrows favorites too — a pinned bucket that cannot
+  // match has no business staying on screen while everything else filters
+  const favs = favorites().filter((b) => !treeMatcher || treeMatcher(b));
   $('fav-section').classList.toggle('hidden', favs.length === 0);
   $('favorites').replaceChildren(...favs.map((b) => el('div', {
     class: 'fav-row',

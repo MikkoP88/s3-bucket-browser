@@ -8,6 +8,7 @@
 // source, so two sources can hold same-named buckets without colliding.
 import { api, subscribeStream } from './api.js';
 import { el, srcIcon } from './util.js';
+import { t } from './i18n.js';
 
 export class Tree {
   // guardOf(bucket, source) returns the cached guard state for the bucket
@@ -15,7 +16,9 @@ export class Tree {
   // onGuardClick(bucket, source) opens the admin panel from those icons;
   // onBuckets(source, names) is called when bucket rows appear so the caller
   // can fetch their guards in the background.
-  constructor({ onNavigate, onDropTo, onContext, guardOf, onGuardClick, onBuckets }) {
+  // onFilterStatus({walking, scanning}) reports the deep-walk state so the
+  // filter panel can show progress and a Stop control.
+  constructor({ onNavigate, onDropTo, onContext, guardOf, onGuardClick, onBuckets, onFilterStatus }) {
     this.container = document.getElementById('tree');
     this.onNavigate = onNavigate;
     this.onDropTo = onDropTo;
@@ -23,9 +26,24 @@ export class Tree {
     this.guardOf = guardOf || (() => null);
     this.onGuardClick = onGuardClick;
     this.onBuckets = onBuckets;
+    this.onFilterStatus = onFilterStatus;
     this.nodes = new Map(); // id -> node
     this.currentId = null;
     this.status = new Map(); // source name -> 'ok' | 'error' | 'busy'
+    // tree filter state: a matcher over row labels (null = unfiltered),
+    // the raw query for the no-match note, the ids the user collapsed
+    // while filtered, the deep-walk opt-in, the generation token that
+    // aborts an in-flight walk, and what a render may draw.
+    this.filter = null;
+    this.filterQuery = '';
+    this.filterCollapsed = new Set();
+    this.deep = false;
+    this.walkGen = 0;
+    this.walkActive = false; // a walk is in flight (dedupes re-apply)
+    this.walkingLabel = null; // source being scanned, for the status line
+    this.visibleSet = null;
+    this.visibleCount = 0;
+    this.loading = new Set(); // node ids with a listing in flight
   }
 
   nodeKey(source, bucket, prefix) { return `bkt:${source}:${bucket}:${prefix}`; }
@@ -79,11 +97,14 @@ export class Tree {
       else if (n.kind === 'rdir' && keep.has(this.srcKey(n.source))) keep.set(id, n);
     }
     this.nodes = keep;
+    this.walkGen++; // a changed source set invalidates any in-flight walk
     this.render(currentLoc);
     // re-expand previously-open sources lazily
     for (const [id, n] of keep) {
       if (n.kind === 'source' && n.expanded) this.expand(id);
     }
+    // the filter itself survives a sources change; a deep filter re-walks
+    if (this.filter && this.deep) this.startWalk();
   }
 
   // refresh feeds one LEGACY account-wide S3 source's buckets view into its
@@ -114,32 +135,146 @@ export class Tree {
     this.onBuckets?.(n.source, buckets.map((b) => b.name));
   }
 
+  // loadChildren fills one node's children by kind (source roots dispatch
+  // by type, S3 nodes stream their folder level, remote nodes list their
+  // directory) without touching expansion state — expand(), the filter's
+  // first-level preload and the deep walk all share it. The in-flight Set
+  // keeps concurrent callers from listing the same node twice.
+  async loadChildren(n) {
+    if (n.loaded || this.loading.has(n.id)) return;
+    this.loading.add(n.id);
+    try {
+      if (n.kind === 'source' && n.stype === 's3') {
+        if (n.bucket !== undefined) {
+          // bucket-scoped source: content folders directly under it
+          await this.buildS3Children(n);
+          this.onBuckets?.(n.source, [n.bucket]);
+        } else {
+          // legacy account-wide source: the bucket list
+          this.buildBucketChildren(n, await api.ListSourceBuckets(n.source));
+        }
+      } else if (n.kind === 'source' || n.kind === 'rdir') {
+        this.buildRemoteChildren(n, await api.RemoteList(n.source, n.kind === 'source' ? '/' : n.path));
+      } else if (n.bucket !== undefined) {
+        await this.buildS3Children(n);
+      }
+    } finally {
+      this.loading.delete(n.id);
+    }
+  }
+
   async expand(id) {
     const n = this.nodes.get(id);
     if (!n) return;
     n.expanded = true;
+    this.filterCollapsed.delete(id); // a reveal under a filter must open
     if (!n.loaded) {
       try {
-        if (n.kind === 'source' && n.stype === 's3') {
-          if (n.bucket !== undefined) {
-            // bucket-scoped source: content folders directly under it
-            await this.buildS3Children(n);
-            this.onBuckets?.(n.source, [n.bucket]);
-          } else {
-            // legacy account-wide source: the bucket list
-            this.buildBucketChildren(n, await api.ListSourceBuckets(n.source));
-          }
-        } else if (n.kind === 'source' || n.kind === 'rdir') {
-          this.buildRemoteChildren(n, await api.RemoteList(n.source, n.kind === 'source' ? '/' : n.path));
-        } else if (n.bucket !== undefined) {
-          await this.buildS3Children(n);
-        }
+        await this.loadChildren(n);
       } catch (err) {
         n.expanded = false;
         console.error('tree expand failed', err);
       }
     }
     this.render();
+  }
+
+  // ========================= tree filter =========================
+  // setFilter applies (matcher, query); a null matcher clears. The
+  // instant pass narrows everything the tree already knows, and unloaded
+  // SOURCE roots preload their first level in the background (expansion
+  // state is never touched, so clearing the filter restores exactly what
+  // the user had open). A changed query aborts any in-flight deep walk;
+  // deep mode restarts it for the new pattern.
+  setFilter(matcher, query) {
+    const changed = query !== this.filterQuery;
+    this.filter = matcher || null;
+    this.filterQuery = query || '';
+    this.filterCollapsed.clear();
+    if (changed) this.abortWalk();
+    if (this.filter) {
+      for (const n of this.nodes.values()) {
+        if (n.kind === 'source' && !n.loaded) {
+          this.loadChildren(n).then(() => this.render()).catch(() => {});
+        }
+      }
+      // an unchanged query re-applied (the input's debounce landing after
+      // Enter) must not restart a walk that is already in flight
+      if (this.deep && !this.walkActive) this.startWalk();
+    }
+    this.render();
+  }
+
+  // setDeep opts in or out of walking unloaded folders for the filter.
+  setDeep(on) {
+    this.deep = !!on;
+    if (this.deep && this.filter && !this.walkActive) this.startWalk();
+    else if (!this.deep) this.abortWalk();
+  }
+
+  // startWalk depth-first loads every folder of every source so the
+  // filter reaches depths the tree never expanded. Sources walk in render
+  // order, one node's listing at a time — gentle on remote engines and
+  // easy to follow in the status line. walkGen aborts the walk on filter
+  // change, clear, toggle-off or a sources change; children are re-read
+  // every iteration because a listing elsewhere can swap the array
+  // mid-walk.
+  async startWalk() {
+    const gen = ++this.walkGen;
+    this.walkActive = true;
+    const roots = [...this.nodes.values()].filter((n) => n.kind === 'source')
+      .sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1));
+    for (const r of roots) {
+      if (gen !== this.walkGen) return;
+      this.walkingLabel = r.label;
+      this.onFilterStatus?.({ walking: true, scanning: r.label });
+      await this.walkNode(r, gen);
+    }
+    if (gen === this.walkGen) {
+      this.walkActive = false;
+      this.walkingLabel = null;
+      this.onFilterStatus?.({ walking: false });
+    }
+  }
+
+  async walkNode(n, gen) {
+    if (gen !== this.walkGen) return;
+    if (!n.loaded) {
+      try {
+        await this.loadChildren(n);
+      } catch {
+        return; // an unreadable folder skips its subtree; the walk goes on
+      }
+      if (gen !== this.walkGen) return;
+      this.render();
+    }
+    for (let i = 0; i < n.children.length; i++) {
+      if (gen !== this.walkGen) return;
+      await this.walkNode(n.children[i], gen);
+    }
+  }
+
+  abortWalk() {
+    this.walkGen++;
+    this.walkActive = false;
+    this.walkingLabel = null;
+    this.onFilterStatus?.({ walking: false });
+  }
+
+  // computeVisibility marks the nodes a render may draw: a row stays when
+  // its label matches or any LOADED child stays — unloaded folders cannot
+  // participate yet, which is exactly what the deep walk adds.
+  computeVisibility() {
+    const vis = new Set();
+    const visit = (n) => {
+      let v = this.filter ? !!this.filter(n.label) : true;
+      for (const c of n.children) if (visit(c)) v = true;
+      if (v) vis.add(n.id);
+      return v;
+    };
+    // every node hangs off a source root — visiting the roots covers all
+    for (const n of this.nodes.values()) if (n.kind === 'source') visit(n);
+    return vis;
   }
 
   // buildS3Children loads the folder level of a bucket/prefix node through
@@ -296,6 +431,9 @@ export class Tree {
 
   collapseAll() {
     for (const n of this.nodes.values()) n.expanded = false;
+    // under a filter the effective expansion ignores n.expanded, so the
+    // collapse lands on the filtered view's own override
+    if (this.filter) for (const n of this.nodes.values()) this.filterCollapsed.add(n.id);
     this.render();
   }
 
@@ -344,7 +482,22 @@ export class Tree {
     const roots = [...this.nodes.values()].filter((n) => n.kind === 'source');
     roots.sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1));
     this.container.replaceChildren();
-    for (const r of roots) this.container.appendChild(this.renderNode(r));
+    if (this.filter) {
+      this.visibleSet = this.computeVisibility();
+      for (const r of roots) {
+        if (this.visibleSet.has(r.id)) this.container.appendChild(this.renderNode(r));
+      }
+      if (!this.container.children.length) {
+        this.container.appendChild(el('div', {
+          class: 'tree-empty-note',
+          text: t('treeFilterNone', { q: this.filterQuery }),
+        }));
+      }
+      this.visibleCount = this.container.querySelectorAll('.tnode').length;
+    } else {
+      this.visibleSet = null;
+      for (const r of roots) this.container.appendChild(this.renderNode(r));
+    }
   }
 
   // guardIcons builds the versioning / object-lock indicators shown after a
@@ -386,14 +539,36 @@ export class Tree {
   }
 
   renderNode(n) {
+    // under a filter an invisible row is simply not rendered; a visible
+    // row that only carries a matching descendant renders dimmed, and the
+    // subtree reads as expanded so matches at depth surface without
+    // touching the user's collapse state (filterCollapsed remembers the
+    // manual collapses made while filtered)
+    if (this.visibleSet && !this.visibleSet.has(n.id)) return document.createDocumentFragment();
+    const filtered = !!this.visibleSet;
+    const open = filtered ? !this.filterCollapsed.has(n.id) : n.expanded;
     const hasKids = n.loaded && n.children.length > 0;
     const twist = el('span', {
       class: 'twist',
-      text: n.expanded ? '\u25BC' : '\u25B6',
-      onclick: (e) => { e.stopPropagation(); n.expanded ? this.collapse(n.id) : this.expand(n.id); },
+      text: open ? '\u25BC' : '\u25B6',
+      onclick: (e) => {
+        e.stopPropagation();
+        if (filtered) {
+          if (open) {
+            this.filterCollapsed.add(n.id);
+          } else {
+            this.filterCollapsed.delete(n.id);
+            // expanding an unloaded folder under a filter still fetches it
+            if (!n.loaded) this.loadChildren(n).then(() => this.render()).catch(() => {});
+          }
+          this.render();
+        } else {
+          n.expanded ? this.collapse(n.id) : this.expand(n.id);
+        }
+      },
     });
     n.twistEl = twist;
-    if (!hasKids && !n.expanded) twist.style.visibility = 'hidden';
+    if (!hasKids && !open) twist.style.visibility = 'hidden';
     const ticon = el('span', { class: 'ticon' });
     if (n.kind === 'source') {
       // the type glyph painted in the source's own accent color — the
@@ -402,7 +577,7 @@ export class Tree {
       if (n.color) ticon.style.color = n.color;
     } else ticon.textContent = n.kind === 'rdir' ? '\u{1F4C1}' : n.prefix === '' ? '\u{1F5C0}' : '\u{1F4C1}';
     const row = el('div', {
-      class: `tnode${this.currentId === n.id ? ' sel' : ''}`,
+      class: `tnode${this.currentId === n.id ? ' sel' : ''}${filtered && !this.filter(n.label) ? ' dim' : ''}`,
       style: `padding-left:${8 + n.level * 14}px`,
       title: n.kind === 'source'
         ? (n.bucket !== undefined ? `${n.label} (s3 — bucket ${n.bucket})` : `${n.label} (${n.stype})`)
@@ -501,7 +676,7 @@ export class Tree {
     n.el = row;
     const frag = document.createDocumentFragment();
     frag.appendChild(row);
-    if (n.expanded && n.children.length) {
+    if (open && n.children.length) {
       for (const c of n.children) frag.appendChild(this.renderNode(c));
     }
     return frag;

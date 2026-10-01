@@ -248,6 +248,7 @@ switching; the same S3 source stays connected through it).
 | Monitoring windows: 490×300 footprint, auto-height, row detail panels | Wails v3 server | the monitor popouts (transfers, searches) open at their 490×300 footprint — also their resize floor — grow with content instead of scrolling it away, expand per-row detail panels in place, collapse long lists behind "+N more", and carry the header strip that identifies the window | — | — (sweep: popout-auto-height + popout-row-details + popout-window-views, SWEEP-VIS-01) | Win 11 x64 |
 | **Column resize/reorder and the sidebar splitter: the dragged edge is the only thing that moves** | shim world | resizing drags the grabbed edge, never the neighbor boundaries — the stretch column pins on the first resize, growth past the pane becomes the horizontal scrollbar instead of squeezing other columns, narrowing floors at the template minimum, and a reordered column keeps its grab strip seated even flush with the pane's right edge; double-click resets a width and the header picker's Reset columns restores the whole out-of-box set, order and widths in one click (persisted); opt-in columns carry their values on a quiet gray wash; the sidebar splitter drags with pointer capture past the window edge, keeps the boundary glued to the grab offset, clamps at its ceiling, persists and resets on double-click | — | — (sweep: column-resize-reorder + sidebar-resize, SWEEP-VIS-01 — 742/742) | Win 11 x64 |
 | **Content size bar: the real recursive number, every source type, version-aware** | shim world | the content viewer's bottom bar answers "how much is really here" byte-exact on every source type it hosts: versioned S3 (whole listing, folder selection, file selection, mixed multi-select — current bytes + old-version bytes + marker counts each pinned), suspended S3 (enabled-era history still priced), never-versioned S3 (no version part), the buckets view (the browsed source's four buckets walked in ONE call — never cross-source, re-walked on per-bucket invalidation — and one-bucket selection), remote engines (SFTP whole/folder, WebDAV file stated not walked), empty buckets (exact `0 B`); a re-selected row answers from cache (no second walk after invalidation), a slow walk shows the busy placeholder and then the answer, a failed walk falls back to listing-level sums with `partial — at least this much` and the error on hover, a walk resolving after navigating away never paints, the bar spans the content area only (sidebar to window edge; the pane boundary when the dual pane is open), and the whole thing renders localized (fi walk) | — | — (sweep: size-bar, SWEEP-VIS-01 — 765/765) | Win 11 x64 |
+| **Data sources filter: one pattern, every source, wildcards, whole hierarchy** | shim world | the funnel sits left of the + in the sidebar head (and disappears with no sources while the + stays); the panel opens focused; a plain word narrows every source at once (BACKUP → one), `*`/`?` globs anchor on row labels (`*prod*`, `?ightly`), multi-pattern OR surfaces folder rows under dimmed pass-through sources (a bucket matching by name surfaces with its source as one more carrier), a no-match pattern empties the tree to the "no matches for …" note, Escape closes the panel but keeps the pattern (funnel stays lit), the × restores the tree and unlights the funnel; the deep walk reports the source being scanned with a Stop control that cancels it, and a pattern matching a folder no expansion ever loaded (legacy, three levels down) surfaces it with carriers dim and the shown-row count in the status line; the pattern also hides a non-matching favorite until it clears (favorite returns intact) | — | — (sweep: tree-filter + favorites + onboarding-empty, SWEEP-VIS-01 — 806/806) | Win 11 x64 |
 
 | **Execute-time delete gate: a stale preview can never authorize the delete** | S3 (MinIO) | 49 objects previewed (under the L2 gate), 3 more land before Execute: the FRESH expansion crosses 50 and the delete without force REFUSES with nothing gone (the ladder re-checks at execute time — the count-then-act window cannot be abused); the fresh dry-run counts 53; --force then deletes exactly what exists | ✅ CLI-S3-44 | ✅ GUI-54 (leg 1: real grid + bridge refusal, ≥52 remain) | Win 11 x64 |
 | **Canceling a running delete stays scoped, countable, recoverable** | S3 (MinIO) | a 600-object delete canceled from the task registry mid-flight: the out-of-scope control prefix untouched (3/3 files), the scoped prefix left countable (≤ seeded), the task settles — never wedged — and a fresh delete finishes the job; a bogus CancelList on an unknown token resolves without wedging the list registry | — | ✅ GUI-54 (legs 2–3) | Win 11 x64 |
@@ -347,7 +348,7 @@ full matrix (174 rows):
   (the 7 SKIPs are the recorded MinIO provider gaps: lifecycle put,
    SSE-S3, CORS put, website put and encryption put on the CLI, plus
    the CORS and website admin tabs behind the same refused APIs)
-  SWEEP-VIS-01  gui-visual   791/791 checks
+  SWEEP-VIS-01  gui-visual   806/806 checks
   SWEEP-LIVE-01 gui-v3live   142 checks, no page errors
   standalone units, same tree:
   --only gui (final tree)           89 PASS · 2 SKIP · 0 FAIL — 1683 s
@@ -355,6 +356,18 @@ full matrix (174 rows):
 ```
 
 The rounds in brief:
+
+- Round 9 shipped the Data sources filter (the funnel left of the +
+  in the sidebar header). The sweep pinned the whole contract:
+  wildcard and multi-pattern semantics over every source at once,
+  hierarchy filtering with dimmed pass-through ancestors, the no-match
+  note, panel Esc/clear behavior, the cancelable deep walk reaching a
+  folder no expansion ever loaded, favorites narrowing under the
+  pattern, and the funnel hidden on an empty workspace. The round also
+  fixed a real race the battery caught live: the pattern field's
+  debounce captured the typed value at event time, so a quick
+  type-then-clear resurrected the pattern 250 ms after the clear —
+  the debounce now reads the field when it fires.
 
 - Round 8 swept the destructive edges that still lacked act-time
   proof. The app now holds the line server-side on every mass-delete

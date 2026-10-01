@@ -8,6 +8,22 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Data sources filter: one pattern narrows every source, wildcards
+  included.** The sidebar header gains a funnel next to the **+** that
+  opens a filter panel for the whole Data sources tree. Plain words
+  match as case-insensitive substrings, `*` and `?` act as wildcards,
+  and space- or comma-separated patterns OR together. The pattern
+  filters the entire hierarchy — sources, buckets and folders — with
+  pass-through ancestors dimmed, an honest "no matches" note when
+  nothing survives, and the Favorites list narrowed to matching
+  buckets. Loaded content filters instantly as you type; a **Search
+  all folders** toggle walks the unloaded depths of every source in
+  the background (status line naming the source, Stop cancels, results
+  appearing as the walk goes) so deep matches surface without opening
+  anything. Enter applies immediately, Escape closes the panel while
+  keeping the pattern, the × clears it, and the funnel icon hides
+  itself entirely when no data sources exist.
+
 - **Content size bar: the real recursive size, every source type,
   version-aware.** The content viewer gains a WinSCP-style bottom
   bar: with nothing selected it shows the real recursive size of

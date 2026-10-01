@@ -3147,6 +3147,129 @@ await step('sources-in-tree', async () => {
   await shotOf('sources-tree', '#tree');
 });
 
+await step('tree-filter', async () => {
+  // the sidebar funnel: one pattern narrows every data source at once.
+  // tree-lazy already loaded the deepest chain in memory, so this step
+  // reboots the page for a deterministic fresh-boot tree — the storage
+  // snapshot + one-shot keep hatch carries every s3b-* key through the
+  // reload (search-window precedent). Fresh boot expands hetzner (the
+  // buckets view feeds the tree), so "the whole tree" here means nine
+  // rows: hetzner + its four buckets + the four other sources.
+  const store0 = await evalPage(() => JSON.parse(JSON.stringify(
+    Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith('s3b-'))))));
+  await evalPage((d) => {
+    for (const [k, v] of Object.entries(d)) localStorage.setItem(k, String(v));
+    localStorage.setItem('s3b-shim-keep', '1');
+  }, store0);
+  await page.goto(BASE);
+  const treeLabels = () => evalPage(() => Array.from(document.querySelectorAll('#tree .tnode .tlabel'))
+    .map((e) => e.textContent));
+  const WHOLE = ['backup-box', 'dav-claims', 'hetzner', 'logs-2026', 'media-assets',
+    'nightly', 'archive-cold', 'team-files', 'website-prod'];
+  const sameRows = (want, what) => waitFor(async () => {
+    const got = (await treeLabels()).slice().sort().join('|');
+    return got === want.slice().sort().join('|');
+  }, 6000, what);
+  await waitFor(async () => (await treeLabels()).includes('team-files'), 10000, 'fresh boot tree');
+
+  // the funnel sits left of the + and toggles the pattern panel
+  await ok('funnel left of the + in the sidebar head', evalPage(() => {
+    const kids = Array.from(document.querySelectorAll('#sidebar-head .side-tools > button'));
+    return kids.length === 2 && kids[0].classList.contains('side-filter')
+      && kids[1].classList.contains('side-add');
+  }));
+  await ok('filter panel hidden until the funnel opens', evalPage(() =>
+    document.getElementById('tree-filter').classList.contains('hidden')));
+  await page.click('#sidebar-head .side-filter');
+  await ok('panel opens and focuses the pattern input', evalPage(() =>
+    !document.getElementById('tree-filter').classList.contains('hidden')
+    && document.activeElement?.id === 'tree-filter-input'));
+
+  // plain word: case-insensitive substring across every source at once
+  await page.fill('#tree-filter-input', 'BACKUP');
+  await page.press('#tree-filter-input', 'Enter');
+  await sameRows(['backup-box'], 'BACKUP narrows to one source');
+  await ok('funnel marked on while a filter is applied', evalPage(() =>
+    document.querySelector('#sidebar-head .side-filter').classList.contains('on')));
+
+  // wildcards: * runs, ? singles — anchored globs on row labels
+  await page.fill('#tree-filter-input', '*prod*');
+  await page.press('#tree-filter-input', 'Enter');
+  await sameRows(['website-prod'], '*prod* glob');
+  await page.fill('#tree-filter-input', '?ightly');
+  await page.press('#tree-filter-input', 'Enter');
+  await sameRows(['nightly'], '?ightly glob');
+
+  // hierarchy: folder rows match under their (dimmed) source — the
+  // instant pass sees the auto-loaded first level of every source.
+  // 'assets' also substring-matches hetzner's media-assets bucket: the
+  // pattern narrows ROWS, so a matching bucket row surfaces with its
+  // source as one more dim carrier — exactly the hierarchy behavior.
+  await page.fill('#tree-filter-input', 'invoices assets');
+  await page.press('#tree-filter-input', 'Enter');
+  await sameRows(['dav-claims', 'invoices', 'hetzner', 'media-assets', 'website-prod', 'assets'], 'multi-pattern OR');
+  await ok('pass-through ancestors render dimmed', evalPage(() => {
+    const dims = Array.from(document.querySelectorAll('#tree .tnode.dim .tlabel')).map((e) => e.textContent);
+    return dims.join('|') === 'dav-claims|hetzner|website-prod';
+  }));
+
+  // no match: one note row, zero tree rows
+  await page.fill('#tree-filter-input', 'zzz-none');
+  await page.press('#tree-filter-input', 'Enter');
+  await sameRows([], 'no-match empties the tree');
+  await ok('no-match note names the pattern', evalPage(() =>
+    (document.querySelector('#tree .tree-empty-note')?.textContent || '').includes('zzz-none')));
+
+  // Esc closes the panel but keeps the filter; the funnel stays lit
+  await page.press('#tree-filter-input', 'Escape');
+  await ok('Esc closes the panel, filter persists', evalPage(() =>
+    document.getElementById('tree-filter').classList.contains('hidden')
+    && document.querySelector('#sidebar-head .side-filter').classList.contains('on')
+    && document.querySelectorAll('#tree .tnode').length === 0));
+  await page.click('#sidebar-head .side-filter');
+  await page.click('#tree-filter-clear');
+  await sameRows(WHOLE, 'clear restores the tree');
+  await ok('funnel unlit after clear', evalPage(() =>
+    !document.querySelector('#sidebar-head .side-filter').classList.contains('on')));
+
+  // deep walk: slow faults make the walk observable, Stop cancels it
+  await evalPage(() => { window.__shim.world.fault = { listDelayMs: 400, remoteDelayMs: 400 }; });
+  await page.check('#tree-filter-deep');
+  await page.fill('#tree-filter-input', 'docs');
+  await page.press('#tree-filter-input', 'Enter');
+  await ok('deep walk reports the source being scanned', waitFor(async () => {
+    const st = await txt('#tree-filter-status');
+    return /backup-box|dav-claims|hetzner|nightly|website-prod/.test(st)
+      && await evalPage(() => !document.getElementById('tree-filter-stop').classList.contains('hidden'));
+  }, 8000, 'walk status'));
+  await page.click('#tree-filter-stop');
+  await ok('Stop cancels the walk', waitFor(async () => evalPage(() =>
+    document.getElementById('tree-filter-stop').classList.contains('hidden')
+    && !/backup-box|dav-claims|hetzner|nightly|website-prod/.test(
+      document.getElementById('tree-filter-status').textContent)), 4000, 'walk stopped'));
+  await evalPage(() => { window.__shim.world.fault = null; });
+
+  // with deep on, a pattern matching a folder NO expansion ever loaded
+  // surfaces it: the walk loads hetzner -> team-files -> docs -> legacy
+  await page.fill('#tree-filter-input', 'legacy');
+  await page.press('#tree-filter-input', 'Enter');
+  await sameRows(['hetzner', 'team-files', 'docs', 'legacy'], 'deep walk reaches legacy');
+  await ok('match renders bright, carriers dim', evalPage(() => {
+    const dims = Array.from(document.querySelectorAll('#tree .tnode.dim .tlabel')).map((e) => e.textContent);
+    return dims.join('|') === 'hetzner|team-files|docs';
+  }));
+  await ok('status counts the shown rows', waitFor(async () =>
+    (await txt('#tree-filter-status')).includes('4'), 4000, 'shown count'));
+
+  // leave the world as it was: no filter, no deep, panel closed, and a
+  // familiar bucket view on screen for the steps that follow
+  await page.click('#tree-filter-clear');
+  await page.uncheck('#tree-filter-deep');
+  await page.press('#tree-filter-input', 'Escape');
+  await sameRows(WHOLE, 'cleanup restores the tree');
+  await navObjectsOf('hetzner', 'team-files');
+});
+
 await step('source-editor-autoname', async () => {
   // the sidebar "+" opens the Add-source dialog; the Name field auto-fills
   // from the connection details and stays editable (a typed name wins)
@@ -5519,6 +5642,9 @@ await step('onboarding-empty', async () => {
   await ok('empty actions offer add-source', p2.evaluate(() => document.getElementById('empty-actions').textContent.length > 0));
   await ok('upload greyed without sources', p2.evaluate(() => document.getElementById('btn-upload').disabled));
   await ok('doctor greyed without sources', p2.evaluate(() => window.__s3bCmdState?.canDoctor === false));
+  await ok('funnel hidden with no data sources, + stays', p2.evaluate(() =>
+    !document.querySelector('#sidebar-head .side-filter')
+    && !!document.querySelector('#sidebar-head .side-add')));
   // with nothing selected there is no source root crumb in front of the
   // path — no orphan bucket icon for a source that isn't there
   await ok('path bar carries no source crumb when nothing is selected', p2.evaluate(() => document.getElementById('breadcrumb').children.length === 0));
@@ -6591,6 +6717,18 @@ await step('favorites', async () => {
   await waitFor(async () => !!(await elOrNull(() => document.querySelector('#favorites .fav-row') || null)), 4000, 'fav row');
   await ok('favorite appears in the sidebar', evalPage(() => document.querySelector('#favorites .fav-label')?.textContent === 'team-files'));
   await ok('favorite persisted', (await evalPage(() => localStorage.getItem('s3b-favs'))).includes('team-files'));
+  // the tree filter narrows favorites too: a non-matching pattern drops
+  // the pinned row (and the section) until the pattern clears
+  await page.click('#sidebar-head .side-filter');
+  await page.fill('#tree-filter-input', 'zzz-none');
+  await page.press('#tree-filter-input', 'Enter');
+  await ok('filter hides a non-matching favorite', waitFor(async () =>
+    evalPage(() => document.getElementById('fav-section').classList.contains('hidden')), 4000, 'fav hidden by filter'));
+  await page.click('#tree-filter-clear');
+  await ok('favorite returns when the filter clears', waitFor(async () =>
+    evalPage(() => (document.querySelector('#favorites .fav-label')?.textContent || '') === 'team-files'),
+    4000, 'fav back'));
+  await page.press('#tree-filter-input', 'Escape');
   await shot('favorites');
   await resetCalls();
   await page.click('#favorites .fav-row');
