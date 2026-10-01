@@ -1296,18 +1296,21 @@ kbd {
 .pill.on { background: rgba(27, 127, 59, .14); color: var(--ok); }
 .pill.off { background: rgba(107, 116, 132, .18); color: var(--text-dim); }
 
-/* Sidebar resize splitter: an 11px grab strip carrying a thin seam down
-   its middle — wide enough to hit without aiming, subtle enough to
-   ignore. The strip overlaps its neighbors 3px per side so the layout
-   slot stays 5px; pointer capture (main.js) holds the drag past the
-   edge. */
+/* Sidebar resize splitter: an 11px grab strip straddling the sidebar's
+   own border-right hairline — wide enough to hit without aiming, quiet
+   enough to ignore (at rest the hairline IS the divider, like every
+   other seam in the app; no second grey bar beside it). The strip
+   overlaps its neighbors 3px per side so the layout slot stays 5px;
+   pointer capture (main.js) holds the drag past the edge, and the
+   seam's accent pill appears only while the pointer is on it. */
 .side-split {
   flex: none; width: 11px; margin: 0 -3px; cursor: col-resize;
   background: transparent; z-index: 3; touch-action: none; position: relative;
 }
 .side-split::after {
   content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px;
-  border-radius: 2px; background: var(--border);
+  border-radius: 2px; background: transparent;
+  transition: background-color .12s ease;
 }
 .side-split:hover::after, body.col-resizing .side-split::after { background: var(--accent); }
 body.col-resizing { cursor: col-resize; user-select: none; }
