@@ -99,6 +99,24 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   padding: 6px 8px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  /* each toolbar measures its own column, so under the dual-pane split
+     the main and secondary toolbars collapse independently */
+  container-type: inline-size;
+}
+/* narrow columns trade word labels for glyphs — tooltips carry the full
+   names and every shortcut keeps working */
+@container (max-width: 839px) {
+  .tb-word { display: none; }
+}
+/* next tier: the buttons the menu bar and shortcuts already cover fold
+   away (View menu, F1, Ctrl+Shift+F, Shift+F4 all still reach them) */
+@container (max-width: 579px) {
+  #btn-theme, #btn-help, #btn-find, #btn-newfile,
+  #local-btn-theme, #local-btn-help, #local-btn-find, #local-btn-newfile { display: none; }
+}
+/* deepest tier: new folder and compare fold — context menus cover both */
+@container (max-width: 419px) {
+  #btn-compare, #btn-newfolder, #local-compare, #local-btn-newfolder { display: none; }
 }
 .tb-btn {
   font: var(--font); color: var(--text);
@@ -178,6 +196,9 @@ svg.flip { transform: scaleX(-1); }
 
 /* ================= Main split ================= */
 .main { flex: 1; display: flex; min-height: 0; }
+/* content pane column: the toolbar + path bar + grid stack — one per
+   pane in dual-pane mode, both columns carrying the identical chrome */
+.pane-col { flex: 1 1 50%; min-width: 240px; display: flex; flex-direction: column; }
 
 .sidebar {
   width: var(--sidebar-w); min-width: 160px; flex: none;
@@ -265,7 +286,7 @@ svg.flip { transform: scaleX(-1); }
 .tnode .tlabel { overflow: hidden; text-overflow: ellipsis; }
 
 /* ================= Grid ================= */
-.grid-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; }
+.grid-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 
 /* The column template is dynamic (grid.setColumns builds it from the
    visible-column list) — head and rows each carry it inline. */
@@ -499,8 +520,8 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
   .load-skel div { animation: none; }
 }
 
-/* Side pane mid-navigation: rows of the previous directory dim while the
-   next one loads — honest about being stale, never blank. */
+/* Secondary pane mid-navigation: rows of the previous directory dim while
+   the next one loads — honest about being stale, never blank. */
 .local-pane.is-loading .grid-body { opacity: .55; }
 .local-pane.is-loading #local-status { color: var(--accent); }
 
@@ -930,49 +951,30 @@ kbd {
   border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px;
 }
 
-/* ================= Local pane (dual-pane, F9) ================= */
+/* ================= Secondary pane (dual-pane, F9) ================= */
+/* The twin column: an even 50/50 flex partner of the main pane (no saved
+   drag width = the twin default); the splitter's drag (main.js) swaps the
+   basis for a fixed pixel width, persisted as s3b-pane-w. */
 .local-pane {
-  flex: 1; min-width: 0;
+  flex: 1 1 50%; min-width: 300px;
   display: flex; flex-direction: column;
   background: var(--panel);
   border-left: 1px solid var(--border);
   /* stay on top of anything bleeding out of the center column */
   position: relative; z-index: 2;
 }
-.lp-bar {
-  display: flex; align-items: center; gap: 4px;
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--border);
-}
+/* the onboarding source picker — an empty-state slot, not pane chrome:
+   once a binding exists, the tree's "Open on secondary pane" and the
+   remembered location take over */
 .lp-src {
-  max-width: 150px;
+  max-width: 240px;
   font-size: 12px;
   padding: 2px 4px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--panel-alt); color: var(--text);
 }
-.lp-crumb {
-  flex: 1; min-width: 0;
-  padding: 3px 8px;
-  border: 1px solid var(--border-soft); border-radius: 4px;
-  background: var(--panel-alt);
-  font-family: var(--mono); font-size: 12px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  cursor: pointer;
-}
-.lp-crumb:hover { background: var(--hover); }
-.lp-sync {
-  display: flex; align-items: center; gap: 4px;
-  font-size: 12px; color: var(--text-dim);
-  cursor: pointer; white-space: nowrap;
-}
-.lp-status {
-  padding: 3px 10px;
-  border-top: 1px solid var(--border);
-  font-size: 12px; color: var(--text-dim);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.empty-picker { margin-top: 4px; }
 
 /* Content bottom bar (main viewer, WinSCP-style): the real recursive
    totals of the listing or the selection on the left, the active data

@@ -1067,6 +1067,11 @@ function shim() {
       (world.objects[bucket] = world.objects[bucket] || []).push({ key, size: 0 });
       return key;
     },
+    SourceCreateFile: (_src, bucket, prefix, name, ext) => {
+      const key = `${prefix || ''}${composeName(name, ext)}`;
+      (world.objects[bucket] = world.objects[bucket] || []).push({ key, size: 0 });
+      return key;
+    },
     RemoteCreateFile: (src, dir, name, ext) => {
       const full = `${(dir && dir.endsWith('/')) ? dir : `${dir}/`}${composeName(name, ext)}`;
       const rn = world.remote[src] ? src : world.sources.find((s) => s.id === src)?.name;
@@ -1500,11 +1505,19 @@ await step('loading-states', async () => {
     return rows.includes('readme.md') && !rows.some((k) => k.startsWith('/'));
   }));
 
-  // -- side pane: dimmed pane + ellipsis status while its listing pends --
+  // -- secondary pane: the onboarding empty state first, then the dimmed
+  //    pane + ellipsis status while its listing pends --
   await page.click('#btn-panes');
+  await ok('fresh pane opens on its onboarding empty state', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && !document.getElementById('local-empty').classList.contains('hidden')
+    && !document.getElementById('local-empty-picker').classList.contains('hidden')
+    && document.getElementById('local-empty-title').textContent === 'Secondary pane'));
+  await page.selectOption('#local-src', 'local');
   await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane open at local home');
   await evalPage(() => { window.__shim.world.fault = { remoteDelayMs: 800 }; });
-  await page.selectOption('#local-src', 'src-box');
+  // the picker hides once a binding exists — rebind() is the pane's own API
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
   await ok('side pane flags its in-flight listing', evalPage(() =>
     document.getElementById('local-pane').classList.contains('is-loading')
     && document.getElementById('local-status').textContent === '\u2026'));
@@ -1513,7 +1526,7 @@ await step('loading-states', async () => {
   await ok('side pane loading flag cleared', evalPage(() =>
     !document.getElementById('local-pane').classList.contains('is-loading')));
   await evalPage(() => { window.__shim.world.fault = null; });
-  await page.selectOption('#local-src', 'local');
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane back to local');
   await page.click('#btn-panes'); // close: later steps expect a single pane
 });
@@ -5685,16 +5698,65 @@ await step('popout-window-views', async () => {
 });
 
 await step('dual-pane', async () => {
+  // a pane with no remembered binding opens on its onboarding empty state
+  await evalPage(() => { window.__s3bSidePane.reset(); });
   await page.click('#btn-panes');
   await ok('pane visible', evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')));
-  // sideKeys carries absolute paths — assert on the visible row label
+  await ok('fresh pane shows the onboarding picker, not content', evalPage(() =>
+    !document.getElementById('local-empty').classList.contains('hidden')
+    && !document.getElementById('local-empty-picker').classList.contains('hidden')
+    && document.getElementById('local-empty-title').textContent === 'Secondary pane'));
+  await shot('pane-onboarding');
+  // identical toolbars: both columns carry the same button family (the
+  // pane's ids are local- prefixed, plus its own close)
+  await ok('both panes carry the identical toolbar', evalPage(() => {
+    const norm = (root, pre) => Array.from(root.querySelectorAll('button[id]'))
+      .map((b) => b.id.replace(pre, '').replace(/^local-/, ''));
+    const m = norm(document.getElementById('toolbar'), /^btn-/);
+    const s = norm(document.getElementById('local-toolbar'), /^local-btn-/).filter((x) => x !== 'close');
+    return m.length > 5 && m.join(',') === s.join(',');
+  }));
+  const ptool = await evalPage(() => {
+    const bar = document.getElementById('local-toolbar');
+    const r = bar.getBoundingClientRect();
+    const bad = [];
+    if (bar.scrollWidth > bar.clientWidth + 1) bad.push('hscroll ' + bar.scrollWidth + '>' + bar.clientWidth);
+    for (const c of bar.querySelectorAll('*')) {
+      const cr = c.getBoundingClientRect();
+      if (cr.height > 0 && (cr.top < r.top - 1.5 || cr.bottom > r.bottom + 1.5)) { bad.push('bleed ' + (c.id || c.className)); break; }
+    }
+    return bad.join('; ');
+  });
+  await ok('pane toolbar stays inside its bar' + (ptool ? ' [' + ptool + ']' : ''), !ptool);
+  // the onboarding picker is one way in — the workstation first
+  await page.selectOption('#local-src', 'local');
   await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'local home');
   await ok('local home listed', true);
   await shot('pane-local');
-  // remote binding
-  await page.selectOption('#local-src', 'src-box');
-  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote listing');
-  await ok('pane binds sftp source', (await txt('#local-crumb')).includes('backup-box'));
+  // the tree's ctx menu is the other way in: a source node binds the pane
+  // to that source's root
+  const box = await treeRow('backup-box');
+  await rightClick(box);
+  await sleep(60);
+  await ctxItem(/^open on secondary pane$/i);
+  await sleep(400);
+  if (!(await sideKeys()).includes('/backup.sh')) {
+    // the ctx click never reached the pane — dump state, then drive
+    // openAt directly: if the direct call lists, the menu->handler hop is
+    // broken; if not, the pane engine is (the label carries the evidence)
+    const st = await evalPage(() => {
+      const sp = window.__s3bSidePane;
+      return 'srcs=' + sp.sources.map((s) => s.name).join('|') + ' bound=' + sp.bound
+        + ' binding=' + JSON.stringify(sp.binding) + ' listed=' + sp.hasListed;
+    });
+    await evalPage(() => { window.__s3bSidePane.openAt({ kind: 'remote', source: 'backup-box', path: '' }); });
+    await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000,
+      'pane remote listing [ctx miss; ' + st + ']');
+    await ok('tree ctx item reached the pane (no fallback needed)', false);
+  } else {
+    await ok('tree ctx item reached the pane (no fallback needed)', true);
+  }
+  await ok('tree ctx bound the pane to the remote source', (await txt('#local-crumb')).includes('backup-box'));
   await shot('pane-remote');
   // side remote Copy URL: the same real-address form as the main remote
   // view, pinned to the pane's own source
@@ -5704,25 +5766,166 @@ await step('dual-pane', async () => {
   });
   await sleep(80);
   await ctxItem(/^copy url$/i);
-  let ru = await findCall('RemoteUrls');
+  const ru = await findCall('RemoteUrls');
   let cc = await findCall('ClipboardSetText');
   await ok('side pane remote copy url pins the pane source (by id)', !!ru && ru.args[0] === 'src-box'
     && ru.args[1][0] === '/backup.sh' && !!cc && cc.args[0] === 'sftp://demo@backup-box.example.test:2022/backup.sh');
-  // s3 binding (slice 5)
-  await page.selectOption('#local-src', 'src-hetzner');
-  await waitFor(async () => (await sideKeys()).includes('logs-2026'), 6000, 'pane s3 buckets');
+  // the pane toolbar acts on its own binding: New folder mkdirs in the
+  // pane's remote root
+  await page.click('#local-btn-newfolder');
+  await waitFor(modalVisible, 4000, 'new folder prompt');
+  await evalPage(() => {
+    const i = document.querySelector('#modal-root input');
+    i.value = 'pane-made';
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(60);
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await findCall('RemoteMkdir')) !== null, 4000, 'RemoteMkdir');
+  const mk = await findCall('RemoteMkdir');
+  await ok('pane New folder lands in the pane source', mk && mk.args[0] === 'src-box' && mk.args[1] === '/pane-made');
+  // s3 binding: a source node opens the buckets view
+  const hz = await treeRow('hetzner');
+  await rightClick(hz);
+  await sleep(60);
+  await ctxItem(/^open on secondary pane$/i);
+  await sleep(400);
+  if (!(await sideKeys()).includes('logs-2026')) {
+    // the s3 ctx click never reached the pane — dump state, then drive
+    // openAt directly so the label says which link broke
+    const st = await evalPage(() => {
+      const sp = window.__s3bSidePane;
+      return 'binding=' + JSON.stringify(sp.binding) + ' listed=' + sp.hasListed
+        + ' ctxHidden=' + document.getElementById('ctxmenu').classList.contains('hidden')
+        + ' modalKids=' + document.getElementById('modal-root').children.length;
+    });
+    await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'hetzner', bucket: '', prefix: '' }); });
+    await waitFor(async () => (await sideKeys()).includes('logs-2026'), 6000,
+      'pane s3 buckets [ctx miss; ' + st + ']');
+    await ok('s3 tree ctx item reached the pane (no fallback needed)', false);
+  } else {
+    await ok('s3 tree ctx item reached the pane (no fallback needed)', true);
+  }
   await ok('pane lists S3 buckets', (await txt('#local-crumb')).includes('hetzner'));
   await shot('pane-s3');
-  await page.selectOption('#local-src', 'local');
-  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane back to local');
-  // side local Copy URL: file:/// reshaping, no backend call involved
+  // the pane's own filter narrows its grid only
+  await evalPage(() => {
+    const f = document.getElementById('local-filter');
+    f.value = 'logs';
+    f.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(260); // the pane filter debounces at 120ms
+  await ok('pane filter narrows its own grid only', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+      .filter((r) => r.style.display !== 'none' && r._model);
+    return document.getElementById('filter').value === ''
+      && rows.length > 0 && rows.every((r) => /logs/i.test(r._model.name));
+  }));
+  await evalPage(() => {
+    const f = document.getElementById('local-filter');
+    f.value = '';
+    f.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(260);
+  // parent row: gated by the same setting as the main pane's
+  await evalPage(() => localStorage.setItem('s3b-parent-row', '1'));
+  const lg = await sideRow('logs-2026');
+  await lg.asElement().dblclick();
+  await waitFor(async () => (await txt('#local-crumb')).includes('logs-2026'), 6000, 'inside bucket');
+  await ok('pane parent row seats when the setting is on', waitFor(async () =>
+    evalPage(() => !document.getElementById('local-upbar').classList.contains('hidden')), 4000, 'pane upbar seats'));
+  // the pane's New file composes into its own bucket/prefix
+  await page.click('#local-btn-newfile');
+  await waitFor(modalVisible, 4000, 'new file prompt');
+  await evalPage(() => {
+    const i = document.querySelector('#modal-root input');
+    i.value = 'pane-note';
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await sleep(60);
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => (await findCall('SourceCreateFile')) !== null, 4000, 'SourceCreateFile');
+  const mf = await findCall('SourceCreateFile');
+  await ok('pane New file lands in the pane bucket', mf && mf.args[0] === 'src-hetzner'
+    && mf.args[1] === 'logs-2026' && mf.args[3] === 'pane-note');
+  await evalPage(() => document.getElementById('local-upbar').click());
+  await waitFor(async () => !(await txt('#local-crumb')).includes('logs-2026'), 4000, 'pane upbar climbs');
+  await evalPage(() => localStorage.removeItem('s3b-parent-row'));
+  await ok('pane parent row rests when the setting is off', waitFor(async () =>
+    evalPage(() => document.getElementById('local-upbar').classList.contains('hidden')), 4000, 'pane upbar rests'));
+  // per-pane availability: the pane's selection drives its own toolbar,
+  // and the local binding's Download rests (it IS the workstation)
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
+  await waitFor(async () => !!(await sideRow('notes.txt')), 6000, 'pane back to local');
   const nt = await sideRow('notes.txt');
+  await nt.asElement().click();
+  await sleep(80);
+  await ok('pane selection arms Upload; Download rests on the local binding', evalPage(() =>
+    !document.getElementById('local-btn-upload').disabled
+    && document.getElementById('local-btn-download').disabled === true));
+  // side local Copy URL: file:/// reshaping, no backend call involved
   await nt.asElement().click({ button: 'right' });
   await sleep(80);
   await ctxItem(/^copy url$/i);
   cc = await findCall('ClipboardSetText');
   await ok('side pane local copy url formats file:///', !!cc
     && cc.args[0] === 'file:///C:/Users/demo/notes.txt');
+  // a remote selection arms the pane's Download
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote again');
+  const bk = await sideRow('backup.sh');
+  await bk.asElement().click();
+  await sleep(80);
+  await ok('a remote selection arms the pane Download', evalPage(() =>
+    !document.getElementById('local-btn-download').disabled));
+  // close ×, then reload: the × is an honest close (setPanes(false) writes
+  // s3b-panes '0' — the settings checkbox agrees), so boot keeps the pane
+  // shut; the remembered location (s3b-side-loc) restores when the pane
+  // is opened again
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
+  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane to local for the remember leg');
+  const before = await sideKeys();
+  await page.click('#local-btn-close');
+  await ok('the pane close button hides the pane', waitFor(async () =>
+    evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed'));
+  // the harness shim wipes every s3b-* key at each boot (deterministic
+  // seeds); stage its one-shot keep flag so the reload carries the pane
+  // keys — s3b-panes '0' and the remembered binding — into the new
+  // document (the same idiom the search-window walk uses)
+  await evalPage(() => { localStorage.setItem('s3b-shim-keep', '1'); });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction(() => window.__shim !== undefined
+    && document.querySelectorAll('#menubar .mb-title').length > 0, null, { timeout: 10000 });
+  await sleep(300);
+  await ok('boot keeps the pane closed after an honest × close', evalPage(() =>
+    localStorage.getItem('s3b-panes') === '0'
+    && document.getElementById('local-pane').classList.contains('hidden')));
+  await page.click('#btn-panes');
+  await waitFor(async () => !!(await sideRow('Downloads')), 8000, 'pane reopened at the remembered location');
+  await ok('reopen restores the remembered location after a reload', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')));
+  const after = await sideKeys();
+  await ok('same rows after the reopen', JSON.stringify(before) === JSON.stringify(after));
+  // the seam: drag resizes the pane and persists; a double-click resets
+  const w0 = await evalPage(() => document.getElementById('local-pane').getBoundingClientRect().width);
+  const sp = await elOrNull(() => document.getElementById('pane-split'));
+  const sb = await sp.asElement().boundingBox();
+  await page.mouse.move(sb.x + sb.width / 2, sb.y + 300);
+  await page.mouse.down();
+  await page.mouse.move(sb.x - 150, sb.y + 300, { steps: 8 });
+  await page.mouse.up();
+  await sleep(150);
+  const w1 = await evalPage(() => document.getElementById('local-pane').getBoundingClientRect().width);
+  // the seam tracks the pointer: traveling left hands the pane the space
+  // (the pane is the right column)
+  await ok('dragging the seam resizes the pane', w1 > w0 + 80);
+  await ok('the pane width persists', evalPage(() => parseInt(localStorage.getItem('s3b-pane-w') || '0', 10) > 300));
+  await sp.asElement().dblclick();
+  await sleep(150);
+  await ok('double-click resets the pane to even halves', evalPage(() =>
+    localStorage.getItem('s3b-pane-w') === null
+    && Math.abs(document.getElementById('main-pane').getBoundingClientRect().width
+      - document.getElementById('local-pane').getBoundingClientRect().width) < 4));
 });
 
 await step('side-pane-delete-window', async () => {
@@ -5733,7 +5936,7 @@ await step('side-pane-delete-window', async () => {
   await evalPage(() => {
     for (const k of ['s3b-del-autoconfirm', 's3b-del-window', 's3b-del-typeconfirm']) localStorage.removeItem(k);
   });
-  await page.selectOption('#local-src', 'src-box');
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
   await waitFor(async () => (await sideKeys()).includes('/db.dump'), 6000, 'pane remote listing');
   await resetCalls();
   await evalPage(() => {
@@ -5762,7 +5965,7 @@ await step('side-pane-delete-window', async () => {
   const rc = await findCall('RemoteRemove');
   await ok('RemoteRemove got the path', rc && JSON.stringify(rc.args).includes('/db.dump'));
   // local binding: same window, LocalDeletePreview → LocalRemove
-  await page.selectOption('#local-src', 'local');
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('notes.txt')), 6000, 'pane back to local');
   await resetCalls();
   await evalPage(() => {
@@ -5784,7 +5987,7 @@ await step('side-pane-delete-window', async () => {
   // Classic mode (window off) on a remote pane — classicTyped territory:
   // the typed word must appear ONLY while Require-typing is on; off, a
   // plain danger confirm carries the same stakes text.
-  await page.selectOption('#local-src', 'src-box');
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
   await waitFor(async () => (await sideKeys()).includes('/db.dump'), 6000, 'pane remote listing (classic)');
   await resetCalls();
   await evalPage(() => localStorage.setItem('s3b-del-window', '0'));
@@ -6134,7 +6337,7 @@ await step('dnd-local-to-s3', async () => {
   // pane on local Downloads, main grid on team-files objects.
   // sideKeys returns absolute paths ('C:\Users\demo\Downloads') — match the
   // visible .tname label instead
-  await page.selectOption('#local-src', 'local');
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane local');
   const dl = await sideRow('Downloads');
   await dl.asElement().dblclick();
@@ -6150,11 +6353,10 @@ await step('dnd-local-to-s3', async () => {
 });
 
 await step('dnd-s3-to-local-pane', async () => {
-  // the onboarding step reloads the page, so the pane may sit anywhere —
-  // go HOME explicitly (up() from home would climb above it into an empty
-  // C:\Users\) and wait for a real folder row (Documents) as the target
-  const home = await elOrNull(() => document.getElementById('local-home'));
-  await home.asElement().click();
+  // the dual-pane step's reload may leave the pane anywhere — rebind
+  // local, which lands on the home listing, and wait for a real folder
+  // row (Documents) as the target
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane home');
   await resetCalls();
   const from = await gridRow('readme.md');
@@ -7907,7 +8109,7 @@ await step('layout-audit', async () => {
     }
     return { ok: bad.length === 0, bad: bad.join(',') };
   });
-  await ok('menubar/toolbar/statusbar aligned', align.ok);
+  await ok('menubar/toolbar/statusbar aligned' + (align.ok ? '' : ' [' + align.bad + ']'), align.ok);
   await shot('final-light');
   // dark theme main view
   await evalPage(() => { document.documentElement.dataset.theme = 'dark'; });
@@ -7985,7 +8187,7 @@ await step('settings-honor', async () => {
   // reload hands the world back the way the boot shim found it.
   const DIALOG_KEYS = ['s3b-autorefresh', 's3b-cols', 's3b-cols-local', 's3b-conflict',
     's3b-copy-versions', 's3b-del-autoconfirm', 's3b-del-typeconfirm', 's3b-del-window',
-    's3b-edit-choose-app', 's3b-local-sync', 's3b-log', 's3b-os-clip', 's3b-panes',
+    's3b-edit-choose-app', 's3b-log', 's3b-os-clip', 's3b-panes',
     's3b-parent-row', 's3b-popout-center', 's3b-popouts-persist', 's3b-refresh-focus', 's3b-show-hidden',
     's3b-show-markers', 's3b-show-throttle', 's3b-show-versions', 's3b-throttle',
     's3b-xfer-window'];
@@ -8068,13 +8270,12 @@ await step('settings-honor', async () => {
     && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
   await pick('Language', 'en'); // back to base - no reload may ride this Save
   // view
-  await tickTo('Show panels', true);
+  await tickTo('Show the secondary pane', true);
   await tickTo('Show log area', true);
   await tickTo('Show version count icons', true);
   await tickTo('Show delete marker icons', true);
   await tickTo('Show hidden (delete-marked) objects', true);
   await tickTo('Show parent directory row', true);
-  await tickTo('Sync local pane with remote', true);
   await tickTo('Remember popout window positions', false);
   await pick('Popout windows open centered on', 'app');
   await uncheckCol('Main grid columns', 'Type');
@@ -8122,7 +8323,7 @@ await step('settings-honor', async () => {
   await ok('save persists every staged value', evalPage(() => {
     const kv = {
       's3b-panes': '1', 's3b-log': '1', 's3b-show-versions': '1', 's3b-show-markers': '1',
-      's3b-show-hidden': '1', 's3b-parent-row': '1', 's3b-local-sync': '1', 's3b-popouts-persist': '0',
+      's3b-show-hidden': '1', 's3b-parent-row': '1', 's3b-popouts-persist': '0',
       's3b-popout-center': 'app', 's3b-conflict': 'rename', 's3b-show-throttle': '1',
       's3b-copy-versions': '0', 's3b-os-clip': '0', 's3b-xfer-window': '0',
       's3b-throttle': '524288', 's3b-edit-choose-app': '0', 's3b-del-window': '0',
@@ -8143,7 +8344,6 @@ await step('settings-honor', async () => {
     !document.getElementById('local-pane').classList.contains('hidden')
     && !document.getElementById('logarea').classList.contains('hidden')
     && !document.getElementById('status-auto').classList.contains('hidden')
-    && document.getElementById('local-sync')?.checked === true
     && !document.getElementById('grid-head').textContent.includes('Type')
     && !document.getElementById('local-grid-head').textContent.includes('Size')
     && !document.getElementById('upbar').classList.contains('hidden')));
@@ -8168,12 +8368,11 @@ await step('settings-honor', async () => {
     (await selValue('Theme')) === 'auto' && (await selValue('Language')) === 'en'
     && (await selValue('Auto refresh')) === '0' && (await cbState('Refresh on focus')) === false);
   await ok('reset stages the view defaults',
-    (await cbState('Show panels')) === false && (await cbState('Show log area')) === false
+    (await cbState('Show the secondary pane')) === false && (await cbState('Show log area')) === false
     && (await cbState('Show version count icons')) === false
     && (await cbState('Show delete marker icons')) === false
     && (await cbState('Show hidden (delete-marked) objects')) === false
     && (await cbState('Show parent directory row')) === false
-    && (await cbState('Sync local pane with remote')) === false
     && (await cbState('Remember popout window positions')) === true
     && (await selValue('Popout windows open centered on')) === 'display');
   await ok('reset stages the editing + deleting + transfers defaults',
@@ -8199,7 +8398,7 @@ await step('settings-honor', async () => {
   await ok('save-after-reset persists every default value', evalPage(() => {
     const kv = {
       's3b-panes': '0', 's3b-log': '0', 's3b-show-versions': '0', 's3b-show-markers': '0',
-      's3b-show-hidden': '0', 's3b-parent-row': '0', 's3b-local-sync': '0', 's3b-popouts-persist': '1',
+      's3b-show-hidden': '0', 's3b-parent-row': '0', 's3b-popouts-persist': '1',
       's3b-popout-center': 'display', 's3b-conflict': 'ask', 's3b-show-throttle': '0',
       's3b-copy-versions': '1', 's3b-os-clip': '1', 's3b-xfer-window': '1',
       's3b-throttle': '0', 's3b-edit-choose-app': '1', 's3b-del-window': '1',

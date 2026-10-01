@@ -105,7 +105,7 @@ else does.
 | Remote filesystems | `sftp://` `scp://` | SSH; host, port 22 default, password auth, anchored root path |
 | | `ftp://` `ftps://` | plain and TLS; ports 21/990 defaults |
 | | `webdav://` `webdavs://` | RFC 4918 over HTTP(S); Apache, nginx, rclone serve webdav, Nextcloud, IIS |
-| Local filesystem | — | the dual-pane side (F9) browses local drives; any source type can be bound to it |
+| Local filesystem | — | the secondary pane (F9) browses local drives; any source type can be bound to it |
 
 An S3 source is either **account-wide** (all buckets the key can list)
 or **bucket-scoped** — `s3b source add s3://my-bucket` or the `--bucket`
@@ -115,7 +115,7 @@ On the CLI every source is reachable as a URI (`hetzner://bucket/prefix`,
 
 All of them browse, upload, download, rename and delete like any other
 source — and join the same transfer matrix (drag & drop, copy/paste,
-directory compare) with S3 and the local pane.
+directory compare) with S3 and the secondary pane.
 
 ---
 
@@ -263,10 +263,19 @@ directory compare) with S3 and the local pane.
   not doubled). Works on S3 and on remote sources (creation only);
   shows as a 📄 *Creating* task in Running tasks.
 
-- **Dual pane** — F9 opens a local-filesystem pane (or another source)
-  beside the main view, WinSCP-style: drag between panes, synchronized
-  browsing, and **Compare** color-codes newer / older / size-diff /
-  only-here between the two sides.
+- **Dual pane** — F9 or the **Dual-pane** toolbar button opens an
+  optional secondary pane beside the main view: a full twin of the
+  content area — its own toolbar (upload, download, new folder, new
+  file, compare, search), interactive breadcrumb, quick filter,
+  back/forward history, parent row and status line. It opens empty with
+  a source picker, or right-click any data source, bucket or folder in
+  the tree and choose **Open on secondary pane** to land there directly.
+  Any source type binds to it — S3, SFTP, FTP, WebDAV, local drives —
+  and it remembers where you left it, reopening there. Drag between
+  panes transfers, and **Compare** color-codes newer / older /
+  size-diff / only-here between the two sides. The pane's × (or F9
+  again) closes it. When the columns run narrow each toolbar folds its
+  word labels down to icons on its own, so neither side overflows.
 
 ![Dual pane with directory compare](screenshots/dual-pane-compare.png)
 
@@ -349,7 +358,7 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   download — never a row in File transfers, never an auto-opened window
   — so Ctrl+V in Explorer pastes real files; pasting inside the app
   still uses the reference copy and runs the transfer then. Copying
-  real local files in the dual-pane local view hands them to the OS
+  real local files in the secondary pane's local view hands them to the OS
   clipboard directly. Cut never mirrors — an Explorer paste of a cut
   would move. **Last copy wins** on both sides. Machines that must not
   touch the OS clipboard can turn the whole bridge off: Settings →

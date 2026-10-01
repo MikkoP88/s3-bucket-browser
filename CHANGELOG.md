@@ -8,6 +8,24 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Dual pane: the secondary pane is a full twin of the main view.** The
+  old "Panes" side panel and its Sync toggle are gone; F9 or the
+  **Dual-pane** toolbar button now opens an optional secondary pane on
+  the right that mirrors the content area button for button — its own
+  toolbar (upload, download, new folder, new file, compare, search),
+  interactive breadcrumb, quick filter, back/forward/refresh history,
+  parent row and status line. A fresh pane opens on an onboarding
+  picker; the tree's right-click menu gains **Open on secondary pane**
+  on every data source, bucket and folder, landing the pane there
+  directly. Any source type binds to it — S3, SFTP, FTP, WebDAV, local
+  drives — the last location is remembered across reopens, the pane's ×
+  or the same toggle closes it, and drag & drop between the panes feeds
+  the same transfer matrix. Directory **Compare** stays;
+  synchronized browsing is removed with the old panel. Under the split,
+  each toolbar folds its word labels to icons (and, narrower still,
+  folds the menu-covered buttons) on its own, so neither column
+  overflows at any width.
+
 - **Not-connected is now a first-class state.** A source that drops
   mid-session becomes visible without any refresh: the source behind
   the active view is probed once a minute, and a failed connection

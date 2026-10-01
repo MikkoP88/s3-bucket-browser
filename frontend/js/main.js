@@ -13,7 +13,7 @@ import {
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile,
 } from './dialogs.js';
 import { LICENSE, licenseLine } from './license.js';
-import { LocalPane, aggregateCompare } from './local.js';
+import { SidePane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
 import { setCommandContext, updateCommandState, commandState } from './commands.js';
 import { createMenubar } from './menubar.js';
@@ -29,7 +29,8 @@ const grid = new Grid();
 // exposes the logical list (rows) and scrollTo() so external tooling can
 // observe and reveal any row without reaching into grid internals.
 window.__s3bGrid = grid;
-const localPane = new LocalPane();
+const localPane = new SidePane();
+window.__s3bSidePane = localPane; // battery handle: gui-visual drives the pane directly
 const tree = new Tree({
   onNavigate: (loc) => nav.to(loc),
   onDropTo: dropToTarget,
@@ -51,6 +52,9 @@ setCommandContext({
   localSelectionCount: () => (localPane.visible ? localPane.grid.selectedRows().length : 0),
   localPaneOpen: () => localPane.visible,
   osClipFiles: () => osClipFilesReady, // Explorer files wait on the OS clipboard
+  // the secondary pane's adapter, when open — commands.js drives the pane
+  // toolbar's availability from it (commandState(pane))
+  paneAdapter: () => (localPane.visible ? localPane.cmdAdapter() : null),
 });
 
 let sources = []; // data sources of any type (M8)
@@ -310,6 +314,7 @@ async function boot() {
   const ok = await refreshSources();
   if (ok) nav.to(sourceHomeLoc());
   initSidebarResize();
+  initPaneResize();
   initTreeFilterPanel();
   refreshPfState(); // container sessions do not survive restarts; defensive
   if (localStorage.getItem('s3b-panes') === '1') localPane.show();
@@ -446,12 +451,19 @@ async function refreshSources() {
   renderSidebarHead();
   tree.setSources(sources, nav.current); // sources are the tree's top level
   // The side pane's source dropdown follows the source set
-  localPane.sources = sources.map((s) => ({ id: s.id, name: s.name, type: s.type }));
+  // bucket/color ride along: the pane's S3 binding needs the scope
+  // (bucket-scoped sources open their bucket, not the buckets view) and
+  // the breadcrumb's icon the tint
+  localPane.sources = sources.map((s) => ({ id: s.id, name: s.name, type: s.type, bucket: s.bucket, color: s.color }));
   localPane.renderSources();
-  if (!localPane.bindingApplied) localPane.restoreBinding();
-  else if (localPane.binding.kind !== 'local'
+  // an unbound open pane adopts the remembered state once sources exist
+  // (a closed one restores on show); a binding whose source disappeared
+  // drops back to onboarding
+  if (!localPane.bound) {
+    if (localPane.visible) localPane.restore();
+  } else if (localPane.binding.kind !== 'local'
     && !sources.some((s) => (s.id || s.name) === localPane.binding.source)) {
-    localPane.rebind('local'); // bound source was removed
+    localPane.reset();
   }
   if (!sources.length) {
     showOnboarding();
@@ -571,6 +583,56 @@ function initSidebarResize() {
   split.addEventListener('dblclick', () => {
     localStorage.removeItem('s3b-sidebar-w');
     document.documentElement.style.removeProperty('--sidebar-w');
+  });
+}
+
+// initPaneResize wires the splitter between the two content panes: drag to
+// resize (300px..60% of the window), persisted in localStorage — the same
+// pointer-capture drag as the sidebar's, so the feel is identical. No saved
+// width = the even 50/50 twin split (flex-basis auto); double-click clears
+// the saved width and returns to it.
+function initPaneResize() {
+  const split = $('pane-split');
+  const pane = $('local-pane');
+  if (!split || !pane) return;
+  const clamp = (w) => Math.min(Math.max(300, w), Math.ceil(window.innerWidth * 0.6));
+  const apply = (w) => { pane.style.flex = '0 0 ' + w + 'px'; };
+  const saved = parseInt(localStorage.getItem('s3b-pane-w') || '', 10);
+  if (saved >= 300) apply(clamp(saved));
+  split.addEventListener('pointerdown', (e) => {
+    if (!localPane.visible || e.button !== 0) return;
+    e.preventDefault();
+    split.setPointerCapture?.(e.pointerId); // the drag survives leaving the strip
+    document.body.classList.add('col-resizing');
+    // the boundary keeps its offset from the grab point, exactly like the
+    // sidebar's splitter — mirrored: the pane is the right column, so the
+    // seam traveling left of the grab hands it space (the sidebar twin
+    // measures a left column, where the width IS the edge's coordinate)
+    const rect = pane.getBoundingClientRect();
+    const grabOff = e.clientX - rect.left;
+    const onMove = (ev) => {
+      const w = clamp(rect.right - (ev.clientX - grabOff));
+      apply(w);
+      localStorage.setItem('s3b-pane-w', String(w));
+    };
+    const stop = () => {
+      document.body.classList.remove('col-resizing');
+      split.removeEventListener('pointermove', onMove);
+      split.removeEventListener('pointerup', stop);
+      split.removeEventListener('pointercancel', stop);
+    };
+    split.addEventListener('pointermove', onMove);
+    split.addEventListener('pointerup', stop);
+    split.addEventListener('pointercancel', stop);
+  });
+  // a capture lost without pointerup must not leave the resize cursor
+  // stuck on the body; a double-click returns the even twin split
+  split.addEventListener('lostpointercapture', () => {
+    document.body.classList.remove('col-resizing');
+  });
+  split.addEventListener('dblclick', () => {
+    localStorage.removeItem('s3b-pane-w');
+    pane.style.flex = '';
   });
 }
 
@@ -873,7 +935,6 @@ async function loadView(loc, { silent = false } = {}) {
       if (seq !== viewSeq) return;
       await loadObjectsStream(loc, silent);
       tree.reveal(loc).catch(() => {});
-      localPane.syncTo(loc.prefix || '');
       // no setUpbar here: stream.begin resolves at token registration,
       // long before the first page on a slow source — the parent row
       // returns with the rows (loadObjectsStream's first-page leg below)
@@ -1644,18 +1705,20 @@ function wireLocalPane() {
     ]);
   };
   localPane.on.compare = compareDirs;
-  localPane.on.syncBase = () => {
-    const loc = nav.current;
-    return loc?.kind === 'objects' ? { dir: localPane.dir, prefix: loc.prefix || '' } : null;
-  };
-  localPane.on.syncUp = (dir) => {
-    const loc = nav.current;
-    if (loc?.kind !== 'objects') return;
-    const prefix = localPane.remotePrefixFor(dir);
-    if (prefix !== null && prefix !== (loc.prefix || '')) {
-      nav.to({ kind: 'objects', bucket: loc.bucket, prefix });
-    }
-  };
+  // The pane toolbar's buttons: pane-scoped leaves act on the pane's own
+  // binding (helpers below, source-pinned); window-scope copies (find,
+  // theme, help) and the Dual-pane toggle mirror the main toolbar's. The
+  // pane's back/forward/refresh, filter, breadcrumb and parent row are
+  // wired inside SidePane itself.
+  $('local-btn-panes').onclick = togglePanes;
+  $('local-btn-close').onclick = () => setPanes(false);
+  $('local-btn-upload').onclick = () => openMenu($('local-btn-upload'), uploadChoices(paneUploadFiles, paneUploadFolder));
+  $('local-btn-download').onclick = () => paneDownload();
+  $('local-btn-find').onclick = openSearch;
+  $('local-btn-newfolder').onclick = () => paneNewFolder();
+  $('local-btn-newfile').onclick = () => paneNewFile();
+  $('local-btn-theme').onclick = toggleTheme;
+  $('local-btn-help').onclick = helpSheet;
 }
 
 // openMenu renders items in the shared #ctxmenu popup. An item is
@@ -1937,6 +2000,7 @@ function showTreeMenu(e, node) {
         if (node.stype !== 's3') nav.to({ kind: 'remote', source: node.source, path: '' });
         else nav.to({ kind: 'buckets', source: node.source });
       }],
+      ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
       null,
       ['Refresh', 'F5', () => tree.reload(node.id)],
       // reconnectSource re-saves (drops cached engines), probes, and —
@@ -1987,6 +2051,7 @@ function showTreeMenu(e, node) {
     );
     openMenu(e, [
       ['Open', '', go],
+      ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
       [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
       null,
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
@@ -2027,6 +2092,7 @@ function showTreeMenu(e, node) {
   if (node.kind === 'rdir') {
     openMenu(e, [
       ['Open', '', () => nav.to({ kind: 'remote', source: node.source, path: node.path })],
+      ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
       null,
       ...uploadMenu(
         async () => { const paths = await api.PickUploadFiles(); if (paths?.length) uploadToRemote(paths, node.source, node.path); },
@@ -2068,6 +2134,7 @@ function showTreeMenu(e, node) {
   if (node.prefix === '') {
     openMenu(e, [
       ['Open', '', go],
+      ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
       [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
       null,
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
@@ -2086,6 +2153,7 @@ function showTreeMenu(e, node) {
   const clipCut = () => { Object.assign(clipboard, { mode: 'cut', kind: 's3', bucket: node.bucket, source: node.source, dir: node.prefix.replace(/\/+$/, ''), keys: [node.prefix], paths: [] }); toast(`Cut ${node.label}`); updateCommandState(); };
   openMenu(e, [
     ['Open', '', go],
+    ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
     null,
     ...uploadMenu(() => uploadTo(node.prefix, node.bucket, node.source), () => uploadFolderTo(node.prefix, node.bucket, node.source), !st.hasProfile),
     ['Download\u2026', '', () => downloadTreeEntry(node), !st.hasProfile],
@@ -2255,6 +2323,96 @@ const uploadChoices = (filesFn, folderFn, disabled = false) => ([
 const uploadMenu = (filesFn, folderFn, disabled = false) => ([
   ['Upload', '', null, false, '', disabled ? null : uploadChoices(filesFn, folderFn)],
 ]);
+
+// ================== secondary pane toolbar leaves ==================
+// The pane toolbar's flows mirror the main toolbar's, but every destination
+// is the pane's own binding and every call source-pinned (credentials
+// travel with the source — no view-source swap, no profile gate).
+
+// sidePaneOpenFor maps a sidebar tree node onto the pane's openAt target:
+// any data source (its opening view), any remote directory, any S3 bucket
+// or prefix. A bucket-scoped S3 source's home IS its bucket's contents.
+function sidePaneOpenFor(node) {
+  if (node.kind === 'source') {
+    if (node.bucket !== undefined) {
+      return localPane.openAt({ kind: 's3', source: node.source, bucket: node.bucket, prefix: '' });
+    }
+    if (node.stype === 's3') {
+      const src = sources.find((s) => s.name === node.source);
+      return localPane.openAt({ kind: 's3', source: node.source, bucket: src?.bucket || '', prefix: '' });
+    }
+    return localPane.openAt({ kind: 'remote', source: node.source, path: '' });
+  }
+  if (node.kind === 'rdir') return localPane.openAt({ kind: 'remote', source: node.source, path: node.path });
+  return localPane.openAt({ kind: 's3', source: node.source, bucket: node.bucket, prefix: node.prefix });
+}
+
+// paneUploadFiles/paneUploadFolder pick local paths and push them into the
+// pane's current location, whatever it is bound to.
+async function paneUploadFiles() {
+  const paths = await api.PickUploadFiles();
+  if (paths?.length) paneUploadPaths(paths);
+}
+async function paneUploadFolder() {
+  const dir = await api.PickFolder('Choose a folder to upload');
+  if (dir) paneUploadPaths([dir]);
+}
+async function paneUploadPaths(paths) {
+  const b = localPane.binding;
+  if (b.kind === 'remote') return uploadToRemote(paths, b.source, localPane.dir || '/');
+  if (b.kind === 's3' && localPane.bucket) {
+    return startTransfer({ localPaths: paths, dest: { kind: 's3', source: b.source, bucket: localPane.bucket, dir: localPane.dir || '' } });
+  }
+  if (b.kind === 'local' && localPane.dir) {
+    return startTransfer({ localPaths: paths, dest: { kind: 'local', dir: localPane.dir }, label: localPane.dir });
+  }
+  toast('Open a bucket or folder first');
+}
+
+// paneDownload saves the pane's selection into a picked local folder —
+// remote and S3 bindings only (the local binding already IS the
+// workstation; its Download button rests).
+async function paneDownload() {
+  const b = localPane.binding;
+  const rows = localPane.grid.selectedRows();
+  if (!rows.length) { toast('Select items to download'); return; }
+  if (b.kind === 's3') return downloadSideRows(rows.filter((r) => !r.isBucket));
+  if (b.kind === 'remote') return downloadSideRows(rows);
+}
+
+// paneNewFolder/paneNewFile create a folder/file in the pane's current
+// location — the same prompts as the main toolbar's leaves.
+async function paneNewFolder() {
+  const b = localPane.binding;
+  const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
+  if (!name) return;
+  try {
+    if (b.kind === 'remote') await api.RemoteMkdir(b.source, remoteChildPath(localPane.dir || '', name));
+    else if (b.kind === 's3' && localPane.bucket) await api.SourceCreateFolder(b.source, localPane.bucket, localPane.dir || '', name);
+    else return;
+    toast('Folder created', 'ok');
+    localPane.refresh();
+  } catch (err) {
+    toast('Create folder failed: ' + err, 'error');
+  }
+}
+async function paneNewFile() {
+  const b = localPane.binding;
+  const r = await promptFile({ title: 'New file', dir: localPane.dir || '' });
+  if (!r) return;
+  try {
+    if (b.kind === 'remote') {
+      const p = await api.RemoteCreateFile(b.source, localPane.dir || '', r.name, r.ext);
+      toast('Created ' + p, 'ok');
+    } else if (b.kind === 's3' && localPane.bucket) {
+      await api.SourceCreateFile(b.source, localPane.bucket, localPane.dir || '', r.name, r.ext);
+      toast('File created', 'ok');
+    } else return;
+    localPane.refresh();
+  } catch (err) {
+    toast('Create file failed: ' + err, 'error');
+  }
+}
 
 async function downloadSelection(overrideRows) {
   const loc = nav.current;
@@ -3719,6 +3877,7 @@ function wireToolbar() {
   $('btn-upload').onclick = () => openMenu($('btn-upload'), uploadChoices(uploadFiles, uploadFolder));
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = togglePanes;
+  $('btn-compare').onclick = compareDirs;
   $('btn-find').onclick = openSearch;
   $('btn-newfolder').onclick = newFolder;
   $('btn-newfile').onclick = newFile;
@@ -3731,7 +3890,7 @@ function wireToolbar() {
 
   // Path bar: clicking the navbar's empty area (not a crumb or the filter
   // box) opens the inline path editor for copy/paste navigation.
-  const navbar = document.querySelector('.navbar');
+  const navbar = document.querySelector('#main-pane .navbar');
   navbar.title = t('pathClickHint');
   navbar.addEventListener('click', (e) => {
     if (e.target.closest('.crumb, .crumb-sep, input, button')) return;
@@ -3928,9 +4087,6 @@ async function openSettings() {
       // Popout geometry persistence (dialogs.js reads this fresh on every
       // open/save) — off = windows always open centered, nothing stored.
       popoutPersist: () => localStorage.getItem('s3b-popouts-persist') !== '0',
-      // Synced local/remote browsing (local.js setSync mirrors the pane
-      // header checkbox and captures the base pair on enable).
-      localSync: () => localPane.sync,
     },
     apply: {
       theme: setThemePref,
@@ -3951,7 +4107,11 @@ async function openSettings() {
       showVersions: (v) => { localStorage.setItem('s3b-show-versions', v ? '1' : '0'); grid.showVersions = v; grid.render(); },
       // One flip re-seats the row for the view that earned it — the
       // setting must not wait for the next navigation.
-      parentRow: (v) => { localStorage.setItem('s3b-parent-row', v ? '1' : '0'); setUpbar(upbarWanted); },
+      parentRow: (v) => {
+        localStorage.setItem('s3b-parent-row', v ? '1' : '0');
+        setUpbar(upbarWanted);
+        localPane.reseatUpbar(); // the pane's own row re-seats with it
+      },
       delWindow: (v) => localStorage.setItem('s3b-del-window', v ? '1' : '0'),
       delTypeConfirm: (v) => localStorage.setItem('s3b-del-typeconfirm', v ? '1' : '0'),
       delAutoConfirm: (v) => localStorage.setItem('s3b-del-autoconfirm', v ? '1' : '0'),
@@ -3970,7 +4130,6 @@ async function openSettings() {
       // consumer needs notifying.
       popoutCenter: (v) => localStorage.setItem('s3b-popout-center', v === 'app' ? 'app' : 'display'),
       popoutPersist: (v) => localStorage.setItem('s3b-popouts-persist', v ? '1' : '0'),
-      localSync: (v) => localPane.setSync(v),
     },
     log: {
       get: () => logSet,
@@ -4031,7 +4190,7 @@ async function openSettings() {
       showHidden: false, showMarkers: false, showVersions: false, parentRow: false,
       delWindow: true, delTypeConfirm: false, delAutoConfirm: false,
       explorerClip: true, xferWin: true, popoutCenter: 'display',
-      popoutPersist: true, localSync: false,
+      popoutPersist: true,
       tuning: { listingTimeoutMs: 0, compareTimeoutMs: 0, retryAttempts: 0, partSizeMiB: 0, partConcurrency: 0, stallAfterMs: 0 },
       logCfg: { mode: 'off', dir: '', levels: [], scopes: [], sources: [] },
     },

@@ -304,7 +304,6 @@ export function settingsDialog(ctx) {
     xferWin: s.xferWin?.() ?? true,
     popoutCenter: s.popoutCenter(),
     popoutPersist: s.popoutPersist?.() ?? true,
-    localSync: !!(s.localSync?.()),
     tuning: { ...(ctx.engine?.get() || {}) },
     logCfg: logCfgOf(ctx.log?.get()),
   });
@@ -438,7 +437,6 @@ export function settingsDialog(ctx) {
         row(t('settings.showMarkers'), checkbox(d.showMarkers, (v) => set('showMarkers', v)), t('settings.showMarkersHint')),
         row(t('settings.showHidden'), checkbox(d.showHidden, (v) => set('showHidden', v)), t('settings.showHiddenHint')),
         row(t('settings.parentRow'), checkbox(d.parentRow, (v) => set('parentRow', v)), t('settings.parentRowHint')),
-        row(t('settings.localSync'), checkbox(d.localSync, (v) => set('localSync', v)), t('settings.localSyncHint')),
         // Native popout windows open centered on the display the app is on
         // (multi-monitor aware); "app" pins them to the app window's center.
         // In-page popouts are bounded by the app window either way.

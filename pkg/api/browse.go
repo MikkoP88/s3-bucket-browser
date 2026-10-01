@@ -379,6 +379,19 @@ func (a *App) CreateFile(bucket, prefix, name, ext string) (key string, err erro
 	return a.createFileC(ctx, c, bucket, prefix, name, ext)
 }
 
+// SourceCreateFile is CreateFile pinned to one named S3 source — the
+// secondary pane's New file lands in its own binding's bucket/prefix.
+func (a *App) SourceCreateFile(idOrName, bucket, prefix, name, ext string) (key string, err error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return "", err
+	}
+	task := a.tasks.add("mkfile", fmt.Sprintf("s3://%s/%s", bucket, joinKeyNoSlash(prefix, composeFileName(name, ext))))
+	ctx := task.ctx
+	defer func() { task.finish(err, false) }()
+	return a.createFileC(ctx, c, bucket, prefix, name, ext)
+}
+
 func (a *App) createFileC(ctx context.Context, c *s3client.Client, bucket, prefix, name, ext string) (string, error) {
 	composed := composeFileName(name, ext)
 	if composed == "" || strings.Contains(composed, "/") {
