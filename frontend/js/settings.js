@@ -296,6 +296,7 @@ export function settingsDialog(ctx) {
     showHidden: !!(s.showHidden?.()),
     showMarkers: !!(s.showMarkers?.()),
     showVersions: !!(s.showVersions?.()),
+    parentRow: !!(s.parentRow?.()),
     delWindow: s.delWindow?.() ?? true,
     delTypeConfirm: !!(s.delTypeConfirm?.()),
     delAutoConfirm: !!(s.delAutoConfirm?.()),
@@ -436,6 +437,7 @@ export function settingsDialog(ctx) {
         row(t('settings.showVersions'), checkbox(d.showVersions, (v) => set('showVersions', v)), t('settings.showVersionsHint')),
         row(t('settings.showMarkers'), checkbox(d.showMarkers, (v) => set('showMarkers', v)), t('settings.showMarkersHint')),
         row(t('settings.showHidden'), checkbox(d.showHidden, (v) => set('showHidden', v)), t('settings.showHiddenHint')),
+        row(t('settings.parentRow'), checkbox(d.parentRow, (v) => set('parentRow', v)), t('settings.parentRowHint')),
         row(t('settings.localSync'), checkbox(d.localSync, (v) => set('localSync', v)), t('settings.localSyncHint')),
         // Native popout windows open centered on the display the app is on
         // (multi-monitor aware); "app" pins them to the app window's center.

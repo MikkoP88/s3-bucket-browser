@@ -207,8 +207,11 @@ directory compare) with S3 and the local pane.
   level, including a bucket-scoped source's root (its home IS the
   bucket's contents; the account bucket list is unreachable) — there
   is no row at all, and it steps aside while a loading,
-  error or first-run panel owns the area. Alt+↑ and Backspace do the
-  same from the keyboard (the toolbar's Up button is retired), and
+  error or first-run panel owns the area. The feature is opt-in as a
+  whole (Settings → View, off by default — the View menu carries the
+  same toggle): while hidden there is no row anywhere and the climb
+  keys rest; while shown, Alt+↑ and Backspace climb from the
+  keyboard (the toolbar's Up button is retired), and
   back / forward wear arrow icons. The row wears the same folder glyph
   as every folder row — a backward-arrow badge riding its corner
   marks the climb — beside the `..` caption, seated in the Name

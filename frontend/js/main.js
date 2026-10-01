@@ -1169,11 +1169,22 @@ function syncUpbarLayout() {
 // level — the Data source main view, a bucket-scoped source's root) or an
 // information panel owns the area
 // (loading, error, onboarding). The 'greyed' state is retired: a view with
-// nothing above it simply shows no row.
+// nothing above it simply shows no row. The row is opt-in as a whole
+// (Settings → View, off by default): parentRowOn() gates the row and the
+// climb keys together, and the wanted state is remembered so flipping the
+// setting re-seats the row for the view that earned it.
+let upbarWanted = 'off';
 function setUpbar(state) {
-  $('upbar').classList.toggle('hidden', state !== 'on');
-  if (state === 'on') syncUpbarLayout();
+  upbarWanted = state;
+  const on = state === 'on' && parentRowOn();
+  $('upbar').classList.toggle('hidden', !on);
+  if (on) syncUpbarLayout();
 }
+
+// parentRowOn is the setting's live read — the one gate the row and both
+// climb keys share, so hiding the parent-directory feature hides all of
+// it (Backspace and Alt+↑ climb only while the row shows).
+const parentRowOn = () => localStorage.getItem('s3b-parent-row') === '1';
 
 // parentUp is the climb oracle for every up-driven surface — the parent
 // row's click, Alt+↑, Backspace. It is parentOf plus the one rule the
@@ -3907,6 +3918,7 @@ async function openSettings() {
       showHidden: () => localStorage.getItem('s3b-show-hidden') === '1',
       showMarkers: () => localStorage.getItem('s3b-show-markers') === '1',
       showVersions: () => localStorage.getItem('s3b-show-versions') === '1',
+      parentRow: () => localStorage.getItem('s3b-parent-row') === '1',
       delWindow: delWindowOn,
       delTypeConfirm: delTypedOn,
       delAutoConfirm: delAutoConfirm,
@@ -3937,6 +3949,9 @@ async function openSettings() {
       showHidden: (v) => { localStorage.setItem('s3b-show-hidden', v ? '1' : '0'); refreshCurrent(); },
       showMarkers: (v) => { localStorage.setItem('s3b-show-markers', v ? '1' : '0'); grid.showMarkers = v; grid.render(); },
       showVersions: (v) => { localStorage.setItem('s3b-show-versions', v ? '1' : '0'); grid.showVersions = v; grid.render(); },
+      // One flip re-seats the row for the view that earned it — the
+      // setting must not wait for the next navigation.
+      parentRow: (v) => { localStorage.setItem('s3b-parent-row', v ? '1' : '0'); setUpbar(upbarWanted); },
       delWindow: (v) => localStorage.setItem('s3b-del-window', v ? '1' : '0'),
       delTypeConfirm: (v) => localStorage.setItem('s3b-del-typeconfirm', v ? '1' : '0'),
       delAutoConfirm: (v) => localStorage.setItem('s3b-del-autoconfirm', v ? '1' : '0'),
@@ -4013,7 +4028,7 @@ async function openSettings() {
       panes: false, log: false, conflict: 'ask', throttle: 0,
       showThrottle: false, editChooseApp: true, copyVersions: true,
       cols: [...DEFAULT_COLS], colsLocal: [...DEFAULT_COLS],
-      showHidden: false, showMarkers: false, showVersions: false,
+      showHidden: false, showMarkers: false, showVersions: false, parentRow: false,
       delWindow: true, delTypeConfirm: false, delAutoConfirm: false,
       explorerClip: true, xferWin: true, popoutCenter: 'display',
       popoutPersist: true, localSync: false,
@@ -4101,11 +4116,12 @@ function mountMenubar() {
         },
         { label: t('ar.focus'), checked: () => refreshOnFocus, action: () => setRefreshOnFocus(!refreshOnFocus) },
         null,
-        // The three versioning/visibility toggles Settings also carries —
-        // one click closer (Explorer's View menu pattern).
+        // The versioning/visibility toggles Settings also carries — one
+        // click closer (Explorer's View menu pattern).
         { label: t('settings.showVersions'), checked: () => localStorage.getItem('s3b-show-versions') === '1', action: () => { const v = localStorage.getItem('s3b-show-versions') !== '1'; localStorage.setItem('s3b-show-versions', v ? '1' : '0'); grid.showVersions = v; grid.render(); } },
         { label: t('settings.showMarkers'), checked: () => localStorage.getItem('s3b-show-markers') === '1', action: () => { const v = localStorage.getItem('s3b-show-markers') !== '1'; localStorage.setItem('s3b-show-markers', v ? '1' : '0'); grid.showMarkers = v; grid.render(); } },
         { label: t('settings.showHidden'), checked: () => localStorage.getItem('s3b-show-hidden') === '1', action: () => { const v = localStorage.getItem('s3b-show-hidden') !== '1'; localStorage.setItem('s3b-show-hidden', v ? '1' : '0'); refreshCurrent(); } },
+        { label: t('settings.parentRow'), checked: () => localStorage.getItem('s3b-parent-row') === '1', action: () => { const v = localStorage.getItem('s3b-parent-row') !== '1'; localStorage.setItem('s3b-parent-row', v ? '1' : '0'); setUpbar(upbarWanted); } },
       ],
     },
     {
@@ -4428,8 +4444,8 @@ function wireKeys() {
     const ctrl = e.ctrlKey || e.metaKey;
     if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); if (nav.canBack()) nav.back(); return; }
     if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); if (nav.canForward()) nav.forwardGo(); return; }
-    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'Up')) { e.preventDefault(); const p = parentUp(nav.current); if (p) nav.to(p); return; }
-    if (e.key === 'Backspace') { e.preventDefault(); const p = parentUp(nav.current); if (p) nav.to(p); return; }
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'Up')) { e.preventDefault(); const p = parentRowOn() ? parentUp(nav.current) : null; if (p) nav.to(p); return; }
+    if (e.key === 'Backspace') { e.preventDefault(); const p = parentRowOn() ? parentUp(nav.current) : null; if (p) nav.to(p); return; }
     if (e.key === 'F5') { e.preventDefault(); refreshCurrent(); return; }
     if (e.key === 'F2') { e.preventDefault(); renameSelection(); return; }
     if (e.key === 'Delete') { e.preventDefault(); if (e.shiftKey) deletePermanentSelection(); else deleteSelection(); return; }

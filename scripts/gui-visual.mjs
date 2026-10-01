@@ -1662,8 +1662,13 @@ await step('file-ctxmenu-versions', async () => {
   await closeCtx();
   // folder menu in the same bucket: Search in this folder IS offered (a single
   // dir selection targets that folder); Versions stays correctly absent
+  // the climb keys belong to the opt-in parent-row feature: open its
+  // gate for this utility press, close it right after (the row itself
+  // never matters to this walk — only the key does, read live)
+  await evalPage(() => localStorage.setItem('s3b-parent-row', '1'));
   await page.keyboard.press('Backspace'); // up from app/ to the bucket root
   await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('app/')), 4000, 'back to bucket root');
+  await evalPage(() => localStorage.removeItem('s3b-parent-row'));
   const n2 = await openCtx('app');
   const items3 = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
     .map((i) => i.textContent.trim()));
@@ -2500,6 +2505,22 @@ await step('view-menu-toggles', async () => {
   // restore the untouched-boot state — the settings-dialog walk asserts the
   // badge keys start as null
   await evalPage(() => localStorage.removeItem('s3b-show-versions'));
+  // the parent-row toggle rides the same menu — its live effect is the
+  // parent-row step's own subject; here the key flips both ways
+  const parentItem = () => elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /parent directory row/i.test(i.textContent)) || null);
+  await openView();
+  await ok('View menu lists the parent-row toggle', !!(await parentItem()));
+  const pi = await parentItem();
+  if (pi) await pi.asElement().click();
+  await sleep(80);
+  await ok('parent-row toggle flips the setting on', evalPage(() => localStorage.getItem('s3b-parent-row') === '1'));
+  await openView();
+  const pi2 = await parentItem();
+  if (pi2) await pi2.asElement().click();
+  await sleep(80);
+  await ok('parent-row toggle flips the setting back off', evalPage(() => localStorage.getItem('s3b-parent-row') === '0'));
+  await evalPage(() => localStorage.removeItem('s3b-parent-row'));
 });
 
 await step('exit-guard', async () => {
@@ -7051,9 +7072,14 @@ await step('toolbar-nav', async () => {
   await page.keyboard.press('Alt+ArrowRight');
   await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 6000, 'Alt+Right forward');
   await ok('Alt+Right goes forward', true);
+  // Alt+Up is the retired Up button's keyboard heir — part of the
+  // opt-in parent-row feature, so the gate opens for the assertion and
+  // closes again (the F5 leg below re-seats the hidden default)
+  await evalPage(() => localStorage.setItem('s3b-parent-row', '1'));
   await page.keyboard.press('Alt+ArrowUp');
   await waitFor(async () => !(await txt('#breadcrumb')).includes('docs'), 6000, 'Alt+Up parent');
   await ok('Alt+Up climbs to the parent', true);
+  await evalPage(() => localStorage.removeItem('s3b-parent-row'));
   await resetCalls();
   await page.keyboard.press('F5');
   await waitFor(async () => (await findCall('ListObjectsStream')) !== null, 4000, 'F5 ListObjectsStream');
@@ -7089,6 +7115,9 @@ await step('parent-row', async () => {
       headNameL: document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().left,
     } : null;
   });
+  // the row is opt-in (Settings → View, off by default): this walk turns
+  // it on first; its closing leg flips it off and proves the gate
+  await evalPage(() => localStorage.setItem('s3b-parent-row', '1'));
   // -- placement: a row of the listing, not chrome above it --
   await navObjectsOf('hetzner', 'team-files');
   await dblClickRow('docs');
@@ -7180,6 +7209,21 @@ await step('parent-row', async () => {
   await evalPage(() => { window.__shim.world.fault = null; });
   await page.click('#btn-refresh');
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'rows restored');
+  // -- the setting is the feature's whole gate: off by default, one flip
+  // hides the row even where a parent waits above — and the climb keys
+  // rest with it --
+  await evalPage(() => { localStorage.setItem('s3b-parent-row', '0'); });
+  await page.click('#btn-refresh');
+  await waitFor(() => evalPage(() => document.getElementById('upbar').classList.contains('hidden')), 4000, 'row hides with the setting');
+  s = await row();
+  await ok('the setting hides the row where a parent waits above it', !!s && !s.vis);
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'rows back after the off-flip');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('Alt+ArrowUp');
+  await sleep(150);
+  await ok('the climb keys rest while the row is hidden',
+    (await rowKeys()).includes('docs/notes.md'));
+  await evalPage(() => localStorage.removeItem('s3b-parent-row'));
 });
 
 await step('crumb-click', async () => {
@@ -7384,8 +7428,8 @@ await step('marquee-select', async () => {
   // rubber-band starting in the empty area below the rows, dragged up
   await navObjectsOf('hetzner', 'team-files');
   await waitFor(async () => (await rowKeys()).length > 0, 6000, 'rows listed');
-  // measure the empty band from the bottom-most RENDERED row — the
-  // parent row ("..") rides in-flow above the canvas, so the body's
+  // measure the empty band from the bottom-most RENDERED row — whatever
+  // rides in-flow above the canvas (the opt-in parent row), the body's
   // own top is not where the rows begin
   const geo = await evalPage(() => {
     const r = document.getElementById('grid-body').getBoundingClientRect();
@@ -7942,7 +7986,7 @@ await step('settings-honor', async () => {
   const DIALOG_KEYS = ['s3b-autorefresh', 's3b-cols', 's3b-cols-local', 's3b-conflict',
     's3b-copy-versions', 's3b-del-autoconfirm', 's3b-del-typeconfirm', 's3b-del-window',
     's3b-edit-choose-app', 's3b-local-sync', 's3b-log', 's3b-os-clip', 's3b-panes',
-    's3b-popout-center', 's3b-popouts-persist', 's3b-refresh-focus', 's3b-show-hidden',
+    's3b-parent-row', 's3b-popout-center', 's3b-popouts-persist', 's3b-refresh-focus', 's3b-show-hidden',
     's3b-show-markers', 's3b-show-throttle', 's3b-show-versions', 's3b-throttle',
     's3b-xfer-window'];
   // fresh install: clear every key the dialog owns, then reboot so the
@@ -8029,6 +8073,7 @@ await step('settings-honor', async () => {
   await tickTo('Show version count icons', true);
   await tickTo('Show delete marker icons', true);
   await tickTo('Show hidden (delete-marked) objects', true);
+  await tickTo('Show parent directory row', true);
   await tickTo('Sync local pane with remote', true);
   await tickTo('Remember popout window positions', false);
   await pick('Popout windows open centered on', 'app');
@@ -8077,7 +8122,7 @@ await step('settings-honor', async () => {
   await ok('save persists every staged value', evalPage(() => {
     const kv = {
       's3b-panes': '1', 's3b-log': '1', 's3b-show-versions': '1', 's3b-show-markers': '1',
-      's3b-show-hidden': '1', 's3b-local-sync': '1', 's3b-popouts-persist': '0',
+      's3b-show-hidden': '1', 's3b-parent-row': '1', 's3b-local-sync': '1', 's3b-popouts-persist': '0',
       's3b-popout-center': 'app', 's3b-conflict': 'rename', 's3b-show-throttle': '1',
       's3b-copy-versions': '0', 's3b-os-clip': '0', 's3b-xfer-window': '0',
       's3b-throttle': '524288', 's3b-edit-choose-app': '0', 's3b-del-window': '0',
@@ -8090,13 +8135,18 @@ await step('settings-honor', async () => {
     return Array.isArray(cols.cols) && !cols.cols.includes('type') && cols.cols.includes('name')
       && Array.isArray(colsLocal.cols) && !colsLocal.cols.includes('size') && colsLocal.cols.includes('name');
   }));
+  // the row's re-seat rides the re-list this save triggers (showHidden
+  // refreshes the view; the loading pass parks the row until rows land) —
+  // wait for the settled state, then snapshot
+  await waitFor(() => evalPage(() => !document.getElementById('upbar').classList.contains('hidden')), 4000, 'parent row re-seats after the save');
   await ok('applied controls drive their live consumers', evalPage(() =>
     !document.getElementById('local-pane').classList.contains('hidden')
     && !document.getElementById('logarea').classList.contains('hidden')
     && !document.getElementById('status-auto').classList.contains('hidden')
     && document.getElementById('local-sync')?.checked === true
     && !document.getElementById('grid-head').textContent.includes('Type')
-    && !document.getElementById('local-grid-head').textContent.includes('Size')));
+    && !document.getElementById('local-grid-head').textContent.includes('Size')
+    && !document.getElementById('upbar').classList.contains('hidden')));
   const tc = await findCall('SetTuning');
   await ok('one whole-snapshot SetTuning rides the save', tc
     && tc.args[0] === 30000 && tc.args[1] === 300000 && tc.args[2] === 5
@@ -8122,6 +8172,7 @@ await step('settings-honor', async () => {
     && (await cbState('Show version count icons')) === false
     && (await cbState('Show delete marker icons')) === false
     && (await cbState('Show hidden (delete-marked) objects')) === false
+    && (await cbState('Show parent directory row')) === false
     && (await cbState('Sync local pane with remote')) === false
     && (await cbState('Remember popout window positions')) === true
     && (await selValue('Popout windows open centered on')) === 'display');
@@ -8148,7 +8199,7 @@ await step('settings-honor', async () => {
   await ok('save-after-reset persists every default value', evalPage(() => {
     const kv = {
       's3b-panes': '0', 's3b-log': '0', 's3b-show-versions': '0', 's3b-show-markers': '0',
-      's3b-show-hidden': '0', 's3b-local-sync': '0', 's3b-popouts-persist': '1',
+      's3b-show-hidden': '0', 's3b-parent-row': '0', 's3b-local-sync': '0', 's3b-popouts-persist': '1',
       's3b-popout-center': 'display', 's3b-conflict': 'ask', 's3b-show-throttle': '0',
       's3b-copy-versions': '1', 's3b-os-clip': '1', 's3b-xfer-window': '1',
       's3b-throttle': '0', 's3b-edit-choose-app': '1', 's3b-del-window': '1',
@@ -8167,7 +8218,8 @@ await step('settings-honor', async () => {
     && document.getElementById('logarea').classList.contains('hidden')
     && document.getElementById('status-auto').classList.contains('hidden')
     && document.getElementById('grid-head').textContent.includes('Type')
-    && document.getElementById('local-grid-head').textContent.includes('Size')));
+    && document.getElementById('local-grid-head').textContent.includes('Size')
+    && document.getElementById('upbar').classList.contains('hidden')));
   const tr2 = await findCall('SetTuning');
   await ok('reset rides zero-means-default tuning to the backend',
     tr2 && tr2.args.length === 6 && tr2.args.every((v) => v === 0));

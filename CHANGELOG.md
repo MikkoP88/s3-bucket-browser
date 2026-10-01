@@ -125,9 +125,11 @@ follow [Semantic Versioning](https://semver.org/).
   steps aside while an information panel owns the area (loading
   skeleton, errors, first-run). As a plain row of the listing it
   never joins selection, counts, the size bar, sorting or filters.
-  The toolbar's Up button is retired — Alt+↑ and Backspace still
-  climb from the keyboard — and back / forward wear proper arrow
-  icons from the app's icon family.
+  The feature is opt-in as a whole — Settings → View or the View
+  menu toggle, off by default — and while it is hidden the climb
+  keys rest with it. The toolbar's Up button is retired — Alt+↑ and
+  Backspace climb from the keyboard while the row shows — and
+  back / forward wear proper arrow icons from the app's icon family.
 
 - **Deep search is now Search — a real window across every data
   source.** The one-bucket modal becomes a floating Search window
