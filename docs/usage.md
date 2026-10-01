@@ -173,9 +173,7 @@ directory compare) with S3 and the local pane.
   columns (double-click resets; Arrow keys resize a focused edge) —
   and reorder by dragging the header itself; widths and order persist
   per pane, and the header picker's Reset columns brings the
-  out-of-box set, order and widths back in one click. Columns beyond
-  the default four carry their values on a quiet gray wash, so opt-in
-  data reads as an overlay at a glance.
+  out-of-box set, order and widths back in one click.
 - **Content size bar** — the strip along the bottom of the content
   view always answers *how much is really here*: with nothing
   selected it is the real recursive size of everything listed; select

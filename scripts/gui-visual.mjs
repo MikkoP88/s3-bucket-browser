@@ -2015,8 +2015,10 @@ await step('column-resize-reorder', async () => {
   await page.setViewportSize(vp);
   await sleep(150);
 
-  // I. columns beyond the default four: their values carry a quiet gray
-  // wash (class "extra") so opt-in columns read as overlay data
+  // I. columns beyond the default four: they render exactly like the
+  // default set — the old quiet-gray wash read as a rendering bug (a
+  // grey column among white ones), so an opt-in column paints nothing
+  // behind its values
   await page.locator('#grid-head .gh[data-col="type"]').click({ button: 'right' });
   await sleep(80);
   await ok('header right-click opens the column picker', evalPage(() =>
@@ -2024,16 +2026,16 @@ await step('column-resize-reorder', async () => {
     && document.getElementById('ctxmenu').textContent.includes('Mode')));
   await page.locator('#ctxmenu .item', { hasText: 'Mode' }).first().click();
   await sleep(120);
-  await ok('opt-in column cells get the gray overlay wash', evalPage(() => {
+  await ok('opt-in column cells render like the default four (no wash)', evalPage(() => {
     const row = document.querySelector('#grid-canvas .grid-row');
     if (!row) return false;
     const mode = row.querySelector('.gc.mode');
     const name = row.querySelector('.gc.name');
     const type = row.querySelector('.gc.type');
-    return !!mode && mode.classList.contains('extra')
-      && getComputedStyle(mode).backgroundColor !== 'rgba(0, 0, 0, 0)'
-      && !name.classList.contains('extra') && !type.classList.contains('extra')
-      && getComputedStyle(name).backgroundColor === 'rgba(0, 0, 0, 0)';
+    return !!mode
+      && getComputedStyle(mode).backgroundColor === 'rgba(0, 0, 0, 0)'
+      && getComputedStyle(name).backgroundColor === 'rgba(0, 0, 0, 0)'
+      && getComputedStyle(type).backgroundColor === 'rgba(0, 0, 0, 0)';
   }));
   await shot('columns-extra');
   await page.locator('#grid-head .gh[data-col="type"]').click({ button: 'right' });

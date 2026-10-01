@@ -369,10 +369,6 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
   display: flex; align-items: center; gap: 6px; height: 100%;
 }
 .gc.num { justify-content: flex-end; font-variant-numeric: tabular-nums; }
-/* columns beyond the default four wash their values in quiet gray; row
-   states (hover/selection/focus) paint the row behind and stay visible
-   through the translucent tint */
-.gc.extra { background: rgba(128, 132, 141, .12); }
 .gc .icon { flex: none; width: 16px; text-align: center; }
 /* name-cell badges (versioned buckets): ⟲ version count, ⛔ delete-marker
    count; clicking opens the Versions / Delete Marker windows */

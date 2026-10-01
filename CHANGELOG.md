@@ -64,8 +64,7 @@ follow [Semantic Versioning](https://semver.org/).
   strip even when it sits flush with the pane's right edge
   (double-click resets; Arrow keys resize a focused edge). The header
   picker gains **Reset columns** — one click restores the out-of-box
-  set, order and widths. Columns beyond the default four carry their
-  values on a quiet gray wash.
+  set, order and widths.
   **Date created** (bucket views, WebDAV
   creationdate, Windows local birth times) and **Mode** (local and
   SFTP permission bits) join the opt-in set, and the Type column now
