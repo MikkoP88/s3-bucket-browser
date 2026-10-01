@@ -3285,10 +3285,18 @@ await step('tree-filter', async () => {
     !document.getElementById('tree-filter').classList.contains('hidden')
     && document.activeElement?.id === 'tree-filter-input'));
 
+  // the sidebar's own bottom bar carries the counts now: the tree's rows
+  // without a filter, and the window status bar's idle "<n> items" is gone
+  // (it speaks only for a selection; the sidebar counts its own tree)
+  await ok('side footer counts the tree, status bar idle is silent', evalPage(() =>
+    /^\d+ items?$/.test(document.getElementById('side-foot-count').textContent || '')
+    && document.getElementById('status-selection').textContent === ''));
+
   // plain word: case-insensitive substring across every source at once
   await page.fill('#tree-filter-input', 'BACKUP');
   await page.press('#tree-filter-input', 'Enter');
   await sameRows(['backup-box'], 'BACKUP narrows to one source');
+  await ok('footer shows the filtered count', (await txt('#side-foot-count')).endsWith('1 shown'));
   await ok('funnel marked on while a filter is applied', evalPage(() =>
     document.querySelector('#sidebar-head .side-filter').classList.contains('on')));
 
@@ -3319,6 +3327,8 @@ await step('tree-filter', async () => {
   await sameRows([], 'no-match empties the tree');
   await ok('no-match note names the pattern', evalPage(() =>
     (document.querySelector('#tree .tree-empty-note')?.textContent || '').includes('zzz-none')));
+  await ok('no-match note offers the deep search', evalPage(() =>
+    !!document.querySelector('#tree .tree-empty-note .tree-note-act')));
 
   // Esc closes the panel but keeps the filter; the funnel stays lit
   await page.press('#tree-filter-input', 'Escape');
@@ -3327,46 +3337,64 @@ await step('tree-filter', async () => {
     && document.querySelector('#sidebar-head .side-filter').classList.contains('on')
     && document.querySelectorAll('#tree .tnode').length === 0));
   await page.click('#sidebar-head .side-filter');
-  await page.click('#tree-filter-clear');
-  await sameRows(WHOLE, 'clear restores the tree');
+  await page.fill('#tree-filter-input', '');
+  await page.press('#tree-filter-input', 'Enter');
+  await sameRows(WHOLE, 'emptying the pattern restores the tree');
   await ok('funnel unlit after clear', evalPage(() =>
     !document.querySelector('#sidebar-head .side-filter').classList.contains('on')));
+  await ok('footer back to the plain count', evalPage(() =>
+    /^\d+ items?$/.test(document.getElementById('side-foot-count').textContent || '')));
 
-  // deep walk: slow faults make the walk observable, Stop cancels it
+  // deep walk: no checkbox anymore — the no-match note's action opts in.
+  // Slow faults make the walk observable; the footer names the source
+  // being scanned with a Stop control that cancels AND opts out
   await evalPage(() => { window.__shim.world.fault = { listDelayMs: 400, remoteDelayMs: 400 }; });
-  await page.check('#tree-filter-deep');
-  await page.fill('#tree-filter-input', 'docs');
+  await page.fill('#tree-filter-input', 'zzz-none');
   await page.press('#tree-filter-input', 'Enter');
+  await sameRows([], 'no-match again, this time to walk');
+  await page.click('#tree .tree-empty-note .tree-note-act');
   await ok('deep walk reports the source being scanned', waitFor(async () => {
-    const st = await txt('#tree-filter-status');
+    const st = await txt('#side-foot-count');
     return /backup-box|dav-claims|hetzner|nightly|website-prod/.test(st)
-      && await evalPage(() => !document.getElementById('tree-filter-stop').classList.contains('hidden'));
+      && await evalPage(() => !document.getElementById('side-foot-stop').classList.contains('hidden'));
   }, 8000, 'walk status'));
-  await page.click('#tree-filter-stop');
-  await ok('Stop cancels the walk', waitFor(async () => evalPage(() =>
-    document.getElementById('tree-filter-stop').classList.contains('hidden')
+  await page.click('#side-foot-stop');
+  await ok('Stop cancels the walk and opts out of deep', waitFor(async () => evalPage(() =>
+    document.getElementById('side-foot-stop').classList.contains('hidden')
     && !/backup-box|dav-claims|hetzner|nightly|website-prod/.test(
-      document.getElementById('tree-filter-status').textContent)), 4000, 'walk stopped'));
+      document.getElementById('side-foot-count').textContent)), 4000, 'walk stopped'));
+  await ok('the no-match note offers the deep search again after Stop', evalPage(() =>
+    !!document.querySelector('#tree .tree-empty-note .tree-note-act')));
   await evalPage(() => { window.__shim.world.fault = null; });
 
-  // with deep on, a pattern matching a folder NO expansion ever loaded
-  // surfaces it: the walk loads hetzner -> team-files -> docs -> legacy
+  // with deep reached through the note, a pattern matching a folder NO
+  // expansion ever loaded surfaces it: the walk loads hetzner ->
+  // team-files -> docs -> legacy
   await page.fill('#tree-filter-input', 'legacy');
   await page.press('#tree-filter-input', 'Enter');
+  await page.click('#tree .tree-empty-note .tree-note-act');
   await sameRows(['hetzner', 'team-files', 'docs', 'legacy'], 'deep walk reaches legacy');
   await ok('match renders bright, carriers dim', evalPage(() => {
     const dims = Array.from(document.querySelectorAll('#tree .tnode.dim .tlabel')).map((e) => e.textContent);
     return dims.join('|') === 'hetzner|team-files|docs';
   }));
-  await ok('status counts the shown rows', waitFor(async () =>
-    (await txt('#tree-filter-status')).includes('4'), 4000, 'shown count'));
+  await ok('footer counts the shown rows', waitFor(async () =>
+    (await txt('#side-foot-count')).includes('4'), 4000, 'shown count'));
 
   // leave the world as it was: no filter, no deep, panel closed, and a
-  // familiar bucket view on screen for the steps that follow
-  await page.click('#tree-filter-clear');
-  await page.uncheck('#tree-filter-deep');
-  await page.press('#tree-filter-input', 'Escape');
+  // familiar bucket view on screen for the steps that follow — and the
+  // clear must have reset the deep opt-in along with the pattern
+  await page.fill('#tree-filter-input', '');
+  await page.press('#tree-filter-input', 'Enter');
   await sameRows(WHOLE, 'cleanup restores the tree');
+  await page.fill('#tree-filter-input', 'zzz-none');
+  await page.press('#tree-filter-input', 'Enter');
+  await ok('clearing the pattern reset the deep opt-in', evalPage(() =>
+    !!document.querySelector('#tree .tree-empty-note .tree-note-act')));
+  await page.fill('#tree-filter-input', '');
+  await page.press('#tree-filter-input', 'Enter');
+  await sameRows(WHOLE, 'cleanup restores the tree');
+  await page.press('#tree-filter-input', 'Escape');
   await navObjectsOf('hetzner', 'team-files');
 });
 
@@ -5745,6 +5773,8 @@ await step('onboarding-empty', async () => {
   await ok('funnel hidden with no data sources, + stays', p2.evaluate(() =>
     !document.querySelector('#sidebar-head .side-filter')
     && !!document.querySelector('#sidebar-head .side-add')));
+  await ok('side footer hidden with no data sources', p2.evaluate(() =>
+    document.getElementById('side-foot').classList.contains('hidden')));
   // with nothing selected there is no source root crumb in front of the
   // path — no orphan bucket icon for a source that isn't there
   await ok('path bar carries no source crumb when nothing is selected', p2.evaluate(() => document.getElementById('breadcrumb').children.length === 0));
@@ -6824,7 +6854,8 @@ await step('favorites', async () => {
   await page.press('#tree-filter-input', 'Enter');
   await ok('filter hides a non-matching favorite', waitFor(async () =>
     evalPage(() => document.getElementById('fav-section').classList.contains('hidden')), 4000, 'fav hidden by filter'));
-  await page.click('#tree-filter-clear');
+  await page.fill('#tree-filter-input', '');
+  await page.press('#tree-filter-input', 'Enter');
   await ok('favorite returns when the filter clears', waitFor(async () =>
     evalPage(() => (document.querySelector('#favorites .fav-label')?.textContent || '') === 'team-files'),
     4000, 'fav back'));

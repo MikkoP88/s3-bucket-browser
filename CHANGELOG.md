@@ -30,13 +30,24 @@ follow [Semantic Versioning](https://semver.org/).
   filters the entire hierarchy — sources, buckets and folders — with
   pass-through ancestors dimmed, an honest "no matches" note when
   nothing survives, and the Favorites list narrowed to matching
-  buckets. Loaded content filters instantly as you type; a **Search
-  all folders** toggle walks the unloaded depths of every source in
-  the background (status line naming the source, Stop cancels, results
-  appearing as the walk goes) so deep matches surface without opening
-  anything. Enter applies immediately, Escape closes the panel while
-  keeping the pattern, the × clears it, and the funnel icon hides
-  itself entirely when no data sources exist.
+  buckets. Loaded content filters instantly as you type; emptying the
+  box restores the tree, Enter applies at once, and Escape closes the
+  panel while keeping the pattern. When a pattern matches nothing
+  loaded, the no-match note offers **Search all folders**: the walk
+  loads the unloaded depths of every source in the background (the
+  sidebar's bottom bar names the source being scanned; its Stop
+  button cancels and opts back out; clearing the pattern resets the
+  opt-in) so deep matches surface without opening anything. The
+  funnel icon hides itself entirely when no data sources exist.
+
+- **The Data sources area has its own bottom bar.** The sidebar counts
+  its tree at all times — *n* items with no filter, *n* shown while a
+  pattern narrows it, the source being scanned with a Stop control
+  while a deep walk runs — mirroring the content area's size bar. The
+  plain item count moves here from the window status bar, which now
+  speaks only for a selection (selection summaries stay, the idle span
+  stays empty), and the bar hides itself along with the funnel when
+  no data sources exist.
 
 - **Content size bar: the real recursive size, every source type,
   version-aware.** The content viewer gains a WinSCP-style bottom

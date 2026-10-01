@@ -40,7 +40,8 @@ const tree = new Tree({
     () => adminDialog(bucket, refreshCurrent),
   ),
   onBuckets: (source, names) => ensureGuards(source, names),
-  onFilterStatus: (st) => updateTreeFilterStatus(st.walking ? st.scanning : undefined),
+  onFilterStatus: (st) => updateSideFoot(st.walking ? st.scanning : undefined),
+  onRender: () => updateSideFoot(),
 });
 const logArea = createLogArea();
 
@@ -583,6 +584,7 @@ function renderSidebarHead() {
   const head = $('sidebar-head');
   const tools = el('span', { class: 'side-tools' });
   if (sources.length) {
+    $('side-foot').classList.remove('hidden');
     const funnel = el('button', {
       class: 'side-filter' + (treeMatcher ? ' on' : ''),
       title: t('treeFilter'),
@@ -594,6 +596,7 @@ function renderSidebarHead() {
     tools.appendChild(funnel);
   } else {
     $('tree-filter').classList.add('hidden'); // nothing to filter: no panel either
+    $('side-foot').classList.add('hidden'); // and no rows to count
   }
   tools.appendChild(el('button', {
     class: 'side-add', text: '+', title: t('addSource'),
@@ -690,28 +693,28 @@ function applyTreeFilter(query) {
   tree.setFilter(treeMatcher, query);
   renderSidebarHead();
   renderFavorites();
-  updateTreeFilterStatus();
+  updateSideFoot();
 }
 
-// updateTreeFilterStatus renders the panel's status line: match count,
-// plus the source being walked and a Stop control while the deep walk
-// runs. The tree drives transitions through onFilterStatus; a direct
-// call (after applying a pattern) falls back to the tree's live walk
-// state so it never clobbers a "Scanning…" line that already started.
-function updateTreeFilterStatus(scanning) {
-  const st = $('tree-filter-status');
-  const stop = $('tree-filter-stop');
-  if (!st) return;
-  if (!treeMatcher) {
-    st.textContent = '';
-    stop.classList.add('hidden');
-    return;
-  }
+// updateSideFoot paints the sidebar's status footer — the Data Sources
+// counterpart of the content size bar: the tree's row count ("<n>
+// items"), which becomes the filter's "<n> shown" while a pattern
+// narrows the tree, prefixed by the source being walked plus a Stop
+// control while the deep walk runs. The tree drives repaints through
+// onRender/onFilterStatus; a direct call (after applying a pattern)
+// falls back to the tree's live walk state so it never clobbers a
+// "Scanning…" line that already started.
+function updateSideFoot(scanning) {
+  const cnt = $('side-foot-count');
+  const stop = $('side-foot-stop');
+  if (!cnt) return;
   const scan = scanning !== undefined ? scanning : tree.walkingLabel;
   const n = tree.visibleCount;
-  st.textContent = scan
-    ? t('treeFilterScan', { src: scan }) + ' — ' + t('treeFilterShown', { n })
-    : t('treeFilterShown', { n });
+  cnt.textContent = treeMatcher
+    ? (scan
+      ? t('treeFilterScan', { src: scan }) + ' — ' + t('treeFilterShown', { n })
+      : t('treeFilterShown', { n }))
+    : `${n} ${n === 1 ? t('item') : t('items')}`;
   stop.classList.toggle('hidden', !scan);
 }
 
@@ -719,13 +722,10 @@ function initTreeFilterPanel() {
   const inp = $('tree-filter-input');
   inp.placeholder = t('treeFilterPh');
   inp.title = t('treeFilter');
-  $('tree-filter-clear').title = t('treeFilterClear');
-  $('tree-filter-deep-label').textContent = t('treeFilterDeep');
-  $('tree-filter-stop').textContent = t('treeFilterStop');
   // the debounce must read the field WHEN IT FIRES, not when the event
   // lands: typing a pattern and clearing it quickly (Enter applies at
-  // once, the x button empties the field without an input event) would
-  // otherwise resurrect the typed pattern 250 ms after the clear
+  // once) would otherwise resurrect the typed pattern 250 ms after the
+  // clear
   const debounced = debounce(() => applyTreeFilter(inp.value), 250);
   inp.addEventListener('input', () => debounced());
   inp.addEventListener('keydown', (e) => {
@@ -737,13 +737,12 @@ function initTreeFilterPanel() {
       toggleTreeFilterPanel(false);
     }
   });
-  $('tree-filter-clear').onclick = () => {
-    inp.value = '';
-    applyTreeFilter('');
-    inp.focus();
-  };
-  $('tree-filter-deep').addEventListener('change', (e) => tree.setDeep(e.target.checked));
-  $('tree-filter-stop').onclick = () => tree.abortWalk();
+  // the footer's Stop cancels the walk AND opts out of deep mode: with
+  // the checkbox gone this is the one visible deep control, so it must
+  // mean "stop searching everywhere", not "pause this sweep"
+  const stop = $('side-foot-stop');
+  stop.textContent = t('treeFilterStop');
+  stop.onclick = () => tree.setDeep(false);
 }
 
 // ============================ navigation ============================
@@ -4526,7 +4525,7 @@ function updateStatus() {
   const selRows = grid.selectedRows();
   const sel = selRows.length;
   const total = grid.rows.length;
-  let text;
+  let text = '';
   if (sel) {
     // Selection count summary. Sizes live one floor down, in the
     // content size bar, where they are real recursive totals — this
@@ -4538,9 +4537,11 @@ function updateStatus() {
     if (folders) parts.push(`${folders} folder(s)`);
     if (files) parts.push(`${files} file(s)`);
     text = `${sel} of ${total} ${t('items')} ${t('selected')}${parts.length ? ` \u2014 ${parts.join(', ')}` : ''}`;
-  } else {
-    text = `${total} ${total === 1 ? t('item') : t('items')}`;
   }
+  // idle leaves this span empty: the plain "<n> items" count moved down
+  // into the Data Sources footer, which counts its own tree with or
+  // without a filter — this span speaks only for a selection now (the
+  // content area's own totals live in the size bar below the grid)
   $('status-selection').textContent = text;
   updateCommandState();
   scheduleSizeBar(); // same moments as the footer: selection, pages, done

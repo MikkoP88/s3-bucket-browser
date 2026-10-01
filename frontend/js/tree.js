@@ -17,8 +17,9 @@ export class Tree {
   // onBuckets(source, names) is called when bucket rows appear so the caller
   // can fetch their guards in the background.
   // onFilterStatus({walking, scanning}) reports the deep-walk state so the
-  // filter panel can show progress and a Stop control.
-  constructor({ onNavigate, onDropTo, onContext, guardOf, onGuardClick, onBuckets, onFilterStatus }) {
+  // side footer can show progress and a Stop control; onRender() fires
+  // after every render so the footer can recount the rows it just drew.
+  constructor({ onNavigate, onDropTo, onContext, guardOf, onGuardClick, onBuckets, onFilterStatus, onRender }) {
     this.container = document.getElementById('tree');
     this.onNavigate = onNavigate;
     this.onDropTo = onDropTo;
@@ -27,6 +28,7 @@ export class Tree {
     this.onGuardClick = onGuardClick;
     this.onBuckets = onBuckets;
     this.onFilterStatus = onFilterStatus;
+    this.onRender = onRender;
     this.nodes = new Map(); // id -> node
     this.currentId = null;
     this.status = new Map(); // source name -> 'ok' | 'error' | 'busy'
@@ -198,6 +200,10 @@ export class Tree {
     this.filterQuery = query || '';
     this.filterCollapsed.clear();
     if (changed) this.abortWalk();
+    // the deep opt-in lives and dies with the pattern: the checkbox is
+    // gone, so leaving deep armed after a clear would walk every source
+    // again on the next pattern with nothing on screen saying so
+    this.deep = this.deep && !!this.filter;
     if (this.filter) {
       for (const n of this.nodes.values()) {
         if (n.kind === 'source' && !n.loaded) {
@@ -211,11 +217,15 @@ export class Tree {
     this.render();
   }
 
-  // setDeep opts in or out of walking unloaded folders for the filter.
+  // setDeep opts in or out of walking unloaded folders for the filter —
+  // the no-match note's action opts in, the footer's Stop opts out (a
+  // plain abort would leave deep armed and re-walk on the next pattern
+  // with nothing on screen saying so; the re-render brings the note's
+  // action back).
   setDeep(on) {
     this.deep = !!on;
     if (this.deep && this.filter && !this.walkActive) this.startWalk();
-    else if (!this.deep) this.abortWalk();
+    else if (!this.deep) { this.abortWalk(); this.render(); }
   }
 
   // startWalk depth-first loads every folder of every source so the
@@ -494,16 +504,27 @@ export class Tree {
         if (this.visibleSet.has(r.id)) this.container.appendChild(this.renderNode(r));
       }
       if (!this.container.children.length) {
-        this.container.appendChild(el('div', {
+        const note = el('div', {
           class: 'tree-empty-note',
           text: t('treeFilterNone', { q: this.filterQuery }),
-        }));
+        });
+        // zero matches in everything loaded: offer the one search that can
+        // reach further — the walk opt-in surfaces only when it can pay off
+        if (!this.deep) {
+          note.appendChild(el('button', {
+            class: 'tree-note-act', type: 'button', text: t('treeFilterDeep'),
+            onclick: () => this.setDeep(true),
+          }));
+        }
+        this.container.appendChild(note);
       }
       this.visibleCount = this.container.querySelectorAll('.tnode').length;
     } else {
       this.visibleSet = null;
       for (const r of roots) this.container.appendChild(this.renderNode(r));
+      this.visibleCount = this.container.querySelectorAll('.tnode').length;
     }
+    this.onRender?.();
   }
 
   // guardIcons builds the versioning / object-lock indicators shown after a

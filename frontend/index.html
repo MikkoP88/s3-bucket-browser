@@ -57,20 +57,23 @@
     <main class="main">
       <aside class="sidebar" id="sidebar" aria-label="Buckets">
         <div class="sidebar-head" id="sidebar-head">Buckets</div>
-        <!-- tree-filter: the funnel's pattern panel (labels come from i18n at boot) -->
+        <!-- tree-filter: the funnel's pattern strip (the label comes from i18n at boot) -->
         <div class="tree-filter hidden" id="tree-filter">
-          <div class="tf-row">
-            <input id="tree-filter-input" class="input mono" spellcheck="false" autocomplete="off">
-            <button id="tree-filter-clear" class="tf-x" type="button">&#215;</button>
-          </div>
-          <label class="tf-deep"><input type="checkbox" id="tree-filter-deep"><span id="tree-filter-deep-label"></span></label>
-          <div class="tf-status" role="status"><span id="tree-filter-status"></span><button id="tree-filter-stop" class="tf-stop hidden" type="button"></button></div>
+          <input id="tree-filter-input" class="input mono" spellcheck="false" autocomplete="off">
         </div>
         <div class="fav-section hidden" id="fav-section" aria-label="Favorites">
           <div class="fav-head">&#9733; Favorites</div>
           <div class="favorites" id="favorites" role="list"></div>
         </div>
         <div class="tree" id="tree" role="tree"></div>
+        <!-- side footer: the Data Sources area's own status line, the sidebar's
+             counterpart of the content size bar — the tree's row count (or the
+             filter's shown count), and the source being scanned with a Stop
+             control while a deep walk runs -->
+        <div class="side-foot hidden" id="side-foot" role="status">
+          <span class="sf-count" id="side-foot-count"></span>
+          <button id="side-foot-stop" class="sf-stop hidden" type="button"></button>
+        </div>
       </aside>
       <div class="side-split" id="side-split" title="Drag to resize — double-click to reset"></div>
       <div class="grid-wrap" id="grid-wrap">

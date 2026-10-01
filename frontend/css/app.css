@@ -200,36 +200,36 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .side-filter:hover { color: var(--accent); border-color: var(--accent); }
 .side-filter.on { color: var(--accent); border-color: var(--accent); }
 
-/* Tree filter: the funnel's pattern panel under the sidebar head */
-.tree-filter {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 6px 10px 8px; border-bottom: 1px solid var(--border);
-}
-.tf-row { display: flex; gap: 6px; align-items: center; }
-.tf-row .input { flex: 1; min-width: 0; font-size: 12px; padding: 3px 7px; }
-.tf-x {
-  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
-  border-radius: 4px; font-size: 12px; line-height: 1; padding: 4px 7px; cursor: pointer;
-}
-.tf-x:hover { color: var(--accent); border-color: var(--accent); }
-.tf-deep {
-  display: flex; gap: 6px; align-items: center;
-  font-size: 11px; color: var(--text-dim); cursor: pointer; user-select: none;
-}
-.tf-deep input { margin: 0; }
-.tf-status {
-  display: flex; gap: 8px; align-items: center; justify-content: space-between;
-  font-size: 11px; color: var(--text-dim); min-height: 18px;
-}
-.tf-stop {
-  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
-  border-radius: 4px; font-size: 11px; line-height: 1; padding: 2px 8px; cursor: pointer;
-}
-.tf-stop:hover { color: var(--accent); border-color: var(--accent); }
+/* Tree filter: the funnel's pattern strip under the sidebar head */
+.tree-filter { padding: 7px 10px 8px; border-bottom: 1px solid var(--border); }
+.tree-filter .input { font-size: 12px; padding: 4px 8px; }
 
-/* Dimmed pass-through rows and the filter's no-match note */
+/* Side footer: the Data Sources area's own status line — the grid-status
+   recipe applied to the sidebar. Always-on row count ("<n> items"), the
+   filter's shown count while a pattern narrows the tree, and the deep
+   walk's scanning line with its Stop control. */
+.side-foot {
+  display: flex; gap: 8px; align-items: center; justify-content: space-between;
+  padding: 3px 10px; border-top: 1px solid var(--border); min-height: 22px;
+  font-size: 12px; color: var(--text-dim);
+}
+.sf-count { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sf-stop {
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  border-radius: 4px; font-size: 11px; line-height: 1; padding: 2px 8px; cursor: pointer; flex: none;
+}
+.sf-stop:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Dimmed pass-through rows and the filter's no-match note (whose action
+   opts into the deep walk — the only place that search is offered) */
 .tnode.dim .tlabel { opacity: .55; }
 .tree-empty-note { padding: 10px 12px; color: var(--text-dim); font-style: italic; }
+.tree-note-act {
+  display: block; margin-top: 6px; font-style: normal; font-size: 11px;
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  border-radius: 4px; line-height: 1; padding: 4px 8px; cursor: pointer;
+}
+.tree-note-act:hover { color: var(--accent); border-color: var(--accent); }
 .tree { flex: 1; overflow: auto; padding: 2px 0 20px; }
 
 /* Favorites section (M5): pinned buckets above the tree */

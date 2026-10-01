@@ -136,12 +136,18 @@ directory compare) with S3 and the local pane.
   buckets and folders inside sources, not just source names — with
   pass-through ancestors dimmed, and the pattern narrows the Favorites
   list to matching buckets too. Everything the tree has loaded filters
-  as you type; **Search all folders** additionally walks the unloaded
-  depths of every source in the background (the status line names the
-  source being scanned and a Stop button cancels), so deep matches
-  appear without opening anything. Enter applies at once, Escape closes
-  the panel but keeps the pattern, and the × clears it. The funnel icon
-  hides itself when there are no data sources.
+  as you type; emptying the box restores the tree, Enter applies at
+  once, and Escape closes the panel but keeps the pattern. The
+  sidebar's bottom bar counts the tree at all times — *n* items with
+  no filter, *n* shown while one narrows it — taking over the plain
+  item count the window status bar used to carry (that bar now speaks
+  only for a selection). When a pattern matches nothing loaded, the
+  no-match note offers **Search all folders**: the walk loads the
+  unloaded depths of every source in the background (the bottom bar
+  names the source being scanned, and its Stop button cancels and
+  opts back out) so deep matches appear without opening anything.
+  The funnel icon and the bottom bar hide themselves when there are
+  no data sources.
 - **Connection status** — the ball beside a source's name says whether
   it is reachable: green connected, red connection problem, busy while
   a probe runs (hover for the exact state; right-click the source for
