@@ -661,7 +661,13 @@ function shim() {
       return JSON.parse(JSON.stringify(world.buckets));
     },
     ListSourceBuckets: (_src) => JSON.parse(JSON.stringify(world.buckets)),
-    TestSource: (_idOrName) => ({ ok: true, message: 'connected — bucket accessible' }),
+    // probeError faults the probe itself (connection-states step): the
+    // source answers listings or not, but the PROBE says down.
+    TestSource: (_idOrName) => {
+      const f = world.fault || {};
+      if (f.probeError) return { ok: false, message: f.probeError };
+      return { ok: true, message: 'connected — bucket accessible' };
+    },
     ListObjectsStream: (bucket, prefix) => {
       const f = world.fault || {};
       if (f.listBeginError) throw new Error(f.listBeginError);
@@ -1436,8 +1442,10 @@ await step('loading-states', async () => {
     (await calls()).filter((c) => c.m === 'ListObjectsStream').length > callsBefore, 4000, 'retry call'));
   await ok('view recovers after retry', waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'rows after retry'));
 
-  // -- non-timeout failure: the generic title, never false "timeout" wording --
-  await evalPage(() => { window.__shim.world.fault = { listError: 'connection refused' }; });
+  // -- non-timeout failure: the generic title, never false "timeout" wording
+  //    (and never the not-connected title — the fault below is neither a
+  //    timeout nor a connection-class error) --
+  await evalPage(() => { window.__shim.world.fault = { listError: 'malformed listing response — trailing garbage' }; });
   await page.click('#btn-refresh');
   await waitFor(() => evalPage(() => document.getElementById('empty-title').textContent.includes('Could not load')), 4000, 'generic error state');
   await ok('non-timeout error uses the generic title', (await txt('#empty-title')).includes('Could not load'));
@@ -1489,6 +1497,96 @@ await step('loading-states', async () => {
   await page.selectOption('#local-src', 'local');
   await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane back to local');
   await page.click('#btn-panes'); // close: later steps expect a single pane
+});
+
+// The not-connected contract: a connection-class failure names the problem
+// ("Source not connected") and offers Reconnect (re-probe + view heal)
+// beside Retry; the sidebar ball agrees with the panel; the connectivity
+// monitor detects a dropped source WITHOUT any user refresh (persistent
+// banner over the kept rows) and recovery heals by itself; silent-refresh
+// streaks escalate from a one-time toast to the banner; and updating one
+// source's ball no longer wipes every other ball.
+await step('connection-states', async () => {
+  // the monitor's natural 60 s beat is noise inside this step — every
+  // tick below is forced through the hook, so pause the timer first
+  await evalPage(() => window.__s3bConnPause());
+  // source rows only — a bucket of the same name may sit under another
+  // source (hetzner also has a team-files bucket row, but no ball)
+  const ballOf = (label) => evalPage((l) => {
+    const row = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'))
+      .find((r) => r.textContent.includes(l));
+    return row ? (row.querySelector('.sball') || {}).className || '' : '';
+  }, label);
+  const panelButtons = () => evalPage(() => Array.from(document.querySelectorAll('#empty-actions button'))
+    .map((b) => b.textContent));
+  const panelButton = (needle) => elOrNull((s) => Array.from(document.querySelectorAll('#empty-actions button'))
+    .find((b) => b.textContent.toLowerCase().includes(s)) || null, needle);
+  const bannerHidden = () => evalPage(() => document.getElementById('conn-banner').classList.contains('hidden'));
+
+  // -- navigation failure: classified title, Reconnect primary, ball agrees --
+  await evalPage(() => { window.__shim.world.fault = { listError: 'connection refused' }; });
+  await page.click('#btn-refresh');
+  await waitFor(() => evalPage(() => document.getElementById('empty-title').textContent.includes('not connected')), 4000, 'not-connected title');
+  await ok('connection-class failure titled "not connected"', (await txt('#empty-title')).includes('not connected'));
+  await ok('raw backend message stays the sub-line', (await txt('#empty-sub')).includes('connection refused'));
+  await ok('Reconnect is offered first', waitFor(async () => /reconnect/i.test((await panelButtons())[0] || ''), 3000, 'reconnect first'));
+  await ok('Retry stays beside it', waitFor(async () => (await panelButtons()).some((x) => /retry/i.test(x)), 3000, 'retry present'));
+  await ok('sidebar ball agrees: error', waitFor(async () => (await ballOf('hetzner')).includes('error'), 3000, 'ball error'));
+  await shot('conn-not-connected');
+
+  // -- Reconnect that fails: honest toast, the state persists --
+  await evalPage(() => { window.__shim.world.fault = { probeError: 'connection refused' }; });
+  (await panelButton('reconnect')).asElement().click();
+  await ok('failed reconnect says so', waitFor(async () => (await txt('#toasts')).includes('Could not reconnect'), 4000, 'reconnect-fail toast'));
+  await ok('not-connected panel persists', (await txt('#empty-title')).includes('not connected'));
+  await ok('ball stays error after a failed reconnect', (await ballOf('hetzner')).includes('error'));
+
+  // -- Reconnect that succeeds: ball ok + the view reloads --
+  await evalPage(() => { window.__shim.world.fault = null; });
+  (await panelButton('reconnect')).asElement().click();
+  await ok('reconnect greens the ball', waitFor(async () => (await ballOf('hetzner')).includes('ok'), 4000, 'ball ok'));
+  await ok('reconnect reloads the view', waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'rows after reconnect'));
+  await ok('reconnect success toast', waitFor(async () => (await txt('#toasts')).includes('Reconnected'), 4000, 'reconnected toast'));
+  await ok('panel cleared by the reload', evalPage(() => document.getElementById('empty-state').classList.contains('hidden')));
+
+  // -- background detection WITHOUT any refresh: forced monitor ticks --
+  await evalPage(() => { window.__shim.world.fault = { probeError: 'connection refused' }; });
+  await evalPage(() => window.__s3bConnTick(true)); // strike 1: quiet
+  await ok('one blip stays quiet', bannerHidden());
+  await evalPage(() => window.__s3bConnTick(true)); // strike 2: spoken
+  await ok('banner appears over the kept rows', waitFor(() => evalPage(() => !document.getElementById('conn-banner').classList.contains('hidden')), 3000, 'banner shown'));
+  await ok('banner names the source as not connected', (await txt('#conn-banner-text')).includes('not connected'));
+  await ok('rows stay on screen under the banner', (await rowKeys()).includes('readme.md'));
+  await ok('ball red from the monitor', (await ballOf('hetzner')).includes('error'));
+  await shot('conn-banner');
+  await ok('other balls survive the update (status merge)', waitFor(async () => (await ballOf('backup-box')).includes('ok'), 3000, 'merge keeps other balls'));
+
+  // -- recovery: banner clears and the view heals by itself --
+  await evalPage(() => { window.__shim.world.fault = null; });
+  const listingsBefore = (await calls()).filter((c) => c.m === 'ListObjectsStream').length;
+  await evalPage(() => window.__s3bConnTick(true));
+  await ok('banner cleared on recovery', waitFor(bannerHidden, 3000, 'banner hidden'));
+  await ok('recovery announced', waitFor(async () => (await txt('#toasts')).includes('connected again'), 4000, 'connBack toast'));
+  await ok('view silently re-listed on recovery', waitFor(async () =>
+    (await calls()).filter((c) => c.m === 'ListObjectsStream').length > listingsBefore, 4000, 'auto-heal listing'));
+
+  // -- silent-refresh streak: toast once, then the banner --
+  // (toasts are cleared first: loading-states' silent leg leaves a
+  // 'Background refresh failed' toast behind that would make the check
+  // below pass vacuously — and striking again before the first failure's
+  // 20 ms-deferred error page lands would have cancelListStream drop it)
+  await evalPage(() => { document.getElementById('toasts').innerHTML = ''; });
+  await evalPage(() => { window.__shim.world.fault = { listError: 'connection refused' }; });
+  await evalPage(() => window.__shim.emit('s3:changed', { bucket: 'team-files' }));
+  await sleep(300); // let the failed refresh land before striking again
+  await ok('first silent failure still toasts', (await txt('#toasts')).includes('Background refresh failed'));
+  await ok('no banner on the first failure', bannerHidden());
+  await evalPage(() => window.__shim.emit('s3:changed', { bucket: 'team-files' }));
+  await ok('second failure escalates to the banner', waitFor(() => evalPage(() => !document.getElementById('conn-banner').classList.contains('hidden')), 3000, 'streak banner'));
+  await ok('rows kept through the streak', (await rowKeys()).includes('readme.md'));
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await evalPage(() => window.__shim.emit('s3:changed', { bucket: 'team-files' }));
+  await ok('a landed refresh clears the banner', waitFor(bannerHidden, 4000, 'streak cleared'));
 });
 
 await step('selection-status', async () => {

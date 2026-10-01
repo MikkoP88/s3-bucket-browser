@@ -142,6 +142,20 @@ directory compare) with S3 and the local pane.
   appear without opening anything. Enter applies at once, Escape closes
   the panel but keeps the pattern, and the × clears it. The funnel icon
   hides itself when there are no data sources.
+- **Connection status** — the ball beside a source's name says whether
+  it is reachable: green connected, red connection problem, busy while
+  a probe runs (hover for the exact state; right-click the source for
+  Test / Reconnect). The source behind the view you are looking at is
+  probed once a minute, so a connection that drops mid-session shows
+  itself without any refresh: a slim strip appears above the content —
+  *not connected — showing previous content* — while the rows you were
+  browsing stay on screen. **Reconnect** (on the strip, on a failed
+  view's error panel, or in the source's right-click menu)
+  re-establishes the connection and reloads the view; a failed load
+  names its cause ("Source not connected", "took too long to load")
+  instead of a generic error; and when the connection comes back on
+  its own, the strip clears, the view refreshes itself and a toast
+  says so. The strip's × hides it until recovery.
 - **Grid** — Windows-Explorer selection: click, Ctrl+click, Shift+click,
   Ctrl+A (all), Ctrl+I (invert), marquee drag-select, type-to-jump. The
   funnel row under the header filters per column; right-click the header

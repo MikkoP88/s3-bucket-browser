@@ -217,6 +217,7 @@ switching; the same S3 source stays connected through it).
 | **Hard kill mid-upload: no partial object** | **S3 via faultproxy** | a 64 MiB upload killed mid-flight (process termination) lands NO object — no corrupt or half-written key ever becomes visible; the clean retry is sha-identical | ✅ CLI-RES-04 | — (sweep: GUI cancel mid-transfer, GUI-21) | Win 11 x64 |
 | **Transient 5xx storm: absorbed / exhausted** | **S3 via faultproxy** | a new faultproxy `flap` mode (canned `HTTP 503` × N): a 2-failure storm is retried away INSIDE the SDK budget (the put lands byte-identical, sha-verified); a 50-failure storm exhausts it — non-zero exit, a surfaced error, and NO half-landed object | ✅ CLI-RES-05 | — | Win 11 x64 |
 | **Blackholed transfer: `--timeout` bounds the hang, no partial lands** | **S3 via faultproxy** | an endpoint that never answers would hang a transfer for the default 5 minutes: `--timeout 8s` cuts it to a fast, clean non-zero failure well inside the budget, the half-sent object does NOT exist — and the healthy-path retry lands afterwards (a timeout may cost the attempt, never the store's integrity) | ✅ CLI-RES-06 | — | Win 11 x64 |
+| **Disconnected source: detected, shown, healed — without a refresh** | **shim world (S3-shaped)** | a connection-class failure titles the error panel "Source not connected" with Reconnect primary beside Retry and the sidebar ball agreeing; a failed Reconnect says so and keeps the state, a successful one greens the ball, reloads the view and toasts; the once-a-minute probe of the active view's source surfaces a drop as a persistent strip over the KEPT rows (two strikes — one blip stays quiet), and recovery clears the strip, silently re-lists the stale view and announces itself; silent-refresh failures escalate toast then strip; and a one-ball update no longer wipes the other balls | — | ✅ (battery: connection-states, full gui-visual 832/832) | Win 11 x64 |
 
 ### Meta — the binary and the stack
 
@@ -356,6 +357,22 @@ full matrix (174 rows):
 ```
 
 The rounds in brief:
+
+- Round 10 made not-connected a first-class state. The battery's new
+  connection-states step pins the whole contract over the shim world:
+  the classified error panel (Reconnect beside Retry, the sidebar ball
+  agreeing), failed and successful reconnects (probe-faulted and
+  clean), the one-minute monitor detecting a drop with NO user
+  refresh — banner over kept rows after two strikes, a single blip
+  quiet — recovery clearing it and silently re-listing the stale view,
+  the silent-refresh escalation from toast to banner, and the
+  status-map merge (one ball update no longer wipes the others). Two
+  defects fell out of the round: the context menu's Reconnect reset
+  every other ball to unknown (whole-map replace — found in the
+  round's analysis), and every landed listing re-rendered the tree to
+  re-green an already-green ball — that no-op churn was what made a
+  virtual-grid row handle go stale under delete-settings-modes, so
+  status updates now skip renders that change nothing.
 
 - Round 9 shipped the Data sources filter (the funnel left of the +
   in the sidebar header). The sweep pinned the whole contract:

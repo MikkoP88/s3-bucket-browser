@@ -84,14 +84,154 @@ let pendingSelect = null; // {bucket, prefix, key} on S3, {path, key} on remote 
 // after a newer navigation started is dropped instead of clobbering the
 // view the user is looking at.
 let viewSeq = 0;
-// Consecutive failed background (silent) refreshes. The first failure of
-// a streak tells the user the rows on screen are stale; recovery (any
-// completed refresh) clears the streak silently.
-let silentFailStreak = 0;
-function noteSilentFail() {
-  if (silentFailStreak === 0) toast(t('staleRefresh'), 'error');
-  silentFailStreak++;
+// ======================= connection state =======================
+// One streak machine behind three surfaces: the empty-state error panel
+// (navigation failures), the persistent #conn-banner strip (failures
+// detected in the background — rows stay on screen), and the sidebar
+// status balls. conn.streak counts consecutive failures of ANY kind
+// (listing loads, silent refreshes, monitor probes); conn.flagged marks
+// "the user has been told" and drives the auto-heal on recovery.
+const conn = { streak: 0, flagged: false, busy: false, last: '' };
+
+// CONN_ERR_RE classifies failures that mean "the source is not
+// connected": dial/refused/reset/closed, DNS, unreachable, timeouts and
+// deadlines, TLS/certificate problems, bad credentials. Backend errors
+// arrive as raw Go strings (aws-sdk / remotefs engines) — the shapes
+// they actually take.
+const CONN_ERR_RE = /connection (?:refused|reset|closed|aborted)|dial tcp|no such host|(?:network|host) is unreachable|i\/o timeout|timed?\s?[\s-]?out|timeout|deadline exceeded|context deadline|tls[:\s]|handshake|certificate|x509|invalidaccesskeyid|signaturedoesnotmatch|access denied|permission denied|forbidden|unauthorized|authentication failed|auth failed|\b40[13]\b|\beof\b/i;
+function isConnError(msg) {
+  return CONN_ERR_RE.test(String(msg ?? ''));
 }
+
+// currentViewSourceName resolves the source behind the active view —
+// the same resolution setViewSourceFor applies (name or id -> name,
+// then the pinned view source, then the first S3 source).
+function currentViewSourceName(loc = nav.current) {
+  const raw = loc?.source || viewSource || sources.find((s) => s.type === 's3')?.name || '';
+  if (!raw) return '';
+  return sources.find((s) => s.name === raw || s.id === raw)?.name || raw;
+}
+
+// viewFailed records a failed load/refresh/probe of a source view.
+// quiet (the monitor's first strike): count it, tell nobody — one flaky
+// probe must not redden a ball that may be green a minute from now.
+function viewFailed(name, err, { silent = false, connClass = null, quiet = false } = {}) {
+  if (!name) return;
+  if (connClass === null) connClass = isConnError(err);
+  conn.last = name;
+  const first = conn.streak === 0;
+  conn.streak += 1;
+  if (!quiet) {
+    if (silent && first) toast(t('staleRefresh'), 'error');
+    if (connClass) tree.setStatus({ [name]: 'error' });
+  }
+  if (conn.streak >= 2) {
+    conn.flagged = true;
+    if (silent) showConnBanner(name, connClass ? 'conn' : 'stale');
+  }
+}
+
+// viewLandedHealthy: a listing completed — the source is reachable
+// again. Resets the streak, clears the banner, greens the ball and,
+// after a flagged outage, announces the recovery.
+function viewLandedHealthy(name) {
+  const wasDown = conn.streak > 0 || conn.flagged;
+  conn.streak = 0;
+  conn.flagged = false;
+  hideConnBanner();
+  if (name) tree.setStatus({ [name]: 'ok' });
+  if (wasDown && name) toast(t('connBack', { src: name }), 'ok');
+}
+
+// showConnBanner: the persistent strip over the grid. 'conn' (probe says
+// the source is down, danger) offers Reconnect; 'stale' (background
+// failures of unclassified cause, warn) offers Retry. The x dismisses
+// until recovery clears it.
+function showConnBanner(name, mode) {
+  const banner = $('conn-banner');
+  if (!banner || !name) return;
+  banner.classList.remove('hidden', 'conn', 'stale');
+  banner.classList.add(mode === 'conn' ? 'conn' : 'stale');
+  $('conn-banner-text').textContent = mode === 'conn'
+    ? t('connLost', { src: name }) : t('connStale', { src: name });
+  const act = $('conn-banner-act');
+  act.textContent = mode === 'conn' ? t('reconnect') : '\u21BB ' + t('retry');
+  act.disabled = false;
+  act.onclick = () => (mode === 'conn' ? reconnectSource(name) : refreshCurrent());
+}
+function hideConnBanner() {
+  $('conn-banner')?.classList.add('hidden');
+}
+function setConnBannerBusy(on) {
+  const banner = $('conn-banner');
+  const act = $('conn-banner-act');
+  if (!banner || !act || banner.classList.contains('hidden')) return;
+  if (on) { act.textContent = t('reconnecting'); act.disabled = true; }
+  else {
+    act.textContent = banner.classList.contains('stale') ? '\u21BB ' + t('retry') : t('reconnect');
+    act.disabled = false;
+  }
+}
+
+// reconnectSource is THE reconnect: re-save the source (a no-op save
+// round-trip — masked secrets inherit stored values — that drops cached
+// engines/clients so the next dial is fresh), probe it, and on success
+// reload the current view when it belongs to this source. The tree
+// context menu and both error surfaces funnel through here.
+async function reconnectSource(name, reloadNodeId = null) {
+  const src = sources.find((s) => s.name === name || s.id === name);
+  if (!src || conn.busy) return;
+  conn.busy = true;
+  tree.setStatus({ [name]: 'busy' });
+  setConnBannerBusy(true);
+  try {
+    await api.SaveSource(src);
+    if (reloadNodeId) tree.reload(reloadNodeId);
+  } catch { /* a failed save leaves the old engine in place — the probe decides */ }
+  const okProbe = await probeSource(src);
+  conn.busy = false;
+  tree.setStatus({ [name]: okProbe ? 'ok' : 'error' });
+  setConnBannerBusy(false);
+  if (okProbe) {
+    conn.streak = 0;
+    conn.flagged = false;
+    hideConnBanner();
+    toast(t('reconnected', { src: name }), 'ok');
+    if (currentViewSourceName() === name) refreshCurrent();
+  } else {
+    toast(t('reconnectFailed', { src: name }), 'error');
+  }
+}
+
+// ==================== connectivity monitor ====================
+// connTick probes the ACTIVE view's source once a minute: a connection
+// that drops mid-session becomes visible without any user refresh
+// (banner over the stale rows, red ball) and heals by itself once the
+// source answers again. Pauses when hidden / a modal or context menu is
+// open / transfers are running — the same courtesy autoRefresh pays.
+const CONN_PROBE_MS = 60000;
+let connTimer = null;
+async function connTick(force = false) {
+  if (!force && (document.hidden || autoRefreshBlocked())) return;
+  const name = currentViewSourceName();
+  if (!name || conn.busy) return;
+  const src = sources.find((s) => s.name === name || s.id === name);
+  if (!src) return;
+  const ok = await probeSource(src);
+  if (name !== currentViewSourceName()) return; // navigated mid-probe
+  if (ok) {
+    if (conn.streak > 0) {
+      const heal = conn.flagged;
+      viewLandedHealthy(name);
+      if (heal) refreshCurrent(true); // silent auto-heal of stale rows
+    }
+    return;
+  }
+  viewFailed(name, null, { silent: true, connClass: true, quiet: conn.streak === 0 });
+}
+// test hook: the gui-visual battery drives forced ticks through this
+// (a 60 s timer is useless inside a 5 s step) — the __s3bGrid pattern.
+window.__s3bConnTick = connTick;
 
 // applyColumnPrefs restores the persisted column layouts (visibility,
 // order and widths — Settings → View, the header menu and the header
@@ -152,6 +292,19 @@ async function boot() {
   const ar = parseInt(localStorage.getItem('s3b-autorefresh') || '0', 10);
   if (ar > 0) setAutoRefresh(ar);
   refreshOnFocus = localStorage.getItem('s3b-refresh-focus') === '1';
+
+  // Connectivity monitor: unlike auto refresh this one is always on — it
+  // probes only the ACTIVE view's source (one cheap call per minute) so
+  // a dropped connection surfaces without any user action at all. The
+  // banner's dismiss stays hidden until recovery clears it.
+  connTimer = setInterval(connTick, CONN_PROBE_MS);
+  // battery hook: gui-visual pauses the natural beat and drives ticks
+  // deterministically through __s3bConnTick instead — a natural tick
+  // landing mid-step would heal (or strike) the streak under test, since
+  // the probe can answer while only the listing is faulted.
+  window.__s3bConnPause = () => { clearInterval(connTimer); connTimer = null; };
+  $('conn-banner-x').title = t('connDismiss');
+  $('conn-banner-x').onclick = () => hideConnBanner();
 
   const ok = await refreshSources();
   if (ok) nav.to(sourceHomeLoc());
@@ -658,6 +811,7 @@ async function loadView(loc, { silent = false } = {}) {
   // NEWER navigation started is dropped, so a slow directory can never
   // clobber the one the user actually opened (the classic A→B race).
   const seq = ++viewSeq;
+  let landedName = ''; // source that produced a completed listing
   if (!silent) grid.clearSelection();
   if (!silent) resetSizeBar(); // clean bar; previous view's walk is stale
   updateNavButtons();
@@ -677,6 +831,7 @@ async function loadView(loc, { silent = false } = {}) {
       const buckets = await api.ListBuckets();
       if (seq !== viewSeq) return; // superseded by a newer navigation
       landed = true;
+      landedName = src;
       currentEntries = buckets.map((b) => ({
         key: b.name, name: b.name, isDir: true, size: 0,
         lastModified: b.createdAt, bucketCreated: true,
@@ -708,6 +863,7 @@ async function loadView(loc, { silent = false } = {}) {
       const entries = await api.RemoteList(loc.source, loc.path || '/');
       if (seq !== viewSeq) return; // superseded — drop the stale rows
       landed = true;
+      landedName = loc.source;
       currentEntries = entries;
       hideEmpty();
       grid.setRows(entries);
@@ -722,18 +878,19 @@ async function loadView(loc, { silent = false } = {}) {
       tree.updateRemoteDir(loc.source, loc.path || '/', entries);
       $('btn-up').disabled = !parentOf(loc);
     }
-    if (landed) silentFailStreak = 0;
+    if (landed) viewLandedHealthy(landedName);
   } catch (err) {
     // A silent refresh keeps the current view on transient errors — but the
     // FIRST failure of a streak tells the user the rows are now stale.
     if (silent) {
-      if (seq === viewSeq) noteSilentFail();
+      if (seq === viewSeq) viewFailed(currentViewSourceName(loc), err, { silent: true });
       return;
     }
     if (seq !== viewSeq) return;
     currentEntries = [];
     grid.setRows([]);
     showListError(err);
+    viewFailed(currentViewSourceName(loc), err, { silent: false });
   }
   updateStatus();
 }
@@ -761,7 +918,7 @@ async function loadObjectsStream(loc, silent = false) {
       if (seq !== listSeq) return; // superseded while pages still arrived
       if (p.error) {
         if (!silent) showListError(p.error);
-        else noteSilentFail();
+        viewFailed(loc.source || viewSource, p.error, { silent });
         return;
       }
       if (silent) {
@@ -805,7 +962,7 @@ async function loadObjectsStream(loc, silent = false) {
         }
         consumePendingSelect();
         updateStatus();
-        if (silent) silentFailStreak = 0; // a completed refresh = healthy
+        viewLandedHealthy(loc.source || viewSource); // a completed listing = healthy
       }
     },
   );
@@ -815,8 +972,10 @@ async function loadObjectsStream(loc, silent = false) {
     token = await stream.begin;
   } catch (err) {
     if (listStream.off === stream.off) listStream.off = null;
-    if (seq !== listSeq || silent) return;
+    if (seq !== listSeq) return;
+    if (silent) { viewFailed(loc.source || viewSource, err, { silent: true }); return; }
     showListError(err);
+    viewFailed(loc.source || viewSource, err, { silent: false });
     return;
   }
   if (seq !== listSeq) { api.CancelList(token).catch(() => {}); return; }
@@ -1705,17 +1864,9 @@ function showTreeMenu(e, node) {
       }],
       null,
       ['Refresh', 'F5', () => tree.reload(node.id)],
-      ['Reconnect', '', async () => {
-        // A no-op save round-trip: masked secrets inherit stored values,
-        // and SaveSource drops cached engines/clients (re-dial on next use).
-        try {
-          await api.SaveSource(src);
-          tree.reload(node.id);
-          tree.setStatus({ [node.source]: 'busy' });
-          probeSource(src).then((ok) => tree.setStatus({ [node.source]: ok ? 'ok' : 'error' }));
-          toast(`Reconnected ${node.source}`, 'ok');
-        } catch (err) { toast(`${err}`, 'error'); }
-      }],
+      // reconnectSource re-saves (drops cached engines), probes, and —
+      // when this source owns the current view — reloads it too.
+      ['Reconnect', '', () => reconnectSource(node.source, node.id)],
       ['Test connection\u2026', '', async () => {
         // S3 sources have a dedicated probe; remote/local engines are
         // probed by listing their root through the live engine.
@@ -1774,15 +1925,7 @@ function showTreeMenu(e, node) {
       ['Delete bucket\u2026', '', goThen(() => deleteBucket(node.bucket)), !st.hasProfile],
       null,
       ['Refresh', 'F5', () => tree.reload(node.id)],
-      ['Reconnect', '', async () => {
-        try {
-          await api.SaveSource(src);
-          tree.reload(node.id);
-          tree.setStatus({ [node.source]: 'busy' });
-          probeSource(src).then((ok) => tree.setStatus({ [node.source]: ok ? 'ok' : 'error' }));
-          toast(`Reconnected ${node.source}`, 'ok');
-        } catch (err) { toast(`${err}`, 'error'); }
-      }],
+      ['Reconnect', '', () => reconnectSource(node.source, node.id)],
       ['Test connection\u2026', '', async () => {
         // bucket-scoped: the backend probes THIS bucket, not the account
         const res = await api.TestSource(src.id || node.source);
@@ -4634,13 +4777,24 @@ function showLoading() {
 }
 // showListError renders a failed view load: the raw message, a title that
 // classifies timeouts (the single most action-relevant failure on a bad
-// connection) and a one-click Retry of the same navigation.
+// connection) AND connection failures (the source is not connected), and
+// one-click actions — Reconnect re-probes and heals, Retry re-lists.
 function showListError(err) {
   const msg = String(err?.message ?? err);
   const timedOut = /timed?\s?[\s-]?out|timeout|deadline exceeded|context deadline/i.test(msg);
-  showEmpty(timedOut ? t('loadTimeout') : t('loadFailed'), msg, [
-    el('button', { class: 'btn primary', text: `\u21BB ${t('retry')}`, onclick: () => refreshCurrent() }),
-  ]);
+  const connErr = timedOut || isConnError(msg);
+  const name = currentViewSourceName();
+  if (connErr && name) tree.setStatus({ [name]: 'error' }); // the ball must agree with the panel
+  const actions = [];
+  if (connErr) {
+    actions.push(el('button', { class: 'btn primary', text: t('reconnect'), onclick: () => reconnectSource(name) }));
+  }
+  actions.push(el('button', {
+    class: connErr ? 'btn' : 'btn primary',
+    text: '\u21BB ' + t('retry'),
+    onclick: () => refreshCurrent(),
+  }));
+  showEmpty(timedOut ? t('loadTimeout') : connErr ? t('notConnected') : t('loadFailed'), msg, actions);
 }
 
 boot();

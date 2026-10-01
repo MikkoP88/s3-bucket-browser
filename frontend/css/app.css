@@ -405,6 +405,28 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 .empty-sub { color: var(--text-dim); max-width: 460px; white-space: pre-line; overflow-wrap: anywhere; }
 .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 14px; }
 
+/* Connection banner (top of the viewer): the persistent not-connected /
+   stale-content strip for failures detected in the background — the
+   rows stay on screen underneath it, and Reconnect heals the source.
+   .conn = probe says the source is down (danger); .stale = listings are
+   failing but the cause is unclassified (warn). */
+.conn-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--warn) 14%, var(--panel));
+}
+.conn-banner.conn { background: color-mix(in srgb, var(--danger) 12%, var(--panel)); }
+.cb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--warn); }
+.conn-banner.conn .cb-dot { background: var(--danger); }
+.cb-text { flex: 1; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.cb-act { padding: 3px 10px; font-size: 12px; }
+.cb-x {
+  flex: none; border: 0; background: none; color: var(--text-dim);
+  font-size: 14px; line-height: 1; cursor: pointer; padding: 2px 4px;
+}
+.cb-x:hover { color: var(--accent); }
+
 /* In-flight variant: the panel is FETCHING, not empty — a spinner takes
    the icon's place and skeleton rows stand in for the listing that has
    not arrived yet, so a slow source can never read as an empty folder. */

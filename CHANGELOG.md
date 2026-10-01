@@ -8,6 +8,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Not-connected is now a first-class state.** A source that drops
+  mid-session becomes visible without any refresh: the source behind
+  the active view is probed once a minute, and a failed connection
+  raises a slim persistent strip above the content — the rows stay on
+  screen ("showing previous content") with a Reconnect action. Failed
+  loads classify themselves ("Source not connected", the existing
+  timeout title) and put Reconnect beside Retry; the sidebar status
+  ball agrees with what the content area shows; Reconnect heals for
+  real (re-save the source to drop cached engines, probe, and reload
+  the view when it belongs to that source); recovery is announced and
+  auto-refreshes the stale view; and silent background-refresh
+  failures escalate from a one-time toast to the persistent strip
+  instead of staying invisible.
+
 - **Data sources filter: one pattern narrows every source, wildcards
   included.** The sidebar header gains a funnel next to the **+** that
   opens a filter panel for the whole Data sources tree. Plain words
@@ -121,6 +135,15 @@ follow [Semantic Versioning](https://semver.org/).
   is verified against a real Vault.
 
 ### Fixed
+
+- The tree context menu's Reconnect no longer wipes every other
+  source's status ball to "unknown" (a one-source status update now
+  merges into the map instead of replacing it) and no longer toasts
+  "Reconnected" before the probe has said so — it funnels through the
+  same reconnect path as the error surfaces and reloads the current
+  view when that source owns it. Status updates that change nothing
+  also skip their re-render, so a landed listing no longer rebuilds
+  the tree to re-green an already-green ball.
 
 - Column-resize drags no longer misbehave at the edges: the boundary
   between two columns grabs from both sides, and a rightward drag in

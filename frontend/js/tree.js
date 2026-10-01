@@ -53,7 +53,13 @@ export class Tree {
   // setStatus feeds the per-source connectivity balls ('ok' | 'error' |
   // 'busy'); a partial map keeps the previous state of untouched sources.
   setStatus(map) {
-    this.status = new Map(Object.entries(map));
+    // merge — a single-source update must not wipe every other ball —
+    // and render only when a ball actually moved: landings green the
+    // view's source on every listing, and a needless tree re-render per
+    // navigation is pure churn
+    const merged = { ...Object.fromEntries(this.status), ...map };
+    if (!Object.entries(merged).some(([k, v]) => this.status.get(k) !== v)) return;
+    this.status = new Map(Object.entries(merged));
     this.render();
   }
 

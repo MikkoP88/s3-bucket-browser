@@ -74,6 +74,15 @@
       </aside>
       <div class="side-split" id="side-split" title="Drag to resize — double-click to reset"></div>
       <div class="grid-wrap" id="grid-wrap">
+        <!-- connection banner: persistent not-connected / stale-content
+             notice for the current view's source (rows stay; Reconnect
+             heals) — the slim sibling of the empty-state error panel -->
+        <div class="conn-banner hidden" id="conn-banner" role="alert">
+          <span class="cb-dot" aria-hidden="true"></span>
+          <span class="cb-text" id="conn-banner-text"></span>
+          <button class="btn primary cb-act" id="conn-banner-act" type="button"></button>
+          <button class="cb-x" id="conn-banner-x" type="button">&#215;</button>
+        </div>
         <div class="grid-head" id="grid-head" role="row"></div>
         <div class="grid-body" id="grid-body" tabindex="0" role="listbox" aria-label="Objects">
           <div class="grid-canvas" id="grid-canvas"></div>
