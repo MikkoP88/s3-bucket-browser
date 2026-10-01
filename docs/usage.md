@@ -208,7 +208,8 @@ directory compare) with S3 and the local pane.
   error or first-run panel owns the area. Alt+↑ and Backspace do the
   same from the keyboard (the toolbar's Up button is retired), and
   back / forward wear arrow icons. The row wears the same folder glyph
-  as every folder row, beside the `..` caption, seated in the Name
+  as every folder row — a backward-arrow badge riding its corner
+  marks the climb — beside the `..` caption, seated in the Name
   column exactly where a folder's own name sits — resizing or
   reordering the columns never breaks the seat.
 - **Favorites** — star buckets and folders for one-click jumps.

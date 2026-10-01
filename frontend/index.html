@@ -88,8 +88,10 @@
         <div class="grid-body" id="grid-body" tabindex="0" role="listbox" aria-label="Objects">
           <!-- parent row: the WinSCP parent-directory entry as the first
                row of the listing itself — the same folder glyph every
-               folder row wears, beside the ".." caption, seated in the
-               Name column exactly where a folder row's own name sits
+               folder row wears, its corner carrying the backward
+               arrow that marks the climb, beside the ".." caption,
+               seated in the Name column exactly where a folder row's
+               own name sits
                (main.js mirrors the grid's live column template onto
                the button: an empty checkbox gutter, then the name
                cell, so resize and reorder never break the seat); one
@@ -102,7 +104,7 @@
           <button class="upbar hidden" id="upbar" type="button">
             <span class="gc check" aria-hidden="true"></span>
             <span class="gc name">
-              <span class="icon">&#128193;</span>
+              <span class="icon">&#128193;<svg class="up-arrow" viewBox="0 0 12 12" aria-hidden="true"><circle class="up-badge" cx="6" cy="6" r="5.4"/><path class="up-glyph" d="M6 9.4V3M3 6 6 3l3 3"/></svg></span>
               <span class="up-label">..</span>
             </span>
           </button>

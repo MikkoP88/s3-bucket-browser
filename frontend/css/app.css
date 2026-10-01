@@ -418,6 +418,22 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 }
 .upbar:hover { background: var(--hover); }
 .upbar .up-label { letter-spacing: .03em; }
+/* The folder glyph stays the emoji the rows wear — the backward arrow
+   rides its corner as a badge: a disc in the panel color lifting the
+   --text arrow off the folder in both themes (the disc follows the
+   row into its hover tint so the badge never floats on the wrong
+   ground). */
+.upbar .gc.name .icon { position: relative; }
+.upbar .up-arrow {
+  position: absolute; right: 0; bottom: 0;
+  width: 11px; height: 11px; display: block;
+}
+.upbar .up-badge { fill: var(--panel); }
+.upbar .up-glyph {
+  fill: none; stroke: var(--text); stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.upbar:hover .up-badge { fill: var(--hover); }
 
 /* ================= Empty state ================= */
 .empty-state {

@@ -111,8 +111,9 @@ follow [Semantic Versioning](https://semver.org/).
   itself — WinSCP Explorer's parent entry.** Every content view —
   buckets, S3 folders, remote sources — carries the one-click climb
   to the directory above as a row inside the grid body, styled like
-  the folder rows around it — the same folder glyph they wear beside
-  the `..` caption, seated in the Name column exactly where a
+  the folder rows around it — the same folder glyph they wear — a
+  backward-arrow badge on its corner — beside the `..` caption,
+  seated in the Name column exactly where a
   folder's own name sits (the row mirrors the grid's live column
   template, so resizing or reordering the columns never breaks the
   seat).

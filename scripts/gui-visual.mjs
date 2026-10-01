@@ -7063,6 +7063,14 @@ await step('parent-row', async () => {
       over: getComputedStyle(b).zIndex !== 'auto',
       label: (b.querySelector('.up-label') || {}).textContent || '',
       glyph: (b.querySelector('.gc.name .icon') || {}).textContent || '',
+      arrow: (() => {
+        const ic = b.querySelector('.gc.name .icon');
+        const a = ic && ic.querySelector('.up-arrow');
+        if (!a) return false;
+        const r = ic.getBoundingClientRect(), q = a.getBoundingClientRect();
+        const cx = (q.left + q.right) / 2, cy = (q.top + q.bottom) / 2;
+        return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom;
+      })(),
       gutter: b.children[0].className,
       nameL: b.querySelector('.gc.name').getBoundingClientRect().left,
       headNameL: document.querySelector('#grid-head .gh[data-col="name"]').getBoundingClientRect().left,
@@ -7076,11 +7084,12 @@ await step('parent-row', async () => {
   let s = await row();
   await ok('parent row sits inside the grid body, ahead of the canvas', !!s && s.vis && s.inBody);
   await ok('parent row is row-height like the folder rows around it', !!s && Math.abs(s.rowH - 28) < 1);
-  // the glyph is the folder rows' own — fileIcon's folder — beside the
-  // ".." caption, and the entry rides the Name column exactly where a
-  // folder row's own name sits (checkbox gutter included)
-  await ok('caption ".." beside the folder glyph every folder row wears',
-    !!s && s.label === '..' && s.glyph === '\u{1F4C1}');
+  // the glyph is the folder rows' own — fileIcon's folder, wearing the
+  // backward-arrow badge on its corner — beside the ".." caption, and
+  // the entry rides the Name column exactly where a folder row's own
+  // name sits (checkbox gutter included)
+  await ok('caption ".." beside the folder glyph every folder row wears, backward arrow on its corner',
+    !!s && s.label === '..' && s.glyph === '\u{1F4C1}' && s.arrow);
   await ok('the parent entry sits in the Name column like a folder row',
     !!s && s.gutter.includes('check') && Math.abs(s.nameL - s.headNameL) <= 1);
   await shotOf('winscp-parent', '#grid-wrap');
