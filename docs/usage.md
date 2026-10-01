@@ -204,11 +204,16 @@ directory compare) with S3 and the local pane.
   button, View → Search, or *Search in this folder…* from a context
   menu — the menu presets the scope). It searches **every data
   source** by default — every bucket of every S3 source plus every
-  remote source (local, SFTP, FTP, WebDAV) from its root — or the
-  scope dropdown narrows to this folder, bucket or source. Name takes
-  a substring or glob and Enter runs it from any field; size, age,
-  kind (any/files/folders), storage class and result limit fold out
-  under *More filters*. Results stream in with source badges, a
+  remote source (local, SFTP, FTP, WebDAV) from its root — and the
+  scope dropdown names every source: the entries for where you stand
+  (this folder, this bucket, the open remote path) group under *This
+  view*, each configured source is pickable on its own under *Data
+  sources* — an S3 source searched across every bucket it holds, a
+  remote source from its root. Search in and Name are labeled fields
+  always in view; Name takes a substring or glob and Enter runs it
+  from any field; size, age, kind (any/files/folders), storage
+  class and result limit fold out under the *More filters*
+  disclosure chip. Results stream in with source badges, a
   running search can be stopped from the window, and clicking a hit
   jumps to the object and selects it.
 

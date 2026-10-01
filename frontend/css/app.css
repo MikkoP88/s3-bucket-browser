@@ -975,19 +975,20 @@ kbd {
 .ver-row.ghost { opacity: .55; font-style: italic; }
 
 /* ================= Search window ================= */
-/* Floating popout: scope + name always visible, the remaining filters
-   behind the expander, streamed results fill the rest. */
+/* Floating popout: scope and Name sit up top as labeled fields (the old
+   modal's recipe), the remaining filters fold behind a bordered
+   disclosure chip, streamed results fill the rest. */
 .sr-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-.sr-top { display: grid; grid-template-columns: max-content 1fr; gap: 4px 8px; align-items: center; }
-.sr-top label.field { margin: 0; }
+.sr-top { display: grid; gap: 6px; }
+.sr-top label.field { margin: 0 0 3px; }
 .sr-more {
   align-self: flex-start;
-  background: none; border: none; padding: 0;
-  color: var(--accent); font-size: 12px; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-dim);
+  border-radius: 4px; font-size: 11px; line-height: 1; padding: 4px 8px; cursor: pointer;
 }
-.sr-more:hover { text-decoration: underline; }
-.sr-params { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px 12px; }
-.sr-params label.field { margin: 0; }
+.sr-more:hover { color: var(--accent); border-color: var(--accent); }
+.sr-params { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
+.sr-params label.field { margin: 0 0 3px; }
 /* results list: inside the search popout the fixed .ver-list height gives
    way to flex-fill — the window itself is the height contract */
 .popout[data-pop="search"] .ver-list { flex: 1; height: auto; min-height: 120px; margin-top: 0; }

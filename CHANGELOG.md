@@ -107,12 +107,18 @@ follow [Semantic Versioning](https://semver.org/).
   resizable, remembers its place, one instance that refocuses instead
   of stacking. It defaults to searching every data source — every
   bucket of every S3 source plus every remote source (local, SFTP,
-  FTP, WebDAV) from root — with a scope dropdown to narrow to this
-  folder, bucket or source; context-menu *Search in this folder…*
-  presets it. Name is always visible and Enter starts the search from
-  any field; the rest — larger/smaller, older/newer, a new Kind
-  filter (any/files/folders), storage class, limit — fold out under
-  *More filters*. Results stream in with source badges and stay
+  FTP, WebDAV) from root — and the scope dropdown names them all:
+  the where-you-stand entries (this folder, this bucket, the open
+  remote path) group under *This view*, every configured source is
+  pickable on its own under *Data sources* — an S3 source searched
+  across every bucket it holds, a remote engine from its root;
+  context-menu *Search in this folder…* presets it. Search in and
+  Name sit up top as labeled fields — the old modal's recipe — and
+  Enter starts the search from any field; the rest —
+  larger/smaller, older/newer, a new Kind filter
+  (any/files/folders), storage class, limit — fold out under a
+  bordered *More filters* chip into the same two-column labeled
+  grid. Results stream in with source badges and stay
   cancelable; clicking a hit navigates to the object and selects it
   (a hit clicked in a native popout window relays through the main
   window). A storage-class filter skips remote sources — they carry

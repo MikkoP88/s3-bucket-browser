@@ -960,11 +960,17 @@ function shim() {
         };
         const mode = scope.mode || 'all';
         if (mode === 's3') {
-          if (!scope.bucket) throw new Error('bucket required');
           let name = scope.source || world.viewSource || 'hetzner';
           const src = world.sources.find((x) => x.name === name || x.id === scope.source);
           if (src) name = src.name;
-          walkS3(name, scope.bucket, scope.prefix || '');
+          // bucket "" walks every bucket the source holds (account-wide
+          // sources take the world's list, single-bucket sources theirs)
+          const buckets = scope.bucket ? [scope.bucket]
+            : (src && src.bucket ? [src.bucket] : world.buckets.map((x) => x.name));
+          for (const b of buckets) {
+            walkS3(name, b, scope.prefix || '');
+            if (atLimit()) break;
+          }
         } else if (mode === 'remote') {
           if (opts.class) throw new Error('remote sources carry no storage class — drop the class filter or search S3 only');
           const name = world.remote[scope.source] ? scope.source
@@ -3630,6 +3636,14 @@ await step('search-window', async () => {
     const labels = Array.from(document.querySelectorAll(s + ' .sr-scope option')).map((o) => o.textContent.trim());
     return labels.includes('s3://team-files/');
   }, S));
+  await ok('the dropdown names every data source', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    const labels = Array.from(sel.options).map((o) => o.textContent.trim());
+    const groups = Array.from(sel.querySelectorAll('optgroup')).map((g) => g.label);
+    return ['hetzner', 'website-prod', 'nightly', 'backup-box', 'dav-claims']
+      .every((n) => labels.includes(n))
+      && groups.length === 2 && /this view/i.test(groups[0]) && /data sources/i.test(groups[1]);
+  }, S));
   await ok('params hide behind More filters until opened', evalPage((s) => {
     const box = document.querySelector(s + ' .sr-params');
     const btn = document.querySelector(s + ' .sr-more');
@@ -3713,6 +3727,44 @@ await step('search-window', async () => {
     return !!sel && sel.textContent.includes('old.txt');
   }));
 
+  // picking one source scopes the search to it alone: an S3 source walks
+  // every bucket it holds, a remote walks from its root
+  await resetCalls();
+  await evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'hetzner').value;
+  }, S);
+  await runSearch('.');
+  await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 's3'), 4000, 'source-scoped Search call');
+  await ok('an S3 source scope reaches the backend as every-bucket', (async () => {
+    const c = await findCall('Search');
+    return !!c && c.args[0].mode === 's3' && c.args[0].source === 'hetzner'
+      && c.args[0].bucket === '' && c.args[1].pattern === '.';
+  })());
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 3, S), 4000, 'source results');
+  await ok('source scope stays inside the picked source only', evalPage((s) => {
+    const badges = Array.from(document.querySelectorAll(s + ' .sr-src')).map((b) => b.textContent);
+    const hetzner = new Set(['s3://team-files', 's3://logs-2026', 's3://media-assets', 's3://archive-cold']);
+    return badges.length >= 3 && new Set(badges).size >= 2 && badges.every((b) => hetzner.has(b));
+  }, S));
+
+  await resetCalls();
+  await evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'backup-box').value;
+  }, S);
+  await runSearch('.csv');
+  await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 'remote'), 4000, 'remote-source Search call');
+  await ok('a remote source scope reaches the backend exactly', (async () => {
+    const c = await findCall('Search');
+    return !!c && c.args[0].mode === 'remote' && c.args[0].source === 'backup-box';
+  })());
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 1, S), 4000, 'remote-source results');
+  await ok('remote source scope returns only its own rows', evalPage((s) => {
+    const badges = Array.from(document.querySelectorAll(s + ' .sr-src')).map((b) => b.textContent);
+    return badges.length >= 1 && badges.every((b) => b === 'backup-box');
+  }, S));
+
   // the expander reveals the remaining filters — Kind splits files/folders
   await evalPage((s) => { document.querySelector(s + ' .sr-more').click(); }, S);
   await ok('More filters opens the params grid', evalPage((s) => {
@@ -3789,6 +3841,12 @@ await step('search-window', async () => {
     const sel = document.querySelector('#popout-root .sr-scope');
     return document.body.classList.contains('popout-win')
       && !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/';
+  }));
+  await sp.waitForFunction(() => Array.from(document.querySelectorAll('.sr-scope option'))
+    .some((o) => o.textContent.trim() === 'hetzner'), null, { timeout: 8000 });
+  await ok('native window: the dropdown lists every source too', await sp.evaluate(() => {
+    const labels = Array.from(document.querySelectorAll('.sr-scope option')).map((o) => o.textContent.trim());
+    return labels.includes('All data sources') && labels.includes('backup-box');
   }));
   await sp.evaluate(() => {
     const inp = document.querySelector('.sr-top input.input');

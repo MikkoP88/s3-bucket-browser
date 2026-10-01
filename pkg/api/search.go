@@ -55,8 +55,9 @@ func (o SearchOptions) filter() search.Filter {
 // SearchScope picks where Search runs. Mode "all" (the default, also "")
 // searches every data source: each S3 source's every bucket, each remote
 // engine from its root. Mode "s3" walks one bucket/prefix of one S3 source
-// (Source "" = the source the main view is browsing). Mode "remote" walks
-// one remote source from Path (default "/").
+// (Bucket "" = every bucket of the source; Source "" = the source the main
+// view is browsing). Mode "remote" walks one remote source from Path
+// (default "/").
 type SearchScope struct {
 	Mode   string `json:"mode"`
 	Source string `json:"source"`
@@ -117,10 +118,7 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 			}
 			jobs = append(jobs, searchJob{name: src.Name, prefix: "/"})
 		}
-	case "s3":
-		if scope.Bucket == "" {
-			return "", errors.New("bucket required")
-		}
+	case "s3": // Bucket "" walks every bucket of the named source
 		if _, err := a.s3ClientFor(scope.Source); err != nil { // validates sync
 			return "", err
 		}
@@ -156,7 +154,11 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 
 	label := fmt.Sprintf("%q — all sources", opts.Pattern)
 	if scope.Mode == "s3" {
-		label = fmt.Sprintf("%q — s3://%s/%s", opts.Pattern, scope.Bucket, dirPrefix(scope.Prefix))
+		if scope.Bucket == "" {
+			label = fmt.Sprintf("%q — %s (all buckets)", opts.Pattern, jobs[0].name)
+		} else {
+			label = fmt.Sprintf("%q — s3://%s/%s", opts.Pattern, scope.Bucket, dirPrefix(scope.Prefix))
+		}
 	} else if scope.Mode == "remote" {
 		if p := strings.Trim(jobs[0].prefix, "/"); p != "" {
 			label = fmt.Sprintf("%q — %s/%s", opts.Pattern, jobs[0].name, p)

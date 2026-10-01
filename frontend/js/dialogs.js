@@ -598,7 +598,15 @@ export function renderPopoutView(kind, qs) {
   else if (kind === 'guide') usageGuideDialog();
   else if (kind === 'license') licenseDialog();
   else if (kind === 'sources') sourcesInfoDialog();
-  else if (kind === 'search') searchWindow({ preset: searchPresetFromQS(qs) });
+  else if (kind === 'search') {
+    // the native window lists its sources too: boot never ran in here, so
+    // the dropdown's source entries load straight from the backend and a
+    // failed load still opens the window with All plus the preset
+    api.ListSources().then(
+      (list) => searchWindow({ scopes: searchSourceScopes(list), preset: searchPresetFromQS(qs) }),
+      () => searchWindow({ preset: searchPresetFromQS(qs) }),
+    );
+  }
   else document.body.textContent = `Unknown popout: ${kind}`;
 }
 
@@ -3719,7 +3727,7 @@ export function searchWindow(opts = {}) {
   const all = { label: t('search.scopeAll'), scope: { mode: 'all' } };
   const scopes = [all, ...(opts.scopes || [])];
   if (opts.preset && !scopes.some((x) => sameScope(x.scope, opts.preset))) {
-    scopes.push({ label: searchScopeLabel(opts.preset), scope: opts.preset });
+    scopes.push({ group: 'view', label: searchScopeLabel(opts.preset), scope: opts.preset });
   }
   const sel = Math.max(0, scopes.findIndex((x) => sameScope(x.scope, opts.preset)));
   const p = scopes[sel].scope;
@@ -3752,6 +3760,34 @@ function searchScopeLabel(s) {
   return t('search.scopeAll');
 }
 
+// searchSourceScopes turns a source list into one pickable scope each: an
+// S3 source searches every bucket it holds, a remote engine walks from
+// its root. The Search window pairs these with the All default and the
+// current view's narrower entries, so the dropdown names every source
+// instead of collapsing them into "all".
+export function searchSourceScopes(list = []) {
+  return list.map((s) => (s.type === 's3'
+    ? { group: 'sources', label: s.name, scope: { mode: 's3', source: s.name, bucket: '', prefix: '' } }
+    : { group: 'sources', label: s.name, scope: { mode: 'remote', source: s.name, prefix: '/' } }));
+}
+
+// scopeOptions groups the scope dropdown: the All default stands alone,
+// the current view's narrow entries sit under it, every source below —
+// optgroups keep a long source list scannable (options keep their
+// index-based values, so the flat scopes array stays the source of truth).
+function scopeOptions(scopes, selIdx) {
+  const out = [];
+  let grp = null;
+  scopes.forEach((x, i) => {
+    const opt = el('option', { value: String(i), selected: i === selIdx }, x.label);
+    if (!x.group) { out.push(opt); grp = null; return; }
+    const label = x.group === 'view' ? t('search.grpView') : t('search.grpSources');
+    if (!grp || grp.getAttribute('label') !== label) { grp = el('optgroup', { label }); out.push(grp); }
+    grp.appendChild(opt);
+  });
+  return out;
+}
+
 function searchWindowDom(scopes, selIdx, onOpen) {
   // inside a native popout window the main app never booted: picks relay
   // through the backend event bus instead of navigating
@@ -3770,8 +3806,7 @@ function searchWindowDom(scopes, selIdx, onOpen) {
         .map((c) => el('option', { value: c }, c || '\u2014 any \u2014'))),
     limit: el('input', { class: 'input', type: 'number', min: '0', value: '0' }),
   };
-  const scopeSel = el('select', { class: 'input sr-scope' },
-    scopes.map((x, i) => el('option', { value: String(i), selected: i === selIdx }, x.label)));
+  const scopeSel = el('select', { class: 'input sr-scope' }, scopeOptions(scopes, selIdx));
   const status = el('div', { class: 'dlg-status' });
   const list = el('div', { class: 'ver-list', role: 'list' });
   let token = null;
@@ -3832,8 +3867,8 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     title: t('findTitle'),
     body: el('div', { class: 'sr-body' },
       el('div', { class: 'sr-top' },
-        el('label', { class: 'field', text: t('search.scope') }), scopeSel,
-        el('label', { class: 'field', text: t('findName') }), f.name,
+        el('div', {}, el('label', { class: 'field', text: t('search.scope') }), scopeSel),
+        el('div', {}, el('label', { class: 'field', text: t('findName') }), f.name),
       ),
       moreBtn,
       moreBox,
