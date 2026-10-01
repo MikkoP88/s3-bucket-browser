@@ -203,7 +203,8 @@ directory compare) with S3 and the local pane.
   where nothing sits above it, hidden only while a loading, error or
   first-run panel owns the area. Alt+↑ and Backspace do the same from
   the keyboard (the toolbar's Up button is retired), and back / forward
-  wear arrow icons.
+  wear arrow icons. The strip is WinSCP's row verbatim: an outline
+  folder with an up arrow inside it beside the `..` caption.
 - **Favorites** — star buckets and folders for one-click jumps.
 - **Search** — Ctrl+Shift+F opens the Search window (also the toolbar
   button, View → Search, or *Search in this folder…* from a context

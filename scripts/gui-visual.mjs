@@ -6368,6 +6368,14 @@ await step('sidebar-resize', async () => {
       hit: hit ? (hit.id || hit.className) : null };
   });
   await ok('splitter grab strip is hit-testable at its center', sp.hit === 'side-split' && sp.w >= 9);
+  // the strip fully straddles the seam: it claims no layout slot, so
+  // the content's surfaces begin at the sidebar's hairline and no grey
+  // body-background gutter opens between the two panels
+  await ok('splitter claims no layout: content starts at the sidebar hairline', evalPage(() => {
+    const sb = document.getElementById('sidebar').getBoundingClientRect();
+    const gw = document.getElementById('grid-wrap').getBoundingClientRect();
+    return Math.abs(gw.left - sb.right) < 0.51;
+  }));
   await page.mouse.move(sp.x, sp.y);
   await page.mouse.down();
   await page.mouse.move(sp.x + 120, sp.y, { steps: 8 });
@@ -6421,6 +6429,7 @@ await step('sidebar-resize', async () => {
   await sleep(60);
   await ok('double-click resets the width', evalPage(() => localStorage.getItem('s3b-sidebar-w') === null)
     && Math.abs((await evalPage(() => document.getElementById('sidebar').getBoundingClientRect().width)) - w0) < 2);
+  await shot('sidebar-seam');
 });
 
 await step('os-copy-mirror', async () => {
@@ -6965,6 +6974,7 @@ await step('parent-strip', async () => {
       vis: !b.classList.contains('hidden'),
       dis: b.disabled,
       label: (b.querySelector('.up-label') || {}).textContent || '',
+      paths: b.querySelectorAll('svg path').length,
     } : null;
   });
   // -- S3 folder: enabled, climbs to the bucket root, pushes history --
@@ -6974,6 +6984,9 @@ await step('parent-strip', async () => {
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'inside docs');
   let s = await strip();
   await ok('strip visible + enabled inside an S3 folder', !!s && s.vis && !s.dis && s.label === '..');
+  // the glyph matches WinSCP's parent row: the outline folder with the
+  // up arrow inside it (folder path + arrow path) beside the ".." caption
+  await ok('strip glyph is the folder-with-up-arrow (WinSCP parent row)', s.paths === 2);
   await page.click('#upbar');
   await waitFor(async () => !(await txt('#breadcrumb')).includes('docs'), 6000, 'strip climbs to bucket root');
   await ok('strip click climbs to the parent', true);
@@ -6992,7 +7005,7 @@ await step('parent-strip', async () => {
   // -- buckets view: a content view with nothing above — greyed, not gone --
   s = await strip();
   await ok('strip greyed (visible + disabled) at the buckets view', !!s && s.vis && s.dis);
-  await shotOf('parent-strip', '#grid-wrap');
+  await shotOf('winscp-parent', '#grid-wrap');
   // -- remote source: root greys it, a subfolder enables it --
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box root');
@@ -7014,7 +7027,7 @@ await step('parent-strip', async () => {
   s = await strip();
   const emptyShown = await evalPage(() => !document.getElementById('empty-state').classList.contains('hidden'));
   await ok('empty folder: empty view AND strip both visible', !!s && s.vis && !s.dis && emptyShown);
-  await shotOf('parent-strip-empty', '#grid-wrap');
+  await shotOf('winscp-parent-empty', '#grid-wrap');
   // -- information panels: the strip steps aside --
   await navObjectsOf('hetzner', 'team-files');
   await evalPage(() => { window.__shim.world.fault = { listDelayMs: 1200 }; });

@@ -100,10 +100,12 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **A parent-directory strip ("..") pinned at the top of the content
-  area.** Every content view — buckets, S3 folders, remote sources —
-  gains the WinSCP-style one-click climb to the directory above: the
-  strip rides above the column header, outside the grid, so it never
+- **A parent-directory strip pinned at the top of the content area —
+  WinSCP's parent row.** Every content view — buckets, S3 folders,
+  remote sources — gains the one-click climb to the directory above,
+  wearing WinSCP's own row: an outline folder with an up arrow inside
+  it beside the `..` caption. The strip rides above the column
+  header, outside the grid, so it never
   joins selection, counts, the size bar, sorting or filters; it stays
   present over an empty folder, is greyed where nothing sits above it
   (a source's top level) and hides only while an information panel owns
@@ -165,6 +167,13 @@ follow [Semantic Versioning](https://semver.org/).
   is verified against a real Vault.
 
 ### Fixed
+
+- The seam between the Data sources sidebar and the content area no
+  longer opens a grey gutter: the resize strip now fully straddles the
+  sidebar's own hairline (its two overlaps sum to its width, so it
+  claims no layout slot of its own) and the content's surfaces begin
+  at that hairline — the divider reads like every other seam in the
+  app.
 
 - The tree context menu's Reconnect no longer wipes every other
   source's status ball to "unknown" (a one-source status update now

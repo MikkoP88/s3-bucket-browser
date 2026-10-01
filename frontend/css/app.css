@@ -112,10 +112,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .tb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 .tb-spacer { flex: 1; }
 .tb-btn svg { display: block; }
-/* one canonical arrow glyph, three directions: forward mirrors it, the
-   parent strip rotates it into a climb */
+/* forward mirrors the toolbar's canonical arrow; the parent strip's
+   glyph is its own composition — the outline folder with the up arrow
+   inside (see #upbar in index.html) */
 svg.flip { transform: scaleX(-1); }
-svg.rotup { transform: rotate(90deg); }
 
 /* ================= Menu bar ================= */
 .menubar {
@@ -412,7 +412,7 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 .upbar:hover:not(:disabled) { background: var(--hover); }
 .upbar:disabled { color: var(--text-dim); opacity: .55; cursor: default; }
 .upbar svg { display: block; flex: none; }
-.upbar .up-label { font: var(--mono); }
+.upbar .up-label { letter-spacing: .03em; }
 
 /* ================= Empty state ================= */
 .empty-state {
@@ -1338,19 +1338,20 @@ kbd {
 .pill.on { background: rgba(27, 127, 59, .14); color: var(--ok); }
 .pill.off { background: rgba(107, 116, 132, .18); color: var(--text-dim); }
 
-/* Sidebar resize splitter: an 11px grab strip straddling the sidebar's
+/* Sidebar resize splitter: a 12px grab strip straddling the sidebar's
    own border-right hairline — wide enough to hit without aiming, quiet
    enough to ignore (at rest the hairline IS the divider, like every
-   other seam in the app; no second grey bar beside it). The strip
-   overlaps its neighbors 3px per side so the layout slot stays 5px;
-   pointer capture (main.js) holds the drag past the edge, and the
+   other seam in the app). The strip's two overlaps sum to its own
+   width, so it claims no layout slot: the content's surfaces begin at
+   the hairline and no grey body gutter opens between the panels.
+   Pointer capture (main.js) holds the drag past the edge, and the
    seam's accent pill appears only while the pointer is on it. */
 .side-split {
-  flex: none; width: 11px; margin: 0 -3px; cursor: col-resize;
+  flex: none; width: 12px; margin: 0 -6px; cursor: col-resize;
   background: transparent; z-index: 3; touch-action: none; position: relative;
 }
 .side-split::after {
-  content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 3px;
+  content: ''; position: absolute; left: calc(50% - 1.5px); top: 0; bottom: 0; width: 3px;
   border-radius: 2px; background: transparent;
   transition: background-color .12s ease;
 }
