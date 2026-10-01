@@ -180,55 +180,63 @@ directory compare) with S3 and the local pane.
   and reorder by dragging the header itself; widths and order persist
   per pane, and the header picker's Reset columns brings the
   out-of-box set, order and widths back in one click.
-- **Content size bar** — the strip along the bottom of the content
-  view always answers *how much is really here*: with nothing
-  selected it is the real recursive size of everything listed; select
-  rows and it is the recursive size of the selection — a folder
-  always counts its whole interior, WinSCP-style. It works on every
-  source type the view hosts — bucket lists, S3 folders (versioned,
-  suspended or plain) and every remote engine (SFTP, SCP, FTP(S),
-  WebDAV, local) — always for the one source you are browsing, never
-  an aggregate across data sources. On buckets with versioning the
-  history is priced in next to the live content (noncurrent version
-  bytes and delete markers — the real storage bill). Walks run in
-  the background ("calculating…" meanwhile), are cached per folder
-  so revisiting is instant, and a failed walk falls back to
-  listing-level sums marked *partial — at least this much* with the
-  error on hover.
+- **Content bottom bar** — the strip along the bottom of the content
+  view carries the active data source's name in bold, then answers
+  *how much is really here*: with nothing selected it is the real
+  recursive size of everything listed; select rows and it is the
+  recursive size of the selection — a folder always counts its whole
+  interior, WinSCP-style. It works on every source type the view
+  hosts — bucket lists, S3 folders (versioned, suspended or plain)
+  and every remote engine (SFTP, SCP, FTP(S), WebDAV, local) — always
+  for the one source you are browsing, never an aggregate across data
+  sources. On buckets with versioning the history is priced in next
+  to the live content (noncurrent version bytes and delete markers —
+  the real storage bill). Walks run in the background
+  ("calculating…" meanwhile), are cached per folder so revisiting is
+  instant, and a failed walk falls back to listing-level sums marked
+  *partial — at least this much* with the error on hover.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and type a path like `s3://bucket/folder/` — or
   `source://path` for any source — to jump directly. Back / forward
-  history works like Explorer. The parent-directory strip ("..") pinned
-  above the content climbs one level from any content view — greyed
-  where nothing sits above it, hidden only while a loading, error or
-  first-run panel owns the area. Alt+↑ and Backspace do the same from
-  the keyboard (the toolbar's Up button is retired), and back / forward
-  wear arrow icons. The strip is WinSCP's row verbatim: an outline
-  folder with an up arrow inside it beside the `..` caption.
+  history works like Explorer. The parent-directory row ("..") is the
+  first row of the listing itself, WinSCP Explorer-style — it scrolls
+  with the content, one click climbs a level from any content view,
+  and it floats over the empty-folder note so even an empty folder
+  shows its parent. Where nothing sits above it — a source's top
+  level — there is no row at all, and it steps aside while a loading,
+  error or first-run panel owns the area. Alt+↑ and Backspace do the
+  same from the keyboard (the toolbar's Up button is retired), and
+  back / forward wear arrow icons. The row is WinSCP's glyph verbatim:
+  an outline folder with an up arrow inside it beside the `..`
+  caption.
 - **Favorites** — star buckets and folders for one-click jumps.
 - **Search** — Ctrl+Shift+F opens the Search window (also the toolbar
   button, View → Search, or *Search in this folder…* from a context
-  menu — the menu presets the scope). **Name** is the only field
-  always in view — a substring or glob, and Enter runs the search
-  from any field. Everything else folds out under the *More
-  filters* disclosure chip, whose label counts the filters you
-  have set: **Sources** is a flat list with no grouping — *All
-  data sources* (the default: every bucket of every S3 source
-  plus every remote source from its root) and each configured
-  source by name, an S3 source searched across every bucket it
-  holds, a remote source (local, SFTP, FTP, WebDAV) from its
-  root. Beside it: **Kind** (any/files/folders), **Limit**,
-  **Extension** (comma list, dot optional), **Path contains**,
-  **Larger/smaller than** and **Older/newer than** — every filter
-  works the same across S3 and remote sources (storage class
-  never could, so it left the window). A **Clear** button resets
-  the whole form. Only the results list scrolls — the controls
-  stay put — and rows carry type-matched icons (folder, image,
-  video, archive, document …); a search spanning several sources
-  badges every hit with a rounded source pill, hidden when the
-  scope is a single source. A running search can be stopped from
-  the window, and clicking a hit jumps to the object and selects
-  it.
+  menu — the menu presets the scope): WinSCP's Find window,
+  modernized — a filter form pinned on top, and below it a results
+  area wearing the app's own content-area chrome: the same column
+  header, hairline rows and bottom bar as the main view. **Name**
+  and **Sources** sit side by side, always in view: Name is a
+  substring or glob (Enter runs the search from any field),
+  Sources is a flat list with no grouping — *All data sources*
+  (the default: every bucket of every S3 source plus every remote
+  source from its root) and each configured source by name, an S3
+  source searched across every bucket it holds, a remote source
+  (local, SFTP, FTP, WebDAV) from its root. Everything else folds
+  out under the *More filters* disclosure chip, whose label counts
+  the filters you have set: **Kind** (any/files/folders),
+  **Limit**, **Extension** (comma list, dot optional), **Path
+  contains**, **Larger/smaller than** and **Older/newer than** —
+  every filter works the same across S3 and remote sources
+  (storage class never could, so it left the window). A **Clear**
+  button resets the whole form. Results stream in as grid rows
+  with type-matched icons (folder, image, video, archive,
+  document …); clicking a column header sorts ascending, again
+  descending; a run spanning several origins adds a **Source**
+  column, a single-source run drops it; a double-click (or Enter)
+  jumps to the object and selects it. Only the results scroll —
+  the form stays put — and a running search can be stopped from
+  the window.
 
 ![Search](screenshots/search.png)
 

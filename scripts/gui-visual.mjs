@@ -3621,8 +3621,9 @@ await step('admin-panel', async () => {
 
 await step('search-window', async () => {
   // Search is the popout twin of the transfers manager: every data source
-  // at once by default, the remaining filters behind an expander, Enter
-  // runs it, results stream and stay cancelable, picks navigate.
+  // at once by default, Sources beside Name (never folded), the remaining
+  // filters behind an expander, Enter runs it, results stream into their
+  // own content area wearing the app's grid chrome, picks navigate.
   // The reloads below re-run the shim init, which wipes every s3b-*
   // localStorage key on load — snapshot the store and put it back at the
   // end so later steps still read what the settings walk ticked.
@@ -3654,16 +3655,38 @@ await step('search-window', async () => {
         .every((n) => labels.includes(n))
       && labels.every((l) => !l.includes('s3://'));
   }, S));
+  await ok('the Sources picker sits beside Name, outside the folded filters', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    const lab = sel.parentElement.querySelector('label.field');
+    const row = sel.closest('.sr-row');
+    const name = document.querySelector(s + ' .sr-name');
+    return !!lab && lab.textContent.trim() === 'Sources' && !!row
+      && !sel.closest('.sr-params') && name.closest('.sr-row') === row
+      && sel.offsetParent !== null;
+  }, S));
   await ok('params hide behind More filters until opened', evalPage((s) => {
     const box = document.querySelector(s + ' .sr-params');
     const btn = document.querySelector(s + ' .sr-more');
     return !!box && !!btn && box.style.display === 'none' && btn.getAttribute('aria-expanded') === 'false';
   }, S));
+  await ok('the results area wears the content-area chrome', evalPage((s) => {
+    const area = document.querySelector(s + ' .sr-results');
+    const clip = area && area.querySelector('.grid-headclip');
+    const head = clip && clip.querySelector('.grid-head');
+    const cols = head ? Array.from(head.querySelectorAll('.gh')).map((h) => h.dataset.col) : [];
+    return !!area && !!clip && !!head && !!area.querySelector('.grid-body.sr-list')
+      && !!area.querySelector('.grid-status.sr-status')
+      && cols.length === 3 && cols.includes('name') && cols.includes('size') && cols.includes('lastModified');
+  }, S));
+  await ok('idle: the empty state shows before any search', evalPage((s) => {
+    const e = document.querySelector(s + ' .sr-empty');
+    return !!e && !e.classList.contains('hidden') && e.textContent.includes('Nothing searched yet');
+  }, S));
 
   // Enter in the name field runs the search — every source at once
   const runSearch = async (pattern) => {
     await evalPage(([s, p]) => {
-      const inp = document.querySelector(s + ' .sr-top input.input');
+      const inp = document.querySelector(s + ' .sr-name input.input');
       inp.focus();
       inp.value = p;
     }, [S, pattern]);
@@ -3673,28 +3696,40 @@ await step('search-window', async () => {
   await runSearch('*.md');
   await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 'all'), 4000, 'all-sources Search call');
   await ok('Enter launched an all-sources search', true);
-  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 2, S), 4000, 'results');
-  await ok('S3 results carry a source badge', evalPage((s) => {
-    const rows = Array.from(document.querySelectorAll(s + ' .ver-row'));
-    const badges = Array.from(document.querySelectorAll(s + ' .sr-src')).map((b) => b.textContent);
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 2, S), 4000, 'results');
+  await ok('results stream as grid rows under the header', evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'));
     const txt = rows.map((r) => r.textContent).join('|');
-    return txt.includes('readme.md') && txt.includes('docs/notes.md')
-      && badges.length === 2 && badges.every((b) => b === 's3://team-files');
+    return rows.length >= 2 && txt.includes('readme.md') && txt.includes('docs/notes.md');
+  }, S));
+  await ok('a multi-origin run adds the Source column', evalPage((s) => {
+    const col = document.querySelector(s + ' .gh[data-col="source"]');
+    const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((b) => b.textContent);
+    return !!col && col.textContent.includes('Source')
+      && cells.length === 2 && cells.every((b) => b === 's3://team-files');
+  }, S));
+  await ok('a click selects the row, a second click moves the selection', evalPage((s) => {
+    const rows = document.querySelectorAll(s + ' .sr-list .grid-row');
+    rows[0].click();
+    const a = rows[0].classList.contains('sel');
+    rows[1].click();
+    return a && !rows[0].classList.contains('sel') && rows[1].classList.contains('sel');
   }, S));
   await ok('done stats count the sources searched', waitFor(() => evalPage((s) =>
-    /in 5 source\(s\)/.test(document.querySelector(s + ' .dlg-status').textContent), S), 4000, 'done stats'));
+    /in 5 source\(s\)/.test(document.querySelector(s + ' .sr-status').textContent), S), 4000, 'done stats'));
 
   // remote engines are in "all" too: a remote hit opens the remote view
   await runSearch('*.csv');
-  await waitFor(() => evalPage((s) => Array.from(document.querySelectorAll(s + ' .sr-src'))
+  await waitFor(() => evalPage((s) => Array.from(document.querySelectorAll(s + ' .gc.source'))
     .some((b) => b.textContent === 'backup-box'), S), 4000, 'remote hit');
   await ok('remote engines are searched too', evalPage((s) => {
-    const rows = Array.from(document.querySelectorAll(s + ' .ver-row'));
+    const rows = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'));
     return rows.length === 1 && rows[0].textContent.includes('/docs/inventory.csv');
   }, S));
   await evalPage((s) => {
-    Array.from(document.querySelectorAll(s + ' .ver-row'))
-      .find((r) => r.textContent.includes('/docs/inventory.csv')).click();
+    Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'))
+      .find((r) => r.textContent.includes('/docs/inventory.csv'))
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
   }, S);
   await waitFor(async () => (await rowKeys()).includes('/docs/inventory.csv'), 5000, 'remote hit location');
   await ok('remote hit: parent folder open, row selected', evalPage(() => {
@@ -3718,8 +3753,8 @@ await step('search-window', async () => {
     const sel = document.querySelector(s + ' .sr-scope');
     return !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/';
   }, S));
-  await ok('the preset shows through the chip as an active filter count', evalPage((s) =>
-    document.querySelector(s + ' .sr-more').textContent.includes('\u00B7 1'), S));
+  await ok('the preset scope is not counted as a filter on the chip', evalPage((s) =>
+    !document.querySelector(s + ' .sr-more').textContent.includes('\u00B7'), S));
   await runSearch('old');
   await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 's3'), 4000, 'scoped Search call');
   const presetCall = await findCall('Search');
@@ -3727,11 +3762,12 @@ await step('search-window', async () => {
     && presetCall.args[0].mode === 's3' && presetCall.args[0].bucket === 'team-files'
     && presetCall.args[0].prefix === 'docs/' && presetCall.args[0].source === 'hetzner'
     && presetCall.args[1].pattern === 'old');
-  await waitFor(() => evalPage((s) => Array.from(document.querySelectorAll(s + ' .ver-row'))
+  await waitFor(() => evalPage((s) => Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'))
     .some((r) => r.textContent.includes('docs/legacy/old.txt')), S), 4000, 'scoped result');
   await evalPage((s) => {
-    Array.from(document.querySelectorAll(s + ' .ver-row'))
-      .find((r) => r.textContent.includes('docs/legacy/old.txt')).click();
+    Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'))
+      .find((r) => r.textContent.includes('docs/legacy/old.txt'))
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
   }, S);
   await waitFor(async () => (await rowKeys()).includes('docs/legacy/old.txt'), 5000, 'hit location');
   await ok('S3 hit: parent folder open, row selected', evalPage(() => {
@@ -3753,11 +3789,11 @@ await step('search-window', async () => {
     return !!c && c.args[0].mode === 's3' && c.args[0].source === 'hetzner'
       && c.args[0].bucket === '' && c.args[1].pattern === '.';
   })());
-  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 3, S), 4000, 'source results');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 3, S), 4000, 'source results');
   await ok('source scope stays inside the picked source only', evalPage((s) => {
-    const badges = Array.from(document.querySelectorAll(s + ' .sr-src')).map((b) => b.textContent);
+    const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((b) => b.textContent);
     const hetzner = new Set(['s3://team-files', 's3://logs-2026', 's3://media-assets', 's3://archive-cold']);
-    return badges.length >= 3 && new Set(badges).size >= 2 && badges.every((b) => hetzner.has(b));
+    return cells.length >= 3 && new Set(cells).size >= 2 && cells.every((b) => hetzner.has(b));
   }, S));
 
   await resetCalls();
@@ -3771,10 +3807,21 @@ await step('search-window', async () => {
     const c = await findCall('Search');
     return !!c && c.args[0].mode === 'remote' && c.args[0].source === 'backup-box';
   })());
-  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 1, S), 4000, 'remote-source results');
-  await ok('a single-origin run drops the origin pills', evalPage((s) =>
-    document.querySelectorAll(s + ' .ver-row').length >= 1
-    && document.querySelectorAll(s + ' .sr-src').length === 0, S));
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 1, S), 4000, 'remote-source results');
+  await ok('a single-origin run drops the Source column', evalPage((s) =>
+    document.querySelectorAll(s + ' .sr-list .grid-row').length >= 1
+    && !document.querySelector(s + ' .gh[data-col="source"]')
+    && document.querySelectorAll(s + ' .gc.source').length === 0, S));
+
+  // a run that matches nothing ends on the No matches empty state
+  await runSearch('qq-unmatchable');
+  await waitFor(() => evalPage((s) => {
+    const e = document.querySelector(s + ' .sr-empty');
+    return !!e && !e.classList.contains('hidden') && e.textContent.includes('No matches');
+  }, S), 4000, 'no-match empty state');
+  await ok('a matched-nothing run ends on the No matches empty state', evalPage((s) =>
+    document.querySelector(s + ' .sr-status').textContent.length > 0
+    && document.querySelectorAll(s + ' .sr-list .grid-row').length === 0, S));
 
   // the expander reveals the remaining filters — Kind splits files/folders
   await evalPage((s) => { document.querySelector(s + ' .sr-more').click(); }, S);
@@ -3792,17 +3839,17 @@ await step('search-window', async () => {
   }, [S, optionText, value]);
   await ok('Kind filter present (any/files/folders)', await setSelect('Files only', 'file'));
   await runSearch('');
-  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 8, S), 4000, 'kind results');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 8, S), 4000, 'kind results');
   await ok('Kind=files lists only file rows across sources', evalPage((s) => {
-    const icons = Array.from(document.querySelectorAll(s + ' .ver-icon')).map((i) => i.textContent);
+    const icons = Array.from(document.querySelectorAll(s + ' .sr-list .gc.name .icon')).map((i) => i.textContent);
     return icons.length >= 8 && !icons.includes('\u{1F4C1}') && new Set(icons).size >= 4;
   }, S));
   await ok('Kind=folders lists only folder rows', (async () => {
     if (!(await setSelect('Files only', 'dir'))) return false;
     await runSearch('');
-    await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 8, S), 4000, 'folder rows');
+    await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 8, S), 4000, 'folder rows');
     return evalPage((s) => {
-      const icons = Array.from(document.querySelectorAll(s + ' .ver-icon')).map((i) => i.textContent);
+      const icons = Array.from(document.querySelectorAll(s + ' .sr-list .gc.name .icon')).map((i) => i.textContent);
       return icons.length >= 8 && icons.every((i) => i === '\u{1F4C1}');
     }, S);
   })());
@@ -3825,10 +3872,10 @@ await step('search-window', async () => {
   await runSearch('');
   await waitFor(() => findCall('Search').then((c) => !!c && c.args[1].ext === 'md'), 4000, 'ext Search call');
   await ok('the extension filter reaches the backend', true);
-  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 2, S), 4000, 'ext results');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 2, S), 4000, 'ext results');
   await ok('extension narrows to .md rows only', evalPage((s) => {
-    const rows = Array.from(document.querySelectorAll(s + ' .ver-row'));
-    return rows.length >= 2 && rows.every((r) => /\.md$/.test(r.querySelector('.ver-main > div:first-child').textContent.trim()));
+    const rows = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'));
+    return rows.length >= 2 && rows.every((r) => /\.md$/.test(r.querySelector('.gc.name .tname').textContent.trim()));
   }, S));
 
   await resetCalls();
@@ -3836,11 +3883,11 @@ await step('search-window', async () => {
   await setParam('docs', 'docs');
   await runSearch('');
   await waitFor(() => findCall('Search').then((c) => !!c && c.args[1].path === 'docs'), 4000, 'path Search call');
-  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 3, S), 4000, 'path results');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 3, S), 4000, 'path results');
   await ok('path contains narrows to docs folders, S3 and remote alike', evalPage((s) => {
-    const rows = Array.from(document.querySelectorAll(s + ' .ver-row'));
+    const rows = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'));
     return rows.length >= 3 && rows.every((r) => {
-      const key = r.querySelector('.ver-main > div:first-child').textContent;
+      const key = r.querySelector('.gc.name .tname').textContent;
       return key.slice(0, key.lastIndexOf('/')).includes('docs');
     }) && rows.some((r) => r.textContent.includes('inventory.csv'));
   }, S));
@@ -3849,20 +3896,32 @@ await step('search-window', async () => {
   // several distinct types, folders still folders
   await setParam('docs', '');
   await runSearch('');
-  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 8, S), 4000, 'icon results');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 8, S), 4000, 'icon results');
   await ok('icons match the file type', evalPage((s) => {
-    const icons = Array.from(document.querySelectorAll(s + ' .ver-icon')).map((i) => i.textContent);
+    const icons = Array.from(document.querySelectorAll(s + ' .sr-list .gc.name .icon')).map((i) => i.textContent);
     return icons.length >= 8 && !icons.includes('\u{1F50D}') && !icons.includes('\u{1F4C5}')
       && new Set(icons).size >= 4 && icons.includes('\u{1F4C1}');
   }, S));
-  await ok('the scope field is labeled Sources and lives behind the chip', evalPage((s) => {
-    const sel = document.querySelector(s + ' .sr-scope');
-    const lab = sel.parentElement.querySelector('label.field');
-    return !!lab && lab.textContent.trim() === 'Sources' && !!sel.closest('.sr-params');
+
+  // header click sorts: first click ascending with the triangle, second
+  // click flips to descending — the main grid's glyphs and behavior
+  await ok('header click sorts the rows, again reverses them', evalPage((s) => {
+    // the head is REBUILT on every sort click — query it fresh each time
+    const cell = () => document.querySelector(s + ' .gh[data-col="name"]');
+    const names = () => Array.from(document.querySelectorAll(s + ' .sr-list .gc.name .tname')).map((x) => x.textContent);
+    cell().click();
+    const asc = names();
+    const ascOk = cell().querySelector('.sort-ind').textContent === '\u25B2'
+      && asc.length >= 8 && asc.every((v, i) => i === 0 || asc[i - 1] <= v);
+    cell().click();
+    const desc = names();
+    const descOk = cell().querySelector('.sort-ind').textContent === '\u25BC'
+      && desc.every((v, i) => i === 0 || desc[i - 1] >= v);
+    return ascOk && descOk;
   }, S));
-  await ok('only the results scroll: the body stays locked with the chip open', evalPage((s) => {
+  await ok('only the results scroll: the form and body stay locked', evalPage((s) => {
     const body = document.querySelector(s + ' .modal-body');
-    const rows = document.querySelector(s + ' .ver-list');
+    const rows = document.querySelector(s + ' .sr-list');
     return getComputedStyle(body).overflow === 'hidden'
       && getComputedStyle(rows).overflowY === 'auto'
       && body.scrollHeight <= body.clientHeight + 1;
@@ -3871,7 +3930,7 @@ await step('search-window', async () => {
 
   // Clear returns the whole window to its open state
   await evalPage((s) => {
-    document.querySelector(s + ' .sr-top input.input').value = 'zz';
+    document.querySelector(s + ' .sr-name input.input').value = 'zz';
     const sel = document.querySelector(s + ' .sr-scope');
     sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'nightly').value;
     sel.dispatchEvent(new Event('change'));
@@ -3880,13 +3939,17 @@ await step('search-window', async () => {
     Array.from(document.querySelectorAll(s + ' .modal-foot button'))
       .find((b) => b.textContent.trim() === 'Clear').click();
   }, S);
-  await ok('Clear resets fields, scope, chip count and results', evalPage((s) => {
-    const name = document.querySelector(s + ' .sr-top input.input');
+  await ok('Clear resets fields, scope, sort, chip and results', evalPage((s) => {
+    const name = document.querySelector(s + ' .sr-name input.input');
     const sel = document.querySelector(s + ' .sr-scope');
+    const inds = Array.from(document.querySelectorAll(s + ' .sort-ind')).map((x) => x.textContent);
+    const empty = document.querySelector(s + ' .sr-empty');
     return name.value === '' && sel.selectedIndex === 0
-      && document.querySelectorAll(s + ' .ver-row').length === 0
-      && document.querySelector(s + ' .dlg-status').textContent === ''
-      && !document.querySelector(s + ' .sr-more').textContent.includes('\u00B7');
+      && document.querySelectorAll(s + ' .sr-list .grid-row').length === 0
+      && document.querySelector(s + ' .sr-status').textContent === ''
+      && !document.querySelector(s + ' .sr-more').textContent.includes('\u00B7')
+      && inds.every((x) => x === '')
+      && !empty.classList.contains('hidden') && empty.textContent.includes('Nothing searched yet');
   }, S));
 
   // Stop cancels a long search
@@ -3918,8 +3981,10 @@ await step('search-window', async () => {
   await sp.waitForSelector('.sr-body', { timeout: 8000 });
   await ok('native window: search renders full-bleed with the preset scope', await sp.evaluate(() => {
     const sel = document.querySelector('#popout-root .sr-scope');
+    const pad = getComputedStyle(document.querySelector('#popout-root .popout[data-pop="search"] .modal-body')).padding;
     return document.body.classList.contains('popout-win')
-      && !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/';
+      && !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/'
+      && pad === '0px';
   }));
   await sp.waitForFunction(() => Array.from(document.querySelectorAll('.sr-scope option'))
     .some((o) => o.textContent.trim() === 'hetzner'), null, { timeout: 8000 });
@@ -3928,17 +3993,18 @@ await step('search-window', async () => {
     return labels.includes('All data sources') && labels.includes('backup-box');
   }));
   await sp.evaluate(() => {
-    const inp = document.querySelector('.sr-top input.input');
+    const inp = document.querySelector('.sr-name input.input');
     inp.focus();
     inp.value = 'notes';
   });
   await sp.keyboard.press('Enter');
-  await sp.waitForFunction(() => Array.from(document.querySelectorAll('.ver-row'))
+  await sp.waitForFunction(() => Array.from(document.querySelectorAll('.sr-list .grid-row'))
     .some((r) => r.textContent.includes('docs/notes.md')), null, { timeout: 8000 });
   await ok('native window: results stream into the OS window', true);
   await sp.evaluate(() => {
-    Array.from(document.querySelectorAll('.ver-row'))
-      .find((r) => r.textContent.includes('docs/notes.md')).click();
+    Array.from(document.querySelectorAll('.sr-list .grid-row'))
+      .find((r) => r.textContent.includes('docs/notes.md'))
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
   });
   await ok('pick in the OS window relays through SearchGoto', await sp.evaluate(() =>
     window.__shim.calls.some((c) => c.m === 'SearchGoto' && c.args[0] && c.args[0].key === 'docs/notes.md')));
@@ -5889,7 +5955,7 @@ await step('profile-flow', async () => {
     }
     await ok('OpenProfileFile reached the backend', (await findCall('OpenProfileFile')) !== null);
     await ok('status bar shows open profile', waitFor(async () => (await txt('#status-pfile')).includes('demo.s3bprofile')
-      || (await txt('#status-profile')).includes('demo.s3bprofile'), 3000, 'pf status'));
+      || (await txt('#grid-source')).includes('demo.s3bprofile'), 3000, 'pf status'));
     await shot('profile-open');
   }
   await page.keyboard.press('Escape');
@@ -6320,14 +6386,14 @@ await step('import-creds-kms', async () => {
 
 await step('view-source-switch', async () => {
   // 'from-file-photos' is a bucket-scoped imported source: opening it pins
-  // the engine to it (SetViewSource), mirrors it in the status bar, and
-  // opens the bucket contents DIRECTLY (no buckets-view round trip)
+  // the engine to it (SetViewSource), mirrors it in the content bottom
+  // bar, and opens the bucket contents DIRECTLY (no buckets-view round trip)
   await resetCalls();
   await clickTree('from-file-photos');
   await waitFor(async () => (await rowKeys()).includes('img-1.jpg'), 6000, 'from-file-photos contents');
   const c = await findCall('SetViewSource');
   await ok('opening a source pins it as the view source', c && c.args[0] === 'from-file-photos');
-  await ok('status bar mirrors the active source', (await txt('#status-profile')).includes('from-file-photos'));
+  await ok('content bottom bar carries the active source', (await txt('#grid-source')).includes('from-file-photos'));
   await clickTree('hetzner');
   await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'back to hetzner buckets');
   const c2 = await findCall('SetViewSource');
@@ -6963,79 +7029,86 @@ await step('toolbar-nav', async () => {
   await ok('F5 refreshes the current view', true);
 });
 
-await step('parent-strip', async () => {
-  // the WinSCP-style ".." strip pinned to the top of the content area:
-  // every content view carries it, an empty folder keeps it, a source's
-  // top level greys it, the information panels (loading, error) drop it,
-  // and a click climbs — while back/forward keep working alongside
-  const strip = () => evalPage(() => {
+await step('parent-row', async () => {
+  // the WinSCP-style ".." as the first row of the listing itself: it
+  // scrolls with the content inside the grid body, ahead of the canvas;
+  // every folder view carries it, an empty folder keeps it (floating
+  // over the empty panel), a source's top level and the information
+  // panels (loading, error) drop it entirely, and a click climbs —
+  // while back/forward keep working alongside
+  const row = () => evalPage(() => {
     const b = document.getElementById('upbar');
     return b ? {
       vis: !b.classList.contains('hidden'),
-      dis: b.disabled,
+      inBody: b.parentElement.id === 'grid-body' && b.nextElementSibling.id === 'grid-canvas',
+      rowH: b.getBoundingClientRect().height,
+      over: getComputedStyle(b).zIndex !== 'auto',
       label: (b.querySelector('.up-label') || {}).textContent || '',
       paths: b.querySelectorAll('svg path').length,
     } : null;
   });
-  // -- S3 folder: enabled, climbs to the bucket root, pushes history --
+  // -- placement: a row of the listing, not chrome above it --
   await navObjectsOf('hetzner', 'team-files');
   await dblClickRow('docs');
-  // rows, not breadcrumb: the strip returns with the first streamed page
+  // rows, not breadcrumb: the parent row returns with the first streamed page
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'inside docs');
-  let s = await strip();
-  await ok('strip visible + enabled inside an S3 folder', !!s && s.vis && !s.dis && s.label === '..');
+  let s = await row();
+  await ok('parent row sits inside the grid body, ahead of the canvas', !!s && s.vis && s.inBody);
+  await ok('parent row is row-height like the folder rows around it', !!s && Math.abs(s.rowH - 28) < 1);
   // the glyph matches WinSCP's parent row: the outline folder with the
   // up arrow inside it (folder path + arrow path) beside the ".." caption
-  await ok('strip glyph is the folder-with-up-arrow (WinSCP parent row)', s.paths === 2);
+  await ok('caption ".." with the folder-with-up-arrow glyph (WinSCP parent row)',
+    !!s && s.label === '..' && s.paths === 2);
+  await shotOf('winscp-parent', '#grid-wrap');
   await page.click('#upbar');
-  await waitFor(async () => !(await txt('#breadcrumb')).includes('docs'), 6000, 'strip climbs to bucket root');
-  await ok('strip click climbs to the parent', true);
-  // strip navigation is real history: back returns into docs, forward again
+  await waitFor(async () => !(await txt('#breadcrumb')).includes('docs'), 6000, 'row climbs to bucket root');
+  await ok('row click climbs to the parent', true);
+  // row navigation is real history: back returns into docs, forward again
   await page.click('#btn-back');
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'back into docs');
   await page.click('#btn-forward');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'forward to bucket root');
-  await ok('back/forward work across strip navigation', true);
+  await ok('back/forward work across row navigation', true);
   // -- bucket root: still a parent — the buckets view --
-  s = await strip();
-  await ok('strip enabled at a bucket root', !!s && s.vis && !s.dis);
+  s = await row();
+  await ok('parent row shown at a bucket root', !!s && s.vis);
   await page.click('#upbar');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'strip reaches buckets view');
-  await ok('strip click at bucket root opens the buckets view', true);
-  // -- buckets view: a content view with nothing above — greyed, not gone --
-  s = await strip();
-  await ok('strip greyed (visible + disabled) at the buckets view', !!s && s.vis && s.dis);
-  await shotOf('winscp-parent', '#grid-wrap');
-  // -- remote source: root greys it, a subfolder enables it --
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'row reaches buckets view');
+  await ok('row click at bucket root opens the buckets view', true);
+  // -- the Data source main view: nothing above it — no row at all --
+  s = await row();
+  await ok('no parent row at the Data source main view (nothing above it)', !!s && !s.vis);
+  // -- remote source: root drops it, a subfolder carries it --
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box root');
-  s = await strip();
-  await ok('strip greyed at a remote root', !!s && s.vis && s.dis);
+  s = await row();
+  await ok('no parent row at a remote root', !!s && !s.vis);
   await dblClickRow('docs');
   await waitFor(async () => (await rowKeys()).includes('/docs/inventory.csv'), 6000, 'remote subfolder rows');
-  s = await strip();
-  await ok('strip enabled inside a remote subfolder', !!s && s.vis && !s.dis);
+  s = await row();
+  await ok('parent row inside a remote subfolder', !!s && s.vis);
   await page.click('#upbar');
-  await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'strip climbs the remote tree');
-  await ok('strip click climbs a remote folder', true);
-  // -- empty folder: the empty view and the strip coexist --
+  await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'row climbs the remote tree');
+  await ok('row click climbs a remote folder', true);
+  // -- empty folder: the empty view and the parent row coexist --
   await clickTree('hetzner');
   await waitFor(async () => (await rowKeys()).includes('archive-cold'), 6000, 'buckets of hetzner');
   await dblClickRow('archive-cold');
   await waitFor(async () => evalPage(() => !document.getElementById('empty-state').classList.contains('hidden')
     && !document.getElementById('empty-state').classList.contains('is-loading')), 6000, 'empty view');
-  s = await strip();
+  s = await row();
   const emptyShown = await evalPage(() => !document.getElementById('empty-state').classList.contains('hidden'));
-  await ok('empty folder: empty view AND strip both visible', !!s && s.vis && !s.dis && emptyShown);
+  await ok('empty folder: empty view AND parent row both visible, the row above the panel',
+    !!s && s.vis && s.over && emptyShown);
   await shotOf('winscp-parent-empty', '#grid-wrap');
-  // -- information panels: the strip steps aside --
+  // -- information panels: the row steps aside --
   await navObjectsOf('hetzner', 'team-files');
   await evalPage(() => { window.__shim.world.fault = { listDelayMs: 1200 }; });
   await dblClickRow('docs');
   // poll for the transient in-flight state: stream.begin resolves at token
   // registration, so the skeleton window belongs to the pages' delay — poll
   // until it shows (a point-sample can race the dblclick dispatch)
-  await ok('strip hidden while the loading skeleton owns the area', waitFor(() => evalPage(() =>
+  await ok('parent row hidden while the loading skeleton owns the area', waitFor(() => evalPage(() =>
     !document.getElementById('load-skel').classList.contains('hidden')
     && document.getElementById('upbar').classList.contains('hidden')), 2500, 'skeleton window'));
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'delayed listing lands');
@@ -7043,7 +7116,7 @@ await step('parent-strip', async () => {
   await page.click('#btn-refresh');
   await waitFor(() => evalPage(() => !document.getElementById('empty-state').classList.contains('hidden')
     && !document.getElementById('empty-state').classList.contains('is-loading')), 4000, 'error state');
-  await ok('strip hidden while the error panel owns the area', evalPage(() =>
+  await ok('parent row hidden while the error panel owns the area', evalPage(() =>
     document.getElementById('upbar').classList.contains('hidden')));
   await evalPage(() => { window.__shim.world.fault = null; });
   await page.click('#btn-refresh');
@@ -7251,13 +7324,18 @@ await step('hidden-ghost-refresh', async () => {
 await step('marquee-select', async () => {
   // rubber-band starting in the empty area below the rows, dragged up
   await navObjectsOf('hetzner', 'team-files');
-  const keys = await rowKeys();
+  await waitFor(async () => (await rowKeys()).length > 0, 6000, 'rows listed');
+  // measure the empty band from the bottom-most RENDERED row — the
+  // parent row ("..") rides in-flow above the canvas, so the body's
+  // own top is not where the rows begin
   const geo = await evalPage(() => {
     const r = document.getElementById('grid-body').getBoundingClientRect();
-    return { x: r.left + r.width / 2, top: r.top, bottom: r.bottom };
+    const bottoms = Array.from(document.querySelectorAll('#grid-canvas .grid-row'))
+      .map((row) => row.getBoundingClientRect().bottom);
+    return { x: r.left + r.width / 2, bottom: r.bottom, lastBottom: bottoms.length ? Math.max(...bottoms) : 0 };
   });
-  const startY = geo.top + keys.length * 28 + 8;
-  if (startY < geo.bottom - 4) {
+  const startY = geo.lastBottom + 8;
+  if (startY && startY < geo.bottom - 4) {
     await page.mouse.move(geo.x, startY);
     await page.mouse.down();
     await page.mouse.move(geo.x, startY - 70, { steps: 4 });
@@ -7301,13 +7379,14 @@ await step('download-selection', async () => {
 });
 
 await step('size-bar', async () => {
-  // The content viewer's bottom bar (#grid-status): real recursive
+  // The content viewer's bottom bar (#grid-status — source name in
+  // #grid-source, size text in #grid-status-text): real recursive
   // sizes of the listing or the selection on every source type — S3
   // objects (versioned / suspended / plain), the buckets view (single
   // source only), remote engines — plus the busy, error-fallback,
   // stale-drop, cache and geometry contracts. Every number is pinned
   // byte-exact against the world fixtures.
-  const barTxt = () => txt('#grid-status');
+  const barTxt = () => txt('#grid-status-text');
   const barHas = (s) => waitFor(async () => (await barTxt()).includes(s), 5000, 'bar shows "' + s + '"')
     .catch(async (e) => {
       throw new Error(`${e.message} — bar: "${await barTxt()}" · selection: "${await txt('#status-selection')}"`);
@@ -7326,6 +7405,11 @@ await step('size-bar', async () => {
   const t1 = await barTxt();
   await ok('versioned whole: files/folders/bytes + version split',
     t1 === '10 file(s), 4 folder(s), 217 MB — old versions: 2.3 KB (17 version(s), 1 marker(s))');
+  await ok('the source name rides the same bar ahead of the numbers',
+    (await txt('#grid-source')) === 'hetzner'
+      && (await evalPage(() => document.getElementById('grid-status').textContent
+        === document.getElementById('grid-source').textContent
+        + document.getElementById('grid-status-text').textContent)));
   await shot('sizebar-versioned');
 
   // 2. folder selection docs/: everything inside — its own marker is the
@@ -7364,6 +7448,10 @@ await step('size-bar', async () => {
   //    first (exactly what a delete in this bucket does), let the
   //    still-selected row re-walk, and count from there: one walk
   //    for budget, zero more for the then-cached children
+  // clear the log BEFORE the emit: the waitFor below must catch the
+  // invalidation's genuine re-walk, not the stale readme call from the
+  // selection check above it
+  await resetCalls();
   await evalPage(() => window.__shim.emit('s3:changed', { bucket: 'team-files' }));
   await waitFor(async () => (await calls()).some((c) => c.m === 'S3Usage'
     && (c.args[2] || []).includes('readme.md')), 6000, 'invalidated selection re-walks');
@@ -7498,7 +7586,7 @@ await step('size-bar', async () => {
   await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('/q4-summary.pdf')), 6000, 'reports listing');
   await barHas('partial');
   const t14 = await barTxt();
-  const err14 = await evalPage(() => document.getElementById('grid-status').title || '');
+  const err14 = await evalPage(() => document.getElementById('grid-status-text').title || '');
   await ok('failed walk falls back to level sums, says so, carries the error',
     t14 === '1 file(s), 11.5 KB — partial — at least this much'
     && err14.includes('usage walk failed'));

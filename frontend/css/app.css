@@ -3,7 +3,6 @@
 
 :root {
   --row-h: 28px;
-  --upbar-h: 26px; /* the parent strip ("..") above the column header */
   --sidebar-w: 240px;
   --accent: #0b63ce;
   --accent-soft: rgba(11, 99, 206, .12);
@@ -112,7 +111,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .tb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
 .tb-spacer { flex: 1; }
 .tb-btn svg { display: block; }
-/* forward mirrors the toolbar's canonical arrow; the parent strip's
+/* forward mirrors the toolbar's canonical arrow; the parent row's
    glyph is its own composition — the outline folder with the up arrow
    inside (see #upbar in index.html) */
 svg.flip { transform: scaleX(-1); }
@@ -395,22 +394,25 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 .gc.check input, .gh.check input { accent-color: var(--accent); cursor: pointer; }
 .grid-row.dragging { opacity: .4; }
 
-/* ================= Parent strip ================= */
-/* The WinSCP-style ".." pinned to the top of the content area — above the
-   column header, outside the grid. Present in every content view (even an
-   empty folder), greyed at a source's top level where nothing is above,
-   hidden while an information panel (loading, error, onboarding) owns the
-   area. */
+/* ================= Parent row ================= */
+/* The WinSCP-style ".." as the first row of the listing itself — inside
+   the grid body it scrolls with the content, styled like the folder rows
+   around it (Explorer's parent entry, not a toolbar strip). One click
+   climbs to the parent; absent at a source's top level (the Data source
+   main view) and while an information panel (loading, error,
+   onboarding) owns the area. The z-index lifts it over the empty-state
+   overlay so an empty folder still shows its parent — the grid's own
+   rows are absolutely positioned and never contend for this band. */
 .upbar {
-  display: flex; align-items: center; gap: 7px;
-  width: 100%; height: var(--upbar-h); padding: 0 10px;
+  display: flex; align-items: center;
+  position: relative; z-index: 1; /* above the empty-state overlay */
+  width: 100%; height: var(--row-h); padding: 0;
   font: var(--font); color: var(--text); text-align: left;
   background: var(--panel); border: none;
   border-bottom: 1px solid var(--border-soft);
   cursor: pointer;
 }
-.upbar:hover:not(:disabled) { background: var(--hover); }
-.upbar:disabled { color: var(--text-dim); opacity: .55; cursor: default; }
+.upbar:hover { background: var(--hover); }
 .upbar svg { display: block; flex: none; }
 .upbar .up-label { letter-spacing: .03em; }
 
@@ -420,11 +422,7 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; background: var(--panel); text-align: center; padding: 20px;
   animation: fade-in .18s ease-out;
-}
-/* The parent strip sits above the header: while it is shown, the absolute
-   panel anchors below strip + header instead of the header alone. */
-.grid-wrap.has-upbar .empty-state { inset: calc(var(--row-h) + var(--upbar-h)) 0 0 0; }
-.empty-icon { width: 46px; height: auto; opacity: .9; user-select: none; }
+}.empty-icon { width: 46px; height: auto; opacity: .9; user-select: none; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .empty-title { font-size: 16px; font-weight: 600; }
 .empty-sub { color: var(--text-dim); max-width: 460px; white-space: pre-line; overflow-wrap: anywhere; }
@@ -951,18 +949,29 @@ kbd {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* Content size bar (main viewer bottom, WinSCP-style): the lp-status
-   recipe scoped to #grid-wrap — the content area only, never the
-   window width. :empty keeps it out of the layout until it has
-   something to say. */
+/* Content bottom bar (main viewer, WinSCP-style): the active data
+   source's name beside the real recursive totals of the listing or the
+   selection — the lp-status recipe scoped to #grid-wrap, the content
+   area only, never the window width. Wears the panel background so it
+   matches the Data Sources side-foot: both bottom bars read as one
+   chrome line. The search window's clone of this bar still leans on
+   :empty; this bar hides via .hidden once both name and text are gone. */
 .grid-status {
   padding: 3px 10px;
+  background: var(--panel);
   border-top: 1px solid var(--border);
   font-size: 12px; color: var(--text-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .grid-status.busy { opacity: .6; }
 .grid-status:empty { display: none; }
+/* the source name: its own bold span; the ::before seam parts it from
+   the size text without any JS string-building */
+.gs-src { font-weight: 600; color: var(--text); }
+#grid-status .gs-src:not(.hidden) + .gs-text:not(:empty)::before {
+  content: " — ";
+  font-weight: 400; color: var(--text-dim);
+}
 
 /* Directory-compare decorations (data-cmp from CompareDir) */
 .grid-row[data-cmp="same"], .grid-row[data-cmp="same-sub"] { color: var(--text-dim); }
@@ -1004,42 +1013,47 @@ kbd {
 .ver-row.ghost { opacity: .55; font-style: italic; }
 
 /* ================= Search window ================= */
-/* Floating popout: Name leads, every other control folds behind the
-   bordered disclosure chip (Sources included), streamed results fill
-   the rest — and ONLY the results scroll: the body locks, the list
-   flexes. */
-.sr-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-.sr-top { display: grid; gap: 6px; flex: none; }
-.sr-top label.field { margin: 0 0 3px; }
+/* WinSCP's Find, modernized: the filter form pins to the top — Name
+   beside the Sources picker (WinSCP keeps its "Find in:" root beside
+   the file mask too) — and the results own the rest of the window as a
+   content area in the app's own chrome: the same head band, header
+   row, hairline rows and status bar the main grid wears. Only the
+   results scroll. */
+.sr-body { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.sr-form { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 14px 16px 10px; }
+.sr-form label.field { margin: 0 0 3px; }
+/* the primary pair: the name pattern flexes, the source picker keeps
+   its dropdown readable at a fixed width */
+.sr-row { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 10px; }
 .sr-more {
   align-self: flex-start; flex: none;
   border: 1px solid var(--border); background: transparent; color: var(--text-dim);
   border-radius: 4px; font-size: 11px; line-height: 1; padding: 4px 8px; cursor: pointer;
 }
 .sr-more:hover { color: var(--accent); border-color: var(--accent); }
-/* the folded filter grid: Sources and Path span wide, sizes and ages
-   line up in one row of four */
+/* the folded filter grid: kind, limit, extension and path on one row,
+   sizes and ages on the next */
 .sr-params { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 10px; flex: none; }
 .sr-params label.field { margin: 0 0 3px; }
 .sr-f { min-width: 0; }
-.sr-span2 { grid-column: span 2; }
-.sr-span3 { grid-column: span 3; }
-/* results list: the window's one scroll region — the body never grows a
-   scrollbar of its own, the list takes whatever height remains */
-.popout[data-pop="search"] .modal-body { overflow: hidden; display: flex; }
-.popout[data-pop="search"] .sr-body { flex: 1; }
-.popout[data-pop="search"] .dlg-status { flex: none; }
-.popout[data-pop="search"] .ver-list { flex: 1; height: auto; min-height: 0; margin-top: 0; }
-/* origin pill on each result row (s3://bucket or source name) — shown
-   only while origins vary: all-sources and every-bucket runs */
-.sr-src {
-  flex: none; max-width: 42%;
-  font-size: 11px; color: var(--text-dim);
-  padding: 2px 9px; border: 1px solid var(--border-soft); border-radius: 999px;
-  background: var(--hover);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+/* ---- the results area: the window's own content panel ---- */
+.sr-results {
+  flex: 1; min-height: 220px; min-width: 0; position: relative;
+  display: flex; flex-direction: column;
+  border-top: 1px solid var(--border); background: var(--panel);
 }
-
+/* the main grid seats rows absolutely for its virtualizer; here they
+   flow — same cells, same hairlines, no pool */
+.sr-list { flex: 1; overflow: auto; position: relative; outline: none; }
+.sr-list .grid-row { position: static; }
+.sr-list .gc.source { color: var(--text-dim); font-size: 12px; }
+/* the idle / no-matches panel: the content area's empty state, scaled
+   to the window — it anchors below the header row like the main one */
+.sr-results .empty-state { justify-content: flex-start; padding-top: 48px; }
+.sr-results .empty-icon { width: 34px; opacity: .75; }
+/* full-bleed: the popout body is one pane — the form pads itself, the
+   results run edge to edge between it and the footer */
+.popout[data-pop="search"] .modal-body { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
 /* ================= Content Versions window ================= */
 /* The header is a one-line version count (same format as the Delete
    Marker window); per-child rows render via the shared .ver-list rules. */

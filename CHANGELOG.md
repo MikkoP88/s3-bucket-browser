@@ -100,19 +100,29 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **A parent-directory strip pinned at the top of the content area —
-  WinSCP's parent row.** Every content view — buckets, S3 folders,
-  remote sources — gains the one-click climb to the directory above,
-  wearing WinSCP's own row: an outline folder with an up arrow inside
-  it beside the `..` caption. The strip rides above the column
-  header, outside the grid, so it never
-  joins selection, counts, the size bar, sorting or filters; it stays
-  present over an empty folder, is greyed where nothing sits above it
-  (a source's top level) and hides only while an information panel owns
-  the area (loading skeleton, errors, first-run). The toolbar's Up
-  button is retired — Alt+↑ and Backspace still climb from the
-  keyboard — and back / forward wear proper arrow icons from the app's
-  icon family.
+- **The content bottom bar says whose files it is counting.** The
+  active data source's name moves from the app footer to the content
+  area's own bottom bar — bold, ahead of the size text — so the
+  listing's owner and its real recursive totals read as one line; the
+  bar wears the panel background, making it and the Data Sources
+  side-foot read as one chrome line. The app footer keeps jobs and
+  selection state only.
+
+- **The parent-directory row ("..") is the first row of the listing
+  itself — WinSCP Explorer's parent entry.** Every content view —
+  buckets, S3 folders, remote sources — carries the one-click climb
+  to the directory above as a row inside the grid body, styled like
+  the folder rows around it and wearing WinSCP's own glyph: an
+  outline folder with an up arrow inside it beside the `..` caption.
+  It scrolls with the content, stays present over an empty folder
+  (floating above the empty-state panel), and where nothing sits
+  above it — a source's top level — there is no row at all; it also
+  steps aside while an information panel owns the area (loading
+  skeleton, errors, first-run). As a plain row of the listing it
+  never joins selection, counts, the size bar, sorting or filters.
+  The toolbar's Up button is retired — Alt+↑ and Backspace still
+  climb from the keyboard — and back / forward wear proper arrow
+  icons from the app's icon family.
 
 - **Deep search is now Search — a real window across every data
   source.** The one-bucket modal becomes a floating Search window
@@ -121,25 +131,26 @@ follow [Semantic Versioning](https://semver.org/).
   resizable, remembers its place, one instance that refocuses instead
   of stacking. It defaults to searching every data source — every
   bucket of every S3 source plus every remote source (local, SFTP,
-  FTP, WebDAV) from root — and the **Sources** dropdown inside
-  *More filters* is a flat list with no grouping: *All data
-  sources* plus every configured source by name, an S3 source
-  searched across every bucket it holds, a remote engine from its
-  root; context-menu *Search in this folder…* presets it. **Name**
-  is the only always-visible field, and Enter starts the search
-  from any field; the rest — Kind (any/files/folders), Limit, the
-  new Extension and Path-contains filters, larger/smaller,
-  older/newer — fold out under a bordered *More filters* chip that
-  counts the active filters, and every one of them works the same
-  across S3 and remote sources (storage class never could, so it
-  left the window — the CLI keeps --class). Only the results list
-  scrolls; rows carry type-matched icons and, when the scope spans
-  sources, a rounded source pill (hidden on single-origin runs);
-  **Clear** resets the form and results stay cancelable; clicking
-  a hit navigates to the object and selects it (a hit clicked in a
-  native popout window relays through the main window). The CLI
-  gains the same filters: `s3b find --kind file|dir`, `--ext` and
-  `--path`.
+  FTP, WebDAV) from root — and the **Sources** dropdown is a flat
+  list with no grouping: *All data sources* plus every configured
+  source by name, an S3 source searched across every bucket it
+  holds, a remote engine from its root; context-menu *Search in
+  this folder…* presets it. Sources is a primary control now —
+  beside **Name**, always in view — and the rest — Kind
+  (any/files/folders), Limit, the new Extension and Path-contains
+  filters, larger/smaller, older/newer — fold out under a bordered
+  *More filters* chip that counts the active filters, every one of
+  them working the same across S3 and remote sources (storage
+  class never could, so it left the window — the CLI keeps
+  --class). The results wear the main view's own content-area
+  chrome — the same column header, hairline rows and bottom bar —
+  with type-matched icons, a click-to-sort header (ascending, then
+  descending) and a **Source** column that appears only when the
+  run spans origins; only the results scroll; **Clear** resets the
+  form and results stay cancelable; clicking a hit navigates to
+  the object and selects it (a hit clicked in a native popout
+  window relays through the main window). The CLI gains the same
+  filters: `s3b find --kind file|dir`, `--ext` and `--path`.
 
 - **Settings apply on Save, not on click.** The dialog is now a draft:
   every control stages until Save (disabled until something changes),

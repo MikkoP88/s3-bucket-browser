@@ -3787,69 +3787,168 @@ function searchWindowDom(scopes, selIdx, onOpen) {
         t(k === 'file' ? 'search.kindFile' : k === 'dir' ? 'search.kindFolder' : 'search.kindAny')))),
     limit: el('input', { class: 'input', type: 'number', min: '0', value: '0' }),
   };
+  // Sources stays a primary control, never folded — WinSCP's Find keeps
+  // its root ("Find in:") beside the file mask, and so does this window
   const scopeSel = el('select', { class: 'input sr-scope' },
     scopes.map((x, i) => el('option', { value: String(i), selected: i === selIdx }, x.label)));
-  const status = el('div', { class: 'dlg-status' });
-  const list = el('div', { class: 'ver-list', role: 'list' });
+
+  // ---- results: the app's content-area chrome, worn verbatim ----
+  // WinSCP's Find lists hits in a file-panel control; here the same
+  // classes the main grid wears draw the area — head band, header row,
+  // hairline rows, status bar. The Source column rides only runs that
+  // span origins (the old per-row pill, promoted to a column); the head
+  // width-locks to the list and slides with its horizontal scroll
+  // exactly like grid.js's clipping band.
+  const SR_COLS = [
+    { id: 'name', labelKey: 'col.name', css: 'minmax(220px, 1fr)' },
+    { id: 'source', labelKey: 'col.source', css: '150px' },
+    { id: 'size', labelKey: 'col.size', css: '110px', num: true },
+    { id: 'lastModified', labelKey: 'col.date', css: '160px' },
+  ];
+  let showSource = false; // multi-origin run only (the old pill's rule)
+  let sortKey = '';       // '' = arrival order, the streaming default
+  let sortDir = 1;
+  let selKey = null;      // the one selected hit (click / arrows)
+  const hits = [];        // streamed results, arrival order
+  const head = el('div', { class: 'grid-head', role: 'row' });
+  const headClip = el('div', { class: 'grid-headclip' }, head);
+  const body = el('div', { class: 'grid-body sr-list', tabindex: '0', role: 'listbox' });
+  const emptyTitle = el('div', { class: 'empty-title' });
+  const emptySub = el('div', { class: 'empty-sub' });
+  const empty = el('div', { class: 'empty-state sr-empty hidden' },
+    el('img', { class: 'empty-icon', src: 'assets/logo.svg', alt: '' }), emptyTitle, emptySub);
+  const status = el('div', { class: 'grid-status sr-status', role: 'status' });
   let token = null;
   let running = false;
   let offPage = null;
   let offDone = null;
 
-  // Everything but Name hides behind "More filters" — Sources included:
-  // the name box is the one field most searches ever touch, the rest stay
-  // one click away, and the chip carries a live count of active filters
-  // so a preset scope never hides completely behind it.
-  let moreOpen = false;
-  const moreBox = el('div', { class: 'sr-params' },
-    el('div', { class: 'sr-f sr-span2' }, el('label', { class: 'field', text: t('search.scope') }), scopeSel),
-    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('search.kind') }), f.kind),
-    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findLimit') }), f.limit),
-    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('search.ext') }), f.ext),
-    el('div', { class: 'sr-f sr-span3' }, el('label', { class: 'field', text: t('search.path') }), f.path),
-    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findLarger') }), f.larger),
-    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findSmaller') }), f.smaller),
-    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findOlder') }), f.older),
-    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findNewer') }), f.newer),
-  );
-  // one count per filter family — a number the user can hold in their head
-  const activeCount = () => {
-    let n = (parseInt(scopeSel.value, 10) || 0) === 0 ? 0 : 1;
-    if (f.name.value.trim()) n += 1;
-    if (f.ext.value.trim() || f.path.value.trim()) n += 1;
-    if (f.kind.value) n += 1;
-    if (f.larger.value.trim() || f.smaller.value.trim()) n += 1;
-    if (f.older.value.trim() || f.newer.value.trim()) n += 1;
-    return n;
-  };
-  const moreBtn = el('button', { class: 'sr-more', type: 'button',
-    onclick: () => { moreOpen = !moreOpen; syncMore(); } });
-  function syncMore() {
-    moreBox.style.display = moreOpen ? '' : 'none';
-    const n = activeCount();
-    moreBtn.textContent = `${t('search.more')} ${moreOpen ? '\u25B4' : '\u25BE'}${n > 0 ? ` \u00B7 ${n}` : ''}`;
-    moreBtn.setAttribute('aria-expanded', String(moreOpen));
-  }
-  [scopeSel, f.kind].forEach((x) => x.addEventListener('change', syncMore));
-  [f.name, f.ext, f.path, f.larger, f.smaller, f.older, f.newer]
-    .forEach((x) => x.addEventListener('input', syncMore));
-  syncMore();
+  const cols = () => SR_COLS.filter((c) => c.id !== 'source' || showSource);
+  const colsTpl = () => cols().map((c) => c.css).join(' ');
+  const originOf = (r) => (r.bucket ? `s3://${r.bucket}` : (r.source || ''));
+  const isDirOf = (r) => !!(r.isDir || String(r.key).endsWith('/'));
 
-  // fileIcon types each row by extension; the origin pill renders only
-  // while origins vary (every source, or every bucket of one source) — a
-  // single-origin run would only repeat itself
-  const fmtRes = (r, badge) => el('div', {
-    class: 'ver-row',
-    role: 'listitem',
-    onclick: () => openHit(r),
-  },
-    el('span', { class: 'ver-icon', text: fileIcon(r.key, r.isDir || String(r.key).endsWith('/')) }),
-    el('span', { class: 'ver-main' },
-      el('div', { class: 'mono', text: r.key }),
-      el('div', { class: 'ver-sub', text: `${fmtBytes(r.size || 0)}${r.storageClass && r.storageClass !== 'STANDARD' ? ` \u2014 ${r.storageClass}` : ''}${r.lastModified ? ` \u2014 ${fmtDate(r.lastModified)}` : ''}` }),
-    ),
-    badge ? el('span', { class: 'sr-src', text: r.bucket ? `s3://${r.bucket}` : (r.source || '') }) : null,
-  );
+  // setStatus paints the area's own status bar — the content size bar's
+  // twin; errors arrive colored, everything else rides its dim default
+  function setStatus(text, color, title) {
+    status.textContent = text || '';
+    status.style.color = color || '';
+    status.title = title || '';
+  }
+
+  // setEmpty swaps the idle / no-matches panel inside the area — the
+  // same empty-state class the main content area shows
+  function setEmpty(which) {
+    if (!which) { empty.classList.add('hidden'); return; }
+    emptyTitle.textContent = t(which === 'idle' ? 'search.emptyIdleTitle' : 'search.emptyNoneTitle');
+    emptySub.textContent = t(which === 'idle' ? 'search.emptyIdleSub' : 'search.emptyNoneSub');
+    empty.classList.remove('hidden');
+  }
+
+  // syncHead is grid.js's head lock in miniature: the head spans the
+  // list's client width and slides left with its scroll, so headers stay
+  // over their columns in a window narrower than the column set
+  function syncHead() {
+    head.style.width = `${body.clientWidth}px`;
+    head.style.transform = `translateX(${-body.scrollLeft}px)`;
+  }
+
+  function buildHead() {
+    head.style.gridTemplateColumns = colsTpl();
+    head.replaceChildren(...cols().map((c) => {
+      const ind = el('span', { class: 'sort-ind' });
+      if (sortKey === c.id) ind.textContent = sortDir > 0 ? '\u25B2' : '\u25BC';
+      return el('div', {
+        class: `gh${c.num ? ' num' : ''}`,
+        'data-col': c.id,
+        role: 'columnheader',
+        onclick: () => {
+          if (sortKey === c.id) sortDir = -sortDir;
+          else { sortKey = c.id; sortDir = 1; }
+          buildHead();
+          renderRows();
+        },
+      }, el('span', { text: t(c.labelKey) }), ind);
+    }));
+    syncHead();
+  }
+
+  const sortVal = (r) => (sortKey === 'size' ? (isDirOf(r) ? -1 : (r.size || 0))
+    : sortKey === 'lastModified' ? (r.lastModified ? new Date(r.lastModified).getTime() : 0)
+      : sortKey === 'source' ? originOf(r)
+        : r.key);
+  const sorted = () => (sortKey
+    ? [...hits].sort((a, b) => {
+      const va = sortVal(a); const vb = sortVal(b);
+      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+    })
+    : hits);
+
+  // main-grid parity: a click picks the row, a double-click (or Enter)
+  // opens the hit — a stray single click never navigates
+  function rowEl(r) {
+    const cells = [el('div', { class: 'gc name' },
+      el('span', { class: 'icon', text: fileIcon(r.key, isDirOf(r)) }),
+      el('span', { class: 'tname', text: r.key }))];
+    if (showSource) cells.push(el('div', { class: 'gc source', text: originOf(r) }));
+    cells.push(el('div', { class: 'gc num', text: isDirOf(r) ? '' : fmtBytes(r.size || 0) }));
+    cells.push(el('div', { class: 'gc', text: isDirOf(r) ? '' : (r.lastModified ? fmtDate(r.lastModified) : '') }));
+    const row = el('div', {
+      class: `grid-row${r.key === selKey ? ' sel' : ''}`,
+      role: 'option',
+      'aria-selected': r.key === selKey ? 'true' : 'false',
+      style: `grid-template-columns: ${colsTpl()}`,
+    }, ...cells);
+    row.addEventListener('click', () => {
+      if (selKey === r.key) return;
+      selKey = r.key;
+      for (const x of body.querySelectorAll('.grid-row')) {
+        const on = x === row;
+        x.classList.toggle('sel', on);
+        x.setAttribute('aria-selected', on ? 'true' : 'false');
+      }
+    });
+    row.addEventListener('dblclick', () => openHit(r));
+    return row;
+  }
+
+  function renderRows() {
+    body.replaceChildren(...sorted().map(rowEl));
+  }
+
+  function selectRow(r) {
+    selKey = r.key;
+    renderRows();
+    body.querySelector('.grid-row.sel')?.scrollIntoView({ block: 'nearest' });
+  }
+
+  // Enter opens the selected hit, the arrows walk the list — the body
+  // is focusable (tabindex 0) like the main grid
+  body.addEventListener('keydown', (e) => {
+    const list = sorted();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const r = hits.find((x) => x.key === selKey);
+      if (r) openHit(r);
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!list.length) return;
+      let i = list.findIndex((x) => x.key === selKey);
+      if (i < 0) i = e.key === 'ArrowDown' ? 0 : list.length - 1;
+      else i = e.key === 'ArrowDown' ? Math.min(list.length - 1, i + 1) : Math.max(0, i - 1);
+      selectRow(list[i]);
+    }
+  });
+
+  // addPage streams one results page in: rows land in arrival order (or
+  // the chosen sort), and the list follows the tail only while the user
+  // already sits near it — an inspection scroll is never yanked away
+  function addPage(entries) {
+    const stick = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+    hits.push(...entries);
+    renderRows();
+    if (stick) body.scrollTop = body.scrollHeight;
+  }
 
   function openHit(r) {
     if (inWin) { api.SearchGoto(r); return; }
@@ -3865,8 +3964,47 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     syncRun();
   }
 
+  // Everything but Name and Sources hides behind "More filters": the
+  // two controls every search touches stay up top, the rest stay one
+  // click away, and the chip counts only real filters — the scope shows
+  // itself, it never hides behind the chip
+  let moreOpen = false;
+  const moreBox = el('div', { class: 'sr-params' },
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('search.kind') }), f.kind),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findLimit') }), f.limit),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('search.ext') }), f.ext),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('search.path') }), f.path),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findLarger') }), f.larger),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findSmaller') }), f.smaller),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findOlder') }), f.older),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findNewer') }), f.newer),
+  );
+  // one count per filter family — a number the user can hold in their
+  // head (the Sources picker is not a filter: it lives outside)
+  const activeCount = () => {
+    let n = 0;
+    if (f.name.value.trim()) n += 1;
+    if (f.ext.value.trim() || f.path.value.trim()) n += 1;
+    if (f.kind.value) n += 1;
+    if (f.larger.value.trim() || f.smaller.value.trim()) n += 1;
+    if (f.older.value.trim() || f.newer.value.trim()) n += 1;
+    return n;
+  };
+  const moreBtn = el('button', { class: 'sr-more', type: 'button',
+    onclick: () => { moreOpen = !moreOpen; syncMore(); } });
+  function syncMore() {
+    moreBox.style.display = moreOpen ? '' : 'none';
+    const n = activeCount();
+    moreBtn.textContent = `${t('search.more')} ${moreOpen ? '\u25B4' : '\u25BE'}${n > 0 ? ` \u00B7 ${n}` : ''}`;
+    moreBtn.setAttribute('aria-expanded', String(moreOpen));
+  }
+  [f.kind].forEach((x) => x.addEventListener('change', syncMore));
+  [f.name, f.ext, f.path, f.larger, f.smaller, f.older, f.newer]
+    .forEach((x) => x.addEventListener('input', syncMore));
+  syncMore();
+
   // Clear returns the whole window to its open state: fields, scope,
-  // results, status — a fresh search without reopening
+  // sort, results, status — a fresh search without reopening
   function clearAll() {
     stop();
     f.name.value = f.ext.value = f.path.value = '';
@@ -3874,9 +4012,14 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     f.kind.value = '';
     f.limit.value = '0';
     scopeSel.value = '0';
-    list.replaceChildren();
-    status.textContent = '';
-    status.title = '';
+    hits.length = 0;
+    selKey = null;
+    sortKey = '';
+    showSource = false;
+    buildHead();
+    renderRows();
+    setEmpty('idle');
+    setStatus('');
     syncMore();
     f.name.focus();
   }
@@ -3884,13 +4027,15 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     id: 'search',
     title: t('findTitle'),
     body: el('div', { class: 'sr-body' },
-      el('div', { class: 'sr-top' },
-        el('div', {}, el('label', { class: 'field', text: t('findName') }), f.name),
+      el('div', { class: 'sr-form' },
+        el('div', { class: 'sr-row' },
+          el('div', { class: 'sr-f sr-name' }, el('label', { class: 'field', text: t('findName') }), f.name),
+          el('div', { class: 'sr-f sr-pick' }, el('label', { class: 'field', text: t('search.scope') }), scopeSel),
+        ),
+        moreBtn,
+        moreBox,
       ),
-      moreBtn,
-      moreBox,
-      status,
-      list,
+      el('div', { class: 'sr-results' }, headClip, body, empty, status),
     ),
     wide: true,
     buttons: [
@@ -3904,12 +4049,18 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     if (btnEl) btnEl.textContent = running ? t('findStop') : t('findStart');
   }
   syncRun();
+  buildHead();
+  setEmpty('idle');
   // already floating: focus() did the work — the first instance owns the
   // events and its button, a second subscription would leak (btnEl is
   // undefined here: no new DOM was created, and the declarations above
   // keep close() → onClose → stop() clear of the const TDZ)
   if (!pop.fresh) return { close: pop.close };
 
+  // the head follows the list: horizontal scroll slides it, a resized
+  // window (popout grip, native shell) re-locks its width
+  body.addEventListener('scroll', syncHead);
+  new ResizeObserver(syncHead).observe(headClip);
   // Enter anywhere in the form runs the search
   const enterRuns = (input) => input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); if (!running) start(); }
@@ -3932,40 +4083,40 @@ function searchWindowDom(scopes, selIdx, onOpen) {
         limit: parseInt(f.limit.value, 10) || 0,
       };
     } catch (err) {
-      status.textContent = String(err);
-      status.style.color = 'var(--danger)';
+      setStatus(String(err), 'var(--danger)');
       return;
     }
-    status.style.color = 'var(--text-dim)';
-    status.textContent = t('findRunning', { matched: 0 });
-    list.replaceChildren();
+    setStatus(t('findRunning', { matched: 0 }));
+    hits.length = 0;
+    selKey = null;
+    renderRows();
+    setEmpty(null);
     stop(); // cancel any previous run
     running = true;
     syncRun();
     const scope = scopes[parseInt(scopeSel.value, 10) || 0].scope;
-    // pills only while origins vary: every source, or every bucket of one
-    // source — one bucket or one remote would only repeat itself
-    const badge = scope.mode === 'all' || (scope.mode === 's3' && !scope.bucket);
+    // the Source column only while origins vary: every source, or every
+    // bucket of one source — a single origin would only repeat itself
+    showSource = scope.mode === 'all' || (scope.mode === 's3' && !scope.bucket);
+    buildHead();
     // Subscribe BEFORE the call: a search over a small source can finish
     // (search:done) before the call resolving with the token reaches the
     // page, and events dispatched to no listener would leave the window
     // stuck on "running". Early events buffer and replay once the token
     // is known; foreign tokens drop out.
     const onPage = (p) => {
-      for (const r of p.entries || []) list.appendChild(fmtRes(r, badge));
-      status.textContent = t('findRunning', { matched: p.matched });
-      list.scrollTop = list.scrollHeight;
+      if (p.entries?.length) addPage(p.entries);
+      setStatus(t('findRunning', { matched: p.matched }));
     };
     const onDone = (d) => {
       token = null;
       running = false;
       syncRun();
-      let done = d.error
+      setStatus(d.error
         ? d.error
-        : t('findDone', { matched: d.matched, scanned: d.scanned, sources: d.sources ?? 1 });
-      status.textContent = done;
-      status.style.color = d.error ? 'var(--danger)' : 'var(--text-dim)';
-      status.title = d.sourceErrors || '';
+        : t('findDone', { matched: d.matched, scanned: d.scanned, sources: d.sources ?? 1 }),
+      d.error ? 'var(--danger)' : '', d.sourceErrors || '');
+      if (!d.error && !hits.length) setEmpty('none');
     };
     const early = [];
     let tok = null;
@@ -3985,8 +4136,7 @@ function searchWindowDom(scopes, selIdx, onOpen) {
       offPage = offDone = null;
       running = false;
       syncRun();
-      status.textContent = String(err);
-      status.style.color = 'var(--danger)';
+      setStatus(String(err), 'var(--danger)');
       return;
     }
     token = tok;

@@ -442,7 +442,7 @@ async function refreshSources() {
     toast(`Sources: ${err}`, 'error');
     sources = [];
   }
-  $('status-profile').textContent = viewSource;
+  setGridSource(viewSource);
   renderSidebarHead();
   tree.setSources(sources, nav.current); // sources are the tree's top level
   // The side pane's source dropdown follows the source set
@@ -778,7 +778,7 @@ function renderFavorites() {
 
 // setViewSourceFor resolves a location's source to its canonical NAME,
 // pushes it Go-side (engine-native S3 APIs address it) and mirrors it in
-// the status bar. Returns the resolved name ('' when no S3 source exists).
+// the content bottom bar. Returns the resolved name ('' when no S3 source exists).
 async function setViewSourceFor(loc) {
   let name = loc.source || '';
   if (!name) {
@@ -796,10 +796,30 @@ async function setViewSourceFor(loc) {
       toast(`View source: ${err}`, 'error');
     }
     viewSource = name;
-    $('status-profile').textContent = name;
-    $('status-profile').title = `Active data source: ${name}`;
+    setGridSource(name);
   }
   return name;
+}
+
+// setGridSource names the active data source in the content area's own
+// bottom bar, ahead of the size text — the window footer no longer
+// carries it; the bar it names is the one the source's rows fill.
+let gridSourceName = '';
+function setGridSource(name) {
+  gridSourceName = name || '';
+  const sp = $('grid-source');
+  if (!sp) return;
+  sp.textContent = gridSourceName;
+  if (gridSourceName) sp.title = `Active data source: ${gridSourceName}`;
+  else sp.removeAttribute('title');
+  sp.classList.toggle('hidden', !gridSourceName);
+  syncGridStatus();
+}
+// syncGridStatus hides the whole bar only when it has nothing to say —
+// no source name, no size text (onboarding, before any source exists).
+function syncGridStatus() {
+  const bar = $('grid-status');
+  if (bar) bar.classList.toggle('hidden', !gridSourceName && !$('grid-status-text')?.textContent);
 }
 
 async function loadView(loc, { silent = false } = {}) {
@@ -847,7 +867,7 @@ async function loadView(loc, { silent = false } = {}) {
       // always feed the tree — the legacy bucket level tracks the live
       // bucket set (created/deleted), even down to zero
       tree.refresh(src, buckets, loc);
-      setUpbar('greyed'); // a content view, but nothing above it
+      setUpbar('off'); // the source's top level: no parent row, nothing above it
     } else if (loc.kind === 'objects') {
       await setViewSourceFor(loc);
       if (seq !== viewSeq) return;
@@ -855,8 +875,8 @@ async function loadView(loc, { silent = false } = {}) {
       tree.reveal(loc).catch(() => {});
       localPane.syncTo(loc.prefix || '');
       // no setUpbar here: stream.begin resolves at token registration,
-      // long before the first page on a slow source — the strip returns
-      // with the rows (loadObjectsStream's first-page leg below)
+      // long before the first page on a slow source — the parent row
+      // returns with the rows (loadObjectsStream's first-page leg below)
     } else if (loc.kind === 'remote') {
       // sftp/scp/ftp/ftps/webdav/local source browsed through its remotefs
       // engine; rows carry the same shape as S3 listings
@@ -877,7 +897,7 @@ async function loadView(loc, { silent = false } = {}) {
       }
       tree.reveal(loc).catch(() => {});
       tree.updateRemoteDir(loc.source, loc.path || '/', entries);
-      setUpbar(parentOf(loc) ? 'on' : 'greyed');
+      setUpbar(parentOf(loc) ? 'on' : 'off');
     }
     if (landed) viewLandedHealthy(landedName);
   } catch (err) {
@@ -928,7 +948,7 @@ async function loadObjectsStream(loc, silent = false) {
       } else {
         // First data landed: the skeleton/loading overlay has done its
         // job — rows now tell the story (idempotent, so every page can
-        // call it without layout cost once hidden). The parent strip
+        // call it without layout cost once hidden). The parent row
         // comes back with the rows, for the same reason.
         hideEmpty();
         setUpbar('on');
@@ -1126,15 +1146,14 @@ function updateNavButtons() {
   $('btn-back').disabled = !nav.canBack();
   $('btn-forward').disabled = !nav.canForward();
 }
-// setUpbar drives the parent strip (the WinSCP-style ".." at the top of the
-// content area): 'on' = one click climbs to parentOf(current), 'greyed' = a
-// content view with nothing above it (a source's top level), 'off' = an
-// information panel owns the area (loading, error, onboarding). The
-// has-upbar class also lowers the empty-state panel below the strip.
+// setUpbar drives the parent row (the WinSCP-style ".." as the first row of
+// the listing, inside the grid body): 'on' = the row shows and one click
+// climbs to parentOf(current), 'off' = nothing above it (a source's top
+// level, the Data source main view) or an information panel owns the area
+// (loading, error, onboarding). The 'greyed' state is retired: a view with
+// nothing above it simply shows no row.
 function setUpbar(state) {
-  $('upbar').classList.toggle('hidden', state === 'off');
-  $('grid-wrap').classList.toggle('has-upbar', state !== 'off');
-  $('upbar').disabled = state === 'greyed';
+  $('upbar').classList.toggle('hidden', state !== 'on');
 }
 
 function renderBreadcrumb() {
@@ -3602,7 +3621,6 @@ grid.dragPayload = () => {
 
 // ============================ marquee ============================
 function startMarquee(e) {
-  const body = grid.body;
   const startX = e.clientX, startY = e.clientY;
   const mq = $('marquee');
   let active = false;
@@ -3614,9 +3632,12 @@ function startMarquee(e) {
     const x = Math.min(ev.clientX, startX), y = Math.min(ev.clientY, startY);
     const w = Math.abs(ev.clientX - startX), h = Math.abs(ev.clientY - startY);
     Object.assign(mq.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
-    const rect = body.getBoundingClientRect();
-    const first = Math.max(0, Math.floor((y - rect.top + body.scrollTop) / 28));
-    const last = Math.floor((y + h - rect.top + body.scrollTop) / 28);
+    // anchor on the canvas: rows sit at top idx*28 inside it, and the
+    // parent row ("..") rides in-flow above — measuring from the body
+    // would sweep one row high whenever the parent row is shown
+    const rect = $('grid-canvas').getBoundingClientRect();
+    const first = Math.max(0, Math.floor((y - rect.top) / 28));
+    const last = Math.floor((y + h - rect.top) / 28);
     grid.sel.clear();
     for (let i = first; i <= Math.min(last, grid.rows.length - 1); i++) grid.sel.add(grid.rows[i].key);
     grid.render();
@@ -3638,6 +3659,9 @@ function wireToolbar() {
   $('upbar').onclick = () => { const p = parentOf(nav.current); if (p) nav.to(p); };
   $('upbar').title = t('upParent');
   $('upbar').setAttribute('aria-label', t('upParent'));
+  // the row lives inside the grid body: its keys stay its own — Enter
+  // clicks the row without also driving the grid's keyboard layer
+  $('upbar').addEventListener('keydown', (e) => e.stopPropagation());
   // () => : a bare `onclick = refreshCurrent` would pass the MouseEvent in
   // as `silent` (truthy) — the button refresh would silently skip the
   // loading state and bury errors as stale-row toasts. Manual refresh is
@@ -4584,17 +4608,20 @@ function usageDropPrefix(prefix) {
   }
 }
 
-// resetSizeBar blanks the bar and ages out every in-flight walk: a
-// fresh navigation must never paint the previous view's numbers.
+// resetSizeBar blanks the size text and ages out every in-flight walk: a
+// fresh navigation must never paint the previous view's numbers. The
+// source name rides the same bar but is not the walk's to clear.
 function resetSizeBar() {
   sizeBarSeq++;
   usageInflight.clear();
   const bar = $('grid-status');
-  if (bar) {
-    bar.textContent = '';
-    bar.className = 'grid-status';
-    bar.removeAttribute('title');
+  const txt = $('grid-status-text');
+  if (bar) bar.className = 'grid-status';
+  if (txt) {
+    txt.textContent = '';
+    txt.removeAttribute('title');
   }
+  syncGridStatus();
 }
 
 const scheduleSizeBar = debounce(runSizeBar, 200);
@@ -4636,15 +4663,17 @@ function sizeBarText(head, tot) {
 
 function paintSizeBar(tot, { head = '', busy = false, error = '' } = {}) {
   const bar = $('grid-status');
-  if (!bar) return;
+  const txt = $('grid-status-text');
+  if (!bar || !txt) return;
   if (!tot) {
-    bar.textContent = t('sizeBar.calculating');
+    txt.textContent = t('sizeBar.calculating');
   } else {
-    bar.textContent = sizeBarText(head, tot);
-    if (error || tot.error) bar.title = String(error || tot.error);
-    else bar.removeAttribute('title');
+    txt.textContent = sizeBarText(head, tot);
+    if (error || tot.error) txt.title = String(error || tot.error);
+    else txt.removeAttribute('title');
   }
   bar.classList.toggle('busy', busy);
+  syncGridStatus();
 }
 
 // sizeBarFallback: the honest floor when the real walk failed — plain
