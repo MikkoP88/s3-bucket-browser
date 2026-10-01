@@ -15,15 +15,16 @@ import (
 )
 
 func findCmd() *cobra.Command {
-	var pattern, larger, smaller, older, newer, class, kind string
+	var pattern, larger, smaller, older, newer, class, kind, ext, path string
 	var limit int
 	cmd := &cobra.Command{
 		Use:   "find s3://bucket[/prefix]",
 		Short: "Search objects by name, size, age, kind or storage class",
 		Long: "Streams every object under the prefix and prints the ones matching all filters.\n" +
 			"--name is a substring, or a glob when it contains * or ? (matched against the full key,\n" +
-			"so 'backup*' also matches nested paths). Sizes accept 10MB / 1.5GB forms; ages 30d / 24h;\n" +
-			"--kind file|dir keeps only files or folders.",
+			"so 'backup*' also matches nested paths). --ext filters by name extension and --path by a\n" +
+			"substring of the parent directory (both case-insensitive). Sizes accept 10MB / 1.5GB forms;\n" +
+			"ages 30d / 24h; --kind file|dir keeps only files or folders.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
@@ -37,7 +38,7 @@ func findCmd() *cobra.Command {
 			if kind != "" && !strings.EqualFold(kind, "file") && !strings.EqualFold(kind, "dir") {
 				return usageErr("--kind must be file or dir")
 			}
-			f := search.Filter{Pattern: pattern, Kind: kind, Class: class, Limit: limit}
+			f := search.Filter{Pattern: pattern, Kind: kind, Ext: ext, Path: path, Class: class, Limit: limit}
 			if larger != "" {
 				if f.LargerThan, err = search.ParseSize(larger); err != nil {
 					return usageErr("--larger: %v", err)
@@ -84,6 +85,8 @@ func findCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVarP(&pattern, "name", "n", "", "substring or glob to match against the key")
+	f.StringVar(&ext, "ext", "", "comma-separated name extensions (e.g. pdf,jpg; dot optional)")
+	f.StringVar(&path, "path", "", "substring the parent directory must contain (e.g. docs)")
 	f.StringVar(&larger, "larger", "", "match objects larger than this (e.g. 10MB)")
 	f.StringVar(&smaller, "smaller", "", "match objects smaller than this (e.g. 500KB)")
 	f.StringVar(&older, "older", "", "last modified longer ago than this (e.g. 30d)")

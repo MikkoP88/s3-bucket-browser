@@ -1,7 +1,7 @@
 // Modal framework + every dialog: confirmations (L1/L2 ladder), prompts,
 // properties, doctor, profile editor, transfer manager, help sheet.
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename, fileIcon } from './util.js';
 import { t } from './i18n.js';
 import { LICENSE } from './license.js';
 
@@ -283,19 +283,19 @@ function openPopout({ id, title, body, buttons = [], footLeft = null, wide = fal
     box.style.left = `${Math.max(16, (window.innerWidth - box.offsetWidth) / 2)}px`;
     box.style.top = `${Math.max(16, (window.innerHeight - box.offsetHeight) / 2)}px`;
   }
-  if (autoH) {
-    // CSS-driven height changes fire no event, yet the window grows
-    // downward from a pinned top: keep the whole thing on screen as the
-    // content comes and goes (a centered 300px window at the 740 cap
-    // would otherwise spill past the viewport bottom). A manual size
-    // (inline height) leaves placement to the user.
-    new MutationObserver(() => {
-      if (box.style.height) return;
-      const top = parseFloat(box.style.top) || 0;
-      const fit = Math.max(0, Math.min(top, window.innerHeight - box.offsetHeight));
-      if (Math.abs(fit - top) >= 1) box.style.top = `${Math.round(fit)}px`;
-    }).observe(box, { childList: true, subtree: true, characterData: true });
-  }
+  // CSS-driven height changes fire no event, yet a content-capped window
+  // grows downward from a pinned top: keep the whole thing on screen as
+  // the content comes and goes (a centered 300px window hitting the cap
+  // would otherwise spill past the viewport bottom — the auto-height
+  // monitors growing into their profile, the Search window's results
+  // streaming in). A manual size (inline height) leaves placement to
+  // the user.
+  new MutationObserver(() => {
+    if (box.style.height) return;
+    const top = parseFloat(box.style.top) || 0;
+    const fit = Math.max(0, Math.min(top, window.innerHeight - box.offsetHeight));
+    if (Math.abs(fit - top) >= 1) box.style.top = `${Math.round(fit)}px`;
+  }).observe(box, { childList: true, subtree: true, characterData: true });
   clampPop(box);
   handle.focus();
   return handle;
@@ -3727,7 +3727,7 @@ export function searchWindow(opts = {}) {
   const all = { label: t('search.scopeAll'), scope: { mode: 'all' } };
   const scopes = [all, ...(opts.scopes || [])];
   if (opts.preset && !scopes.some((x) => sameScope(x.scope, opts.preset))) {
-    scopes.push({ group: 'view', label: searchScopeLabel(opts.preset), scope: opts.preset });
+    scopes.push({ label: searchScopeLabel(opts.preset), scope: opts.preset });
   }
   const sel = Math.max(0, scopes.findIndex((x) => sameScope(x.scope, opts.preset)));
   const p = scopes[sel].scope;
@@ -3741,7 +3741,7 @@ export function searchWindow(opts = {}) {
   }
   if (maybeNativePopout({
     id: 'search', query: q, title: t('findTitle'),
-    w: 560, h: 560, minW: 460, minH: 380,
+    w: 620, h: 600, minW: 520, minH: 460,
     domOpen: () => searchWindowDom(scopes, sel, opts.onOpen),
   })) {
     return { close: () => api.ClosePopout('search') };
@@ -3762,30 +3762,12 @@ function searchScopeLabel(s) {
 
 // searchSourceScopes turns a source list into one pickable scope each: an
 // S3 source searches every bucket it holds, a remote engine walks from
-// its root. The Search window pairs these with the All default and the
-// current view's narrower entries, so the dropdown names every source
-// instead of collapsing them into "all".
+// its root. The Search window pairs these with the All default — a flat
+// list of names, no group headers, every source one pick away.
 export function searchSourceScopes(list = []) {
   return list.map((s) => (s.type === 's3'
-    ? { group: 'sources', label: s.name, scope: { mode: 's3', source: s.name, bucket: '', prefix: '' } }
-    : { group: 'sources', label: s.name, scope: { mode: 'remote', source: s.name, prefix: '/' } }));
-}
-
-// scopeOptions groups the scope dropdown: the All default stands alone,
-// the current view's narrow entries sit under it, every source below —
-// optgroups keep a long source list scannable (options keep their
-// index-based values, so the flat scopes array stays the source of truth).
-function scopeOptions(scopes, selIdx) {
-  const out = [];
-  let grp = null;
-  scopes.forEach((x, i) => {
-    const opt = el('option', { value: String(i), selected: i === selIdx }, x.label);
-    if (!x.group) { out.push(opt); grp = null; return; }
-    const label = x.group === 'view' ? t('search.grpView') : t('search.grpSources');
-    if (!grp || grp.getAttribute('label') !== label) { grp = el('optgroup', { label }); out.push(grp); }
-    grp.appendChild(opt);
-  });
-  return out;
+    ? { label: s.name, scope: { mode: 's3', source: s.name, bucket: '', prefix: '' } }
+    : { label: s.name, scope: { mode: 'remote', source: s.name, prefix: '/' } }));
 }
 
 function searchWindowDom(scopes, selIdx, onOpen) {
@@ -3794,6 +3776,8 @@ function searchWindowDom(scopes, selIdx, onOpen) {
   const inWin = document.body.classList.contains('popout-win');
   const f = {
     name: el('input', { class: 'input mono', placeholder: 'report*', spellcheck: 'false' }),
+    ext: el('input', { class: 'input mono', placeholder: 'pdf, jpg', spellcheck: 'false' }),
+    path: el('input', { class: 'input mono', placeholder: 'docs', spellcheck: 'false' }),
     larger: el('input', { class: 'input mono', placeholder: '10MB', spellcheck: 'false' }),
     smaller: el('input', { class: 'input mono', placeholder: '500KB', spellcheck: 'false' }),
     older: el('input', { class: 'input mono', placeholder: '30d', spellcheck: 'false' }),
@@ -3801,12 +3785,10 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     kind: el('select', { class: 'input' },
       ['', 'file', 'dir'].map((k) => el('option', { value: k },
         t(k === 'file' ? 'search.kindFile' : k === 'dir' ? 'search.kindFolder' : 'search.kindAny')))),
-    class: el('select', { class: 'input' },
-      ['', 'STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE']
-        .map((c) => el('option', { value: c }, c || '\u2014 any \u2014'))),
     limit: el('input', { class: 'input', type: 'number', min: '0', value: '0' }),
   };
-  const scopeSel = el('select', { class: 'input sr-scope' }, scopeOptions(scopes, selIdx));
+  const scopeSel = el('select', { class: 'input sr-scope' },
+    scopes.map((x, i) => el('option', { value: String(i), selected: i === selIdx }, x.label)));
   const status = el('div', { class: 'dlg-status' });
   const list = el('div', { class: 'ver-list', role: 'list' });
   let token = null;
@@ -3814,38 +3796,59 @@ function searchWindowDom(scopes, selIdx, onOpen) {
   let offPage = null;
   let offDone = null;
 
-  // Everything past the name hides behind "More filters": the name box is
-  // the one field most searches ever touch, the rest stay one click away.
+  // Everything but Name hides behind "More filters" — Sources included:
+  // the name box is the one field most searches ever touch, the rest stay
+  // one click away, and the chip carries a live count of active filters
+  // so a preset scope never hides completely behind it.
   let moreOpen = false;
   const moreBox = el('div', { class: 'sr-params' },
-    el('div', {}, el('label', { class: 'field', text: t('findLarger') }), f.larger),
-    el('div', {}, el('label', { class: 'field', text: t('findSmaller') }), f.smaller),
-    el('div', {}, el('label', { class: 'field', text: t('findOlder') }), f.older),
-    el('div', {}, el('label', { class: 'field', text: t('findNewer') }), f.newer),
-    el('div', {}, el('label', { class: 'field', text: t('search.kind') }), f.kind),
-    el('div', {}, el('label', { class: 'field', text: t('class') }), f.class),
-    el('div', {}, el('label', { class: 'field', text: t('findLimit') }), f.limit),
+    el('div', { class: 'sr-f sr-span2' }, el('label', { class: 'field', text: t('search.scope') }), scopeSel),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('search.kind') }), f.kind),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findLimit') }), f.limit),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('search.ext') }), f.ext),
+    el('div', { class: 'sr-f sr-span3' }, el('label', { class: 'field', text: t('search.path') }), f.path),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findLarger') }), f.larger),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findSmaller') }), f.smaller),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findOlder') }), f.older),
+    el('div', { class: 'sr-f' }, el('label', { class: 'field', text: t('findNewer') }), f.newer),
   );
+  // one count per filter family — a number the user can hold in their head
+  const activeCount = () => {
+    let n = (parseInt(scopeSel.value, 10) || 0) === 0 ? 0 : 1;
+    if (f.name.value.trim()) n += 1;
+    if (f.ext.value.trim() || f.path.value.trim()) n += 1;
+    if (f.kind.value) n += 1;
+    if (f.larger.value.trim() || f.smaller.value.trim()) n += 1;
+    if (f.older.value.trim() || f.newer.value.trim()) n += 1;
+    return n;
+  };
   const moreBtn = el('button', { class: 'sr-more', type: 'button',
     onclick: () => { moreOpen = !moreOpen; syncMore(); } });
   function syncMore() {
     moreBox.style.display = moreOpen ? '' : 'none';
-    moreBtn.textContent = `${t('search.more')} ${moreOpen ? '\u25B4' : '\u25BE'}`;
+    const n = activeCount();
+    moreBtn.textContent = `${t('search.more')} ${moreOpen ? '\u25B4' : '\u25BE'}${n > 0 ? ` \u00B7 ${n}` : ''}`;
     moreBtn.setAttribute('aria-expanded', String(moreOpen));
   }
+  [scopeSel, f.kind].forEach((x) => x.addEventListener('change', syncMore));
+  [f.name, f.ext, f.path, f.larger, f.smaller, f.older, f.newer]
+    .forEach((x) => x.addEventListener('input', syncMore));
   syncMore();
 
-  const fmtRes = (r) => el('div', {
+  // fileIcon types each row by extension; the origin pill renders only
+  // while origins vary (every source, or every bucket of one source) — a
+  // single-origin run would only repeat itself
+  const fmtRes = (r, badge) => el('div', {
     class: 'ver-row',
     role: 'listitem',
     onclick: () => openHit(r),
   },
-    el('span', { class: 'ver-icon', text: (r.isDir || String(r.key).endsWith('/')) ? '\u{1F4C1}' : '\u{1F50D}' }),
+    el('span', { class: 'ver-icon', text: fileIcon(r.key, r.isDir || String(r.key).endsWith('/')) }),
     el('span', { class: 'ver-main' },
       el('div', { class: 'mono', text: r.key }),
       el('div', { class: 'ver-sub', text: `${fmtBytes(r.size || 0)}${r.storageClass && r.storageClass !== 'STANDARD' ? ` \u2014 ${r.storageClass}` : ''}${r.lastModified ? ` \u2014 ${fmtDate(r.lastModified)}` : ''}` }),
     ),
-    el('span', { class: 'sr-src mono', text: r.bucket ? `s3://${r.bucket}` : (r.source || '') }),
+    badge ? el('span', { class: 'sr-src', text: r.bucket ? `s3://${r.bucket}` : (r.source || '') }) : null,
   );
 
   function openHit(r) {
@@ -3862,12 +3865,26 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     syncRun();
   }
 
+  // Clear returns the whole window to its open state: fields, scope,
+  // results, status — a fresh search without reopening
+  function clearAll() {
+    stop();
+    f.name.value = f.ext.value = f.path.value = '';
+    f.larger.value = f.smaller.value = f.older.value = f.newer.value = '';
+    f.kind.value = '';
+    f.limit.value = '0';
+    scopeSel.value = '0';
+    list.replaceChildren();
+    status.textContent = '';
+    status.title = '';
+    syncMore();
+    f.name.focus();
+  }
   const pop = openPopout({
     id: 'search',
     title: t('findTitle'),
     body: el('div', { class: 'sr-body' },
       el('div', { class: 'sr-top' },
-        el('div', {}, el('label', { class: 'field', text: t('search.scope') }), scopeSel),
         el('div', {}, el('label', { class: 'field', text: t('findName') }), f.name),
       ),
       moreBtn,
@@ -3876,10 +3893,13 @@ function searchWindowDom(scopes, selIdx, onOpen) {
       list,
     ),
     wide: true,
-    buttons: [{ label: t('findStart'), class: 'primary', onclick: () => (running ? stop() : start()) }],
+    buttons: [
+      { label: t('search.clear'), onclick: clearAll },
+      { label: t('findStart'), class: 'primary', onclick: () => (running ? stop() : start()) },
+    ],
     onClose: () => stop(),
   });
-  const btnEl = pop.btns[0];
+  const btnEl = pop.btns.find((b) => b.classList.contains('primary'));
   function syncRun() {
     if (btnEl) btnEl.textContent = running ? t('findStop') : t('findStart');
   }
@@ -3894,7 +3914,7 @@ function searchWindowDom(scopes, selIdx, onOpen) {
   const enterRuns = (input) => input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); if (!running) start(); }
   });
-  [f.name, f.larger, f.smaller, f.older, f.newer, f.limit].forEach(enterRuns);
+  [f.name, f.ext, f.path, f.larger, f.smaller, f.older, f.newer, f.limit].forEach(enterRuns);
   f.name.focus();
 
   async function start() {
@@ -3903,11 +3923,12 @@ function searchWindowDom(scopes, selIdx, onOpen) {
       opts = {
         pattern: f.name.value.trim(),
         kind: f.kind.value,
+        ext: f.ext.value.trim(),
+        path: f.path.value.trim(),
         largerThan: parseSizeStr(f.larger.value) || 0,
         smallerThan: parseSizeStr(f.smaller.value) || 0,
         olderThanSec: parseDurStr(f.older.value) || 0,
         newerThanSec: parseDurStr(f.newer.value) || 0,
-        class: f.class.value,
         limit: parseInt(f.limit.value, 10) || 0,
       };
     } catch (err) {
@@ -3922,13 +3943,16 @@ function searchWindowDom(scopes, selIdx, onOpen) {
     running = true;
     syncRun();
     const scope = scopes[parseInt(scopeSel.value, 10) || 0].scope;
+    // pills only while origins vary: every source, or every bucket of one
+    // source — one bucket or one remote would only repeat itself
+    const badge = scope.mode === 'all' || (scope.mode === 's3' && !scope.bucket);
     // Subscribe BEFORE the call: a search over a small source can finish
     // (search:done) before the call resolving with the token reaches the
     // page, and events dispatched to no listener would leave the window
     // stuck on "running". Early events buffer and replay once the token
     // is known; foreign tokens drop out.
     const onPage = (p) => {
-      for (const r of p.entries || []) list.appendChild(fmtRes(r));
+      for (const r of p.entries || []) list.appendChild(fmtRes(r, badge));
       status.textContent = t('findRunning', { matched: p.matched });
       list.scrollTop = list.scrollHeight;
     };
@@ -3939,7 +3963,6 @@ function searchWindowDom(scopes, selIdx, onOpen) {
       let done = d.error
         ? d.error
         : t('findDone', { matched: d.matched, scanned: d.scanned, sources: d.sources ?? 1 });
-      if (d.skipped > 0) done += ` \u2014 ${t('search.skipped', { n: d.skipped })}`;
       status.textContent = done;
       status.style.color = d.error ? 'var(--danger)' : 'var(--text-dim)';
       status.title = d.sourceErrors || '';

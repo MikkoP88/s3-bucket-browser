@@ -202,20 +202,27 @@ directory compare) with S3 and the local pane.
 - **Favorites** — star buckets and folders for one-click jumps.
 - **Search** — Ctrl+Shift+F opens the Search window (also the toolbar
   button, View → Search, or *Search in this folder…* from a context
-  menu — the menu presets the scope). It searches **every data
-  source** by default — every bucket of every S3 source plus every
-  remote source (local, SFTP, FTP, WebDAV) from its root — and the
-  scope dropdown names every source: the entries for where you stand
-  (this folder, this bucket, the open remote path) group under *This
-  view*, each configured source is pickable on its own under *Data
-  sources* — an S3 source searched across every bucket it holds, a
-  remote source from its root. Search in and Name are labeled fields
-  always in view; Name takes a substring or glob and Enter runs it
-  from any field; size, age, kind (any/files/folders), storage
-  class and result limit fold out under the *More filters*
-  disclosure chip. Results stream in with source badges, a
-  running search can be stopped from the window, and clicking a hit
-  jumps to the object and selects it.
+  menu — the menu presets the scope). **Name** is the only field
+  always in view — a substring or glob, and Enter runs the search
+  from any field. Everything else folds out under the *More
+  filters* disclosure chip, whose label counts the filters you
+  have set: **Sources** is a flat list with no grouping — *All
+  data sources* (the default: every bucket of every S3 source
+  plus every remote source from its root) and each configured
+  source by name, an S3 source searched across every bucket it
+  holds, a remote source (local, SFTP, FTP, WebDAV) from its
+  root. Beside it: **Kind** (any/files/folders), **Limit**,
+  **Extension** (comma list, dot optional), **Path contains**,
+  **Larger/smaller than** and **Older/newer than** — every filter
+  works the same across S3 and remote sources (storage class
+  never could, so it left the window). A **Clear** button resets
+  the whole form. Only the results list scrolls — the controls
+  stay put — and rows carry type-matched icons (folder, image,
+  video, archive, document …); a search spanning several sources
+  badges every hit with a rounded source pill, hidden when the
+  scope is a single source. A running search can be stopped from
+  the window, and clicking a hit jumps to the object and selects
+  it.
 
 ![Search](screenshots/search.png)
 
@@ -530,6 +537,7 @@ s3b cp ./site s3://b/site/ -r               # upload (or download, or copy)
 s3b cp s3://src-b/ sftp://host/dst/ -r      # cross-source migration
 s3b sync ./site s3://b/site/ --delete
 s3b find s3://b --name 'backup*' --older 90d
+s3b find s3://b --ext pdf,csv --path docs --larger 1MB
 s3b doctor s3://my-bucket
 
 s3b versions ls s3://b/docs/report.pdf      # timeline, newest first

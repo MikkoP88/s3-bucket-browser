@@ -909,8 +909,9 @@ function shim() {
     },
     // ---- search (every data source, streamed + cancelable) ----
     // Mirrors the Go bridge over the fixture world: substring-or-unanchored-
-    // glob name match (case-insensitive), kind, strict size bounds, age,
-    // class; scope modes all/s3/remote; done stats count unique sources
+    // glob name match (case-insensitive), extension and path-contains,
+    // kind, strict size bounds, age, class; scope modes all/s3/remote;
+    // done stats count unique sources
     // searched and the remote sources a class filter skipped. A
     // world.fault.searchDelayMs parks the run so Stop is testable.
     Search: (scope = {}, opts = {}) => {
@@ -927,6 +928,18 @@ function shim() {
         };
         const matches = (e) => {
           if (opts.pattern && !matchPattern(opts.pattern, e.key)) return false;
+          if (opts.ext) {
+            const base = e.key.slice(e.key.lastIndexOf('/') + 1).toLowerCase();
+            const hit = String(opts.ext).split(',').map((x) => x.trim().toLowerCase())
+              .filter(Boolean).map((x) => (x.startsWith('.') ? x : '.' + x))
+              .some((x) => base.endsWith(x));
+            if (!hit) return false;
+          }
+          if (opts.path) {
+            const cut = e.key.lastIndexOf('/');
+            const dir = cut < 0 ? '' : e.key.slice(0, cut);
+            if (!dir.toLowerCase().includes(String(opts.path).toLowerCase())) return false;
+          }
           if (opts.kind && (String(opts.kind).toLowerCase() === 'dir') !== !!e.isDir) return false;
           if (opts.largerThan > 0 && !((e.size || 0) > opts.largerThan)) return false;
           if (opts.smallerThan > 0 && !((e.size || 0) < opts.smallerThan)) return false;
@@ -3632,17 +3645,14 @@ await step('search-window', async () => {
     const sel = document.querySelector(s + ' .sr-scope');
     return !!sel && sel.selectedIndex === 0 && /all data sources/i.test(sel.options[0].textContent);
   }, S));
-  await ok('the open bucket is offered as a narrower scope', evalPage((s) => {
-    const labels = Array.from(document.querySelectorAll(s + ' .sr-scope option')).map((o) => o.textContent.trim());
-    return labels.includes('s3://team-files/');
-  }, S));
-  await ok('the dropdown names every data source', evalPage((s) => {
+  await ok('the dropdown is a flat list: All plus every source, no headers', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    const groups = Array.from(sel.querySelectorAll('optgroup')).map((g) => g.label);
-    return ['hetzner', 'website-prod', 'nightly', 'backup-box', 'dav-claims']
-      .every((n) => labels.includes(n))
-      && groups.length === 2 && /this view/i.test(groups[0]) && /data sources/i.test(groups[1]);
+    return sel.querySelectorAll('optgroup').length === 0
+      && labels.length === 6 && labels[0] === 'All data sources'
+      && ['hetzner', 'website-prod', 'nightly', 'backup-box', 'dav-claims']
+        .every((n) => labels.includes(n))
+      && labels.every((l) => !l.includes('s3://'));
   }, S));
   await ok('params hide behind More filters until opened', evalPage((s) => {
     const box = document.querySelector(s + ' .sr-params');
@@ -3708,6 +3718,8 @@ await step('search-window', async () => {
     const sel = document.querySelector(s + ' .sr-scope');
     return !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/';
   }, S));
+  await ok('the preset shows through the chip as an active filter count', evalPage((s) =>
+    document.querySelector(s + ' .sr-more').textContent.includes('\u00B7 1'), S));
   await runSearch('old');
   await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 's3'), 4000, 'scoped Search call');
   const presetCall = await findCall('Search');
@@ -3760,10 +3772,9 @@ await step('search-window', async () => {
     return !!c && c.args[0].mode === 'remote' && c.args[0].source === 'backup-box';
   })());
   await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 1, S), 4000, 'remote-source results');
-  await ok('remote source scope returns only its own rows', evalPage((s) => {
-    const badges = Array.from(document.querySelectorAll(s + ' .sr-src')).map((b) => b.textContent);
-    return badges.length >= 1 && badges.every((b) => b === 'backup-box');
-  }, S));
+  await ok('a single-origin run drops the origin pills', evalPage((s) =>
+    document.querySelectorAll(s + ' .ver-row').length >= 1
+    && document.querySelectorAll(s + ' .sr-src').length === 0, S));
 
   // the expander reveals the remaining filters — Kind splits files/folders
   await evalPage((s) => { document.querySelector(s + ' .sr-more').click(); }, S);
@@ -3784,7 +3795,7 @@ await step('search-window', async () => {
   await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 8, S), 4000, 'kind results');
   await ok('Kind=files lists only file rows across sources', evalPage((s) => {
     const icons = Array.from(document.querySelectorAll(s + ' .ver-icon')).map((i) => i.textContent);
-    return icons.length >= 8 && icons.every((i) => i === '\u{1F50D}');
+    return icons.length >= 8 && !icons.includes('\u{1F4C1}') && new Set(icons).size >= 4;
   }, S));
   await ok('Kind=folders lists only folder rows', (async () => {
     if (!(await setSelect('Files only', 'dir'))) return false;
@@ -3796,19 +3807,87 @@ await step('search-window', async () => {
     }, S);
   })());
 
-  // class filter: remote sources cannot match — they are skipped and said so
+  // the name-shape filters work on every source type: extension and path
+  // narrow S3 and remote rows alike (storage class is gone from the
+  // window — it cannot apply to remote engines, and no filter here may
+  // be source-specific)
   await setSelect('Files only', '');
-  await setSelect('GLACIER', 'GLACIER');
   await evalPage((s) => { document.querySelector(s + ' .sr-scope').value = '0'; }, S);
+  const setParam = (placeholder, val) => evalPage(([s, ph, v]) => {
+    const inp = Array.from(document.querySelectorAll(s + ' .sr-params input'))
+      .find((x) => x.placeholder === ph);
+    if (!inp) return false;
+    inp.value = v;
+    return true;
+  }, [S, placeholder, val]);
+  await resetCalls();
+  await ok('the extension field is present behind the chip', await setParam('pdf, jpg', 'md'));
   await runSearch('');
-  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length === 1, S), 4000, 'class results');
-  await ok('class filter narrows to the one GLACIER object', evalPage((s) => {
-    const rows = document.querySelectorAll(s + ' .ver-row');
-    return rows.length === 1 && rows[0].textContent.includes('video-final.mp4');
+  await waitFor(() => findCall('Search').then((c) => !!c && c.args[1].ext === 'md'), 4000, 'ext Search call');
+  await ok('the extension filter reaches the backend', true);
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 2, S), 4000, 'ext results');
+  await ok('extension narrows to .md rows only', evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(s + ' .ver-row'));
+    return rows.length >= 2 && rows.every((r) => /\.md$/.test(r.querySelector('.ver-main > div:first-child').textContent.trim()));
   }, S));
-  await ok('skipped sources surface in the done line', waitFor(() => evalPage((s) =>
-    /2 source\(s\) skipped/.test(document.querySelector(s + ' .dlg-status').textContent), S), 4000, 'skipped note'));
+
+  await resetCalls();
+  await setParam('pdf, jpg', '');
+  await setParam('docs', 'docs');
+  await runSearch('');
+  await waitFor(() => findCall('Search').then((c) => !!c && c.args[1].path === 'docs'), 4000, 'path Search call');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 3, S), 4000, 'path results');
+  await ok('path contains narrows to docs folders, S3 and remote alike', evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(s + ' .ver-row'));
+    return rows.length >= 3 && rows.every((r) => {
+      const key = r.querySelector('.ver-main > div:first-child').textContent;
+      return key.slice(0, key.lastIndexOf('/')).includes('docs');
+    }) && rows.some((r) => r.textContent.includes('inventory.csv'));
+  }, S));
+
+  // icons type every row: no generic magnifier, no calendar fallback,
+  // several distinct types, folders still folders
+  await setParam('docs', '');
+  await runSearch('');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .ver-row').length >= 8, S), 4000, 'icon results');
+  await ok('icons match the file type', evalPage((s) => {
+    const icons = Array.from(document.querySelectorAll(s + ' .ver-icon')).map((i) => i.textContent);
+    return icons.length >= 8 && !icons.includes('\u{1F50D}') && !icons.includes('\u{1F4C5}')
+      && new Set(icons).size >= 4 && icons.includes('\u{1F4C1}');
+  }, S));
+  await ok('the scope field is labeled Sources and lives behind the chip', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    const lab = sel.parentElement.querySelector('label.field');
+    return !!lab && lab.textContent.trim() === 'Sources' && !!sel.closest('.sr-params');
+  }, S));
+  await ok('only the results scroll: the body stays locked with the chip open', evalPage((s) => {
+    const body = document.querySelector(s + ' .modal-body');
+    const rows = document.querySelector(s + ' .ver-list');
+    return getComputedStyle(body).overflow === 'hidden'
+      && getComputedStyle(rows).overflowY === 'auto'
+      && body.scrollHeight <= body.clientHeight + 1;
+  }, S));
   await shotOf('search-window', S);
+
+  // Clear returns the whole window to its open state
+  await evalPage((s) => {
+    document.querySelector(s + ' .sr-top input.input').value = 'zz';
+    const sel = document.querySelector(s + ' .sr-scope');
+    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'nightly').value;
+    sel.dispatchEvent(new Event('change'));
+  }, S);
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(s + ' .modal-foot button'))
+      .find((b) => b.textContent.trim() === 'Clear').click();
+  }, S);
+  await ok('Clear resets fields, scope, chip count and results', evalPage((s) => {
+    const name = document.querySelector(s + ' .sr-top input.input');
+    const sel = document.querySelector(s + ' .sr-scope');
+    return name.value === '' && sel.selectedIndex === 0
+      && document.querySelectorAll(s + ' .ver-row').length === 0
+      && document.querySelector(s + ' .dlg-status').textContent === ''
+      && !document.querySelector(s + ' .sr-more').textContent.includes('\u00B7');
+  }, S));
 
   // Stop cancels a long search
   await resetCalls();

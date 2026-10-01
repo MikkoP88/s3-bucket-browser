@@ -975,27 +975,39 @@ kbd {
 .ver-row.ghost { opacity: .55; font-style: italic; }
 
 /* ================= Search window ================= */
-/* Floating popout: scope and Name sit up top as labeled fields (the old
-   modal's recipe), the remaining filters fold behind a bordered
-   disclosure chip, streamed results fill the rest. */
+/* Floating popout: Name leads, every other control folds behind the
+   bordered disclosure chip (Sources included), streamed results fill
+   the rest — and ONLY the results scroll: the body locks, the list
+   flexes. */
 .sr-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-.sr-top { display: grid; gap: 6px; }
+.sr-top { display: grid; gap: 6px; flex: none; }
 .sr-top label.field { margin: 0 0 3px; }
 .sr-more {
-  align-self: flex-start;
+  align-self: flex-start; flex: none;
   border: 1px solid var(--border); background: transparent; color: var(--text-dim);
   border-radius: 4px; font-size: 11px; line-height: 1; padding: 4px 8px; cursor: pointer;
 }
 .sr-more:hover { color: var(--accent); border-color: var(--accent); }
-.sr-params { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 12px; }
+/* the folded filter grid: Sources and Path span wide, sizes and ages
+   line up in one row of four */
+.sr-params { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 10px; flex: none; }
 .sr-params label.field { margin: 0 0 3px; }
-/* results list: inside the search popout the fixed .ver-list height gives
-   way to flex-fill — the window itself is the height contract */
-.popout[data-pop="search"] .ver-list { flex: 1; height: auto; min-height: 120px; margin-top: 0; }
-/* origin badge on each result row (s3://bucket or source name) */
+.sr-f { min-width: 0; }
+.sr-span2 { grid-column: span 2; }
+.sr-span3 { grid-column: span 3; }
+/* results list: the window's one scroll region — the body never grows a
+   scrollbar of its own, the list takes whatever height remains */
+.popout[data-pop="search"] .modal-body { overflow: hidden; display: flex; }
+.popout[data-pop="search"] .sr-body { flex: 1; }
+.popout[data-pop="search"] .dlg-status { flex: none; }
+.popout[data-pop="search"] .ver-list { flex: 1; height: auto; min-height: 0; margin-top: 0; }
+/* origin pill on each result row (s3://bucket or source name) — shown
+   only while origins vary: all-sources and every-bucket runs */
 .sr-src {
-  flex: none; max-width: 40%;
+  flex: none; max-width: 42%;
   font-size: 11px; color: var(--text-dim);
+  padding: 2px 9px; border: 1px solid var(--border-soft); border-radius: 999px;
+  background: var(--hover);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 

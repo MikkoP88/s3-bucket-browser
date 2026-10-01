@@ -1,8 +1,8 @@
 // Package search implements cancelable deep search over object listings:
 // stream every object under a prefix and match it against a filter (name
-// glob, size, age, storage class). Results are delivered through a
-// callback so both the CLI and the GUI can consume them incrementally
-// without ever holding the whole bucket in memory.
+// glob, extension, path, size, age, storage class). Results are delivered
+// through a callback so both the CLI and the GUI can consume them
+// incrementally without ever holding the whole bucket in memory.
 package search
 
 import (
@@ -21,9 +21,13 @@ import (
 )
 
 // Filter describes one deep search. Zero fields mean "no restriction".
+// Every field except Class is a name, size or age predicate, so it applies
+// identically to S3 objects and remote-engine paths alike.
 type Filter struct {
 	Pattern     string        `json:"pattern,omitempty"`     // substring, or glob when it has * or ?
 	Kind        string        `json:"kind,omitempty"`        // "" any, "file", "dir" (case-insensitive)
+	Ext         string        `json:"ext,omitempty"`         // comma-separated name extensions ("pdf, .jpg"), case-insensitive
+	Path        string        `json:"path,omitempty"`        // substring the parent directory must contain
 	LargerThan  int64         `json:"largerThan,omitempty"`  // bytes, strict >
 	SmallerThan int64         `json:"smallerThan,omitempty"` // bytes, strict <
 	OlderThan   time.Duration `json:"olderThan,omitempty"`   // matches LastModified older than now-X
@@ -54,6 +58,16 @@ func Match(f Filter, key string, isDir bool, size int64, mod *time.Time, class s
 			return false
 		}
 	}
+	if f.Ext != "" {
+		if !matchExt(f.Ext, key) {
+			return false
+		}
+	}
+	if f.Path != "" {
+		if !matchPath(f.Path, key) {
+			return false
+		}
+	}
 	if f.Kind != "" {
 		if strings.EqualFold(f.Kind, "dir") != isDir {
 			return false
@@ -79,6 +93,43 @@ func Match(f Filter, key string, isDir bool, size int64, mod *time.Time, class s
 		}
 	}
 	return true
+}
+
+// matchExt reports whether the key's base name ends with one of the
+// comma-separated extensions (case-insensitive; a leading dot is
+// optional, so "pdf" and ".pdf" are the same filter).
+func matchExt(list, key string) bool {
+	base := key
+	if i := strings.LastIndex(base, "/"); i >= 0 {
+		base = base[i+1:]
+	}
+	base = strings.ToLower(base)
+	for e := range strings.SplitSeq(list, ",") {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		if !strings.HasPrefix(e, ".") {
+			e = "." + e
+		}
+		if strings.HasSuffix(base, e) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchPath reports whether the key's directory part contains the
+// substring (case-insensitive): "docs" matches docs/notes.md and
+// archive/docs/old.txt alike, while the name filters stay on the base
+// name. A key with no slash has an empty directory, so only files under
+// something can match a non-empty Path.
+func matchPath(sub, key string) bool {
+	dir := ""
+	if i := strings.LastIndex(key, "/"); i >= 0 {
+		dir = key[:i]
+	}
+	return strings.Contains(strings.ToLower(dir), strings.ToLower(sub))
 }
 
 // matchPattern matches substring (no wildcard chars) or glob (* = any

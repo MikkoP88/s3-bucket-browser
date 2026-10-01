@@ -107,23 +107,25 @@ follow [Semantic Versioning](https://semver.org/).
   resizable, remembers its place, one instance that refocuses instead
   of stacking. It defaults to searching every data source — every
   bucket of every S3 source plus every remote source (local, SFTP,
-  FTP, WebDAV) from root — and the scope dropdown names them all:
-  the where-you-stand entries (this folder, this bucket, the open
-  remote path) group under *This view*, every configured source is
-  pickable on its own under *Data sources* — an S3 source searched
-  across every bucket it holds, a remote engine from its root;
-  context-menu *Search in this folder…* presets it. Search in and
-  Name sit up top as labeled fields — the old modal's recipe — and
-  Enter starts the search from any field; the rest —
-  larger/smaller, older/newer, a new Kind filter
-  (any/files/folders), storage class, limit — fold out under a
-  bordered *More filters* chip into the same two-column labeled
-  grid. Results stream in with source badges and stay
-  cancelable; clicking a hit navigates to the object and selects it
-  (a hit clicked in a native popout window relays through the main
-  window). A storage-class filter skips remote sources — they carry
-  no class — and the summary says so. The CLI gains the same kind
-  filter: `s3b find --kind file|dir`.
+  FTP, WebDAV) from root — and the **Sources** dropdown inside
+  *More filters* is a flat list with no grouping: *All data
+  sources* plus every configured source by name, an S3 source
+  searched across every bucket it holds, a remote engine from its
+  root; context-menu *Search in this folder…* presets it. **Name**
+  is the only always-visible field, and Enter starts the search
+  from any field; the rest — Kind (any/files/folders), Limit, the
+  new Extension and Path-contains filters, larger/smaller,
+  older/newer — fold out under a bordered *More filters* chip that
+  counts the active filters, and every one of them works the same
+  across S3 and remote sources (storage class never could, so it
+  left the window — the CLI keeps --class). Only the results list
+  scrolls; rows carry type-matched icons and, when the scope spans
+  sources, a rounded source pill (hidden on single-origin runs);
+  **Clear** resets the form and results stay cancelable; clicking
+  a hit navigates to the object and selects it (a hit clicked in a
+  native popout window relays through the main window). The CLI
+  gains the same filters: `s3b find --kind file|dir`, `--ext` and
+  `--path`.
 
 - **Settings apply on Save, not on click.** The dialog is now a draft:
   every control stages until Save (disabled until something changes),

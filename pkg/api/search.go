@@ -31,6 +31,8 @@ const searchPageSize = 500
 type SearchOptions struct {
 	Pattern      string `json:"pattern"`
 	Kind         string `json:"kind"`        // "" any, "file", "dir"
+	Ext          string `json:"ext"`         // comma-separated name extensions — global, every source type
+	Path         string `json:"path"`        // substring the parent directory must contain — global
 	LargerThan   int64  `json:"largerThan"`  // bytes
 	SmallerThan  int64  `json:"smallerThan"` // bytes
 	OlderThanSec int64  `json:"olderThanSec"`
@@ -43,6 +45,8 @@ func (o SearchOptions) filter() search.Filter {
 	return search.Filter{
 		Pattern:     o.Pattern,
 		Kind:        o.Kind,
+		Ext:         o.Ext,
+		Path:        o.Path,
 		LargerThan:  o.LargerThan,
 		SmallerThan: o.SmallerThan,
 		OlderThan:   time.Duration(o.OlderThanSec) * time.Second,

@@ -120,17 +120,25 @@ export function basename(key) {
   return i >= 0 ? k.slice(i + 1) : k;
 }
 
+// fileIcon picks a type glyph from the name's extension — the closer the
+// metaphor, the faster a results list reads. One map shared by the grid,
+// the markers column and the Search window, so a type always looks like
+// itself everywhere.
 export function fileIcon(name, isDir) {
   if (isDir) return '\u{1F4C1}';
   const ext = (name.split('.').pop() || '').toLowerCase();
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) return '\u{1F5BC}';
-  if (['mp4', 'mkv', 'mov', 'avi', 'webm'].includes(ext)) return '\u{1F3AC}';
-  if (['mp3', 'wav', 'flac', 'ogg', 'm4a'].includes(ext)) return '\u{1F3B5}';
-  if (['zip', 'tar', 'gz', 'bz2', 'xz', '7z', 'rar'].includes(ext)) return '\u{1F4E6}';
-  if (['pdf'].includes(ext)) return '\u{1F4D1}';
-  if (['txt', 'md', 'log', 'json', 'xml', 'yaml', 'yml', 'csv', 'ini', 'conf'].includes(ext)) return '\u{1F4C4}';
-  if (['exe', 'msi', 'bat', 'sh', 'ps1'].includes(ext)) return '\u{2699}';
-  return '\u{1F4C5}';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'tif', 'tiff', 'heic', 'avif'].includes(ext)) return '\u{1F5BC}'; // image
+  if (['mp4', 'mkv', 'mov', 'avi', 'webm', 'flv', 'm4v', 'mpg', 'mpeg', 'wmv'].includes(ext)) return '\u{1F3AC}';               // video
+  if (['mp3', 'wav', 'flac', 'ogg', 'm4a', 'aac', 'opus', 'wma', 'mid', 'midi'].includes(ext)) return '\u{1F3B5}';               // audio
+  if (['zip', 'tar', 'gz', 'bz2', 'xz', '7z', 'rar', 'zst', 'tgz', 'iso', 'img'].includes(ext)) return '\u{1F4E6}';              // archive
+  if (ext === 'pdf') return '\u{1F4D1}';                                                                                        // pdf
+  if (['doc', 'docx', 'odt', 'rtf', 'pages', 'epub', 'mobi', 'azw3'].includes(ext)) return '\u{1F4D8}';                         // document
+  if (['xls', 'xlsx', 'ods', 'csv', 'tsv'].includes(ext)) return '\u{1F4CA}';                                                   // spreadsheet
+  if (['ppt', 'pptx', 'odp'].includes(ext)) return '\u{1F4C8}';                                                                 // presentation
+  if (['js', 'ts', 'mjs', 'cjs', 'jsx', 'tsx', 'py', 'go', 'rs', 'c', 'h', 'cpp', 'hpp', 'java', 'rb', 'php', 'cs', 'swift', 'kt', 'sql', 'html', 'htm', 'css', 'scss', 'vue', 'svelte'].includes(ext)) return '\u{1F4DC}'; // code
+  if (['txt', 'md', 'log', 'json', 'xml', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg', 'nfo'].includes(ext)) return '\u{1F4DD}'; // text
+  if (['exe', 'msi', 'msix', 'app', 'dmg', 'deb', 'rpm', 'bat', 'cmd', 'sh', 'ps1'].includes(ext)) return '\u{2699}';           // executable
+  return '\u{1F4C4}';                                                                                                           // generic file
 }
 
 // Source-type glyphs for the sidebar and the breadcrumb's source root.

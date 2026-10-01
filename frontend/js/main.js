@@ -3650,26 +3650,14 @@ function wireToolbar() {
   });
 }
 
-// searchScopes fills the Search window's scope dropdown: every data
-// source is pickable on its own (an S3 source's every bucket, a remote
-// from its root), and where the app stands adds the narrower this-folder
-// / this-bucket entries. All data sources always sits first as the
-// default — the window itself owns that entry.
+// searchScopes fills the Search window's Sources list: every data source
+// pickable on its own — an S3 source's every bucket, a remote from its
+// root. All data sources always sits first as the default (the window
+// owns that entry); a narrower this-folder or this-bucket run arrives as
+// a context-menu preset instead of a dropdown entry, so the list stays a
+// clean flat set of names.
 function searchScopes() {
-  const view = [];
-  const loc = nav.current;
-  if (loc?.kind === 'objects') {
-    const src = loc.source || viewSource;
-    if (loc.prefix) view.push({ group: 'view', label: `s3://${loc.bucket}/${loc.prefix}`, scope: { mode: 's3', source: src, bucket: loc.bucket, prefix: loc.prefix } });
-    view.push({ group: 'view', label: `s3://${loc.bucket}/`, scope: { mode: 's3', source: src, bucket: loc.bucket, prefix: '' } });
-  } else if (loc?.kind === 'buckets') {
-    const row = grid.selectedRows()[0];
-    if (row) view.push({ group: 'view', label: `s3://${row.key}/`, scope: { mode: 's3', source: loc.source || viewSource, bucket: row.key, prefix: '' } });
-  } else if (loc?.kind === 'remote') {
-    const p = (loc.path || '/').replace(/^\/+|\/+$/g, '');
-    view.push({ group: 'view', label: `${loc.source}:/${p}`, scope: { mode: 'remote', source: loc.source, prefix: loc.path || '/' } });
-  }
-  return [...view, ...searchSourceScopes(sources)];
+  return searchSourceScopes(sources);
 }
 
 // openSearch opens the Search window (toolbar, Ctrl+Shift+F, View menu).

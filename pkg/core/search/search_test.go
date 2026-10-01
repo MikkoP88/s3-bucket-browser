@@ -31,6 +31,33 @@ func TestMatchPattern(t *testing.T) {
 	}
 }
 
+func TestMatchExtPath(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000)
+
+	if !matchExt("pdf", "docs/report.pdf") || !matchExt(".PDF, jpg", "photos/a.JPG") {
+		t.Error("matchExt: case-insensitive, dot optional, list-tolerant")
+	}
+	if matchExt("pdf", "docs/report.pdf.bak") {
+		t.Error("matchExt: the extension must terminate the name")
+	}
+	if matchExt("md", "readme.md/") {
+		t.Error("matchExt: a directory key is not an extension match")
+	}
+
+	if !matchPath("docs", "docs/notes.md") || !matchPath("Docs", "a/DOCS/x.txt") {
+		t.Error("matchPath: case-insensitive substring on the directory part")
+	}
+	if matchPath("docs", "docs.md") || matchPath("notes", "docs/notes.md") {
+		t.Error("matchPath: the base name must not match")
+	}
+
+	if !Match(Filter{Ext: "md", Path: "docs"}, "docs/a.md", false, 0, nil, "", now) ||
+		Match(Filter{Ext: "md", Path: "docs"}, "docs/a.txt", false, 0, nil, "", now) ||
+		Match(Filter{Ext: "md", Path: "docs"}, "other/a.md", false, 0, nil, "", now) {
+		t.Error("Match: ext and path combine as AND predicates")
+	}
+}
+
 func TestMatchFilters(t *testing.T) {
 	now := time.UnixMilli(1_800_000_000_000)
 	old := now.Add(-48 * time.Hour)
