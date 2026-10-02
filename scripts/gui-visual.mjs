@@ -3852,7 +3852,9 @@ await step('search-window', async () => {
   // Search is the popout twin of the transfers manager: every data source
   // at once by default, Sources beside Name (never folded), the remaining
   // filters behind an expander, Enter runs it, results stream into their
-  // own content area wearing the app's grid chrome, picks navigate.
+  // own content area wearing the app's grid chrome, picks navigate; the
+  // columns resize, reorder and pick exactly like the main grid's
+  // (srgrid.js mirrors grid.js's mechanics — the legs below prove it).
   // The reloads below re-run the shim init, which wipes every s3b-*
   // localStorage key on load — snapshot the store and put it back at the
   // end so later steps still read what the settings walk ticked.
@@ -4187,6 +4189,193 @@ await step('search-window', async () => {
       && body.scrollHeight <= body.clientHeight + 1;
   }, S));
   await shotOf('search-window', S);
+  // ---- column mechanics, mirrored from the main grid's steps ----
+  // The results area reuses the app's whole column machinery: boundary
+  // handles, keyboard resize, header drag-reorder and the right-click
+  // picker, persisted per window under s3b-cols-sr. Source stays the auto
+  // column — present on multi-origin runs, parked last, never draggable,
+  // never listed in the picker. The window below still shows the broad
+  // all-sources run, so all four columns are live.
+  const srCols = () => evalPage((s) => {
+    const cells = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]'));
+    const b = document.querySelector(s + ' .sr-list');
+    return {
+      cols: cells.map((c) => ({
+        id: c.dataset.col,
+        l: Math.round(c.getBoundingClientRect().left),
+        w: Math.round(c.getBoundingClientRect().width),
+      })),
+      bodyW: b.clientWidth, scrollW: b.scrollWidth,
+    };
+  }, S);
+  const srHandle = (id) => evalPage(([s, col]) => {
+    const r = document.querySelector(s + ' .grid-head .gh-handles .gh-resize[data-col="' + col + '"]').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  }, [S, id]);
+  const srDrag = async (id, dx, steps = 8) => {
+    const h = await srHandle(id);
+    await page.mouse.move(h.x, h.y);
+    await page.mouse.down();
+    await page.mouse.move(h.x + dx, h.y, { steps });
+    await page.mouse.up();
+    await sleep(80);
+  };
+  const srSizeW = () => evalPage((s) =>
+    document.querySelector(s + ' .gh[data-col="size"]').getBoundingClientRect().width, S);
+
+  // the boundary layer: one handle per column edge, grabbable along the
+  // whole header height, wearing the same live aria a drag respects
+  await ok('search: every boundary seats a grabbable handle along the header height', evalPage((s) => {
+    const grab = (x, y) => {
+      const h = document.elementFromPoint(x, y);
+      return !!h && (h.classList.contains('gh-resize') || !!h.closest('.gh-resize'));
+    };
+    return Array.from(document.querySelectorAll(s + ' .grid-head .gh-handles .gh-resize')).every((h) => {
+      const r = h.getBoundingClientRect();
+      return grab(r.x + r.width / 2, r.y + r.height / 2)
+        && grab(r.x + r.width / 2, r.top + 2)
+        && grab(r.x + r.width / 2, r.bottom - 2);
+    });
+  }, S));
+  const srK0 = await srSizeW();
+  await ok('search: handle is a focusable aria separator with live values', evalPage(([s, k]) => {
+    const rz = document.querySelector(s + ' .grid-head .gh-handles .gh-resize[data-col="size"]');
+    return rz.tabIndex === 0 && rz.getAttribute('role') === 'separator'
+      && rz.getAttribute('aria-orientation') === 'vertical'
+      && rz.getAttribute('aria-valuenow') === String(Math.round(k))
+      && rz.getAttribute('aria-valuemin') === '48'
+      && Number(rz.getAttribute('aria-valuemax')) >= Math.round(k);
+  }, [S, srK0]));
+
+  // pointer resize: the grabbed edge follows the drag, rows track through
+  // the one template variable, and the width persists per window
+  const srA0 = await srCols();
+  const srAI = srA0.cols.findIndex((c) => c.id === 'size');
+  await srDrag('size', 60);
+  const srA1 = await srCols();
+  await ok('search: rightward drag widens the grabbed column by the drag amount',
+    Math.abs(srA1.cols[srAI].w - srA0.cols[srAI].w - 60) <= 1);
+  await ok('search: rows track the resized template, head and cells agreeing',
+    evalPage(([s, w]) => Math.abs(document.querySelector(s + ' .sr-list .grid-row .gc.size')
+      .getBoundingClientRect().width - w) <= 3, [S, srA1.cols[srAI].w]));
+  await ok('search: the width persists under s3b-cols-sr', evalPage((w) => {
+    try { return Math.abs((JSON.parse(localStorage.getItem('s3b-cols-sr') || '{}').widths || {}).size - w) <= 1; }
+    catch { return false; }
+  }, srA1.cols[srAI].w));
+  await srDrag('size', -60);
+
+  // keyboard resize: arrows nudge (Shift steps), aria tracks, and a
+  // double-click hands the column its catalog width back
+  await page.evaluate((s) => document.querySelector(s + ' .gh-handles .gh-resize[data-col="size"]').focus(), S);
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Shift+ArrowRight');
+  await sleep(60);
+  await ok('search: arrow keys resize from the keyboard and aria tracks',
+    Math.abs((await srSizeW()) - (srK0 + 40)) <= 2
+    && evalPage(([s, k]) => document.querySelector(s + ' .gh-handles .gh-resize[data-col="size"]')
+      .getAttribute('aria-valuenow') === String(Math.round(k + 40)), [S, srK0]));
+  const srH = await srHandle('size');
+  await page.mouse.click(srH.x, srH.y, { clickCount: 2 });
+  await sleep(80);
+  await ok('search: double-click on the handle restores the catalog width',
+    Math.abs((await srSizeW()) - srK0) <= 2);
+
+  // reorder: drag Modified in front of Size — head and rows follow, and
+  // the persisted set is catalog-only (Source never persists)
+  const srD = await evalPage((s) => {
+    const cells = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]'));
+    const from = cells[2].getBoundingClientRect(); // Modified
+    const to = cells[1].getBoundingClientRect(); // drop just inside Size
+    return { x: from.x + 12, y: from.y + from.height / 2, tx: to.x + 4, ty: to.y + to.height / 2 };
+  }, S);
+  await page.mouse.move(srD.x, srD.y);
+  await page.mouse.down();
+  await page.mouse.move(srD.tx, srD.ty, { steps: 12 });
+  await page.mouse.up();
+  await sleep(120);
+  await ok('search: dragging a header reorders the columns', evalPage((s) =>
+    JSON.stringify(Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col))
+      === JSON.stringify(['name', 'lastModified', 'size', 'source']), S));
+  await ok('search: rows follow the reordered layout', evalPage((s) => {
+    const row = document.querySelector(s + ' .sr-list .grid-row');
+    return row.children[0].classList.contains('name') && row.children[1].classList.contains('lastModified')
+      && row.children[2].classList.contains('size') && row.children[3].classList.contains('source');
+  }, S));
+  await ok('search: the reordered set persists without the auto Source column', evalPage(() => {
+    try { return JSON.stringify(JSON.parse(localStorage.getItem('s3b-cols-sr') || '{}').cols)
+      === JSON.stringify(['name', 'lastModified', 'size']); }
+    catch { return false; }
+  }));
+
+  // Source cannot be dragged off the far edge (dragging it is inert; the
+  // trailing click may sort by it, but the column never moves)
+  const srSD = await evalPage((s) => {
+    const cells = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]'));
+    const from = cells[3].getBoundingClientRect(); // Source
+    const to = cells[1].getBoundingClientRect();
+    return { x: from.x + 12, y: from.y + from.height / 2, tx: to.x + 4, ty: to.y + to.height / 2 };
+  }, S);
+  await page.mouse.move(srSD.x, srSD.y);
+  await page.mouse.down();
+  await page.mouse.move(srSD.tx, srSD.ty, { steps: 12 });
+  await page.mouse.up();
+  await sleep(120);
+  await ok('search: the Source column never reorders — it keeps the far edge', evalPage((s) => {
+    const heads = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col);
+    return heads.length === 4 && heads[heads.length - 1] === 'source';
+  }, S));
+
+  // the picker: right-click a header — the whole catalog, Source absent,
+  // name locked; toggling ETag on surfaces the hit's real ETag text
+  await page.locator(S + ' .grid-head .gh[data-col="name"]').click({ button: 'right' });
+  await sleep(80);
+  await ok('search: header right-click opens the column picker', evalPage(() =>
+    !document.getElementById('ctxmenu').classList.contains('hidden')
+    && document.getElementById('ctxmenu').textContent.includes('Mode')));
+  await ok('search: the picker lists the catalog, never the auto Source column', evalPage(() => {
+    const items = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item')).map((i) => i.textContent.trim());
+    return items.length >= 8 && !items.some((x) => /source/i.test(x));
+  }));
+  await ok('search: name is checked and locked in the picker', evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /^\u2713 name$/i.test(i.textContent.trim()));
+    return !!it && it.classList.contains('disabled');
+  }));
+  await page.locator('#ctxmenu .item', { hasText: 'ETag' }).first().click();
+  await sleep(120);
+  await ok('search: ETag appears with real hit text, Source still parked last', evalPage((s) => {
+    const heads = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col);
+    const row = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'))
+      .find((r) => r.textContent.includes('readme.md'));
+    return heads.includes('etag') && heads[heads.length - 1] === 'source'
+      && !!row && (row.querySelector('.gc.etag')?.textContent || '').includes('v3');
+  }, S));
+  await page.locator(S + ' .grid-head .gh[data-col="name"]').click({ button: 'right' });
+  await sleep(80);
+  await page.locator('#ctxmenu .item', { hasText: 'ETag' }).first().click();
+  await sleep(120);
+  await ok('search: toggling ETag off removes the column again', evalPage((s) =>
+    !document.querySelector(s + ' .gh[data-col="etag"]'), S));
+
+  // persistence: close and reopen in the same page session — the layout
+  // (order and widths) rides localStorage, not the window instance
+  await closePopout('search');
+  await page.click('#btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'search popout reopen');
+  await ok('search: the column layout survives close and reopen', evalPage((s) =>
+    JSON.stringify(Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col))
+      === JSON.stringify(['name', 'lastModified', 'size']), S));
+
+  // Reset columns: one click restores the out-of-box set and clears the
+  // widths — then the key goes away entirely so later steps boot clean
+  await page.locator(S + ' .grid-head .gh[data-col="name"]').click({ button: 'right' });
+  await sleep(80);
+  await page.locator('#ctxmenu .item', { hasText: 'Reset columns' }).first().click();
+  await sleep(120);
+  await ok('search: Reset columns restores the out-of-box set', evalPage((s) =>
+    Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col).join(',')
+      === 'name,size,lastModified', S));
+  await evalPage(() => localStorage.removeItem('s3b-cols-sr')); // back to boot defaults
 
   // Clear returns the whole window to its open state
   await evalPage((s) => {

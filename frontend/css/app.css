@@ -1142,6 +1142,18 @@ kbd {
    flow — same cells, same hairlines, no pool */
 .sr-list { flex: 1; overflow: auto; position: relative; outline: none; }
 .sr-list .grid-row { position: static; }
+/* the column template rides one custom property on the results area
+   (srgrid.js applyTemplate): search rows are a plain streaming list,
+   not grid.js's pooled canvas, so one write restyles the head and
+   every row at once */
+.sr-results .grid-head, .sr-results .sr-list .grid-row { grid-template-columns: var(--sr-tpl); }
+/* the clipping band is structural — row height plus its border: the
+   search popout sizes itself from its content (auto-height), and in
+   that cycle an auto-basis band gets squeezed to a sliver while the
+   head keeps its full height — the body then rides over the band's
+   overflow and the boundary handles lose their grab zone. flex:none
+   keeps the band at the height the head paints. */
+.sr-results .grid-headclip { flex: none; }
 .sr-list .gc.source { color: var(--text-dim); font-size: 12px; }
 /* the idle / no-matches panel: the content area's empty state, scaled
    to the window — it anchors below the header row like the main one */

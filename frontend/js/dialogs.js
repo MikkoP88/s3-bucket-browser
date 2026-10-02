@@ -4,6 +4,7 @@ import { api, onEvent, subscribeStream } from './api.js';
 import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename, fileIcon } from './util.js';
 import { t } from './i18n.js';
 import { LICENSE } from './license.js';
+import { makeSearchGrid } from './srgrid.js';
 
 const root = () => document.getElementById('modal-root');
 
@@ -3813,24 +3814,13 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
   // ---- results: the app's content-area chrome, worn verbatim ----
   // WinSCP's Find lists hits in a file-panel control; here the same
   // classes the main grid wears draw the area — head band, header row,
-  // hairline rows, status bar. The Source column rides only runs that
-  // span origins (the old per-row pill, promoted to a column) and parks
-  // last, past Modified; the head width-locks to the list and slides
-  // with its horizontal scroll exactly like grid.js's clipping band.
-  const SR_COLS = [
-    { id: 'name', labelKey: 'col.name', css: 'minmax(220px, 1fr)' },
-    { id: 'size', labelKey: 'col.size', css: '110px', num: true },
-    { id: 'lastModified', labelKey: 'col.date', css: '160px' },
-    { id: 'source', labelKey: 'col.source', css: '150px' },
-  ];
-  let showSource = false; // multi-origin run only (the old pill's rule)
-  let sortKey = '';       // '' = arrival order, the streaming default
-  let sortDir = 1;
-  let selKey = null;      // the one selected hit (click / arrows)
-  const hits = [];        // streamed results, arrival order
-  const head = el('div', { class: 'grid-head', role: 'row' });
-  const headClip = el('div', { class: 'grid-headclip' }, head);
-  const body = el('div', { class: 'grid-body sr-list', tabindex: '0', role: 'listbox' });
+  // hairline rows, status bar. The columns carry the main view's whole
+  // mechanics now (srgrid.js, sharing grid.js's catalog and persistence
+  // writer): drag-resizable widths, drag-to-reorder headers, add and
+  // remove columns from the header's right-click menu — the layout
+  // persists per window under s3b-cols-sr. The Source column keeps its
+  // own rule: it rides only runs that span origins (the old per-row
+  // pill, promoted to a column) and parks last, past Modified.
   const emptyTitle = el('div', { class: 'empty-title' });
   const emptySub = el('div', { class: 'empty-sub' });
   const empty = el('div', { class: 'empty-state sr-empty hidden' },
@@ -3841,10 +3831,10 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
   let offPage = null;
   let offDone = null;
 
-  const cols = () => SR_COLS.filter((c) => c.id !== 'source' || showSource);
-  const colsTpl = () => cols().map((c) => c.css).join(' ');
-  const originOf = (r) => (r.bucket ? `s3://${r.bucket}` : (r.source || ''));
-  const isDirOf = (r) => !!(r.isDir || String(r.key).endsWith('/'));
+  // the results grid — head band, clipping band, list — with every
+  // column mechanic the main view has (openHit is a hoisted function
+  // declaration, so the factory may take it before its declaration)
+  const rg = makeSearchGrid({ onActivate: (r) => openHit(r) });
 
   // setStatus paints the area's own status bar — the content size bar's
   // twin; errors arrive colored, everything else rides its dim default
@@ -3861,110 +3851,6 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
     emptyTitle.textContent = t(which === 'idle' ? 'search.emptyIdleTitle' : 'search.emptyNoneTitle');
     emptySub.textContent = t(which === 'idle' ? 'search.emptyIdleSub' : 'search.emptyNoneSub');
     empty.classList.remove('hidden');
-  }
-
-  // syncHead is grid.js's head lock in miniature: the head spans the
-  // list's client width and slides left with its scroll, so headers stay
-  // over their columns in a window narrower than the column set
-  function syncHead() {
-    head.style.width = `${body.clientWidth}px`;
-    head.style.transform = `translateX(${-body.scrollLeft}px)`;
-  }
-
-  function buildHead() {
-    head.style.gridTemplateColumns = colsTpl();
-    head.replaceChildren(...cols().map((c) => {
-      const ind = el('span', { class: 'sort-ind' });
-      if (sortKey === c.id) ind.textContent = sortDir > 0 ? '\u25B2' : '\u25BC';
-      return el('div', {
-        class: `gh${c.num ? ' num' : ''}`,
-        'data-col': c.id,
-        role: 'columnheader',
-        onclick: () => {
-          if (sortKey === c.id) sortDir = -sortDir;
-          else { sortKey = c.id; sortDir = 1; }
-          buildHead();
-          renderRows();
-        },
-      }, el('span', { text: t(c.labelKey) }), ind);
-    }));
-    syncHead();
-  }
-
-  const sortVal = (r) => (sortKey === 'size' ? (isDirOf(r) ? -1 : (r.size || 0))
-    : sortKey === 'lastModified' ? (r.lastModified ? new Date(r.lastModified).getTime() : 0)
-      : sortKey === 'source' ? originOf(r)
-        : r.key);
-  const sorted = () => (sortKey
-    ? [...hits].sort((a, b) => {
-      const va = sortVal(a); const vb = sortVal(b);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
-    })
-    : hits);
-
-  // main-grid parity: a click picks the row, a double-click (or Enter)
-  // opens the hit — a stray single click never navigates
-  function rowEl(r) {
-    const cells = [el('div', { class: 'gc name' },
-      el('span', { class: 'icon', text: fileIcon(r.key, isDirOf(r)) }),
-      el('span', { class: 'tname', text: r.key }))];
-    cells.push(el('div', { class: 'gc num', text: isDirOf(r) ? '' : fmtBytes(r.size || 0) }));
-    cells.push(el('div', { class: 'gc', text: isDirOf(r) ? '' : (r.lastModified ? fmtDate(r.lastModified) : '') }));
-    // Source parks last — past Modified, the far edge of the row
-    if (showSource) cells.push(el('div', { class: 'gc source', text: originOf(r) }));
-    const row = el('div', {
-      class: `grid-row${r.key === selKey ? ' sel' : ''}`,
-      role: 'option',
-      'aria-selected': r.key === selKey ? 'true' : 'false',
-      style: `grid-template-columns: ${colsTpl()}`,
-    }, ...cells);
-    row.addEventListener('click', () => {
-      if (selKey === r.key) return;
-      selKey = r.key;
-      for (const x of body.querySelectorAll('.grid-row')) {
-        const on = x === row;
-        x.classList.toggle('sel', on);
-        x.setAttribute('aria-selected', on ? 'true' : 'false');
-      }
-    });
-    row.addEventListener('dblclick', () => openHit(r));
-    return row;
-  }
-
-  function renderRows() {
-    body.replaceChildren(...sorted().map(rowEl));
-  }
-
-  function selectRow(r) {
-    selKey = r.key;
-    renderRows();
-    body.querySelector('.grid-row.sel')?.scrollIntoView({ block: 'nearest' });
-  }
-
-  // Enter opens the selected hit, the arrows walk the list — the body
-  // is focusable (tabindex 0) like the main grid
-  body.addEventListener('keydown', (e) => {
-    const list = sorted();
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const r = hits.find((x) => x.key === selKey);
-      if (r) openHit(r);
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (!list.length) return;
-      let i = list.findIndex((x) => x.key === selKey);
-      if (i < 0) i = e.key === 'ArrowDown' ? 0 : list.length - 1;
-      else i = e.key === 'ArrowDown' ? Math.min(list.length - 1, i + 1) : Math.max(0, i - 1);
-      selectRow(list[i]);
-    }
-  });
-
-  // addPage streams one results page in: rows land in arrival order (or
-  // the chosen sort). The viewport never moves itself — the status line
-  // counts the stream and scrolling stays the user's own act
-  function addPage(entries) {
-    hits.push(...entries);
-    renderRows();
   }
 
   function openHit(r) {
@@ -4029,17 +3915,14 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
     f.kind.value = '';
     f.limit.value = '0';
     scopeSel.value = '0';
-    hits.length = 0;
-    selKey = null;
-    sortKey = '';
-    showSource = false;
-    buildHead();
-    renderRows();
+    rg.reset();
     setEmpty('idle');
     setStatus('');
     syncMore();
     f.name.focus();
   }
+  // the empty panel and status bar join the grid into one results area
+  rg.area.append(empty, status);
   const pop = openPopout({
     id: 'search',
     title: t('findTitle'),
@@ -4052,7 +3935,7 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
         moreBtn,
         moreBox,
       ),
-      el('div', { class: 'sr-results' }, headClip, body, empty, status),
+      rg.area,
     ),
     wide: true,
     buttons: [
@@ -4066,7 +3949,6 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
     if (btnEl) btnEl.textContent = running ? t('findStop') : t('findStart');
   }
   syncRun();
-  buildHead();
   setEmpty('idle');
   // already floating: focus() did the work — the first instance owns the
   // events and its button, a second subscription would leak (btnEl is
@@ -4074,10 +3956,6 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
   // keep close() → onClose → stop() clear of the const TDZ)
   if (!pop.fresh) return { close: pop.close };
 
-  // the head follows the list: horizontal scroll slides it, a resized
-  // window (popout grip, native shell) re-locks its width
-  body.addEventListener('scroll', syncHead);
-  new ResizeObserver(syncHead).observe(headClip);
   // Enter anywhere in the form runs the search
   const enterRuns = (input) => input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); if (!running) start(); }
@@ -4104,9 +3982,7 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
       return;
     }
     setStatus(t('findRunning', { matched: 0 }));
-    hits.length = 0;
-    selKey = null;
-    renderRows();
+    rg.clearHits();
     setEmpty(null);
     stop(); // cancel any previous run
     running = true;
@@ -4114,15 +3990,14 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
     const scope = scopes[parseInt(scopeSel.value, 10) || 0].scope;
     // the Source column only while origins vary: every source, or every
     // bucket of one source — a single origin would only repeat itself
-    showSource = scope.mode === 'all' || (scope.mode === 's3' && !scope.bucket);
-    buildHead();
+    rg.setShowSource(scope.mode === 'all' || (scope.mode === 's3' && !scope.bucket));
     // Subscribe BEFORE the call: a search over a small source can finish
     // (search:done) before the call resolving with the token reaches the
     // page, and events dispatched to no listener would leave the window
     // stuck on "running". Early events buffer and replay once the token
     // is known; foreign tokens drop out.
     const onPage = (p) => {
-      if (p.entries?.length) addPage(p.entries);
+      if (p.entries?.length) rg.addPage(p.entries);
       setStatus(t('findRunning', { matched: p.matched }));
     };
     const onDone = (d) => {
@@ -4133,7 +4008,7 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
         ? d.error
         : t('findDone', { matched: d.matched, scanned: d.scanned, sources: d.sources ?? 1 }),
       d.error ? 'var(--danger)' : '', d.sourceErrors || '');
-      if (!d.error && !hits.length) setEmpty('none');
+      if (!d.error && !rg.count()) setEmpty('none');
     };
     const early = [];
     let tok = null;

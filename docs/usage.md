@@ -278,8 +278,16 @@ directory compare) with S3 and the secondary pane.
   button resets the whole form. Results stream in as grid rows
   with type-matched icons (folder, image, video, archive,
   document …); clicking a column header sorts ascending, again
-  descending; a run spanning several origins adds a **Source**
-  column at the end of the row, a single-source run drops it; a
+  descending. The columns carry the main view's whole mechanics:
+  drag a boundary to resize (arrow keys resize from the keyboard,
+  a double-click hands a column its standard width back), drag a
+  header sideways to reorder, right-click one for the add/remove
+  check-list (name always stays; *Reset columns* restores the
+  out-of-box set) — the layout persists per window across runs. A
+  run spanning several origins adds a **Source** column parked at
+  the far edge — it resizes like any column, but never reorders
+  and never lists in the check-list — and a single-source run
+  drops it; a
   double-click (or Enter)
   jumps to the object and selects it. Only the results scroll —
   the form stays put — and a running search can be stopped from

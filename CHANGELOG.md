@@ -8,6 +8,27 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The Search window's columns carry the main view's mechanics.**
+  The results grid resizes by boundary drag or keyboard (arrow
+  keys, Shift for bigger steps, Home/End to the limits, a
+  double-click for the standard width back), reorders by header
+  drag with the same insert indicator, and grows an add/remove
+  check-list from the header's right-click over the full shared
+  catalog — Type, Mode, Created, Storage class, ETag — with name
+  locked on and Reset columns last; the layout persists per
+  window across runs. The Source column keeps its own rule: it
+  rides only runs that span origins, parks at the far edge,
+  resizes like any column but never reorders and never lists in
+  the check-list. The rows themselves stay the window's own
+  contract — a streaming list, single select, Enter or
+  double-click to open — untouched; grid.js is reused as-is and
+  a sibling module (srgrid.js) mirrors its mechanics against the
+  search catalog. The header band also gets its true height back:
+  the auto-height window's content-driven sizing cycle had
+  squeezed the band well under the row height (headers rendered
+  as clipped slivers, the rows riding over the band's overflow)
+  and the band is now locked structural.
+
 - **One window at a time: a second launch focuses the running app.**
 The Windows desktop build now runs a single GUI instance: a named
 mutex (per login session) marks the running app from the first line
