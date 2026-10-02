@@ -279,8 +279,16 @@ directory compare) with S3 and the secondary pane.
   Any source type binds to it — S3, SFTP, FTP, WebDAV, local drives —
   and it remembers where you left it, reopening there. Drag between
   panes transfers, and **Compare** color-codes newer / older /
-  size-diff / only-here between the two sides. The pane's × (or F9
-  again) closes it. When the columns run narrow each toolbar folds its
+  size-diff / only-here between the two sides. With the pane open,
+  clicking the **Dual-pane** button again does not close it: a small
+  picker appears under the button offering where the pane should
+  point — **Home view** starts over at the workstation's home folder
+  with the history cut clean, and **Return to last view** jumps back
+  to the spot the pane stood on when it was opened (through history,
+  so Back undoes the jump; the option rests disabled when nothing was
+  remembered). Escape or a click outside dismisses the picker and the
+  pane stays open throughout — the pane's × or F9 remains the honest
+  close. When the columns run narrow each toolbar folds its
   word labels down to icons on its own, so neither side overflows.
 
 ![Dual pane with directory compare](screenshots/dual-pane-compare.png)

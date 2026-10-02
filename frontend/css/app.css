@@ -661,6 +661,40 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
 .ctxmenu .submenu.flip { left: auto; right: calc(100% - 2px); }
 .ctxmenu .sep { height: 1px; background: var(--border-soft); margin: 4px 6px; }
 
+/* Dual-pane button's view picker (Home / last view): the ctxmenu
+   family's anchored card with richer two-line options — icon tile,
+   title, target path. */
+.pane-dest {
+  position: fixed; z-index: 90; min-width: 268px; max-width: min(360px, calc(100vw - 16px));
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: var(--shadow); padding: 6px;
+  display: flex; flex-direction: column; gap: 2px;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity .14s ease-out, transform .14s ease-out;
+}
+.pane-dest.open { opacity: 1; transform: none; }
+.pane-dest .dest-opt {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 7px 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--text); font: inherit; text-align: left;
+  cursor: pointer;
+}
+.pane-dest .dest-opt:hover:not(:disabled),
+.pane-dest .dest-opt:focus-visible { background: var(--hover); }
+.pane-dest .dest-opt:disabled { color: var(--text-dim); cursor: default; }
+.pane-dest .dest-ic {
+  flex: none; width: 30px; height: 30px; border-radius: 6px;
+  display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent);
+}
+.pane-dest .dest-opt:disabled .dest-ic { background: var(--hover); color: var(--text-dim); }
+.pane-dest .dest-tx { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pane-dest .dest-title { font-size: 12.5px; font-weight: 600; }
+.pane-dest .dest-sub {
+  font-size: 11.5px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* ================= Modals ================= */
 .modal-root {
   position: fixed; inset: 0; z-index: 100;

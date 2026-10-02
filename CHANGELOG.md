@@ -8,6 +8,18 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Dual pane: the Dual-pane button's second act is a view picker.**
+  With the pane already open, clicking the toolbar's **Dual-pane**
+  button (either pane's copy) no longer closes it — a small anchored
+  picker appears under the button offering where the pane should
+  point: **Home view** starts over at the workstation's home folder
+  with the history cut clean, and **Return to last view** jumps back
+  to the spot the pane stood on when it was opened, through history
+  so Back undoes the jump (the option rests disabled when nothing
+  was remembered). Escape, an outside click, or the button again
+  dismisses the picker — the pane stays open throughout. F9, the View
+  menu and the pane's × remain the honest closers.
+
 - **Dual pane: the secondary pane is a full twin of the main view.** The
   old "Panes" side panel and its Sync toggle are gone; F9 or the
   **Dual-pane** toolbar button now opens an optional secondary pane on
@@ -19,7 +31,7 @@ follow [Semantic Versioning](https://semver.org/).
   on every data source, bucket and folder, landing the pane there
   directly. Any source type binds to it — S3, SFTP, FTP, WebDAV, local
   drives — the last location is remembered across reopens, the pane's ×
-  or the same toggle closes it, and drag & drop between the panes feeds
+  or F9 closes it, and drag & drop between the panes feeds
   the same transfer matrix. Directory **Compare** stays;
   synchronized browsing is removed with the old panel. Under the split,
   each toolbar folds its word labels to icons (and, narrower still,

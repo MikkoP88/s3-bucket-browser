@@ -1672,10 +1672,10 @@ function wireLocalPane() {
   localPane.on.compare = compareDirs;
   // The pane toolbar's buttons: pane-scoped leaves act on the pane's own
   // binding (helpers below, source-pinned); window-scope copies (find,
-  // theme, help) and the Dual-pane toggle mirror the main toolbar's. The
+  // theme, help) and the Dual-pane button mirror the main toolbar's. The
   // pane's back/forward/refresh, filter, breadcrumb and parent row are
   // wired inside SidePane itself.
-  $('local-btn-panes').onclick = togglePanes;
+  $('local-btn-panes').onclick = () => paneDestPop($('local-btn-panes'));
   $('local-btn-close').onclick = () => setPanes(false);
   $('local-btn-upload').onclick = () => openMenu($('local-btn-upload'), uploadChoices(paneUploadFiles, paneUploadFolder));
   $('local-btn-download').onclick = () => paneDownload();
@@ -2709,6 +2709,14 @@ function updateEditingStatus() {
 }
 
 function togglePanes() { setPanes(!localPane.visible); }
+
+// paneDestPop is the Dual-pane button: a closed pane opens; an open pane
+// gets the view picker (Home / last view) instead of a close — F9 and
+// the pane's × stay the honest closers.
+function paneDestPop(btn) {
+  if (localPane.visible) localPane.destPop(btn);
+  else setPanes(true);
+}
 
 function setPanes(on) {
   localStorage.setItem('s3b-panes', on ? '1' : '0');
@@ -3841,7 +3849,7 @@ function wireToolbar() {
   $('btn-refresh').onclick = () => refreshCurrent();
   $('btn-upload').onclick = () => openMenu($('btn-upload'), uploadChoices(uploadFiles, uploadFolder));
   $('btn-download').onclick = () => downloadSelection();
-  $('btn-panes').onclick = togglePanes;
+  $('btn-panes').onclick = () => paneDestPop($('btn-panes'));
   $('btn-compare').onclick = compareDirs;
   $('btn-find').onclick = openSearch;
   $('btn-newfolder').onclick = newFolder;

@@ -1528,7 +1528,7 @@ await step('loading-states', async () => {
   await evalPage(() => { window.__shim.world.fault = null; });
   await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane back to local');
-  await page.click('#btn-panes'); // close: later steps expect a single pane
+  await page.keyboard.press('F9'); // close: later steps expect a single pane (the button now picks the view)
 });
 
 // The not-connected contract: a connection-class failure names the problem
@@ -5997,6 +5997,85 @@ await step('side-pane-editpath', async () => {
   await ok('a pasted path binds an unbound pane', (await txt('#local-crumb')).includes('backup-box'));
   await evalPage(() => document.getElementById('toasts').replaceChildren());
 });
+await step('side-pane-destpop', async () => {
+  // the Dual-pane button's second act: with the pane already open it
+  // offers where the pane should point — the workstation's home view, or
+  // the view the pane was opened on — instead of closing it. F9 and the
+  // pane’s × stay the honest closers.
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
+  const anchor = await evalPage(() => {
+    const b = document.getElementById('btn-panes').getBoundingClientRect();
+    return { l: b.left, btm: b.bottom };
+  });
+  await page.click('#btn-panes');
+  await ok('button on an open pane offers views, not a close', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && !document.getElementById('pane-dest').classList.contains('hidden')
+    && document.getElementById('pane-dest').querySelectorAll('.dest-opt').length === 2
+    && document.getElementById('btn-panes').getAttribute('aria-expanded') === 'true'));
+  await ok('picker anchors under the button, inside the window', evalPage((a) => {
+    const p = document.getElementById('pane-dest').getBoundingClientRect();
+    return p.top >= a.btm - 2 && p.left >= a.l - 2 && p.right <= innerWidth - 4 && p.bottom <= innerHeight - 4;
+  }, anchor));
+  // the "last view" names where the pane stood when it was opened —
+  // here: the reload-open at the remembered workstation home
+  await ok('last-view option carries the opening location', evalPage(() => {
+    const o = document.getElementById('pane-dest').querySelectorAll('.dest-opt')[1];
+    return !!o && !o.disabled && o.textContent.includes('C:\\Users\\demo');
+  }));
+  await shot('pane-dest-pop');
+  await page.click('#pane-dest .dest-opt:nth-child(2)');
+  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane back at its opening view');
+  await ok('last view returns the pane through history', evalPage(() =>
+    window.__s3bSidePane.binding.kind === 'local'
+    && window.__s3bSidePane.dir === 'C:\\Users\\demo'
+    && window.__s3bSidePane.hist.length >= 1));
+  // wander away, then Home view: the fresh start (history cut)
+  await evalPage(() => window.__s3bSidePane.go({ kind: 'local', dir: 'C:\\Users\\demo\\Downloads' }));
+  await waitFor(async () => (await txt('#local-crumb')).includes('Downloads'), 6000, 'pane wandered into Downloads');
+  await page.click('#btn-panes');
+  await page.click('#pane-dest .dest-opt:nth-child(1)');
+  await waitFor(() => evalPage(() =>
+    window.__s3bSidePane.dir === 'C:\\Users\\demo' && !window.__s3bSidePane.canBack()), 6000, 'home restart lands');
+  await ok('home view restarts the pane fresh at the workstation home', evalPage(() =>
+    window.__s3bSidePane.binding.kind === 'local'
+    && window.__s3bSidePane.dir === 'C:\\Users\\demo'
+    && window.__s3bSidePane.hist.length === 0));
+  // dismissals: the button toggles the picker; Escape and an outside
+  // click close it — the pane stays open throughout
+  await page.click('#btn-panes');
+  await ok('picker reopened over the open pane', evalPage(() =>
+    !document.getElementById('pane-dest').classList.contains('hidden')));
+  await page.click('#btn-panes');
+  await ok('the button toggles the picker closed', evalPage(() =>
+    document.getElementById('pane-dest').classList.contains('hidden')
+    && document.getElementById('btn-panes').getAttribute('aria-expanded') === null));
+  await page.click('#btn-panes');
+  await page.keyboard.press('Escape');
+  await ok('escape dismisses the picker', evalPage(() =>
+    document.getElementById('pane-dest').classList.contains('hidden')));
+  await page.click('#btn-panes');
+  await page.click('#sidebar');
+  await ok('an outside click dismisses the picker', evalPage(() =>
+    document.getElementById('pane-dest').classList.contains('hidden')));
+  await ok('the pane stayed open through every dismissal', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && localStorage.getItem('s3b-panes') === '1'));
+  // nothing remembered → the last view rests (disabled); F9 closes honestly
+  await page.keyboard.press('F9');
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed by F9');
+  await evalPage(() => localStorage.removeItem('s3b-side-loc'));
+  await page.click('#btn-panes'); // closed → opens (no remembered loc → the local home)
+  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane reopened');
+  await page.click('#btn-panes');
+  await ok('last view rests when nothing was remembered', evalPage(() =>
+    document.getElementById('pane-dest').querySelectorAll('.dest-opt')[1].disabled === true));
+  await page.keyboard.press('Escape');
+  await ok('picker away, pane still open', evalPage(() =>
+    document.getElementById('pane-dest').classList.contains('hidden')
+    && !document.getElementById('local-pane').classList.contains('hidden')));
+});
 
 await step('side-pane-delete-window', async () => {
   // remote (sftp) and local side panes route through the same unified
@@ -7570,9 +7649,9 @@ await step('theme-toggle', async () => {
   // it was last bound to) is closed for the capture and reopened after,
   // so the rest of the walk runs against identical state
   const paneOpen = await evalPage(() => !document.getElementById('local-pane').classList.contains('hidden'));
-  if (paneOpen) await page.click('#btn-panes');
+  if (paneOpen) await page.keyboard.press('F9');
   await shotOf(`theme-${after}`, '#grid-wrap');
-  if (paneOpen) await page.click('#btn-panes');
+  if (paneOpen) await page.keyboard.press('F9');
   await page.click('#btn-theme');
   await ok('second click restores', evalPage((b) => document.documentElement.dataset.theme === b, before));
 });
@@ -7995,7 +8074,10 @@ await step('size-bar', async () => {
   //     first so both measurements mean what they say
   await evalPage(() => {
     const p = document.getElementById('local-pane');
-    if (!p.classList.contains('hidden')) document.getElementById('btn-panes').click();
+    // the button now offers views on an open pane — F9 stays the honest close
+    if (!p.classList.contains('hidden')) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F9', bubbles: true }));
+    }
   });
   await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed baseline');
   const geo1 = await evalPage(() => {
@@ -8018,7 +8100,7 @@ await step('size-bar', async () => {
   await ok('with the pane open the bar ends at the pane boundary',
     Math.abs(geo2.br - geo2.wr) < 2 && Math.abs(geo2.wr - geo2.pl) < 2
     && geo2.pr > geo2.vw - 40);
-  await page.click('#btn-panes'); // close: later steps expect a single pane
+  await page.keyboard.press('F9'); // close: later steps expect a single pane (the button now picks the view)
   await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed');
 
   // 17. localized bar: a second page booted in Finnish (the main page

@@ -22,6 +22,15 @@ const $ = (id) => document.getElementById(id);
 // same switch, so one setting rules both content areas.
 const parentRowOn = () => localStorage.getItem('s3b-parent-row') === '1';
 
+// ARROW_SVG / arrowIconEl: the view picker's "Return to last view" glyph
+// — the toolbar's back arrow, so the icon matches the mechanic.
+const ARROW_SVG = '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8"/></svg>';
+const arrowIconEl = () => {
+  const s = el('span', { class: 'src-ic' });
+  s.innerHTML = ARROW_SVG;
+  return s;
+};
+
 // aggregateCompare folds recursive CompareDir rows into per-child statuses
 // (used by both panes): direct rows keep their status, folders get
 // 'diff-below' when anything beneath them differs, 'same-sub' when all
@@ -64,6 +73,7 @@ export class SidePane {
     this.futr = [];       // forward stack of location entries
     this.upWanted = false; // the current listing's parent-row verdict
     this.on = {};         // callbacks: dropFolder, dropBody, compare, openFail, activateRemoteFile, activateS3File, contextEmpty
+    this.openedLoc = null; // where the pane stood when it was opened — the view picker's "return" target
 
     this.grid.on.activate = (m) => {
       if (this.binding.kind === 's3') {
@@ -163,6 +173,26 @@ export class SidePane {
     navbar.addEventListener('click', (e) => {
       if (e.target.closest('.crumb, .crumb-sep, input, button')) return;
       this.editPath();
+    });
+    // the view picker's lifecycle: any click outside it (or its trigger
+    // buttons) and any Escape close it — the pane itself stays open. The
+    // picker's own keys (Escape / arrows) rest inside it.
+    document.addEventListener('click', (e) => {
+      if (e.target.closest('#pane-dest, #btn-panes, #local-btn-panes')) return;
+      this.hideDestPop();
+    }, true);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this.hideDestPop();
+    });
+    const dest = $('pane-dest');
+    dest.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.hideDestPop(); return; }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      const opts = Array.from(dest.querySelectorAll('.dest-opt:not(:disabled)'));
+      if (opts.length < 2) return;
+      const i = opts.indexOf(document.activeElement);
+      opts[(i + (e.key === 'ArrowDown' ? 1 : opts.length - 1)) % opts.length].focus();
     });
     // the Name-column seat stays live against the pane grid's own template
     // (mirrors main's observer on #grid-head)
@@ -365,7 +395,9 @@ export class SidePane {
       return;
     }
     if (e.kind === 'local') {
-      if (this.binding.kind !== 'local') return;
+      // a local entry rebinds to the workstation — history can cross
+      // bindings (Back from a remote source to a local folder works)
+      if (this.binding.kind !== 'local') this.bindTo(null);
       // dir '' is the roots view — the climb's destination past a drive
       // root and the "This PC" breadcrumb segment's target
       if (e.dir === '') { this.showRoots(); return; }
@@ -403,16 +435,128 @@ export class SidePane {
   }
 
   show() {
+    const wasHidden = !this.visible;
     $('local-pane').classList.remove('hidden');
     $('pane-split').classList.remove('hidden');
+    // where the pane stood when it was opened: persistLoc overwrites the
+    // remembered spot with every landing, so this one capture is the
+    // view picker's "return to last view" target
+    if (wasHidden) this.openedLoc = this.rememberedLoc();
     if (!this.bound) this.restore();
     else if (!this.hasListed) this.start();
   }
   hide() {
+    this.hideDestPop();
     $('local-pane').classList.add('hidden');
     $('pane-split').classList.add('hidden');
   }
   get visible() { return !$('local-pane').classList.contains('hidden'); }
+
+  // ---------- Dual-pane button's view picker ----------
+
+  // rememberedLoc reads the persisted pair (s3b-side-src + s3b-side-loc)
+  // into a navEntry — the pane's last view. restore() navigates here on
+  // reopen; the view picker returns to it on demand.
+  rememberedLoc() {
+    const savedSrc = localStorage.getItem('s3b-side-src');
+    if (!savedSrc) return null;
+    let loc = null;
+    try { loc = JSON.parse(localStorage.getItem('s3b-side-loc') || 'null'); } catch { loc = null; }
+    if (savedSrc === 'local') return loc && loc.kind === 'local' ? { kind: 'local', dir: loc.dir || '' } : null;
+    if (loc && loc.kind !== 'local' && loc.source) {
+      return { kind: loc.kind, source: loc.source, bucket: loc.bucket || '', dir: loc.dir || '' };
+    }
+    // no exact location survived: the remembered source's opening view
+    const src = this.sources.find((s) => s.id === savedSrc || s.name === savedSrc);
+    if (!src) return null;
+    return src.type === 's3'
+      ? { kind: 's3', source: src.id || src.name, bucket: src.bucket || '', dir: '' }
+      : { kind: 'remote', source: src.id || src.name, dir: '/' };
+  }
+
+  // locCanonical renders a navEntry in the user-facing NAME:// form (the
+  // picker's "last view" subtitle) — the same shapes paneCanonical builds
+  // for the live binding.
+  locCanonical(e) {
+    const src = this.sources.find((s) => s.id === e.source || s.name === e.source);
+    const name = (src && src.name) || e.source;
+    if (e.kind === 'remote') return `${name}://${e.dir || '/'}`;
+    if (e.kind === 's3') {
+      if (src && src.bucket) return `${name}://${e.dir || ''}`;
+      return e.bucket ? `${name}://${e.bucket}/${e.dir || ''}` : `${name}://`;
+    }
+    return e.dir || '';
+  }
+
+  // goHome is the picker's "Home view": a fresh start on the workstation's
+  // home folder — the same reset the onboarding picker's choice performs.
+  goHome() { this.rebind('local'); }
+
+  // goLast is the picker's "Return to last view": back to where the pane
+  // stood when it was opened, through history (Back undoes the jump).
+  goLast() {
+    if (this.openedLoc) this.go(this.openedLoc);
+  }
+
+  // destPop is the Dual-pane button's second act: with the pane already
+  // open the button no longer closes it — it offers where the pane should
+  // point, anchored under the button. F9 and the pane's × remain the
+  // honest closers.
+  destPop(btn) {
+    const pop = $('pane-dest');
+    if (!pop.classList.contains('hidden')) { this.hideDestPop(); btn.focus(); return; }
+    this.renderDestPop();
+    btn.setAttribute('aria-expanded', 'true');
+    pop.style.left = '0px';
+    pop.style.top = '0px';
+    pop.classList.remove('hidden');
+    // anchor below the button, clamped into the window; flip above when
+    // the picker would not fit
+    const r = btn.getBoundingClientRect();
+    const w = pop.offsetWidth, h = pop.offsetHeight;
+    const left = Math.min(Math.max(8, r.left), Math.max(8, innerWidth - w - 8));
+    let top = r.bottom + 6;
+    if (top + h > innerHeight - 8) top = Math.max(8, r.top - h - 6);
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+    requestAnimationFrame(() => pop.classList.add('open'));
+    pop.querySelector('.dest-opt:not(:disabled)')?.focus();
+  }
+
+  // renderDestPop rebuilds the picker from the pane's state: the Home view
+  // always; the last view when one was captured (else it rests disabled).
+  renderDestPop() {
+    const last = this.openedLoc;
+    const pop = $('pane-dest');
+    pop.setAttribute('aria-label', t('pane.emptyTitle'));
+    pop.replaceChildren(
+      this.destOpt(srcIconEl('local'), t('pane.popHome'), t('pane.popHomeSub'), () => this.goHome()),
+      this.destOpt(arrowIconEl(), t('pane.popLast'),
+        last ? t('pane.popLastSub', { p: this.locCanonical(last) }) : t('pane.popLastNone'),
+        () => this.goLast(), !last),
+    );
+  }
+
+  // destOpt builds one picker row: icon tile, title, subtitle.
+  destOpt(icon, title, sub, act, disabled = false) {
+    const b = el('button', { type: 'button', class: 'dest-opt', role: 'menuitem' });
+    if (disabled) b.disabled = true;
+    b.append(el('span', { class: 'dest-ic', 'aria-hidden': 'true' }, icon),
+      el('span', { class: 'dest-tx' },
+        el('span', { class: 'dest-title', text: title }),
+        el('span', { class: 'dest-sub', text: sub })));
+    b.onclick = () => { this.hideDestPop(); act(); };
+    return b;
+  }
+
+  hideDestPop() {
+    const pop = $('pane-dest');
+    if (pop.classList.contains('hidden')) return;
+    pop.classList.add('hidden');
+    pop.classList.remove('open');
+    pop.replaceChildren();
+    for (const id of ['btn-panes', 'local-btn-panes']) $(id)?.removeAttribute('aria-expanded');
+  }
 
   // ---------- empty / loading / error states ----------
 
