@@ -102,6 +102,92 @@ func TestParseAddressAppPaths(t *testing.T) {
 	}
 }
 
+func TestParseAddressNormalizedForm(t *testing.T) {
+	a := addressTestApp(t)
+
+	// Name/contents — the editors' normalized display form — resolves
+	// through the same source grammar NAME:// speaks
+	cases := []struct {
+		raw  string
+		kind string
+		src  string
+		bkt  string
+		pfx  string
+	}{
+		{"hetzner/team-files/docs/notes.md", "objects", "hetzner", "team-files", "docs/notes.md/"},
+		{`HETZNER\team-files\docs`, "objects", "hetzner", "team-files", "docs/"},
+		{"website-prod/index.html", "objects", "website-prod", "www-assets", "index.html/"},
+		{"backup-box/srv/data", "remote", "backup-box", "", "/srv/data/"},
+	}
+	for _, c := range cases {
+		got, err := a.ParseAddress(c.raw, "")
+		if err != nil {
+			t.Fatalf("ParseAddress(%q): %v", c.raw, err)
+		}
+		if got.Kind != c.kind || got.Source != c.src || got.Bucket != c.bkt || got.Prefix != c.pfx {
+			t.Errorf("ParseAddress(%q) = %+v, want %s %s %q %q", c.raw, got, c.kind, c.src, c.bkt, c.pfx)
+		}
+	}
+
+	// the bare name alone is the source's root — buckets for an
+	// account-wide S3 source, / for a remote one
+	got, err := a.ParseAddress("hetzner", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "buckets" || got.Source != "hetzner" {
+		t.Errorf("bare s3 name = %+v", got)
+	}
+	got, err = a.ParseAddress("backup-box", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "remote" || got.Source != "backup-box" || got.Prefix != "/" {
+		t.Errorf("bare remote name = %+v", got)
+	}
+
+	// by id (ids are assigned at save; look one up)
+	srcs, _ := a.ListSources()
+	var id string
+	for _, s := range srcs {
+		if s.Name == "backup-box" {
+			id = s.ID
+		}
+	}
+	if id == "" {
+		t.Fatal("backup-box has no id")
+	}
+	got, err = a.ParseAddress(id+"/srv/data", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "remote" || got.Source != "backup-box" || got.Prefix != "/srv/data/" {
+		t.Errorf("by-id remote = %+v", got)
+	}
+}
+
+func TestParseAddressNormalizedPrecedence(t *testing.T) {
+	// the local shape wins over the name step: even a source named "c"
+	// cannot shadow a drive-letter path, and a bucket name is not a
+	// source name
+	a := addressTestApp(t)
+	if err := a.SaveSource(profile.Source{Name: "c", Type: profile.TypeSFTP,
+		Host: "c.example.test", Port: 22, Username: "demo"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.ParseAddress(`C:\Projects\llm-scaler`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "local" || got.Prefix != `C:\Projects\llm-scaler` {
+		t.Errorf("drive beats source named c = %+v", got)
+	}
+	// team-files is hetzner's bucket, not a source — no match, error
+	if _, err := a.ParseAddress("team-files/docs", ""); err == nil {
+		t.Error("bucket-name first segment: want error")
+	}
+}
+
 func TestParseAddressS3Scheme(t *testing.T) {
 	a := addressTestApp(t)
 

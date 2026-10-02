@@ -161,6 +161,14 @@ export function srcIcon(stype) {
   return SRC_TYPE_LABEL[stype] || 'Other';
 }
 
+// slashPath joins a source name to its /-anchored contents for the
+// normalized Name/contents display without doubling the slash: remote
+// paths arrive as '/incoming/', so Name + that must read Name/incoming/;
+// the root alone ('/') reads Name/
+export function slashPath(name, path) {
+  return `${name}/${String(path || '/').replace(/^\/+/, '')}`;
+}
+
 // srcIconEl wraps the type label in a bold span: an explicit color
 // paints the source's accent while the inherited text color keeps the
 // theme default. Every surface that shows a source's identity (sidebar

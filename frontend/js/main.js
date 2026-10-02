@@ -1,6 +1,6 @@
 // S3 Bucket Browser — application shell (Explorer layout).⁠​‌‌‌​​‌‌​​‌‌​​‌‌​‌‌​​​‌​​​‌​‌‌​‌​‌‌‌​​​​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌‌​​‌‌​​​‌‌​‌‌​​‌​‌​​‌​‌‌​‌​‌‌‌​‌‌​​​‌‌​​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​​​​‌‌​‌‌​‌‌‌‌​‌‌‌​​​​​‌‌‌‌​​‌​‌‌‌​​‌​​‌‌​‌​​‌​‌‌​​‌‌‌​‌‌​‌​​​​‌‌‌​‌​​​​‌​​​​​​​‌​‌​​​​‌‌​​​‌‌​​‌​‌​​‌​​‌​​​​​​​‌‌​​‌​​​‌‌​​​​​​‌‌​​‌​​​‌‌​‌‌​​​‌​​​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​​‌​​​​​​‌​‌​​​​​‌‌​​‌​‌​‌‌‌​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​​‌​​​​​​​‌​‌​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​‌​​​​​‌‌​‌‌‌‌​‌‌​‌‌​​​‌‌‌‌​​‌​‌​​​‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​​‌‌​‌‌​‌​​‌​​​​​​‌​​‌​​‌​‌‌​‌‌‌​​‌‌‌​‌​​​‌‌​​‌​‌​‌‌‌​​‌​​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌​​​​‌​​​​​​‌​‌​‌​‌​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​‌​​‌‌​​​‌‌​‌​​‌​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​​‌‌​​​‌​​‌​‌‌‌​​​‌‌​​​​​​‌​‌‌‌​​​‌‌​​​​​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌‌​​‌‌‌​‌‌​‌​​‌​‌‌‌​‌​​​‌‌​‌​​​​‌‌‌​‌​‌​‌‌​​​‌​​​‌​‌‌‌​​‌‌​​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌​‌​​‌​‌‌‌‌​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌‌‌‌​‌‌‌​​‌‌​​‌‌​​‌‌​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​‌​‌​‌‌​​​‌‌​‌‌​‌​‌‌​‌‌​​‌​‌​‌‌‌​‌​​​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌‌​‌‌‌​​‌‌​‌‌​​‌​‌​‌‌‌​​‌​⁠
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl, slashPath } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
 import { Tree } from './tree.js';
@@ -34,6 +34,13 @@ const localPane = new SidePane();
 // the pane's path editor saves stood-up sources itself (parsePaneAddress);
 // main's refreshSources is the rebuild that follows a save
 localPane.onSourcesChanged = refreshSources;
+// the pane's bare-line local shortcut must not eat the normalized
+// Name/contents form: while locally bound, a line whose first segment
+// names a configured source leaves the shortcut for the ladder and
+// rebinds the pane to that source
+localPane.isKnownSource = (seg) => !!seg && sources.some((x) =>
+  (x.name || '').toLowerCase() === seg.toLowerCase()
+  || (x.id || '').toLowerCase() === seg.toLowerCase());
 window.__s3bSidePane = localPane; // battery handle: gui-visual drives the pane directly
 const tree = new Tree({
   onNavigate: (loc) => nav.to(loc),
@@ -843,7 +850,7 @@ function renderFavorites() {
   $('favorites').replaceChildren(...favs.map((b) => el('div', {
     class: 'fav-row',
     role: 'listitem',
-    title: `${viewSource}://${b}`,
+    title: `${viewSource}/${b}`,
     onclick: () => nav.to({ kind: 'objects', source: viewSource, bucket: b, prefix: '' }),
   },
     el('span', { class: 'fav-star', text: '\u2605' }),
@@ -1285,7 +1292,7 @@ function renderBreadcrumb() {
   if (loc.kind === 'remote') {
     const atRoot = !loc.path || loc.path === '/';
     const s = sources.find((x) => x.name === loc.source);
-    const root = el('span', { class: `crumb${atRoot ? ' current' : ''}`, title: `${loc.source}://${loc.path || '/'}` },
+    const root = el('span', { class: `crumb${atRoot ? ' current' : ''}`, title: slashPath(loc.source, loc.path || '/') },
       srcIconEl(s?.type, s?.color), loc.source);
     root.onclick = () => nav.to({ kind: 'remote', source: loc.source, path: '' });
     bc.appendChild(root);
@@ -1311,7 +1318,7 @@ function renderBreadcrumb() {
   // already says which bucket; the account's bucket list is unreachable
   // from inside a single data source).
   const scoped = loc.kind === 'objects' && !!s?.bucket;
-  const root = el('span', { class: `crumb${(loc.kind === 'buckets' || (scoped && !loc.prefix)) ? ' current' : ''}`, title: `${srcName}://` },
+  const root = el('span', { class: `crumb${(loc.kind === 'buckets' || (scoped && !loc.prefix)) ? ' current' : ''}`, title: `${srcName}` },
     srcIconEl(s?.type || 's3', s?.color), srcName);
   root.onclick = () => nav.to(scoped
     ? { kind: 'objects', source: srcName, bucket: s.bucket, prefix: '' }
@@ -1339,37 +1346,41 @@ function renderBreadcrumb() {
 
 // ====================== canonical path bar ======================
 // Every location has ONE path format across all source kinds:
-// "NAME://content" — the source's display name is the scheme and
-// everything after :// is content INSIDE that one data source. A
+// "NAME/content" — the source's display name leads, one slash, and
+// everything after it is content INSIDE that one data source. A
 // bucket-scoped S3 source's name already carries its bucket, so the
-// bucket never repeats after :// ("testijotain://docs/", never
-// "testijotain://testijotain/docs/"); legacy account-wide S3 sources keep
-// the bucket as the first content segment (their content level 1 IS the
-// bucket). Clicking the navbar's empty area swaps the breadcrumb for an
-// editable field with that string, so a path can be copied out or pasted
-// in from anywhere and navigated with Enter.
+// bucket never repeats after the slash ("testijotain/docs/", never
+// "testijotain/testijotain/docs/"); account-wide S3 sources keep the
+// bucket as the first content segment (their content level 1 IS the
+// bucket). The workstation is the lone exception: a local directory
+// wears its bare native path, no prefix at all. Clicking the navbar's
+// empty area swaps the breadcrumb for an editable field with that
+// string, so a path can be copied out or pasted in from anywhere —
+// the backend ladder takes this form back, and every URI family too —
+// and navigated with Enter.
 // s3TreePath is the composer every S3 path display goes through: it
 // decides, from the source definition, whether the bucket belongs after
-// :// (account-wide) or is already spoken for by the name (scoped).
+// the name (account-wide) or is already spoken for by it (scoped).
 function s3TreePath(source, bucket, prefix) {
   const name = source || viewSource;
   const src = sources.find((x) => x.name === name);
-  if (src && src.type === 's3' && src.bucket) return `${name}://${prefix || ''}`;
-  return `${name}://${bucket}/${prefix || ''}`;
+  if (src && src.type === 's3' && src.bucket) return `${name}/${prefix || ''}`;
+  return `${name}/${bucket}/${prefix || ''}`;
 }
 function canonicalPath(loc) {
   if (!loc) return '';
-  if (loc.kind === 'buckets') return `${loc.source || viewSource}://`;
+  if (loc.kind === 'buckets') return `${loc.source || viewSource}`;
   if (loc.kind === 'objects') return s3TreePath(loc.source, loc.bucket, loc.prefix);
-  if (loc.kind === 'remote') return `${loc.source}://${loc.path || '/'}`;
+  if (loc.kind === 'remote') return slashPath(loc.source, loc.path || '/');
   return '';
 }
 
 // editPath swaps the breadcrumb for a one-line editable field holding the
 // canonical path: copy out, paste in, Enter navigates, Esc cancels. The
 // line goes through resolveAddress — the backend's universal ladder — so
-// any address works: app paths (NAME://...), s3:// URIs, connection URIs
-// (an unconfigured one stands its source up), local:// and file:/// URLs
+// any address works: app paths (Name/contents or NAME://...), s3://
+// URIs, connection URIs (an unconfigured one stands its source up),
+// file:/// URLs and bare local paths
 // and bare local paths — the pane's surface, so one opens the pane there.
 function editPath() {
   const bc = $('breadcrumb');
@@ -1398,9 +1409,10 @@ function editPath() {
 }
 
 // resolveAddress runs one edited line through the backend's ParseAddress
-// ladder: any app path (NAME://...), s3:// URI, connection URI (a
-// configured source opens at the URI's root; an unconfigured one stands
-// up through SaveSource and lands in the tree), local:// form, file URL
+// ladder: any app path (Name/contents or NAME://...), s3:// URI,
+// connection URI (a configured source opens at the URI's root; an
+// unconfigured one stands up through SaveSource and lands in the tree),
+// file URL
 // or bare local path maps to a location. Local addresses are the
 // secondary pane's surface (the main view has no local kind) — one opens
 // the pane at the directory. Returns the location for nav.to,
@@ -2276,7 +2288,7 @@ async function uploadPaths(paths, prefixOverride, bucketOverride, sourceOverride
     await startTransfer({ localPaths: paths, dest: { kind: 's3', source, bucket, dir: prefix } });
     return;
   }
-  const res = await resolveTransferOpts('upload', `${source || 's3'}://${bucket}/${prefix || ''}`,
+  const res = await resolveTransferOpts('upload', `${source || 's3'}/${bucket}/${prefix || ''}`,
     () => api.CheckConflicts(null, paths, { kind: 's3', source: source || '', bucket, dir: prefix }));
   if (!res) return;
   try {
@@ -2466,7 +2478,7 @@ function xferDestOf(loc) {
 
 function xferDestLabel(dest) {
   if (dest.kind === 's3') return s3TreePath(dest.source, dest.bucket, dest.dir || '');
-  if (dest.kind === 'remote') return `${dest.source}://${dest.dir || '/'}`;
+  if (dest.kind === 'remote') return slashPath(dest.source, dest.dir || '/');
   return dest.dir;
 }
 
@@ -2691,13 +2703,13 @@ function sidePaneRef() {
 // remote dir), null elsewhere.
 function mainCompareRef() {
   const loc = nav.current;
-  if (loc?.kind === 'objects') return { kind: 's3', bucket: loc.bucket, prefix: loc.prefix || '' };
+  if (loc?.kind === 'objects') return { kind: 's3', source: loc.source, bucket: loc.bucket, prefix: loc.prefix || '' };
   if (loc?.kind === 'remote') return { kind: 'remote', source: loc.source, dir: loc.path || '/' };
   return null;
 }
 
 function cmpRefLabel(ref) {
-  if (ref.kind === 's3') return `s3://${ref.bucket}/${ref.prefix || ''}`;
+  if (ref.kind === 's3') return s3TreePath(ref.source, ref.bucket, ref.prefix || '');
   if (ref.kind === 'remote') return `${ref.source}:${ref.dir}`;
   return ref.dir;
 }
@@ -3033,7 +3045,7 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
         // Same conflict contract as every other transfer: probe the
         // destination first (Settings 'ask' default opens the conflict
         // dialog) instead of silently overwriting what already lives there.
-        const opts = await resolveTransferOpts(move ? 'move' : 'copy', `s3://${dest.bucket}/${prefix || ''}`,
+        const opts = await resolveTransferOpts(move ? 'move' : 'copy', s3TreePath(dest.source, dest.bucket, prefix || ''),
           () => api.CheckConflicts(clipboard.keys.map((k) => ({ source: '', bucket: clipboard.bucket, key: k, size: 0, isDir: k.endsWith('/') })),
             null, { kind: 's3', source: dest.source || '', bucket: dest.bucket, dir: prefix }));
         if (!opts) return;
@@ -3116,7 +3128,7 @@ async function selectionProperties() {
           ['Last modified', fmtDate(st.lastModified)],
         ] : []),
         ['Source', `${loc.source} (${sources.find((s) => s.name === loc.source)?.type || '?'})`],
-        ['Path', `${loc.source}://${row.key}`],
+        ['Path', `${loc.source}/${String(row.key).replace(/^\/+/, '')}`],
       ]);
     } catch (err) {
       toast(`Properties failed: ${err}`, 'error');
@@ -3219,7 +3231,7 @@ async function bucketProperties(bucket) {
       ['Name', bucket],
       ['Provider', def ? providerLabel(def.s3?.endpoint) : '—'],
       ['Region', st?.region || panel?.region || '—'],
-      ['Path', `${viewSource}://${bucket}`],
+      ['Path', `${viewSource}/${bucket}`],
       ...guardRows(g),
       ...(panel ? [
         ['Default encryption', panel.encryption?.algorithm
@@ -3466,7 +3478,7 @@ async function dropToTarget(target, data, e) {
       move,
       async () => {
         // Conflict probe before the server-side copy (see the paste path).
-        const opts = await resolveTransferOpts(move ? 'move' : 'copy', `s3://${dest.bucket}/${dest.dir || ''}`,
+        const opts = await resolveTransferOpts(move ? 'move' : 'copy', s3TreePath(dest.source, dest.bucket, dest.dir || ''),
           () => api.CheckConflicts(data.keys.map((k) => ({ source: '', bucket: srcBucket, key: k, size: 0, isDir: k.endsWith('/') })),
             null, { kind: 's3', source: dest.source || '', bucket: dest.bucket, dir: dest.dir || '' }));
         if (!opts) return;
@@ -3565,7 +3577,7 @@ function showLocalRowMenu(e, rows) {
       properties(`Properties — ${r.name}`, [
         ['Type', r.isDir ? 'Folder' : 'File'],
         ...(!r.isDir ? [['Size', fmtBytes(r.size || 0)]] : []),
-        ['Path', `local://${r.path}`],
+        ['Path', r.path],
       ]);
     }, sel !== 1],
   ]);
@@ -3694,7 +3706,7 @@ async function sideRemoteProperties(row) {
         ['Last modified', fmtDate(st.lastModified)],
       ] : []),
       ['Source', b.source],
-      ['Path', `${b.name || b.source}://${row.key}`],
+      ['Path', `${b.name || b.source}/${String(row.key).replace(/^\/+/, '')}`],
     ]);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');
@@ -4523,11 +4535,11 @@ async function osCopyRemote(items) {
 // mirrors the selection as files through hidden staging (see osCopyRemote);
 // these explicit actions copy text for editors, tickets and terminals.
 // what: 'name' | 'path' | 'url'. ctx: {kind, bucket, source} — 'path' is
-// the app's normalized NAME:// form for every kind, the same string the
-// path editors speak (it round-trips straight back into one): objects
+// the app's normalized Name/contents form for every kind, the same string
+// the path editors speak (it round-trips straight back into one): objects
 // rows through s3TreePath (the bucket folded away for scoped sources),
-// buckets rows NAME://bucket, remote rows NAME://server-path, local rows
-// local://<directory>. 'url' is the REAL address (WinSCP's Copy URI
+// buckets rows Name/bucket, remote rows Name/server-path, local rows the
+// bare native path. 'url' is the REAL address (WinSCP's Copy URI
 // purpose): the endpoint-resolved https URL for S3 objects,
 // scheme://user@host[:port]/server-path for remote sources, file:/// for
 // local rows.
@@ -4535,7 +4547,7 @@ async function copyAsText(rows, what, ctx = {}) {
   if (!rows.length) return;
   const kind = ctx.kind || nav.current?.kind || 'objects';
   const bucket = ctx.bucket ?? nav.current?.bucket;
-  // the NAME in NAME:// — pane bindings carry the source id
+  // the NAME in Name/contents — pane bindings carry the source id
   const sname = (s) => sources.find((x) => x.id === s || x.name === s)?.name || s || viewSource;
   if (what === 'url' && (kind === 'objects' || kind === 'remote')) {
     // real addresses come from the backend: the source's endpoint,
@@ -4564,8 +4576,8 @@ async function copyAsText(rows, what, ctx = {}) {
       return p.startsWith('//') ? `file:${p}` : `file:///${p.replace(/^\/+/, '')}`;
     };
   } else if (kind === 'objects') fmt = (r) => s3TreePath(sname(ctx.source ?? nav.current?.source), bucket, r.key);
-  else if (kind === 'local') fmt = (r) => `local://${r.path}`;
-  else fmt = (r) => `${sname(ctx.source ?? nav.current?.source)}://${r.key}`; // buckets: NAME://bucket; remote: NAME://server-path
+  else if (kind === 'local') fmt = (r) => r.path;
+  else fmt = (r) => `${sname(ctx.source ?? nav.current?.source)}/${String(r.key).replace(/^\/+/, '')}`; // buckets: Name/bucket; remote: Name/server-path
   const label = what;
   try {
     await api.ClipboardSetText(rows.map(fmt).join('\n'));

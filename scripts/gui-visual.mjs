@@ -734,6 +734,15 @@ function shim() {
     }
     const dir = bareLocalDir(r);
     if (dir) return { kind: 'local', prefix: dir };
+    // the normalized display form — Name/contents with no scheme —
+    // names a configured source by its first segment (or the whole
+    // line) and the rest is its contents: what the path bars show
+    const cut = r.search(/[\\/]/);
+    const seg = cut > 0 ? r.slice(0, cut) : r;
+    const rest = cut > 0 ? r.slice(cut + 1) : '';
+    const named = world.sources.find((x) => x.name.toLowerCase() === seg.toLowerCase()
+      || String(x.id || '').toLowerCase() === seg.toLowerCase());
+    if (named) return sourceLoc(named, rest);
     throw new Error('unrecognized address "' + r + '"');
   };
 
@@ -1890,10 +1899,10 @@ await step('copy-as-ctxmenu', async () => {
     .map((i) => i.textContent.trim()));
   await ok('row menu offers copy-as actions', ['copy name', 'copy path', 'copy url']
     .every((s) => items.some((x) => x.toLowerCase() === s)));
-  await ok('the s3:// URI action is gone — Copy path carries the NAME:// form', !items.some((x) => /s3 uri/i.test(x)));
+  await ok('the s3:// URI action is gone — Copy path carries the Name/contents form', !items.some((x) => /s3 uri/i.test(x)));
   await ctxItem(/^copy path$/i);
   let c = await findCall('ClipboardSetText');
-  await ok('copy path puts the normalized path on the clipboard', !!c && c.args[0] === 'hetzner://team-files/readme.md');
+  await ok('copy path puts the normalized path on the clipboard', !!c && c.args[0] === 'hetzner/team-files/readme.md');
   await openCtx('readme.md');
   await ctxItem(/^copy name$/i);
   c = await findCall('ClipboardSetText');
@@ -3546,7 +3555,7 @@ await step('sources-in-tree', async () => {
   await ok('source rows carry bold type labels', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
     return rows.length >= 3 && rows.every((r) => {
-      const t = r.querySelector('.ticon');
+      const t = r.querySelector('.ticon .src-ic');
       return !!t && t.textContent.trim() !== '' && !t.querySelector('svg')
         && parseInt(getComputedStyle(t).fontWeight, 10) >= 600;
     });
@@ -3555,8 +3564,19 @@ await step('sources-in-tree', async () => {
     const r = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'))
       .find((x) => x.dataset.source === 'backup-box');
     // style.color serializes '#1b7f3b' to rgb() in Chromium — accept both
-    const c = r?.querySelector('.ticon')?.style.color || '';
+    const c = r?.querySelector('.ticon .src-ic')?.style.color || '';
     return !!r && ['#1b7f3b', 'rgb(27, 127, 59)'].includes(c);
+  }));
+  await ok('type labels are tinted chips that fit the type column', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
+    return rows.length >= 3 && rows.every((r) => {
+      const chip = r.querySelector('.ticon .src-ic');
+      const col = r.querySelector('.ticon');
+      if (!chip || !col) return false;
+      const cs = getComputedStyle(chip);
+      return cs.borderRadius === '4px' && cs.backgroundColor !== 'rgba(0, 0, 0, 0)'
+        && chip.getBoundingClientRect().width <= col.getBoundingClientRect().width + 0.5;
+    });
   }));
   await shotOf('sources-tree', '#tree');
 });
@@ -4024,7 +4044,7 @@ await step('search-window', async () => {
     const heads = Array.from(document.querySelectorAll(s + ' .grid-head .gh')).map((h) => h.dataset.col);
     const last = document.querySelector(s + ' .sr-list .grid-row').lastElementChild;
     return !!col && col.textContent.includes('Source')
-      && cells.length === 2 && cells.every((b) => b === 's3://team-files')
+      && cells.length === 2 && cells.every((b) => b === 'hetzner/team-files')
       && heads[heads.length - 1] === 'source' && last.classList.contains('source');
   }, S));
   await ok('a click selects the row, a second click moves the selection', evalPage((s) => {
@@ -4079,7 +4099,7 @@ await step('search-window', async () => {
   await waitFor(() => popoutVisible('search'), 4000, 'preset popout');
   await ok('folder preset preselects the scoped entry', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
-    return !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/';
+    return !!sel && sel.selectedOptions[0].textContent.trim() === 'hetzner/team-files/docs/';
   }, S));
   await ok('the preset scope is not counted as a filter on the chip', evalPage((s) =>
     !document.querySelector(s + ' .sr-more').textContent.includes('\u00B7'), S));
@@ -4120,7 +4140,7 @@ await step('search-window', async () => {
   await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 3, S), 4000, 'source results');
   await ok('source scope stays inside the picked source only', evalPage((s) => {
     const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((b) => b.textContent);
-    const hetzner = new Set(['s3://team-files', 's3://logs-2026', 's3://media-assets', 's3://archive-cold']);
+    const hetzner = new Set(['hetzner/team-files', 'hetzner/logs-2026', 'hetzner/media-assets', 'hetzner/archive-cold']);
     return cells.length >= 3 && new Set(cells).size >= 2 && cells.every((b) => hetzner.has(b));
   }, S));
 
@@ -4492,13 +4512,13 @@ await step('search-window', async () => {
   };
   await sp.addInitScript(shim);
   await sp.addInitScript(seedSearchWin);
-  await sp.goto(BASE + '?popout=search&bucket=team-files&prefix=docs/');
+  await sp.goto(BASE + '?popout=search&source=hetzner&bucket=team-files&prefix=docs/');
   await sp.waitForSelector('.sr-body', { timeout: 8000 });
   await ok('native window: search renders full-bleed with the preset scope', await sp.evaluate(() => {
     const sel = document.querySelector('#popout-root .sr-scope');
     const pad = getComputedStyle(document.querySelector('#popout-root .popout[data-pop="search"] .modal-body')).padding;
     return document.body.classList.contains('popout-win')
-      && !!sel && sel.selectedOptions[0].textContent.trim() === 's3://team-files/docs/'
+      && !!sel && sel.selectedOptions[0].textContent.trim() === 'hetzner/team-files/docs/'
       && pad === '0px';
   }));
   await sp.waitForFunction(() => Array.from(document.querySelectorAll('.sr-scope option'))
@@ -6426,8 +6446,9 @@ await step('dual-pane', async () => {
 await step('side-pane-editpath', async () => {
   // the pane's path bar is the main pane's twin: clicking the navbar's
   // empty area swaps the crumb for the inline path editor holding the
-  // pane's canonical path
-  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
+  // pane's canonical path — the step shows the pane itself (without
+  // the default open, so the rebind is the only listing that runs)
+  await evalPage(() => { window.__s3bSidePane.show({ drive: false }); window.__s3bSidePane.rebind('src-box'); });
   await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
   await ok('both path bars carry the same click hint', evalPage(() =>
     document.querySelector('#local-pane .navbar').title === document.querySelector('#main-pane .navbar').title
@@ -6436,7 +6457,7 @@ await step('side-pane-editpath', async () => {
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'pane path editor');
   await ok('pane path field holds the canonical path', evalPage(() =>
-    document.querySelector('#local-crumb input.path-edit')?.value === 'backup-box:///'));
+    document.querySelector('#local-crumb input.path-edit')?.value === 'backup-box/'));
   await shot('pane-path-edit');
   // Escape restores the breadcrumb; a second click reopens the editor
   await page.keyboard.press('Escape');
@@ -6446,12 +6467,12 @@ await step('side-pane-editpath', async () => {
   await evalPage(() => document.querySelector('#local-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor again');
-  // pasting another source's NAME:// path rebinds the pane (it was
-  // bound to backup-box) and navigates
-  await page.fill('#local-crumb input.path-edit', 'hetzner://logs-2026/');
+  // pasting another source's Name/contents path rebinds the pane (it
+  // was bound to backup-box) and navigates
+  await page.fill('#local-crumb input.path-edit', 'hetzner/logs-2026/');
   await page.keyboard.press('Enter');
   await waitFor(async () => (await sideKeys()).includes('app/'), 6000, 'pane navigated via path');
-  await ok('pasting a NAME:// path rebinds and navigates the pane', (await txt('#local-crumb')).includes('logs-2026'));
+  await ok('pasting a Name/contents path rebinds and navigates the pane', (await txt('#local-crumb')).includes('logs-2026'));
   // an unparsable line toasts and keeps the editor
   await evalPage(() => document.getElementById('toasts').replaceChildren());
   await evalPage(() => document.querySelector('#local-pane .navbar')
@@ -6464,32 +6485,42 @@ await step('side-pane-editpath', async () => {
     !!document.querySelector('#toasts .toast.error')
     && !!document.querySelector('#local-crumb input.path-edit')));
   await page.keyboard.press('Escape');
-  // the local binding's canonical form is local://<dir>: paste one back
-  // to navigate the workstation side
+  // the local binding's canonical form is the bare native path: paste
+  // one back to navigate the workstation side
   await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane local bound');
   await evalPage(() => document.querySelector('#local-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor local');
-  await ok('the local canonical path is the local:// form', evalPage(() =>
-    document.querySelector('#local-crumb input.path-edit')?.value === 'local://C:\\Users\\demo'));
+  await ok('the local canonical path is the bare native path', evalPage(() =>
+    document.querySelector('#local-crumb input.path-edit')?.value === 'C:\\Users\\demo'));
   await page.fill('#local-crumb input.path-edit', 'C:\\Users\\demo\\Downloads');
   await page.keyboard.press('Enter');
   await waitFor(async () => (await txt('#local-crumb')).includes('Downloads'), 6000, 'pane navigated via local path');
   await ok('a bare local path navigates the pane', evalPage(() =>
     !document.querySelector('#local-crumb input.path-edit')
     && window.__s3bSidePane.dir.endsWith('Downloads')));
-  // the local:// canonical form navigates too — a round-trip: what the
-  // editor shows is what it takes
+  // the legacy local:// form navigates too — old clips keep working
   await evalPage(() => document.querySelector('#local-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor local again');
   await page.fill('#local-crumb input.path-edit', 'local://C:\\Users\\demo\\Documents');
   await page.keyboard.press('Enter');
-  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane navigated via local:// path');
-  await ok('a local:// path navigates the pane', evalPage(() =>
+  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane navigated via legacy local://');
+  await ok('the legacy local:// form still navigates the pane', evalPage(() =>
     !document.querySelector('#local-crumb input.path-edit')
     && window.__s3bSidePane.dir.endsWith('Documents')));
+  // a Name/contents line names a configured source, so it rebinds the
+  // pane instead of navigating the local binding
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor local name');
+  await page.fill('#local-crumb input.path-edit', 'hetzner/team-files');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'pane rebound via name');
+  await ok('a Name/contents path rebinds a locally-bound pane', evalPage(() =>
+    !document.querySelector('#local-crumb input.path-edit')
+    && window.__s3bSidePane.binding.kind === 's3'));
   // an unbound pane opens the editor empty — a pasted path binds it
   await evalPage(() => { window.__s3bSidePane.reset(); });
   await evalPage(() => document.querySelector('#local-pane .navbar')
@@ -6497,7 +6528,7 @@ await step('side-pane-editpath', async () => {
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor unbound');
   await ok('the unbound pane edits an empty path', evalPage(() =>
     document.querySelector('#local-crumb input.path-edit')?.value === ''));
-  await page.fill('#local-crumb input.path-edit', 'backup-box:///');
+  await page.fill('#local-crumb input.path-edit', 'backup-box/');
   await page.keyboard.press('Enter');
   await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane bound via pasted path');
   await ok('a pasted path binds an unbound pane', (await txt('#local-crumb')).includes('backup-box'));
@@ -7441,16 +7472,16 @@ await step('status-balls', async () => {
 await step('breadcrumb-path-nav', async () => {
   await navObjectsOf('hetzner', 'team-files');
   // clicking the navbar's empty area opens the inline path editor holding
-  // the canonical Source://bucket/prefix path
+  // the canonical Name/bucket/prefix path
   await evalPage(() => document.querySelector('.navbar').dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit')), 4000, 'path editor');
-  await ok('path field holds the canonical path', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 'hetzner://team-files/'));
+  await ok('path field holds the canonical path', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 'hetzner/team-files/'));
   await shot('path-edit');
   // type another location and press Enter — parsePath navigates
-  await page.fill('#breadcrumb input.path-edit', 'hetzner://logs-2026/');
+  await page.fill('#breadcrumb input.path-edit', 'hetzner/logs-2026/');
   await page.keyboard.press('Enter');
   await waitFor(async () => (await rowKeys()).includes('app/'), 6000, 'navigated via path');
-  await ok('pasting a Source://bucket/ path navigates', (await txt('#breadcrumb')).includes('logs-2026'));
+  await ok('pasting a Name/contents path navigates', (await txt('#breadcrumb')).includes('logs-2026'));
 });
 
 // the path editors are universal address lines: local machine paths open
@@ -7489,7 +7520,29 @@ await step('path-address', async () => {
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'main navigated via s3://');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical s3');
-  await ok('an s3:// URI lands on the owning source', (await editorValue()) === 'hetzner://team-files/docs/');
+  await ok('an s3:// URI lands on the owning source', (await editorValue()) === 'hetzner/team-files/docs/');
+  await page.keyboard.press('Escape');
+  // a bare source name opens that source's home — the account-wide
+  // source lands on its buckets view
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open bare');
+  await page.fill('#breadcrumb input.path-edit', 'hetzner');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'source home via bare name');
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor canonical bare');
+  await ok('a bare source name opens its buckets view', (await editorValue()) === 'hetzner');
+  await page.keyboard.press('Escape');
+  // the scoped source has no buckets view — its bare name opens its
+  // root instead (canonical carries the trailing slash)
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open scoped');
+  await page.fill('#breadcrumb input.path-edit', 'website-prod');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).includes('index.html'), 6000, 'scoped root via bare name');
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor canonical scoped');
+  await ok('a scoped source opens its root under its bare name', (await editorValue()) === 'website-prod/');
   await page.keyboard.press('Escape');
   // an unconfigured connection URI stands its source up, saves it and
   // opens its root
@@ -7507,7 +7560,7 @@ await step('path-address', async () => {
   await waitFor(async () => (await txt('#breadcrumb')).includes('newhost.example.test'), 6000, 'view opens the new source');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical ftp');
-  await ok('the new source opens at the URI root', (await editorValue()) === 'newhost.example.test - incoming:///incoming/');
+  await ok('the new source opens at the URI root', (await editorValue()) === 'newhost.example.test - incoming/incoming/');
   await page.keyboard.press('Escape');
   // an unrecognized address toasts and keeps the editor
   await evalPage(() => document.getElementById('toasts').replaceChildren());

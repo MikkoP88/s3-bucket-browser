@@ -193,15 +193,20 @@ svg.flip { transform: scaleX(-1); }
 .crumb-sep { color: var(--text-dim); padding: 0 1px; }
 /* source-type glyph (sidebar rows, breadcrumb root crumb): strokes use
    currentColor, so an inline color paints the source's accent */
-/* the source-type badge: bold text where a glyph used to sit —
-   compact so the longest label (WebDAVS) still reads as a badge;
-   the one remaining svg rider (the view picker's arrow) stays
-   block-level so the span keeps its own box */
+/* the source-type badge: one tinted chip everywhere a source's
+   identity shows — sidebar rows, the breadcrumb's root crumb, every
+   picker. The accent color paints the text and the background tint
+   derives from the same currentColor, so every source color reads in
+   both themes with zero JS; sized against the longest label (WebDAVS) */
 .src-ic {
-  font-weight: 700; font-size: 10px; letter-spacing: 0.02em;
-  line-height: 1; white-space: nowrap;
+  display: inline-block; padding: 2px 5px 1px; border-radius: 4px;
+  background: color-mix(in srgb, currentColor 13%, transparent);
+  font-weight: 700; font-size: 10.5px; letter-spacing: 0.03em;
+  line-height: 1.25; white-space: nowrap;
 }
-.src-ic svg { display: block; }
+/* the view picker's arrow rider is NOT a badge — a bare glyph */
+.ic-arrow { display: inline-flex; line-height: 0; }
+.ic-arrow svg { display: block; }
 .crumb .src-ic { margin-right: 5px; }
 .filter {
   width: 220px; font: var(--font);
@@ -298,14 +303,12 @@ svg.flip { transform: scaleX(-1); }
 .tnode.sel { background: var(--sel); }
 .tnode.drop-target { background: var(--accent-soft); outline: 1px dashed var(--accent); }
 .tnode .twist { width: 14px; text-align: center; color: var(--text-dim); flex: none; font-size: 9px; }
-/* the type column: bold labels (S3, SFTP, WebDAV, …) need more
-   room than a glyph, and one fixed width keeps every row's label
-   on the same stop — folder and bucket emojis center in it too */
-.tnode .ticon { flex: none; width: 48px; text-align: center; }
-.tnode[data-tkind="source"] .ticon {
-  font-weight: 700; font-size: 10px; letter-spacing: 0.02em;
-  white-space: nowrap;
-}
+/* the type column: the source chip (S3, SFTP, WebDAVS, …) needs more
+   room than a glyph, and one fixed width keeps every row's badge on
+   the same stop — chips align left at the column's edge (the label-
+   column look), folder and bucket emojis center in it too */
+.tnode .ticon { flex: none; width: 62px; display: flex; align-items: center; justify-content: center; }
+.tnode[data-tkind="source"] .ticon { justify-content: flex-start; padding-left: 2px; white-space: nowrap; }
 .tnode .tlabel { overflow: hidden; text-overflow: ellipsis; }
 
 /* ================= Grid ================= */

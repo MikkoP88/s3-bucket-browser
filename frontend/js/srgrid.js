@@ -122,7 +122,7 @@ export function makeSearchGrid(opts = {}) {
   const hits = [];                  // streamed results, arrival order
 
   const cols = () => [...userCols.map((id) => byId.get(id)), ...(showSource ? [SOURCE_COL] : [])];
-  const originOf = (r) => (r.bucket ? `s3://${r.bucket}` : (r.source || ''));
+  const originOf = (r) => (r.bucket ? `${r.source || ''}/${r.bucket}` : (r.source || ''));
   const isDirOf = (r) => !!(r.isDir || String(r.key).endsWith('/'));
   const hitType = (r) => {
     const k = String(r.key || '');

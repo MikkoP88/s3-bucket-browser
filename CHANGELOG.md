@@ -8,6 +8,37 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Normalized paths and a universal paste: every data source's
+  address reads `name/contents`, and every path input takes any
+  address.** The path bars, breadcrumbs, properties dialogs,
+  transfer labels, directory picker and search scopes all speak one
+  display form — `hetzner/team-files/docs/`, a bucket-scoped source
+  folding its bucket away (`website-prod/assets/`), the buckets view
+  bare (`hetzner`), the remote pane `name/path` at its root
+  (`backup-box/`), and the local side a bare native path
+  (`C:\Users\...` — `local://` is gone from the UI, though it
+  still pastes back). The form is an input too: the address ladder
+  (Go `ParseAddress` and the battery shim alike) gains the bare
+  `Name/contents` step — first segment names a configured source
+  (name or id, case-insensitive), the rest is its contents — so a
+  copied path pastes straight into any path bar and a bare source
+  name opens its home view; the pane's own bare-path shortcut
+  steps aside when the first segment names a configured source
+  (rebinding instead of navigating the local binding), while every
+  URI family keeps working (`s3://bucket/key`,
+  `ftp://user:pass@host:21/root`, `file:///C:/...` and
+  `file:///home/...`, drive letters, UNC, `~`) and `NAME://` stays
+  accepted for old clips. Copy path carries the normalized form on
+  every surface it lands — objects, buckets, remote and local rows,
+  the properties Path rows, the search results' Source column — and
+  the search popout URL now carries its scope's source so a native
+  window's preset label reads the same form. The source type label
+  becomes a chip: S3, SFTP, WebDAV and friends painted bold in the
+  source's accent color over a 13% tint of the same, one
+  `srcIconEl` builder serving the tree rows, breadcrumbs and every
+  source picker, and the tree's type column widens to a fixed 62px
+  stop with the chips left-aligned — the longest label fits without
+  the old centered dead air on both sides.
 - **One Columns partition for every view in Settings.** The two
   grid-column check-box groups give way to a single Columns
   partition in Settings → View: a chooser — main view, secondary

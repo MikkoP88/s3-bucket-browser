@@ -9,7 +9,7 @@
 // folder rows / the body of the local binding).
 import { Grid } from './grid.js';
 import { toast } from './dialogs.js';
-import { el, fmtBytes, debounce, srcIconEl, parentPrefix } from './util.js';
+import { el, fmtBytes, debounce, srcIconEl, parentPrefix, slashPath } from './util.js';
 import { api, subscribeStream } from './api.js';
 import { t } from './i18n.js';
 import { updateCommandState } from './commands.js';
@@ -26,7 +26,7 @@ const parentRowOn = () => localStorage.getItem('s3b-parent-row') === '1';
 // — the toolbar's back arrow, so the icon matches the mechanic.
 const ARROW_SVG = '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8"/></svg>';
 const arrowIconEl = () => {
-  const s = el('span', { class: 'src-ic' });
+  const s = el('span', { class: 'ic-arrow' });
   s.innerHTML = ARROW_SVG;
   return s;
 };
@@ -534,16 +534,16 @@ export class SidePane {
       : { kind: 'remote', source: src.id || src.name, dir: '/' };
   }
 
-  // locCanonical renders a navEntry in the user-facing NAME:// form (the
-  // picker's "last view" subtitle) — the same shapes paneCanonical builds
-  // for the live binding.
+  // locCanonical renders a navEntry in the user-facing Name/contents form
+  // (the picker's "last view" subtitle) — the same shapes paneCanonical
+  // builds for the live binding; local wears its bare native path.
   locCanonical(e) {
     const src = this.sources.find((s) => s.id === e.source || s.name === e.source);
     const name = (src && src.name) || e.source;
-    if (e.kind === 'remote') return `${name}://${e.dir || '/'}`;
+    if (e.kind === 'remote') return slashPath(name, e.dir || '/');
     if (e.kind === 's3') {
-      if (src && src.bucket) return `${name}://${e.dir || ''}`;
-      return e.bucket ? `${name}://${e.bucket}/${e.dir || ''}` : `${name}://`;
+      if (src && src.bucket) return `${name}/${e.dir || ''}`;
+      return e.bucket ? `${name}/${e.bucket}/${e.dir || ''}` : `${name}`;
     }
     return e.dir || '';
   }
@@ -925,24 +925,24 @@ export class SidePane {
 
   // paneCanonical is the pane's twin of main's canonicalPath: the
   // one-line path the path editor holds. Source bindings speak
-  // NAME://content ('' while unbound); the local binding speaks
-  // local://<directory> (local:// alone at the filesystem-roots view) —
-  // one universal form, pastable straight into either editor.
+  // Name/contents ('' while unbound); the local binding wears its bare
+  // native path ('' at the filesystem-roots view) — one universal form,
+  // pastable straight into either editor.
   paneCanonical() {
     if (!this.bound) return '';
     const name = this.binding.name || this.binding.source || '';
-    if (this.binding.kind === 'remote') return `${name}://${this.dir || '/'}`;
+    if (this.binding.kind === 'remote') return slashPath(name, this.dir);
     if (this.binding.kind === 's3') {
-      if (this.binding.bucket) return `${name}://${this.dir || ''}`;
-      return this.bucket ? `${name}://${this.bucket}/${this.dir || ''}` : `${name}://`;
+      if (this.binding.bucket) return `${name}/${this.dir || ''}`;
+      return this.bucket ? `${name}/${this.bucket}/${this.dir || ''}` : `${name}`;
     }
-    return `local://${this.dir || ''}`;
+    return this.dir || '';
   }
 
   // editPath swaps the breadcrumb for a one-line editable field holding
   // the canonical path — the twin of the main pane's editor: copy out,
   // paste in, Enter navigates through the same universal address ladder
-  // (any address works — another source's NAME:// path rebinds the pane,
+  // (any address works — another source's path rebinds the pane,
   // a local or external path lands on the workstation or its source),
   // Esc cancels. An unbound pane opens the editor empty — a pasted path
   // is one more way past the onboarding picker.
@@ -975,16 +975,18 @@ export class SidePane {
   }
 
   // parsePaneAddress maps an edited line to a pane history entry through
-  // the backend's ParseAddress ladder: any app path (NAME:// — rebinding
-  // the pane when the scheme names a different source), s3:// URI,
-  // connection URI (an unconfigured one stands its source up and saves
-  // it through SaveSource), local:// form, file URL or bare local path.
-  // A bare path while locally bound navigates without the round-trip —
-  // the pane's own grammar. Returns the entry, or null with the failure
-  // already toasted.
+  // the backend's ParseAddress ladder: any app path (Name/contents or
+  // NAME:// — rebinding the pane when it names a different source),
+  // s3:// URI, connection URI (an unconfigured one stands its source up
+  // and saves it through SaveSource), file URL or bare local path. A
+  // bare path while locally bound navigates without the round-trip —
+  // the pane's own grammar — unless its first segment names a configured
+  // source (isKnownSource), which rebinds instead. Returns the entry, or
+  // null with the failure already toasted.
   async parsePaneAddress(str) {
     const v = String(str || '').trim();
-    if (v && !v.includes('://') && this.binding.kind === 'local') return { kind: 'local', dir: v };
+    const seg = v.split(/[\\/]/)[0] || '';
+    if (v && !v.includes('://') && this.binding.kind === 'local' && !this.isKnownSource?.(seg)) return { kind: 'local', dir: v };
     const hint = this.binding.kind === 'local' ? '' : (this.binding.source || '');
     let r;
     try {
@@ -1084,8 +1086,8 @@ export class SidePane {
     const name = this.binding.name || this.binding.source || '';
     const s = this.sources.find((x) => x.id === this.binding.source || x.name === this.binding.source);
     if (this.binding.kind === 'remote') {
-      bc.title = name + '://' + (this.dir || '/');
-      const root = el('span', { class: 'crumb' + ((!this.dir || this.dir === '/') ? ' current' : ''), title: name + '://' },
+      bc.title = slashPath(name, this.dir);
+      const root = el('span', { class: 'crumb' + ((!this.dir || this.dir === '/') ? ' current' : ''), title: name + '/' },
         srcIconEl(s?.type, s?.color), name);
       root.onclick = () => this.go({ kind: 'remote', source: this.binding.source, dir: '/' });
       bc.appendChild(root);
@@ -1106,9 +1108,9 @@ export class SidePane {
     if (this.binding.kind === 's3') {
       const scoped = !!this.binding.bucket;
       bc.title = scoped
-        ? name + '://' + (this.dir || '')
-        : (this.bucket ? name + '://' + this.bucket + '/' + (this.dir || '') : name + '://');
-      const root = el('span', { class: 'crumb' + ((scoped && !this.dir) ? ' current' : ''), title: name + '://' },
+        ? name + '/' + (this.dir || '')
+        : (this.bucket ? name + '/' + this.bucket + '/' + (this.dir || '') : name);
+      const root = el('span', { class: 'crumb' + ((scoped && !this.dir) ? ' current' : ''), title: scoped ? name + '/' : name },
         srcIconEl(s?.type || 's3', s?.color), name);
       root.onclick = () => this.go(scoped
         ? { kind: 's3', source: this.binding.source, bucket: this.binding.bucket, dir: '' }

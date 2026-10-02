@@ -7,7 +7,7 @@
 // (no bucket) keep the bucket-list level. Node ids are namespaced per
 // source, so two sources can hold same-named buckets without colliding.
 import { api, subscribeStream } from './api.js';
-import { el, srcIcon } from './util.js';
+import { el, srcIconEl } from './util.js';
 import { t } from './i18n.js';
 
 export class Tree {
@@ -598,10 +598,9 @@ export class Tree {
     if (!hasKids && !open) twist.style.visibility = 'hidden';
     const ticon = el('span', { class: 'ticon' });
     if (n.kind === 'source') {
-      // the bold type label painted in the source's own accent color —
-      // the same badge the breadcrumb's root crumb carries
-      ticon.textContent = srcIcon(n.stype);
-      if (n.color) ticon.style.color = n.color;
+      // the tinted type chip painted in the source's own accent color —
+      // the same badge the breadcrumb's root crumb and every picker carry
+      ticon.appendChild(srcIconEl(n.stype, n.color));
     } else ticon.textContent = n.kind === 'rdir' ? '\u{1F4C1}' : n.prefix === '' ? '\u{1F5C0}' : '\u{1F4C1}';
     const row = el('div', {
       class: `tnode${this.currentId === n.id ? ' sel' : ''}${filtered && !this.filter(n.label) ? ' dim' : ''}`,

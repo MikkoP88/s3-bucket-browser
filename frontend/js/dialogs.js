@@ -1,7 +1,7 @@
 // Modal framework + every dialog: confirmations (L1/L2 ladder), prompts,
 // properties, doctor, profile editor, transfer manager, help sheet.
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename, fileIcon } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename, fileIcon, slashPath } from './util.js';
 import { t } from './i18n.js';
 import { LICENSE } from './license.js';
 import { makeSearchGrid, applyStoredCols } from './srgrid.js';
@@ -568,7 +568,7 @@ function installAutoHeight(id, box, p) {
 // searchPresetFromQS rebuilds the scope a ?popout=search window opened
 // with (searchWindow wrote it into the query).
 const searchPresetFromQS = (qs) => {
-  if (qs.get('bucket')) return { mode: 's3', bucket: qs.get('bucket'), prefix: qs.get('prefix') || '' };
+  if (qs.get('bucket')) return { mode: 's3', source: qs.get('source') || '', bucket: qs.get('bucket'), prefix: qs.get('prefix') || '' };
   if (qs.get('source')) return { mode: 'remote', source: qs.get('source'), prefix: qs.get('prefix') || '/' };
   if (qs.get('mode') === 'local') return { mode: 'local', prefix: qs.get('prefix') || '' };
   return undefined;
@@ -2453,7 +2453,7 @@ const GUIDE_SECTIONS = [
   ['Browsing', [
     ['Sidebar tree', 'Sources → buckets → folders. Click to navigate; right-click a node for Properties, Admin panel, transfers and more.'],
     ['Grid', 'Click, Ctrl+click and Shift+click to select, Ctrl+A for all, Ctrl+I to invert, drag a marquee, or just type to jump to an item. The funnel row under the header filters per column; right-click the header to pick columns; Ctrl+F focuses the quick filter.'],
-    ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and paste any address to jump straight there: a source path (NAME://bucket/folder/), an s3:// URI, a connection URL (sftp://user@host:21/root — an unconfigured one is saved as a new source), a local folder (C:\Projects, \\server\share, ~) or a file:/// URL. Back / forward / up history works like Explorer.'],
+    ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and paste any address to jump straight there: a source path (the same Name/contents form the path bar takes), an s3:// URI, a connection URL (sftp://user:pass@host:21/root — an unconfigured one is saved as a new source), a local folder (C:\Projects, \\server\share, ~) or a file:/// URL. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here.'],
     ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size. Clicking any app window — main or popout — brings the whole group forward above other applications, with the clicked window on top.'],
     ['Edit files in place', 'Right-click a file → Edit opens it in the app you pick (the OS "Open with" chooser) or the system default; every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost.'],
@@ -2462,7 +2462,7 @@ const GUIDE_SECTIONS = [
   ['File transfers', [
     ['Upload', 'Toolbar ▲ and the context menus open one Upload menu: Files… (Ctrl+U) picks files, Folder… a whole directory tree — or just drag files/folders from the OS anywhere onto the window.'],
     ['Download', 'Toolbar ▼, Ctrl+D, Enter, or the context menu. Multistep downloads/uploads are multipart and resumable per file. Dragging rows out of the window onto Explorer, Finder or the desktop downloads them as real files.'],
-    ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move. Need the text instead? The context menu (or Edit → Copy as) copies names, normalized paths (NAME://…, the same form the path bar takes) or real URLs to the OS clipboard.'],
+    ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move. Need the text instead? The context menu (or Edit → Copy as) copies names, normalized paths (Name/contents, the same form the path bar takes) or real URLs to the OS clipboard.'],
     ['Two-way Explorer clipboard', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. The other direction works too — Ctrl+C here quietly stages small selections onto the OS clipboard (a hidden download that never shows in File transfers) so Ctrl+V in Explorer pastes them; pasting inside the app still uses the reference copy and runs the real transfer then. Cut never mirrors — an Explorer paste of a cut would move. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
     ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 1000 MB/s).'],
     ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle.'],
@@ -3746,6 +3746,7 @@ export function searchWindow(opts = {}) {
   let q = 'popout=search';
   if (opts.solo) q += '&solo=1';
   if (p.mode === 's3' && p.bucket) {
+    if (p.source) q += `&source=${encodeURIComponent(p.source)}`;
     q += `&bucket=${encodeURIComponent(p.bucket)}`;
     if (p.prefix) q += `&prefix=${encodeURIComponent(p.prefix)}`;
   } else if (p.mode === 'remote' && p.source) {
@@ -3771,8 +3772,11 @@ function sameScope(a, b) {
 }
 
 function searchScopeLabel(s) {
-  if (s?.mode === 's3') return `s3://${s.bucket || ''}/${s.prefix || ''}`;
-  if (s?.mode === 'remote') return `${s.source}:/${(s.prefix || '/').replace(/^\/+/, '')}`;
+  if (s?.mode === 's3') {
+    const c = `${s.bucket || ''}/${s.prefix || ''}`.replace(/^\/+/, '');
+    return s.source ? slashPath(s.source, c) : c;
+  }
+  if (s?.mode === 'remote') return slashPath(s.source || '', s.prefix || '/');
   if (s?.mode === 'local') return s.prefix || 'local';
   return t('search.scopeAll');
 }
@@ -4271,7 +4275,7 @@ export function toast(message, type = '') {
 // editor draft (draft Source object, remote engines only).
 // Resolves: remote → '/path/' string; s3 → {bucket, prefix}.
 // scopeBucket pins a bucket-scoped S3 source to its ONE bucket: the
-// crumb renders NAME://prefix (the bucket is the source's identity, not
+// crumb renders Name/prefix (the bucket is the source's identity, not
 // content) and Up never climbs out to the account's bucket list.
 export function browseDirDialog({ title, kind, source = '', name = '', draft = null, start = '/', startBucket = '', scopeBucket = '', startPrefix = '' }) {
   return new Promise((resolve) => {
@@ -4280,9 +4284,9 @@ export function browseDirDialog({ title, kind, source = '', name = '', draft = n
       : { dir: start || '/' };
     const labelOf = () => kind === 's3'
       ? (scopeBucket && cur.bucket === scopeBucket
-        ? `${name || source}://${cur.prefix || ''}`
-        : `${name || source}://${cur.bucket}${cur.bucket ? '/' + cur.prefix : ''}`)
-      : `${name || source}://${cur.dir || '/'}`;
+        ? `${name || source}/${cur.prefix || ''}`
+        : `${name || source}/${cur.bucket}${cur.bucket ? '/' + cur.prefix : ''}`)
+      : slashPath(name || source, cur.dir);
     const crumb = el('div', { class: 'bd-crumb mono', title: '' });
     const list = el('div', { class: 'bd-list' });
     const status = el('div', { class: 'bd-status' });

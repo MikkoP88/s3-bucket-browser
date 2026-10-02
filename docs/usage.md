@@ -226,9 +226,12 @@ directory compare) with S3 and the secondary pane.
   twins of each other below the global bar.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and it becomes an editable line holding the view's
-  normalized path, `Source://bucket/folder/` — the same `Name://`
-  form the Copy path action puts on the clipboard. The line is a
-  universal address bar: a bare local path (`C:\Projects`,
+  normalized path, `Name/bucket/folder/` — the same `Name/contents`
+  form the Copy path action puts on the clipboard, and a bare source
+  name means that source's home view (the bucket list, or a scoped
+  source's root). The line is a
+  universal address bar: the `Name/contents` form pastes straight
+  back; a bare local path (`C:\Projects`,
   `\\server\share`, `~`, a `file:///C:/Users/...` or
   `file:///home/...` URL), an `s3://bucket/key` URI or a connection
   URI (`ftp://user:pass@host:21/root`, `sftp://`, `webdav://`) opens
@@ -336,9 +339,11 @@ directory compare) with S3 and the secondary pane.
   pane's source picker stands up to choose another.
   The pane's path bar carries the main one's every function: click its
   empty area and the breadcrumb becomes an editable line holding the
-  pane's canonical path (`local://C:\Users\...` when the workstation
-  side is bound) — copy it out, paste any address the main bar takes
-  and the pane goes there: another source's `Name://` path points the
+  pane's canonical path (`Name/contents`, or the bare native path
+  `C:\Users\...` when the workstation side is bound) — copy it out,
+  paste any address the main bar takes
+  and the pane goes there: another source's `Name/contents` path
+  points the
   pane at it, a bare local path or `file:///` URL rebinds the pane to
   the workstation, an `s3://` URI or a connection URI binds it to
   that source (standing one up when none matches), Enter goes, Esc
@@ -449,8 +454,9 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   touch the OS clipboard can turn the whole bridge off: Settings →
   File transfers → *Explorer copy & paste* (on by default).
 - **Text instead of files** — the context menu (or Edit → Copy as)
-  copies names, normalized `Source://bucket/key` paths (the form the
-  path bars paste straight back) or URLs to the OS clipboard.
+  copies names, normalized `Name/bucket/key` paths (the form the
+  path bars paste straight back; local rows copy their bare native
+  path) or URLs to the OS clipboard.
 - **Conflicts & speed** — every transfer states a conflict policy
   (overwrite / skip / rename) with a live pre-check that lists exactly
   which files collide, and can be throttled (256 kB/s … 1000 MB/s).

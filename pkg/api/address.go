@@ -1,7 +1,8 @@
 // address.go resolves one pasted address — the single ladder both path
 // editors (the main pane's and the secondary pane's) submit their lines
-// to. App paths (NAME://contents) name a configured data source
-// directly; s3:// and connection URIs (sftp://user:pass@host:port/root)
+// to. App paths (NAME://contents, or the editors' normalized display
+// form Name/contents) name a configured data source directly; s3:// and
+// connection URIs (sftp://user:pass@host:port/root)
 // resolve against the workspace's configured sources, standing one up on
 // the fly when nothing matches (NewSource — the caller saves it through
 // SaveSource, then navigates); file:/// and bare local paths address the
@@ -39,9 +40,9 @@ func (a *App) ParseAddress(raw, hint string) (*AddressResult, error) {
 	if raw == "" {
 		return nil, errors.New("empty address")
 	}
+	srcs := a.workspaceSources()
 	if i := strings.Index(raw, "://"); i > 0 {
 		scheme, rest := raw[:i], raw[i+3:]
-		srcs := a.workspaceSources()
 		// 1. NAME:// — the scheme names a configured source (by name,
 		// case-insensitively, then by id).
 		for idx := range srcs {
@@ -78,11 +79,29 @@ func (a *App) ParseAddress(raw, hint string) (*AddressResult, error) {
 	if dir, ok := bareLocalDir(raw); ok {
 		return &AddressResult{Kind: "local", Prefix: dir}, nil
 	}
+	// 7. the normalized display form — Name/contents, no scheme: the
+	// first segment (or the whole line) names a configured source (by
+	// name or id, case-insensitively) and the rest is its contents —
+	// exactly what the path editors show, so a copied path pastes
+	// straight back. Local addresses already won at step 6 (drive
+	// letters, UNC, ~); a relative path naming no source stays
+	// unrecognized.
+	seg, rest := raw, ""
+	if i := strings.IndexAny(raw, `/\`); i > 0 {
+		seg, rest = raw[:i], raw[i+1:]
+	}
+	for idx := range srcs {
+		s := &srcs[idx]
+		if strings.EqualFold(s.Name, seg) || (s.ID != "" && strings.EqualFold(s.ID, seg)) {
+			return sourceLoc(s, rest), nil
+		}
+	}
 	return nil, fmt.Errorf("unrecognized address %q", raw)
 }
 
-// sourceLoc maps NAME://rest for one configured source — the grammar
-// the path editors have always spoken: backslashes fold to slashes, a
+// sourceLoc maps one configured source's contents (NAME://rest or the
+// normalized Name/rest) — the grammar the path editors have always
+// spoken: backslashes fold to slashes, a
 // bucket-scoped S3 source takes the whole rest as content inside its one
 // bucket (the legacy doubled form folds away), an account-wide S3 source
 // splits bucket then prefix, and every other type (remote engines and
