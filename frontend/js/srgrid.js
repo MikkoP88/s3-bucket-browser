@@ -28,7 +28,7 @@ const byId = new Map(CATALOG.map((c) => [c.id, c]));
 
 // The out-of-box visible set — exactly the columns the window always
 // showed. A saved choice (s3b-cols-sr) always wins.
-const DEFAULT_COLS = ['name', 'size', 'lastModified'];
+export const SR_DEFAULT_COLS = ['name', 'size', 'lastModified'];
 
 // loadColState mirrors grid.js's loader for the search store: same shape,
 // same tolerance (a corrupt or unknown read is simply "no preference"),
@@ -54,6 +54,34 @@ function loadColState(key) {
   } catch {
     return null;
   }
+}
+
+// cleanCols normalizes an incoming id list the way the live list applies
+// it: catalog-only, deduped, name always present — the Settings apply
+// path writes the store without an instance at hand, so the rule lives
+// once here.
+function cleanCols(ids) {
+  const seen = new Set();
+  const out = [];
+  for (const id of Array.isArray(ids) ? ids : []) {
+    if (COLUMNS.some((c) => c.id === id) && !seen.has(id)) { seen.add(id); out.push(id); }
+  }
+  if (!seen.has('name')) out.unshift('name');
+  return out;
+}
+
+// storedSearchCols reads the persisted set (or the out-of-box one) for
+// the Settings draft; applyStoredCols writes a new set, keeping any
+// saved widths — the dialog's Save path, which may run while no search
+// window exists at all.
+export function storedSearchCols() {
+  const st = loadColState(STORE_KEY);
+  return st && st.cols.length ? [...st.cols] : [...SR_DEFAULT_COLS];
+}
+
+export function applyStoredCols(ids) {
+  const st = loadColState(STORE_KEY);
+  saveColState(STORE_KEY, cleanCols(ids), (st && st.widths) || {});
 }
 
 // typeOf mirrors grid.js's Type-column text (not exported there): Folder,
@@ -84,7 +112,7 @@ export function makeSearchGrid(opts = {}) {
   const body = el('div', { class: 'grid-body sr-list', tabindex: '0', role: 'listbox' });
   const area = el('div', { class: 'sr-results' }, headClip, body);
 
-  let userCols = [...DEFAULT_COLS]; // ordered catalog columns (never Source)
+  let userCols = [...SR_DEFAULT_COLS]; // ordered catalog columns (never Source)
   let widths = {};                  // column id -> user-set pixel width
   let headCells = [];               // the .gh elements, in display order
   let showSource = false;           // multi-origin run only (the old rule)
@@ -274,7 +302,7 @@ export function makeSearchGrid(opts = {}) {
       el('span', { class: 'tname', text: r.key })));
     for (const c of cols()) {
       if (c.id === 'name') continue;
-      const extra = DEFAULT_COLS.includes(c.id) || c.id === 'source' ? '' : ' extra';
+      const extra = SR_DEFAULT_COLS.includes(c.id) || c.id === 'source' ? '' : ' extra';
       const cell = el('div', { class: `gc${c.num ? ' num' : ''} ${c.id}${extra}` });
       cell.textContent = cellText(c, r);
       if (c.id === 'etag') cell.title = cell.textContent;
@@ -447,18 +475,13 @@ export function makeSearchGrid(opts = {}) {
     window.addEventListener('pointercancel', done);
   };
 
-  // setColumns applies a visible-column id list (order IS display order):
-  // unknown ids and duplicates drop out, "name" leads when absent, and
-  // Source never enters — its presence is the run's shape, not a choice.
-  // Hiding the sorted column returns the list to arrival order, the
-  // streaming neutral (grid.js falls back to name; a stream has none).
+  // setColumns applies a visible-column id list (order IS display order;
+  // cleanCols normalizes). Source never enters — its presence is the
+  // run's shape, not a choice. Hiding the sorted column returns the list
+  // to arrival order, the streaming neutral (grid.js falls back to name;
+  // a stream has none).
   const setColumns = (ids) => {
-    const seen = new Set();
-    userCols = [];
-    for (const id of Array.isArray(ids) ? ids : []) {
-      if (COLUMNS.some((c) => c.id === id) && !seen.has(id)) { seen.add(id); userCols.push(id); }
-    }
-    if (!seen.has('name')) userCols.unshift('name');
+    userCols = cleanCols(ids);
     if (!cols().some((c) => c.id === sortKey)) sortKey = '';
     buildHead();
     renderRows();
@@ -466,7 +489,7 @@ export function makeSearchGrid(opts = {}) {
 
   const resetCols = () => {
     widths = {};
-    setColumns(DEFAULT_COLS);
+    setColumns(SR_DEFAULT_COLS);
   };
 
   // columnPicker is the header's right-click menu — the same check-list
@@ -506,10 +529,14 @@ export function makeSearchGrid(opts = {}) {
   // restore the persisted layout (or the window's default) and build
   const stored = loadColState(STORE_KEY);
   widths = (stored && stored.widths) || {};
-  setColumns(stored && stored.cols.length ? stored.cols : DEFAULT_COLS);
+  setColumns(stored && stored.cols.length ? stored.cols : SR_DEFAULT_COLS);
 
   return {
     area, headClip, body,
+    // the Settings Save path re-seats a live window through this (see
+    // applySearchCols in dialogs.js); applyStoredCols covers the no-
+    // instance case with the same normalization
+    applyCols(ids) { setColumns(ids); persist(); },
     setShowSource(v) { if (v === showSource) return; showSource = v; buildHead(); renderRows(); },
     addPage(entries) { hits.push(...entries); renderRows(); },
     clearHits() { hits.length = 0; selKey = null; renderRows(); },

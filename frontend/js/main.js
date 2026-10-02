@@ -10,8 +10,9 @@ import {
   versionsDialog, contentVersionsDialog, markersDialog, adminDialog, editingDialog, searchWindow, searchSourceScopes, classDialog, lockDialog,
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   renderPopoutView, licenseGate,
-  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile,
+  runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile, applySearchCols,
 } from './dialogs.js';
+import { SR_DEFAULT_COLS, storedSearchCols } from './srgrid.js';
 import { LICENSE, licenseLine } from './license.js';
 import { SidePane, aggregateCompare } from './local.js';
 import { t, detectLang, setLang, languages, LANG_NAMES } from './i18n.js';
@@ -1781,16 +1782,6 @@ function menuItems(scope, items) {
 }
 
 // ============================ context menu ============================
-// mergeColOrder applies a catalog-ordered on/off list (Settings builds
-// those) onto a pane's current arrangement: columns that stay visible
-// keep their dragged position, newly shown ones append in catalog order.
-function mergeColOrder(g, onIds) {
-  const on = new Set(onIds);
-  const kept = g.visibleCols().map((c) => c.id).filter((id) => on.has(id));
-  for (const id of onIds) if (!kept.includes(id)) kept.push(id);
-  return kept;
-}
-
 // columnMenu: right-click menu on a grid header — the column picker as a
 // check list against the COLUMNS catalog ('name' is locked on), the same
 // control Settings exposes, one click closer. lsKey is the pane's
@@ -4106,6 +4097,7 @@ async function openSettings() {
       copyVersions: () => localStorage.getItem('s3b-copy-versions') !== '0',
       cols: () => grid.visibleCols().map((c) => c.id),
       colsLocal: () => localPane.grid.visibleCols().map((c) => c.id),
+      colsSr: () => storedSearchCols(),
       showHidden: () => localStorage.getItem('s3b-show-hidden') === '1',
       showMarkers: () => localStorage.getItem('s3b-show-markers') === '1',
       showVersions: () => localStorage.getItem('s3b-show-versions') === '1',
@@ -4132,8 +4124,12 @@ async function openSettings() {
       showThrottle: (v) => localStorage.setItem('s3b-show-throttle', v ? '1' : '0'),
       editChooseApp: (v) => localStorage.setItem('s3b-edit-choose-app', v ? '1' : '0'),
       copyVersions: (v) => localStorage.setItem('s3b-copy-versions', v ? '1' : '0'),
-      cols: (v) => { grid.setColumns(mergeColOrder(grid, v)); saveColState('s3b-cols', grid.visibleCols().map((x) => x.id), grid.widths); },
-      colsLocal: (v) => { localPane.grid.setColumns(mergeColOrder(localPane.grid, v)); saveColState('s3b-cols-local', localPane.grid.visibleCols().map((x) => x.id), localPane.grid.widths); },
+      cols: (v) => { grid.setColumns(v); saveColState('s3b-cols', grid.visibleCols().map((x) => x.id), grid.widths); },
+      colsLocal: (v) => { localPane.grid.setColumns(v); saveColState('s3b-cols-local', localPane.grid.visibleCols().map((x) => x.id), localPane.grid.widths); },
+      // Search window: dialogs.applySearchCols persists the set (saved
+      // widths ride along) and re-seats any live in-page window — native
+      // popouts keep their own document and pick it up on the next open.
+      colsSr: (v) => applySearchCols(v),
       showHidden: (v) => { localStorage.setItem('s3b-show-hidden', v ? '1' : '0'); refreshCurrent(); },
       showMarkers: (v) => { localStorage.setItem('s3b-show-markers', v ? '1' : '0'); grid.showMarkers = v; grid.render(); },
       showVersions: (v) => { localStorage.setItem('s3b-show-versions', v ? '1' : '0'); grid.showVersions = v; grid.render(); },
@@ -4218,7 +4214,7 @@ async function openSettings() {
       theme: 'auto', lang: 'en', autoRefreshMs: 0, refreshOnFocus: false,
       panes: false, log: false, conflict: 'ask', throttle: 0,
       showThrottle: false, editChooseApp: true, copyVersions: true,
-      cols: [...DEFAULT_COLS], colsLocal: [...DEFAULT_COLS],
+      cols: [...DEFAULT_COLS], colsLocal: [...DEFAULT_COLS], colsSr: [...SR_DEFAULT_COLS],
       showHidden: false, showMarkers: false, showVersions: false, parentRow: false,
       delWindow: true, delTypeConfirm: false, delAutoConfirm: false,
       explorerClip: true, xferWin: true, popoutCenter: 'display',

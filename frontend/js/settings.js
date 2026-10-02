@@ -62,23 +62,83 @@ function checkbox(checked, onchange) {
   return el('input', { type: 'checkbox', class: 'set-ctl', checked: !!checked, onchange: (e) => onchange(e.target.checked) });
 }
 
-// colSection renders one grid's column-visibility group: a checkbox per
-// column of the catalog. The identity "Name" column is always visible —
-// shown locked rather than hidden. apply receives the full visible-id list
-// on every change.
-function colSection(labelKey, cur, apply) {
-  const on = new Set(cur);
-  return [
-    el('div', { class: 'set-section', text: t(labelKey) }),
-    ...COLUMNS.map((c) => {
-      const locked = c.id === 'name';
-      const cb = el('input', { type: 'checkbox', class: 'set-ctl', checked: locked || on.has(c.id), disabled: locked });
+// Each selector row names the column's data type (Text, Number,
+// Date & time) — the chip text per catalog id, text the default.
+const COL_KIND = {
+  size: 'col.kindNumber',
+  lastModified: 'col.kindDate',
+  created: 'col.kindDate',
+};
+
+// colManager renders the ONE column partition: a view chooser — the
+// main view, the secondary pane, the Search window — and, under it, the
+// full catalog as an ordered check-list. Tick = visible, the list order
+// IS the column order (top to bottom, left to right), the arrow buttons
+// move a column, and the identity "Name" column stays locked on. The
+// panes persist visible ids only (hidden columns carry no stored
+// position), so still-hidden ones seat after the visible set in catalog
+// order — checking one seats it right where it sits. set receives the
+// staged visible-id list, in order, on every change.
+function colManager(d, set) {
+  const VIEWS = [
+    { key: 'cols', labelKey: 'settings.colsViewMain' },
+    { key: 'colsLocal', labelKey: 'settings.colsViewSide' },
+    { key: 'colsSr', labelKey: 'settings.colsViewSearch' },
+  ];
+  // per-view full order + visible set, derived once per render: ticks
+  // never re-order anything (rows stay put under the pointer), only the
+  // arrows and the draft move things — and a render rebuild (Reset,
+  // security re-sync) re-derives from the fresh draft
+  const order = {};
+  const on = {};
+  for (const v of VIEWS) {
+    const vis = d[v.key] || [];
+    on[v.key] = new Set(vis);
+    order[v.key] = [...vis, ...COLUMNS.filter((c) => !vis.includes(c.id)).map((c) => c.id)];
+  }
+  let cur = VIEWS[0].key;
+  const stage = () => set(cur, order[cur].filter((id) => on[cur].has(id)));
+
+  const list = el('div', { class: 'set-collist', role: 'list' });
+  const draw = () => {
+    const ids = order[cur];
+    list.replaceChildren(...ids.map((id, i) => {
+      const c = COLUMNS.find((x) => x.id === id);
+      const locked = id === 'name';
+      const cb = el('input', { type: 'checkbox', checked: locked || on[cur].has(id), disabled: locked });
       cb.addEventListener('change', () => {
-        if (cb.checked) on.add(c.id); else on.delete(c.id);
-        apply(COLUMNS.filter((x) => on.has(x.id)).map((x) => x.id));
+        if (cb.checked) on[cur].add(id); else on[cur].delete(id);
+        stage();
       });
-      return row(t(c.labelKey), cb, locked ? t('settings.colLocked') : '');
-    }),
+      const move = (delta) => {
+        const j = i + delta;
+        if (j < 0 || j >= ids.length) return;
+        ids.splice(i, 1);
+        ids.splice(j, 0, id);
+        draw();
+        stage();
+      };
+      const mk = (glyph, key, delta) => {
+        const b = el('button', { type: 'button', class: 'btn set-colbtn', text: glyph,
+          'aria-label': t(key), title: t(key), disabled: delta < 0 ? i === 0 : i === ids.length - 1 });
+        b.addEventListener('click', () => move(delta));
+        return b;
+      };
+      return el('div', { class: 'set-colrow', role: 'listitem' },
+        cb,
+        el('span', { class: 'set-colname', text: t(c.labelKey) }),
+        el('span', { class: 'set-colkind', text: t(COL_KIND[id] || 'col.kindText') }),
+        mk('▲', 'col.moveUp', -1),
+        mk('▼', 'col.moveDown', 1));
+    }));
+  };
+  draw();
+  const viewSel = select(VIEWS.map((v) => [v.key, t(v.labelKey)]), cur, (v) => { cur = v; draw(); });
+  return [
+    el('div', { class: 'set-section', text: t('settings.colsSection') }),
+    row(t('settings.colsView'), viewSel),
+    el('div', { class: 'set-colwrap' }, list,
+      el('div', { class: 'set-hint set-colhint', text: t('settings.colsHint') })),
   ];
 }
 
@@ -293,6 +353,7 @@ export function settingsDialog(ctx) {
     copyVersions: s.copyVersions?.() ?? true,
     cols: [...(s.cols?.() || [])],
     colsLocal: [...(s.colsLocal?.() || [])],
+    colsSr: [...(s.colsSr?.() || [])],
     showHidden: !!(s.showHidden?.()),
     showMarkers: !!(s.showMarkers?.()),
     showVersions: !!(s.showVersions?.()),
@@ -342,7 +403,8 @@ export function settingsDialog(ctx) {
 
   // ---- pages (right) ------------------------------------------------------
   // Each page's children are only .set-section headers and .set-row rows
-  // (logFileRows/securityRows/colSection all return flat lists), which is
+  // (logFileRows and securityRows return flat lists of rows; colManager
+  // returns the section, one chooser row and one wrap container), which is
   // what the search walk relies on.
   let pageEls = [];
   const noMatch = el('div', { class: 'set-search-none', hidden: '' });
@@ -446,8 +508,7 @@ export function settingsDialog(ctx) {
           (v) => set('popoutCenter', v),
         ), t('settings.popoutCenterHint')),
         row(t('settings.popoutPersist'), checkbox(d.popoutPersist, (v) => set('popoutPersist', v)), t('settings.popoutPersistHint')),
-        ...colSection('settings.colsMain', d.cols, (v) => set('cols', v)),
-        ...colSection('settings.colsSide', d.colsLocal, (v) => set('colsLocal', v)),
+        ...colManager(d, set),
       ],
       refresh: () => [
         row(t('settings.autorefresh'), select(

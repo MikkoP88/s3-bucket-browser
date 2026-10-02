@@ -8,6 +8,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **One Columns partition for every view in Settings.** The two
+  grid-column check-box groups give way to a single Columns
+  partition in Settings → View: a chooser — main view, secondary
+  pane, Search window — and under it the full catalog as an
+  ordered check-list, where a tick shows a column, the list order
+  is the column order (arrow buttons move a column) and each row
+  names its data type (Text, Number, Date & time). Name stays
+  locked on, the Search window gains its first Settings selector
+  (Source stays automatic and never lists), and Save seats a live
+  Search window on the spot — native popouts pick the layout up
+  on their next open. The old mergeColOrder apply path (which
+  kept a pane's current arrangement and would have discarded a
+  chosen order) is retired; grid.js is untouched.
+
 - **The Search window's columns carry the main view's mechanics.**
   The results grid resizes by boundary drag or keyboard (arrow
   keys, Shift for bigger steps, Home/End to the limits, a

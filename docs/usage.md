@@ -181,9 +181,15 @@ directory compare) with S3 and the secondary pane.
   to pick which columns show; Ctrl+F focuses the quick filter. The Type
   column names common file types ("PNG image", "Text document") in the
   UI language — anything else shows as an extension file ("DAT file") —
-  and is on by default. Every column shows or hides in Settings → View
-  (Name is always on); the out-of-box set is Name, Type, Size and Date
-  modified. Opt-in columns: Date created (bucket views, WebDAV
+  and is on by default. Settings → View holds the one Columns
+  partition for every view — main view, secondary pane, Search
+  window — under a chooser: the full catalog as an ordered
+  check-list where a tick shows a column, the list order is the
+  column order (the arrow buttons move a column), each row names
+  its data type (Text, Number, Date & time) and Name stays locked
+  on; the out-of-box set is Name, Type, Size and Date modified
+  (the Search window starts at Name, Size, Date modified).
+  Opt-in columns: Date created (bucket views, WebDAV
   creationdate, Windows local birth times), Mode (local and SFTP
   permission bits), Storage class and ETag — via the header menu or
   Settings. Columns resize by dragging a header edge — the edge
@@ -283,7 +289,10 @@ directory compare) with S3 and the secondary pane.
   a double-click hands a column its standard width back), drag a
   header sideways to reorder, right-click one for the add/remove
   check-list (name always stays; *Reset columns* restores the
-  out-of-box set) — the layout persists per window across runs. A
+  out-of-box set) — the layout persists per window across runs,
+  and the same choice lives in Settings → View's Columns
+  partition: pick the Search window in the chooser to show, hide
+  and order its columns there too. A
   run spanning several origins adds a **Source** column parked at
   the far edge — it resizes like any column, but never reorders
   and never lists in the check-list — and a single-source run

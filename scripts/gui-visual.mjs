@@ -2967,7 +2967,8 @@ await step('settings-dialog', async () => {
   await ok('delete + column + visibility settings rows present', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#modal-root .set-row')).map((r) => r.textContent);
     const secs = Array.from(document.querySelectorAll('#modal-root .set-section')).map((s) => s.textContent);
-    return secs.some((x) => /main grid columns/i.test(x)) && secs.some((x) => /side panel columns/i.test(x))
+    return secs.some((x) => /^columns$/i.test(x.trim()))
+      && rows.some((x) => /columns for/i.test(x) && /search window/i.test(x))
       && rows.some((x) => /always use the delete window/i.test(x))
       && rows.some((x) => /require typing/i.test(x))
       && rows.some((x) => /delete without prompting/i.test(x))
@@ -2977,6 +2978,71 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /show hidden \(delete-marked\) objects/i.test(x))
       && rows.some((x) => /explorer copy & paste/i.test(x));
   }));
+  // the one Columns partition: a chooser for all three views and the
+  // ordered check-list under it — chips name each column's data type,
+  // Name is locked on, the chooser swaps lists, and the arrows reorder
+  // (a full round trip leaves the draft content-clean, so no column
+  // change rides the Save at the end of this step)
+  await ok('column manager: chooser + ordered list + chips', evalPage(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
+      .find((s) => Array.from(s.options).some((o) => o.textContent === 'Search window'));
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-colrow'));
+    const names = rows.map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
+    const kinds = rows.map((r) => (r.querySelector('.set-colkind')?.textContent || '').trim());
+    return !!sel && sel.value === 'cols' && rows.length === 8
+      && names[0] === 'Name' && kinds[0] === 'Text'
+      && kinds.includes('Number') && kinds.includes('Date & time')
+      && /tick to show a column/i.test(document.querySelector('#modal-root .set-colhint')?.textContent || '');
+  }));
+  await ok('column manager: name row locked on', evalPage(() => {
+    const r = document.querySelectorAll('#modal-root .set-colrow')[0];
+    const cb = r?.querySelector('input[type=checkbox]');
+    return !!cb && cb.checked && cb.disabled;
+  }));
+  await ok('nav walks to the view page', await navTo('view'));
+  await evalPage(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
+      .find((s) => Array.from(s.options).some((o) => o.textContent === 'Search window'));
+    sel.value = 'colsSr';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await ok('chooser swaps in the search window set', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-colrow'));
+    const vis = rows.filter((r) => r.querySelector('input[type=checkbox]').checked)
+      .map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
+    return vis.length === 3 && vis[0] === 'Name' && vis.includes('Size') && vis.includes('Date modified');
+  }));
+  await evalPage(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
+      .find((s) => Array.from(s.options).some((o) => o.textContent === 'Search window'));
+    sel.value = 'cols';
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
+      .find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === 'Date modified');
+    row?.querySelector('button[aria-label="Move up"]').click();
+  });
+  await ok('move up seats date modified above size', evalPage(() => {
+    const names = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
+      .map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
+    return names.indexOf('Date modified') === names.indexOf('Size') - 1
+      && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false;
+  }));
+  await evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
+      .find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === 'Date modified');
+    row?.querySelector('button[aria-label="Move down"]').click();
+  });
+  await ok('move back leaves a clean draft', evalPage(() => {
+    const names = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
+      .map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
+    return document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === true
+      && names.indexOf('Date modified') === names.indexOf('Size') + 1;
+  }));
+  // back to the book's first page: the search legs below assert the
+  // appearance page is what a cleared box restores
+  await navTo('appearance');
   // engine tuning: the Network page carries the timeout/retry rows and the
   // File-transfers page the Transfer-engine group; changing a select
   // stages the WHOLE snapshot (zero fields = Default/Auto) and rides it to
@@ -9020,7 +9086,7 @@ await step('settings-honor', async () => {
   // zero-means-Default/Auto tuning snapshot and file-log off. Runs LAST on
   // purpose: it rewrites every s3b-* key the dialog owns, and its final
   // reload hands the world back the way the boot shim found it.
-  const DIALOG_KEYS = ['s3b-autorefresh', 's3b-cols', 's3b-cols-local', 's3b-conflict',
+  const DIALOG_KEYS = ['s3b-autorefresh', 's3b-cols', 's3b-cols-local', 's3b-cols-sr', 's3b-conflict',
     's3b-copy-versions', 's3b-del-autoconfirm', 's3b-del-typeconfirm', 's3b-del-window',
     's3b-edit-choose-app', 's3b-log', 's3b-os-clip', 's3b-panes',
     's3b-parent-row', 's3b-popout-center', 's3b-popouts-persist', 's3b-refresh-focus', 's3b-show-hidden',
@@ -9083,20 +9149,37 @@ await step('settings-honor', async () => {
     const cb = row?.querySelector('input[type=checkbox]');
     return cb ? cb.checked : null;
   }, label);
-  // column checkboxes live under their own section headers - uncheck by
-  // walking the rows between the section and its next sibling section
-  const uncheckCol = (section, col) => evalPage(({ s, c }) => {
-    const start = Array.from(document.querySelectorAll('#modal-root .set-section'))
-      .find((x) => x.textContent.trim() === s);
-    if (!start) return false;
-    const rows = [];
-    for (let n = start.nextElementSibling; n && !n.classList.contains('set-section'); n = n.nextElementSibling) rows.push(n);
-    const row = rows.find((r) => (r.querySelector('.set-name')?.textContent || '').trim() === c);
+  // the column manager: colPick seats a view in the chooser, colTickTo
+  // drives a column row's checkbox to the wanted state, colMove clicks
+  // its arrow — all against the list the chooser currently shows (the
+  // rows live on the View page, present in the DOM whatever page is
+  // active, and programmatic clicks need no visibility)
+  const colPick = (label) => evalPage((lb) => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
+      .find((s) => Array.from(s.options).some((o) => o.textContent === lb));
+    if (!sel) return false;
+    const opt = Array.from(sel.options).find((o) => o.textContent === lb);
+    if (sel.value === opt.value) return true;
+    sel.value = opt.value;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }, label);
+  const colTickTo = (col, want) => evalPage(({ c, w }) => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
+      .find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === c);
     const cb = row?.querySelector('input[type=checkbox]');
-    if (!cb || !cb.checked || cb.disabled) return false;
+    if (!cb || cb.checked === w) return false;
     cb.click();
     return true;
-  }, { s: section, c: col });
+  }, { c: col, w: want });
+  const colMove = (col, dir) => evalPage(({ c, d }) => {
+    const row = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
+      .find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === c);
+    const b = row?.querySelector('button[aria-label="' + d + '"]');
+    if (!b || b.disabled) return false;
+    b.click();
+    return true;
+  }, { c: col, d: dir === 'up' ? 'Move up' : 'Move down' });
   // appearance: language is the one control whose apply reloads the
   // window - stage it, prove it stays deferred, hand it back (the apply
   // path gets its own dedicated reload pass at the end of this step)
@@ -9113,10 +9196,16 @@ await step('settings-honor', async () => {
   await tickTo('Show parent directory row', true);
   await tickTo('Remember popout window positions', false);
   await pick('Popout windows open centered on', 'app');
-  await uncheckCol('Main grid columns', 'Type');
-  await uncheckCol('Side panel columns', 'Size');
+  await ok('columns stage per view through the manager', await colPick('Search window')
+    && await colTickTo('Date modified', false)
+    && await colPick('Main view')
+    && await colTickTo('Type', false)
+    && await colMove('Date modified', 'up')
+    && await colPick('Secondary pane')
+    && await colTickTo('Size', false));
   await ok('view rows stage without applying', evalPage(() =>
     localStorage.getItem('s3b-panes') === null && localStorage.getItem('s3b-log') === null
+    && localStorage.getItem('s3b-cols') === null && localStorage.getItem('s3b-cols-sr') === null
     && document.getElementById('local-pane').classList.contains('hidden')
     && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false));
   // refresh
@@ -9168,8 +9257,10 @@ await step('settings-honor', async () => {
     for (const k of Object.keys(kv)) if (localStorage.getItem(k) !== kv[k]) return false;
     const cols = JSON.parse(localStorage.getItem('s3b-cols') || 'null') || {};
     const colsLocal = JSON.parse(localStorage.getItem('s3b-cols-local') || 'null') || {};
-    return Array.isArray(cols.cols) && !cols.cols.includes('type') && cols.cols.includes('name')
-      && Array.isArray(colsLocal.cols) && !colsLocal.cols.includes('size') && colsLocal.cols.includes('name');
+    const colsSr = JSON.parse(localStorage.getItem('s3b-cols-sr') || 'null') || {};
+    return Array.isArray(cols.cols) && cols.cols.join(',') === 'name,lastModified,size'
+      && Array.isArray(colsLocal.cols) && colsLocal.cols.join(',') === 'name,type,lastModified'
+      && Array.isArray(colsSr.cols) && colsSr.cols.join(',') === 'name,size';
   }));
   // the row's re-seat rides the re-list this save triggers (showHidden
   // refreshes the view; the loading pass parks the row until rows land) —
@@ -9182,6 +9273,10 @@ await step('settings-honor', async () => {
     && !document.getElementById('grid-head').textContent.includes('Type')
     && !document.getElementById('local-grid-head').textContent.includes('Size')
     && !document.getElementById('upbar').classList.contains('hidden')));
+  await ok('grid head wears the settings order', evalPage(() => {
+    const h = document.getElementById('grid-head').textContent.toLowerCase();
+    return h.indexOf('name') < h.indexOf('date modified') && h.indexOf('date modified') < h.indexOf('size');
+  }));
   const tc = await findCall('SetTuning');
   await ok('one whole-snapshot SetTuning rides the save', tc
     && tc.args[0] === 30000 && tc.args[1] === 300000 && tc.args[2] === 5
@@ -9210,6 +9305,22 @@ await step('settings-honor', async () => {
     && (await cbState('Show parent directory row')) === false
     && (await cbState('Remember popout window positions')) === true
     && (await selValue('Popout windows open centered on')) === 'display');
+  await ok('reset stages the column defaults for all three views', evalPage(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
+      .find((s) => Array.from(s.options).some((o) => o.textContent === 'Search window'));
+    const vis = () => Array.from(document.querySelectorAll('#modal-root .set-colrow'))
+      .filter((r) => r.querySelector('input[type=checkbox]').checked)
+      .map((r) => (r.querySelector('.set-colname')?.textContent || '').trim()).join('|');
+    const walk = (label) => {
+      const opt = Array.from(sel.options).find((o) => o.textContent === label);
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return vis();
+    };
+    return walk('Main view') === 'Name|Type|Size|Date modified'
+      && walk('Secondary pane') === 'Name|Type|Size|Date modified'
+      && walk('Search window') === 'Name|Size|Date modified';
+  }));
   await ok('reset stages the editing + deleting + transfers defaults',
     (await cbState('Ask which app opens files for editing')) === true
     && (await cbState('Always use the delete window')) === true
@@ -9242,10 +9353,13 @@ await step('settings-honor', async () => {
     };
     for (const k of Object.keys(kv)) if (localStorage.getItem(k) !== kv[k]) return false;
     const def = ['name', 'type', 'size', 'lastModified'];
+    const srDef = ['name', 'size', 'lastModified'];
     const cols = JSON.parse(localStorage.getItem('s3b-cols') || 'null') || {};
     const colsLocal = JSON.parse(localStorage.getItem('s3b-cols-local') || 'null') || {};
-    return def.every((c) => cols.cols?.includes(c)) && cols.cols?.length === 4
-      && def.every((c) => colsLocal.cols?.includes(c)) && colsLocal.cols?.length === 4;
+    const colsSr = JSON.parse(localStorage.getItem('s3b-cols-sr') || 'null') || {};
+    return cols.cols?.join(',') === def.join(',')
+      && colsLocal.cols?.join(',') === def.join(',')
+      && colsSr.cols?.join(',') === srDef.join(',');
   }));
   await ok('default consumers return to their boot state', evalPage(() =>
     document.getElementById('local-pane').classList.contains('hidden')

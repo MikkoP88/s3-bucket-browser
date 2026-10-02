@@ -4,7 +4,7 @@ import { api, onEvent, subscribeStream } from './api.js';
 import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename, fileIcon } from './util.js';
 import { t } from './i18n.js';
 import { LICENSE } from './license.js';
-import { makeSearchGrid } from './srgrid.js';
+import { makeSearchGrid, applyStoredCols } from './srgrid.js';
 
 const root = () => document.getElementById('modal-root');
 
@@ -3787,6 +3787,16 @@ export function searchSourceScopes(list = []) {
     : { label: s.name, scope: { mode: 'remote', source: s.name, prefix: '/' } }));
 }
 
+// applySearchCols lands a Settings column choice for the Search window:
+// the store is written outright (any saved widths ride along), and the
+// live in-page window re-seats on the spot. A native popout Search
+// window keeps its own document — it picks the new layout up on its
+// next open, the same contract persisted widths already carry.
+let srLive = null;
+export function applySearchCols(ids) {
+  applyStoredCols(ids);
+  srLive?.applyCols?.(ids);
+}
 // pane: a secondary-pane-scoped window — its relayed picks carry the
 // pane flag so the main window routes them to the pane, not the main view
 function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
@@ -3835,6 +3845,9 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
   // column mechanic the main view has (openHit is a hoisted function
   // declaration, so the factory may take it before its declaration)
   const rg = makeSearchGrid({ onActivate: (r) => openHit(r) });
+  // the latest build is the live one behind applySearchCols: every
+  // window open rebuilds here, and a re-seat against a closed window's
+  // detached subtree is inert
 
   // setStatus paints the area's own status bar — the content size bar's
   // twin; errors arrive colored, everything else rides its dim default
