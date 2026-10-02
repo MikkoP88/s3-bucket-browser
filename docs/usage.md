@@ -92,6 +92,16 @@ box (Windows) or terminal line (Linux/macOS) instead of an invisible
 hang, with the details in the event log (**Ctrl+L**). Starting it
 again after that message normally just works.
 
+A second launch is also not a broken start — the app keeps one window
+at a time on Windows: launching it again (double-click, taskbar, a
+second shortcut) brings the instance that is already running to the
+front, restoring it if it was minimised with its popout windows
+lifted behind it, and the new process quietly exits. Two GUIs would
+fight over the same browser profile, which is exactly the
+invisible-hang shape above. Set S3B_MULTI_INSTANCE=1 before launching
+to opt out and run two copies side by side (separate profiles, test
+rigs).
+
 ---
 
 ## 2. Supported data sources

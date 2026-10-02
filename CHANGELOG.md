@@ -8,6 +8,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **One window at a time: a second launch focuses the running app.**
+The Windows desktop build now runs a single GUI instance: a named
+mutex (per login session) marks the running app from the first line
+of startup, and a second launch signals it through a named event —
+the running window comes forward (restored if minimised, the popout
+group lifted behind it) — then exits quietly. Two instances would
+contend the same WebView2 user-data folder and the loser would hang
+into the startup watchdog, the exact shape the app's preflight
+defenses exist for; the kernel reclaims the lock when the process
+dies (no stale lock after a crash), guard failures fail open to the
+old multi-instance behavior, and S3B_MULTI_INSTANCE=1 opts out for
+side-by-side copies. The CLI, the headless build and the server
+build stay multi-instance.
+
 - **Path bars take any address, and every path normalizes to
   `Source://`.** Both content panes' path lines are universal
   address bars now: paste a bare local path (`C:\Projects`,

@@ -98,6 +98,14 @@ func (l *lifecycle) ServiceStartup(ctx context.Context, options application.Serv
 
 // Run starts the desktop GUI and blocks until the app quits.
 func Run(version string) error {
+	// One GUI at a time (desktop Windows): a second launch hands its focus
+	// to the instance already running and exits — two GUIs would contend
+	// the same WebView2 user-data folder and the loser would hang into the
+	// startup watchdog. S3B_MULTI_INSTANCE=1 opts out (side-by-side rigs).
+	focus, alreadyRunning := guardSingleInstance()
+	if alreadyRunning {
+		return nil
+	}
 	detachConsole()
 	// The embedded WebView2 bindings log one unconditional line at startup
 	// ("[WebView2] Environment created successfully", go-webview2
@@ -215,6 +223,21 @@ func Run(version string) error {
 		guihealth.MarkWindowUp() // window + webview exist — start succeeded
 	})
 	installGroupRaise(app3) // any app window clicked → the whole group comes forward
+	if focus != nil {
+		// A later launch's focus signal (gui_single_windows.go): raise the
+		// app. Focus() restores a minimised window and takes foreground;
+		// the group raise lifts the popouts behind it without stealing the
+		// focus. Safe off the main thread — the same window-call pattern
+		// the popout shell hooks already run on.
+		go func() {
+			for range focus {
+				if w, ok := app3.Window.GetByName("main"); ok {
+					w.Focus()
+				}
+				raiseWindowGroup(app3, "main")
+			}
+		}()
+	}
 	installShell(app3, app)
 	return app3.Run()
 }
