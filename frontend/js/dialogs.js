@@ -569,6 +569,7 @@ function installAutoHeight(id, box, p) {
 const searchPresetFromQS = (qs) => {
   if (qs.get('bucket')) return { mode: 's3', bucket: qs.get('bucket'), prefix: qs.get('prefix') || '' };
   if (qs.get('source')) return { mode: 'remote', source: qs.get('source'), prefix: qs.get('prefix') || '/' };
+  if (qs.get('mode') === 'local') return { mode: 'local', prefix: qs.get('prefix') || '' };
   return undefined;
 };
 
@@ -601,11 +602,17 @@ export function renderPopoutView(kind, qs) {
   else if (kind === 'search') {
     // the native window lists its sources too: boot never ran in here, so
     // the dropdown's source entries load straight from the backend and a
-    // failed load still opens the window with All plus the preset
-    api.ListSources().then(
-      (list) => searchWindow({ scopes: searchSourceScopes(list), preset: searchPresetFromQS(qs) }),
-      () => searchWindow({ preset: searchPresetFromQS(qs) }),
-    );
+    // failed load still opens the window with All plus the preset. A solo
+    // window (the secondary pane's search) skips the source list
+    // entirely: its one scope rides in the query preset
+    const solo = qs.get('solo') === '1';
+    const open = (list) => searchWindow({
+      scopes: solo ? [] : searchSourceScopes(list),
+      preset: searchPresetFromQS(qs),
+      solo,
+    });
+    if (solo) open([]);
+    else api.ListSources().then(open, () => open([]));
   }
   else document.body.textContent = `Unknown popout: ${kind}`;
 }
@@ -3717,36 +3724,44 @@ export function editingDialog(onChanged) {
 // searchWindow is the popout twin of the transfer manager: one floating
 // Search window (a native OS window in the desktop shell, the DOM
 // fallback inside one), reopen focuses, close cancels a running search.
-// opts.scopes feeds the scope dropdown ({label, scope} each; a scope is
-// {mode: "all"|"s3"|"remote", source, bucket, prefix} — prefix doubles as
-// the remote root path, mirroring the backend SearchScope); opts.preset
-// preselects one; onOpen(hit) navigates to a picked result — inside a
-// native popout window there is no nav, so picks relay through
-// api.SearchGoto and land in the main window's search:open handler.
+// opts.scopes feeds the scope dropdown ({label, scope} each — bare scope
+// objects get their label here; a scope is {mode, source, bucket, prefix}
+// with mode "all"|"s3"|"remote"|"local" — prefix doubles as the remote
+// root path or the local directory, mirroring the backend SearchScope);
+// opts.preset preselects one; opts.solo drops the All entry (the
+// secondary pane's one-scope search); onOpen(hit) navigates to a picked
+// result — inside a native popout window there is no nav, so picks relay
+// through api.SearchGoto and land in the main window's search:open
+// handler.
 export function searchWindow(opts = {}) {
   const all = { label: t('search.scopeAll'), scope: { mode: 'all' } };
-  const scopes = [all, ...(opts.scopes || [])];
+  const given = (opts.scopes || []).map((x) => (x.scope ? x : { label: searchScopeLabel(x), scope: x }));
+  const scopes = opts.solo ? given : [all, ...given];
   if (opts.preset && !scopes.some((x) => sameScope(x.scope, opts.preset))) {
     scopes.push({ label: searchScopeLabel(opts.preset), scope: opts.preset });
   }
   const sel = Math.max(0, scopes.findIndex((x) => sameScope(x.scope, opts.preset)));
   const p = scopes[sel].scope;
   let q = 'popout=search';
+  if (opts.solo) q += '&solo=1';
   if (p.mode === 's3' && p.bucket) {
     q += `&bucket=${encodeURIComponent(p.bucket)}`;
     if (p.prefix) q += `&prefix=${encodeURIComponent(p.prefix)}`;
   } else if (p.mode === 'remote' && p.source) {
     q += `&source=${encodeURIComponent(p.source)}`;
     if (p.prefix && p.prefix !== '/') q += `&prefix=${encodeURIComponent(p.prefix)}`;
+  } else if (p.mode === 'local') {
+    q += '&mode=local';
+    if (p.prefix) q += `&prefix=${encodeURIComponent(p.prefix)}`;
   }
   if (maybeNativePopout({
     id: 'search', query: q, title: t('findTitle'),
     w: 760, h: 600, minW: 520, minH: 460,
-    domOpen: () => searchWindowDom(scopes, sel, opts.onOpen),
+    domOpen: () => searchWindowDom(scopes, sel, opts.onOpen, !!opts.solo),
   })) {
     return { close: () => api.ClosePopout('search') };
   }
-  return searchWindowDom(scopes, sel, opts.onOpen);
+  return searchWindowDom(scopes, sel, opts.onOpen, !!opts.solo);
 }
 
 function sameScope(a, b) {
@@ -3757,6 +3772,7 @@ function sameScope(a, b) {
 function searchScopeLabel(s) {
   if (s?.mode === 's3') return `s3://${s.bucket || ''}/${s.prefix || ''}`;
   if (s?.mode === 'remote') return `${s.source}:/${(s.prefix || '/').replace(/^\/+/, '')}`;
+  if (s?.mode === 'local') return s.prefix || 'local';
   return t('search.scopeAll');
 }
 
@@ -3770,7 +3786,9 @@ export function searchSourceScopes(list = []) {
     : { label: s.name, scope: { mode: 'remote', source: s.name, prefix: '/' } }));
 }
 
-function searchWindowDom(scopes, selIdx, onOpen) {
+// pane: a secondary-pane-scoped window — its relayed picks carry the
+// pane flag so the main window routes them to the pane, not the main view
+function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
   // inside a native popout window the main app never booted: picks relay
   // through the backend event bus instead of navigating
   const inWin = document.body.classList.contains('popout-win');
@@ -3950,7 +3968,7 @@ function searchWindowDom(scopes, selIdx, onOpen) {
   }
 
   function openHit(r) {
-    if (inWin) { api.SearchGoto(r); return; }
+    if (inWin) { api.SearchGoto(pane ? { ...r, pane: true } : r); return; }
     onOpen?.(r);
   }
 

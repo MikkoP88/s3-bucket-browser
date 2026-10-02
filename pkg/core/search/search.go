@@ -47,6 +47,10 @@ type Result struct {
 	listing.Entry
 	Bucket string `json:"bucket"`
 	Source string `json:"source,omitempty"`
+	// Pane marks a pick relayed from a secondary-pane search window
+	// (SearchGoto): the hit must navigate the pane the window was scoped
+	// to, not the main view. Transport-only — search runs never set it.
+	Pane bool `json:"pane,omitempty"`
 }
 
 // Match reports whether one object passes the filter. key is the full

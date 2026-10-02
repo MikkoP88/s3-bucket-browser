@@ -57,8 +57,10 @@ export function commandState(pane = null) {
       canDownload: bound && (inObjects || inRemote) && sel >= 1,
       canNewFolder: bound && (inObjects || inRemote),
       canNewFile: bound && (inObjects || inRemote),
-      canFind: ctx.hasProfile(),
-      canCompare: true, // the pane exists — comparing it with the main view is meaningful
+      // Search scopes to the pane's own binding — a whole pane-content run,
+      // local workstation FS included — so it rides on bound, not the S3
+      // profile gate the main view's copy answers to
+      canFind: bound,
     };
   }
   const loc = nav.current;
@@ -107,9 +109,9 @@ const BUTTONS = {
 };
 
 // The secondary pane's mirror set — its own back/forward/upload/download/
-// new-folder/new-file/find, plus its Compare copy (always meaningful
-// while the pane is open; the pane's other window-scope buttons — theme,
-// help, the toggle, close — are always-enabled like their main copies).
+// new-folder/new-file/find. The window-scope copies it used to carry
+// (Compare, theme, help, the Dual-pane toggle) live in the global bar now;
+// its close stays always-enabled.
 const PANE_BUTTONS = {
   'local-btn-back': 'canBack',
   'local-btn-forward': 'canForward',
@@ -118,7 +120,6 @@ const PANE_BUTTONS = {
   'local-btn-newfolder': 'canNewFolder',
   'local-btn-newfile': 'canNewFile',
   'local-btn-find': 'canFind',
-  'local-compare': 'canCompare',
 };
 
 function applyButtons(map, state) {

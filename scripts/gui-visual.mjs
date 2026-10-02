@@ -747,7 +747,11 @@ function shim() {
       const f = world.fault || {};
       if (f.localDelayMs) await new Promise((r) => setTimeout(r, f.localDelayMs));
       if (f.localError) throw new Error(f.localError);
-      return JSON.parse(JSON.stringify(world.local[dir] || []));
+      // the real backend Cleans the dir before reading it, so a trailing
+      // separator (the pane crumb's local targets carry one) lists the same
+      // folder — the fixture lookup follows suit; a drive root keeps its own
+      const k = String(dir || '').replace(/[\\/]+$/, '');
+      return JSON.parse(JSON.stringify(world.local[(k.length > 2 ? k : dir)] || []));
     },
     LocalRoots: () => ['C:\\', 'D:\\'],
     LocalHome: () => 'C:\\Users\\demo',
@@ -971,6 +975,23 @@ function shim() {
             if (atLimit()) return;
           }
         };
+        // walkLocal walks the workstation fixture under one root — a
+        // pane-scoped search sends a local-mode scope whose prefix is the
+        // pane's directory, and the walk must stay inside that subtree
+        const walkLocal = (root) => {
+          searched.add('local');
+          const r = String(root || '').replace(/[\\/]+$/, '').toUpperCase();
+          for (const [d, rows] of Object.entries(world.local)) {
+            const dd = d.replace(/[\\/]+$/, '').toUpperCase();
+            if (r && dd !== r && !dd.startsWith(r + '\\')) continue;
+            for (const e of rows) {
+              scanned += 1;
+              const hit = { key: e.path, name: e.name, isDir: !!e.isDir, size: e.size || 0, lastModified: e.modTime || 0 };
+              if (matches(hit)) hits.push(hit);
+              if (atLimit()) return;
+            }
+          }
+        };
         const mode = scope.mode || 'all';
         if (mode === 's3') {
           let name = scope.source || world.viewSource || 'hetzner';
@@ -990,6 +1011,11 @@ function shim() {
             : (world.sources.find((x) => x.id === scope.source) || {}).name;
           if (!name) throw new Error('unknown remote source');
           walkRemote(name, scope.prefix || '/');
+        } else if (mode === 'local') {
+          if (opts.class) throw new Error('the workstation filesystem carries no storage class — drop the class filter or search S3 only');
+          let root = scope.prefix || '';
+          if (root === '' || root === '~') root = 'C:\\Users\\demo';
+          walkLocal(root);
         } else if (mode === 'all') {
           for (const src of world.sources) {
             if (atLimit()) break;
@@ -5743,6 +5769,23 @@ await step('dual-pane', async () => {
     return bad.join('; ');
   });
   await ok('pane toolbar stays inside its bar' + (ptool ? ' [' + ptool + ']' : ''), !ptool);
+  // the app-scope quartet now lives on the global bar between the menubar
+  // and the content — Dual-pane, Compare, theme, help — and neither
+  // content toolbar carries them anymore (each pane keeps only its own)
+  await ok('the global bar carries the app-scope quartet between menubar and content', evalPage(() => {
+    const g = document.getElementById('gbar');
+    if (!g) return false;
+    const ids = Array.from(g.querySelectorAll('button[id]')).map((b) => b.id);
+    return g.classList.contains('gbar')
+      && ids.join(',') === 'btn-panes,btn-compare,btn-theme,btn-help'
+      && document.getElementById('menubar').nextElementSibling === g
+      && !!g.nextElementSibling && g.nextElementSibling.tagName === 'MAIN';
+  }));
+  await ok('neither content toolbar carries the app-scope controls anymore', evalPage(() =>
+    ['btn-panes', 'btn-compare', 'btn-theme', 'btn-help',
+      'local-btn-panes', 'local-compare', 'local-btn-theme', 'local-btn-help']
+      .every((id) => !document.querySelector('#toolbar #' + id)
+        && !document.querySelector('#local-toolbar #' + id))));
   // the onboarding picker is one way in — the workstation first (a
   // direct rebind, the same act the picker's choice performs)
   await page.selectOption('#local-src', 'local');
@@ -6316,13 +6359,120 @@ await step('delete-window-uniform', async () => {
 
 await step('compare', async () => {
   await navObjects('team-files');
-  await page.click('#local-compare');
+  await page.click('#btn-compare');
   await waitFor(async () => evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
     .some((r) => (r.dataset.cmp || '') !== '')), 4000, 'cmp decorations');
   await ok('compare decorations painted', evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
     .some((r) => ['newer-remote', 'size-diff', 'only-remote', 'diff-below', 'same'].includes(r.dataset.cmp))));
   await ok('CompareAny called with both sides', (await findCall('CompareAny')) !== null);
   await shotOf('compare', '#grid-wrap');
+});
+
+await step('pane-search', async () => {
+  // the pane's Search scopes to the pane alone: the scope dropdown offers
+  // exactly the pane's binding — labeled by its directory, no All sources
+  // — the call reaches the backend as a local-mode scope with that
+  // prefix, and a pick navigates the pane and selects the row
+  await evalPage(() => {
+    localStorage.removeItem('s3b-side-src');
+    localStorage.removeItem('s3b-side-loc');
+    window.__s3bSidePane.reset();
+  });
+  if (!(await evalPage(() => document.getElementById('local-pane').classList.contains('hidden')))) {
+    await page.click('#local-btn-close');
+  }
+  await page.click('#btn-panes');
+  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane at workstation home');
+  await page.click('#local-btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'pane search window');
+  const S = '#popout-root .popout[data-pop="search"]';
+  await sleep(250);
+  await ok('one scope: the pane\'s own directory, no All entry', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    const labels = Array.from(sel.options).map((o) => o.textContent.trim());
+    return sel.options.length === 1 && labels[0] === 'C:\\Users\\demo'
+      && !labels.some((l) => /all data sources/i.test(l));
+  }, S));
+  await page.fill(S + ' .sr-name input.input', '*.pdf');
+  await page.press(S + ' .sr-name input.input', 'Enter');
+  await sleep(150);
+  await waitFor(async () => {
+    const c = await findCall('Search');
+    return !!c && c.args[0].mode === 'local' && c.args[0].prefix === 'C:\\Users\\demo';
+  }, 4000, 'local-mode Search call');
+  const sc = await findCall('Search');
+  await ok('the pane scope reaches the backend exactly', !!sc
+    && sc.args[0].mode === 'local' && sc.args[0].prefix === 'C:\\Users\\demo'
+    && sc.args[1].pattern === '*.pdf');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 2, S), 4000, 'local results');
+  await ok('the workstation walk finds the pdf pair', evalPage((s) => {
+    const t = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row')).map((r) => r.textContent).join('|');
+    return t.includes('invoice.pdf') && t.includes('tax-2025.pdf');
+  }, S));
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'))
+      .find((r) => r.textContent.includes('invoice.pdf'))
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  }, S);
+  await waitFor(async () => !!(await sideRow('spec.docx')), 6000, 'pane navigated to Downloads');
+  await ok('a pick navigates the pane to the hit\'s folder', evalPage(() =>
+    String(window.__s3bSidePane.dir || '').replace(/[\\/]+$/, '') === 'C:\\Users\\demo\\Downloads'));
+  await ok('the hit\'s row lands selected in the pane', evalPage(() => {
+    const sel = document.querySelector('#local-grid-body .grid-row.sel');
+    return !!sel && !!sel._model && sel._model.key === 'C:\\Users\\demo\\Downloads\\invoice.pdf';
+  }));
+  await closePopout('search');
+});
+
+await step('pane-history', async () => {
+  // the pane's own history carries the same Explorer rule the main
+  // view's learned: a crumb climb on the pane's path bar leaves the
+  // deeper view one pane-Forward away, the roots view above every drive
+  // qualifies too, and going deeper still cuts it
+  await evalPage(() => {
+    if (document.getElementById('local-pane').classList.contains('hidden')) {
+      document.getElementById('btn-panes').click();
+    }
+  });
+  await evalPage(() => window.__s3bSidePane.go({ kind: 'local', dir: 'C:\\Users\\demo' }));
+  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane home');
+  await evalPage(() => window.__s3bSidePane.go({ kind: 'local', dir: 'C:\\Users\\demo\\Documents' }));
+  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane Documents');
+  await ok('a deeper pane move cuts the pane Forward', evalPage(() =>
+    document.getElementById('local-btn-forward').disabled));
+  await evalPage(() => {
+    const c = Array.from(document.querySelectorAll('#local-crumb .crumb'))
+      .find((x) => (x.textContent || '').trim() === 'demo');
+    if (c) c.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await waitFor(async () => !!(await sideRow('notes.txt')), 6000, 'pane climbed home');
+  await ok('a pane crumb climb leaves the pane Forward armed', evalPage(() =>
+    !document.getElementById('local-btn-forward').disabled));
+  await page.click('#local-btn-forward');
+  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane forward to Documents');
+  await ok('the pane Forward click returns into the deeper folder', true);
+  await evalPage(() => {
+    const c = Array.from(document.querySelectorAll('#local-crumb .crumb'))
+      .find((x) => (x.textContent || '').trim() === 'This PC');
+    if (c) c.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await waitFor(async () => !!(await sideRow('C:\\')), 6000, 'pane roots view');
+  await ok('climbing to This PC arms the pane Forward', evalPage(() =>
+    !document.getElementById('local-btn-forward').disabled));
+  await page.click('#local-btn-forward');
+  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane forward from roots');
+  await ok('the pane Forward returns from the roots view', true);
+  // and the cut still applies: home again, then deeper once more
+  await evalPage(() => {
+    const c = Array.from(document.querySelectorAll('#local-crumb .crumb'))
+      .find((x) => (x.textContent || '').trim() === 'demo');
+    if (c) c.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await waitFor(async () => !!(await sideRow('notes.txt')), 6000, 'pane home again');
+  await evalPage(() => window.__s3bSidePane.go({ kind: 'local', dir: 'C:\\Users\\demo\\Documents' }));
+  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane Documents again');
+  await ok('a fresh deeper pane move cuts the pane Forward again', evalPage(() =>
+    document.getElementById('local-btn-forward').disabled));
 });
 
 await step('log-area', async () => {
@@ -7451,6 +7601,24 @@ await step('toolbar-nav', async () => {
   await page.keyboard.press('F5');
   await waitFor(async () => (await findCall('ListObjectsStream')) !== null, 4000, 'F5 ListObjectsStream');
   await ok('F5 refreshes the current view', true);
+  // the relist streams in — wait for the settled root rows before the
+  // leg below picks a row out of them
+  await waitFor(async () => {
+    const k = await rowKeys();
+    return k.includes('readme.md') && !k.includes('docs/notes.md');
+  }, 6000, 'root rows settled after F5');
+  // the data-source tree is a road uphill too: climbing it while deeper
+  // in a bucket leaves Forward armed exactly like the Back button does —
+  // the report was that only the Back button armed it
+  await dblClickRow('docs');
+  await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 6000, 'docs for the tree climb');
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'tree climb to the buckets view');
+  await ok('tree climb leaves Forward armed', evalPage(() =>
+    !document.getElementById('btn-forward').disabled));
+  await page.click('#btn-forward');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'forward back to the bucket');
+  await ok('Forward click returns after a tree climb', true);
 });
 
 await step('parent-row', async () => {
@@ -7614,6 +7782,26 @@ await step('crumb-click', async () => {
   if (root) await root.asElement().click();
   await waitFor(async () => (await rowKeys()).includes('logs-2026'), 6000, 'buckets via crumb');
   await ok('source crumb returns to the buckets view', true);
+  // the Explorer rule the history now carries: a climb to an ancestor by
+  // crumb is a backward move in disguise — the deeper view stays one
+  // Forward away instead of being cut
+  await ok('crumb climb leaves Forward armed', evalPage(() =>
+    !document.getElementById('btn-forward').disabled));
+  await page.click('#btn-forward');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'forward back into docs');
+  await ok('Forward click returns into the folder the climb left', true);
+  await page.click('#btn-back');
+  await waitFor(async () => (await rowKeys()).includes('logs-2026'), 6000, 'back to buckets again');
+  await ok('Back arms Forward again', evalPage(() =>
+    !document.getElementById('btn-forward').disabled));
+  // re-listing the very same place (the crumb that is already current)
+  // moves no history at all — Forward must survive the re-list untouched
+  const cur = await elOrNull(() => Array.from(document.querySelectorAll('#breadcrumb .crumb'))
+    .find((c) => /hetzner/.test(c.textContent)) || null);
+  if (cur) await cur.asElement().click();
+  await waitFor(async () => (await rowKeys()).includes('logs-2026'), 6000, 'current crumb re-list');
+  await ok('clicking the current crumb is history-neutral', evalPage(() =>
+    !document.getElementById('btn-forward').disabled));
 });
 
 await step('favorites', async () => {
@@ -8264,8 +8452,8 @@ await step('layout-audit', async () => {
   // their bar (no vertical bleed, no horizontal overflow)
   const align = await evalPage(() => {
     const bad = [];
-    for (const bar of [document.getElementById('menubar'), document.getElementById('toolbar'),
-      document.querySelector('footer.statusbar')].filter(Boolean)) {
+    for (const bar of [document.getElementById('menubar'), document.getElementById('gbar'),
+      document.getElementById('toolbar'), document.querySelector('footer.statusbar')].filter(Boolean)) {
       const r = bar.getBoundingClientRect();
       if (bar.scrollWidth > bar.clientWidth + 1) bad.push(`${bar.id || 'bar'}-hscroll`);
       for (const c of bar.querySelectorAll('*')) {
@@ -8277,7 +8465,7 @@ await step('layout-audit', async () => {
     }
     return { ok: bad.length === 0, bad: bad.join(',') };
   });
-  await ok('menubar/toolbar/statusbar aligned' + (align.ok ? '' : ' [' + align.bad + ']'), align.ok);
+  await ok('menubar/gbar/toolbar/statusbar aligned' + (align.ok ? '' : ' [' + align.bad + ']'), align.ok);
   await shot('final-light');
   // dark theme main view
   await evalPage(() => { document.documentElement.dataset.theme = 'dark'; });

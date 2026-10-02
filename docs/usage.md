@@ -196,10 +196,24 @@ directory compare) with S3 and the secondary pane.
   ("calculating…" meanwhile), are cached per folder so revisiting is
   instant, and a failed walk falls back to listing-level sums marked
   *partial — at least this much* with the error on hover.
+- **Global bar** — the slim bar under the menubar carries the
+  controls that act on the app as a whole, not on one view:
+  **Dual-pane** (F9), **Compare** (it needs both panes by
+  definition), the light/dark theme toggle and **?** (the keyboard
+  map, F1). Each pane's own toolbar keeps only what acts on that
+  pane — back, forward, refresh, upload, download, new folder, new
+  file, Search — the same set in the same order on both sides, so
+  the main view and the secondary pane stay button-for-button
+  twins of each other below the global bar.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and type a path like `s3://bucket/folder/` — or
   `source://path` for any source — to jump directly. Back / forward
-  history works like Explorer. The parent-directory row ("..") is the
+  history works like Explorer — including its finer rule: any climb
+  to an ancestor (a breadcrumb segment, the data-source tree, the
+  parent row, a typed path above the current one) leaves the deeper
+  view one Forward away instead of cutting it, and re-listing the
+  very same place moves no history at all. The parent-directory
+  row ("..") is the
   first row of the listing itself, WinSCP Explorer-style — it scrolls
   with the content, one click climbs a level from any content view,
   and it floats over the empty-folder note so even an empty folder
@@ -248,6 +262,13 @@ directory compare) with S3 and the secondary pane.
   jumps to the object and selects it. Only the results scroll —
   the form stays put — and a running search can be stopped from
   the window.
+  The secondary pane's own **Search** button opens the same window
+  scoped to that pane alone: one scope in the dropdown — the pane's
+  current folder, labeled by its path, no *All data sources* — an
+  S3 binding searches its bucket and prefix, a remote binding its
+  folder, and a local binding walks the workstation's filesystem
+  under the pane's directory; a pick navigates the pane (through
+  its own history) and selects the row.
 
 ![Search](screenshots/search.png)
 
@@ -263,10 +284,11 @@ directory compare) with S3 and the secondary pane.
   not doubled). Works on S3 and on remote sources (creation only);
   shows as a 📄 *Creating* task in Running tasks.
 
-- **Dual pane** — F9 or the **Dual-pane** toolbar button opens an
-  optional secondary pane beside the main view: a full twin of the
-  content area — its own toolbar (upload, download, new folder, new
-  file, compare, search), interactive breadcrumb, quick filter,
+- **Dual pane** — F9 or the **Dual-pane** button on the global bar
+  opens an optional secondary pane beside the main view: a full
+  twin of the content area — its own toolbar (back, forward,
+  refresh, upload, download, new folder, new file, search),
+  interactive breadcrumb, quick filter,
   back/forward history, parent row and status line. It opens on the
   workstation's home folder (like the old Panes panel, never an empty
   stop) or wherever it last stood; right-click any data source, bucket
@@ -281,8 +303,9 @@ directory compare) with S3 and the secondary pane.
   goes, Esc cancels.
   Any source type binds to it — S3, SFTP, FTP, WebDAV, local drives —
   and it remembers where you left it, reopening there. Drag between
-  panes transfers, and **Compare** color-codes newer / older /
-  size-diff / only-here between the two sides. With the pane open,
+  panes transfers, and **Compare** — on the global bar, since it
+  needs both sides — color-codes newer / older / size-diff /
+  only-here between the two sides. With the pane open,
   clicking the **Dual-pane** button again does not close it: a small
   picker appears under the button offering where the pane should
   point — **Home view** starts over at the workstation's home folder
@@ -323,7 +346,8 @@ directory compare) with S3 and the secondary pane.
   only the OS window chrome — the in-page header stays hidden, so there
   is no second title bar or close icon.
 - **Light/dark theme** and 15 built-in languages (English default,
-  auto-detect optional) — switchable in Settings.
+  auto-detect optional) — switchable in Settings and, for the
+  theme, straight from the global bar's toggle.
 - **Settings commit on an explicit Save** — every control in the
   Settings dialog stages into a draft until you press Save (disabled
   until something changes; Save applies everything and closes the

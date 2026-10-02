@@ -9,7 +9,7 @@
 // folder rows / the body of the local binding).
 import { Grid } from './grid.js';
 import { toast } from './dialogs.js';
-import { el, fmtBytes, debounce, srcIconEl, parseSourcePath } from './util.js';
+import { el, fmtBytes, debounce, srcIconEl, parseSourcePath, parentPrefix } from './util.js';
 import { api, subscribeStream } from './api.js';
 import { t } from './i18n.js';
 import { updateCommandState } from './commands.js';
@@ -55,6 +55,38 @@ export function aggregateCompare(rows) {
   return out;
 }
 
+// entryKey/entrySame/entryAncestorOf compare pane history entries with the
+// road signs' own spelling: crumb slices, tree nodes and pasted paths name
+// the same place differently — separators differ, and Windows paths are
+// case-insensitive while remote and S3 keys are not — so the comparison
+// normalizes instead of comparing bytes.
+const paneNormDir = (d, sep) => (sep === '\\'
+  ? String(d || '').replace(/\//g, '\\').replace(/\\+$/, '').toUpperCase()
+  : String(d || '').replace(/^\/+/, '').replace(/\/+$/, ''));
+
+const entryKey = (e) => {
+  if (e.kind === 'local') return 'local|' + paneNormDir(e.dir, '\\');
+  if (e.kind === 'remote') return 'remote|' + (e.source || '') + '|' + paneNormDir(e.dir, '/');
+  return 's3|' + (e.source || '') + '|' + (e.bucket || '') + '|' + paneNormDir(e.dir, '/');
+};
+
+const entrySame = (a, b) => !!a && !!b && a.kind === b.kind && entryKey(a) === entryKey(b);
+
+// An ancestor sits strictly above in the same binding: the roots view
+// above any drive, the buckets view above any bucket, a folder above its
+// subtree.
+const entryAncestorOf = (up, cur) => {
+  if (!up || !cur || up.kind !== cur.kind) return false;
+  if (up.kind !== 'local' && (up.source || '') !== (cur.source || '')) return false;
+  if (up.kind === 'local' && !String(up.dir || '')) return true;
+  if (up.kind === 's3' && !up.bucket) return true;
+  if (up.kind === 's3' && (up.bucket || '') !== (cur.bucket || '')) return false;
+  const sep = up.kind === 'local' ? '\\' : '/';
+  const u = paneNormDir(up.dir, sep);
+  const c = paneNormDir(cur.dir, sep);
+  return u !== c && (u === '' || c.startsWith(u + sep));
+};
+
 export class SidePane {
   constructor() {
     this.grid = new Grid('local-');
@@ -72,8 +104,9 @@ export class SidePane {
     this.hist = [];       // back stack of location entries
     this.futr = [];       // forward stack of location entries
     this.upWanted = false; // the current listing's parent-row verdict
-    this.on = {};         // callbacks: dropFolder, dropBody, compare, openFail, activateRemoteFile, activateS3File, contextEmpty
+    this.on = {};         // callbacks: dropFolder, dropBody, openFail, activateRemoteFile, activateS3File, contextEmpty
     this.openedLoc = null; // where the pane stood when it was opened — the view picker's "return" target
+    this.pendingSelect = null; // search pick waiting for its listing to land (gotoHit)
 
     this.grid.on.activate = (m) => {
       if (this.binding.kind === 's3') {
@@ -148,12 +181,11 @@ export class SidePane {
     });
 
     // pane-owned chrome: navigation and the path bar act on the pane's own
-    // state; the upload/download/new/find/theme/help buttons are wired by
-    // main (they need its transfer and dialog engines)
+    // state; the upload/download/new/find buttons are wired by main (they
+    // need its transfer and dialog engines — find scopes to this pane)
     $('local-btn-back').onclick = () => this.back();
     $('local-btn-forward').onclick = () => this.forward();
     $('local-btn-refresh').onclick = () => this.refresh();
-    $('local-compare').onclick = () => this.on.compare?.();
     // onboarding picker: choosing a source binds the pane and leaves the
     // empty state behind
     $('local-src').onchange = () => this.rebind($('local-src').value);
@@ -175,10 +207,10 @@ export class SidePane {
       this.editPath();
     });
     // the view picker's lifecycle: any click outside it (or its trigger
-    // buttons) and any Escape close it — the pane itself stays open. The
-    // picker's own keys (Escape / arrows) rest inside it.
+    // button in the global bar) and any Escape close it — the pane itself
+    // stays open. The picker's own keys (Escape / arrows) rest inside it.
     document.addEventListener('click', (e) => {
-      if (e.target.closest('#pane-dest, #btn-panes, #local-btn-panes')) return;
+      if (e.target.closest('#pane-dest, #btn-panes')) return;
       this.hideDestPop();
     }, true);
     document.addEventListener('keydown', (e) => {
@@ -351,11 +383,21 @@ export class SidePane {
   canForward() { return this.futr.length > 0; }
 
   // go navigates somewhere new: the current listing is pushed onto the
-  // back stack and the forward stack is cut (the standard browser rule).
+  // back stack, and the forward stack lives by the same rule the main
+  // view's history learned — re-listing the very same place (clicking the
+  // current crumb or tree node) moves nothing, a climb to an ancestor
+  // (crumb segment, parent row, tree node, pasted path) keeps the deeper
+  // view one Forward away instead of cutting it, and anything else —
+  // deeper, sideways, another binding — cuts it (the standard rule).
   go(entry) {
     if (!entry) return;
-    if (this.bound && this.hasListed) this.hist.push(this.snapshot());
-    this.futr.length = 0;
+    const from = this.bound && this.hasListed ? this.snapshot() : null;
+    if (!from) this.futr.length = 0;
+    else if (!entrySame(from, entry)) {
+      this.hist.push(from);
+      if (entryAncestorOf(entry, from)) this.futr.push(from);
+      else this.futr.length = 0;
+    }
     this.navEntry(entry);
   }
   back() {
@@ -650,6 +692,7 @@ export class SidePane {
     this.updateStatus();
     this.updateNav();
     this.landUpbar();
+    this.consumePendingSelect();
   }
 
   // ---------- listings ----------
@@ -753,6 +796,7 @@ export class SidePane {
           this.cancelS3Stream();
           if (!this.grid.rows.length) this.showEmpty(t('emptyFolder'), t('emptyFolderSub'), []);
           this.updateCrumb();
+          this.consumePendingSelect();
         }
       },
     );
@@ -785,6 +829,54 @@ export class SidePane {
       return;
     }
     await this.navigate(this.dir);
+  }
+
+  // ---------- search: this pane's own scope ----------
+
+  // gotoHit lands a Search-window pick on THIS pane (its find button opens
+  // the window scoped to the pane's binding): folders open themselves,
+  // files open their parent with the row selected — the twin of main's
+  // gotoSearchHit, driving the pane's own bindings and history.
+  async gotoHit(r) {
+    if (!r?.key || !this.bound) return;
+    const key = String(r.key);
+    const isDir = r.isDir || key.endsWith('/');
+    const b = this.binding;
+    if (b.kind === 'local') {
+      // local hits carry absolute paths — the pane's own row keys — so the
+      // backend's canonical parent calc seats the file's folder
+      if (isDir) { this.navigate(key); return; }
+      const parent = await app().LocalParent(key);
+      this.pendingSelect = { key };
+      this.navigate(parent || key);
+      return;
+    }
+    if (b.kind === 'remote') {
+      if (isDir) { this.navigateRemote(key); return; }
+      const s = key.replace(/\/+$/, '');
+      const i = s.lastIndexOf('/');
+      this.pendingSelect = { key };
+      this.navigateRemote(i <= 0 ? '/' : s.slice(0, i + 1));
+      return;
+    }
+    this.pendingSelect = isDir ? null : { key };
+    this.navigateS3({ bucket: r.bucket || b.bucket, prefix: isDir ? key : parentPrefix(key) });
+  }
+
+  // consumePendingSelect focuses a row requested by gotoHit once its
+  // listing landed (the pane's twin of main's consumePendingSelect) —
+  // settled() for local/remote, the stream's done page for S3.
+  consumePendingSelect() {
+    if (!this.pendingSelect) return;
+    const key = this.pendingSelect.key;
+    this.pendingSelect = null;
+    const idx = this.grid.rows.findIndex((row) => row.key === key);
+    if (idx < 0) return;
+    this.grid.sel = new Set([key]);
+    this.grid.focusKey = key;
+    this.grid.anchorKey = key;
+    this.grid.scrollTo(idx);
+    this.grid.render(true);
   }
 
   async up() {

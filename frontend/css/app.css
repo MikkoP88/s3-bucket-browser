@@ -103,20 +103,29 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
      the main and secondary toolbars collapse independently */
   container-type: inline-size;
 }
+/* the global bar under the menubar: the app-scope buttons (Dual-pane,
+   Compare, theme, help) span the whole window above the split — a
+   hairline tighter than the content toolbars so it reads as window
+   chrome, kin to the menubar rather than a third pane column. It keeps
+   .toolbar's container-type, so on a narrow window its words and
+   menu-covered buttons fold like any toolbar's */
+.gbar { padding: 3px 8px; }
 /* narrow columns trade word labels for glyphs — tooltips carry the full
    names and every shortcut keeps working */
 @container (max-width: 839px) {
   .tb-word { display: none; }
 }
 /* next tier: the buttons the menu bar and shortcuts already cover fold
-   away (View menu, F1, Ctrl+Shift+F, Shift+F4 all still reach them) */
+   away (View menu, F1, Ctrl+Shift+F, Shift+F4 all still reach them).
+   #btn-theme/#btn-help now live in the global bar — full width, so they
+   fold only when the window itself is this narrow */
 @container (max-width: 579px) {
   #btn-theme, #btn-help, #btn-find, #btn-newfile,
-  #local-btn-theme, #local-btn-help, #local-btn-find, #local-btn-newfile { display: none; }
+  #local-btn-find, #local-btn-newfile { display: none; }
 }
 /* deepest tier: new folder and compare fold — context menus cover both */
 @container (max-width: 419px) {
-  #btn-compare, #btn-newfolder, #local-compare, #local-btn-newfolder { display: none; }
+  #btn-compare, #btn-newfolder, #local-btn-newfolder { display: none; }
 }
 .tb-btn {
   font: var(--font); color: var(--text);

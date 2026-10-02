@@ -1669,21 +1669,18 @@ function wireLocalPane() {
       }, !dir],
     ]);
   };
-  localPane.on.compare = compareDirs;
   // The pane toolbar's buttons: pane-scoped leaves act on the pane's own
-  // binding (helpers below, source-pinned); window-scope copies (find,
-  // theme, help) and the Dual-pane button mirror the main toolbar's. The
-  // pane's back/forward/refresh, filter, breadcrumb and parent row are
-  // wired inside SidePane itself.
-  $('local-btn-panes').onclick = () => paneDestPop($('local-btn-panes'));
+  // binding (helpers below, source-pinned) — its find button searches the
+  // pane's content only (paneSearch below). The window-scope buttons it
+  // used to mirror (Dual-pane, Compare, theme, help) live in the global
+  // bar now. The pane's back/forward/refresh, filter, breadcrumb and
+  // parent row are wired inside SidePane itself.
   $('local-btn-close').onclick = () => setPanes(false);
   $('local-btn-upload').onclick = () => openMenu($('local-btn-upload'), uploadChoices(paneUploadFiles, paneUploadFolder));
   $('local-btn-download').onclick = () => paneDownload();
-  $('local-btn-find').onclick = openSearch;
+  $('local-btn-find').onclick = paneSearch;
   $('local-btn-newfolder').onclick = () => paneNewFolder();
   $('local-btn-newfile').onclick = () => paneNewFile();
-  $('local-btn-theme').onclick = toggleTheme;
-  $('local-btn-help').onclick = helpSheet;
 }
 
 // openMenu renders items in the shared #ctxmenu popup. An item is
@@ -3886,6 +3883,22 @@ function openSearch() {
   searchWindow({ scopes: searchScopes(), onOpen: gotoSearchHit });
 }
 
+// paneSearch opens the Search window scoped to the SECONDARY pane alone:
+// exactly one scope — the pane's current binding, from its current
+// location — and no All-sources entry, so the pane's find button searches
+// the pane's content only. Picks land on the pane through gotoHit (the
+// DOM window calls it directly; a native one rides the search:open relay
+// with the pane flag).
+function paneSearch() {
+  if (!localPane.bound) return;
+  const b = localPane.binding;
+  let scope;
+  if (b.kind === 's3') scope = { mode: 's3', source: b.source, bucket: localPane.bucket || '', prefix: localPane.dir || '' };
+  else if (b.kind === 'remote') scope = { mode: 'remote', source: b.source, prefix: localPane.dir || '/' };
+  else scope = { mode: 'local', prefix: localPane.dir || '' };
+  searchWindow({ scopes: [scope], solo: true, onOpen: (r) => localPane.gotoHit(r) });
+}
+
 // ============================ profile file session (M8) ============================
 // pfState mirrors GetProfileFileState() (open container + dirty flag). The
 // File menu reads it for enablement; the status bar shows the session.
@@ -4643,8 +4656,16 @@ function wireEvents() {
   onEvent('log:line', (l) => logArea.append(l));
   // A result picked in a floating Search window relays through the backend
   // (the app event bus is the only channel that crosses OS windows) and
-  // lands here: navigate to it in the main window.
-  onEvent('search:open', gotoSearchHit);
+  // lands here: navigate to it in the main window — or, when the pick
+  // carries the pane flag (a secondary-pane search window), on that pane,
+  // which must still be open to receive it.
+  onEvent('search:open', (r) => {
+    if (r?.pane) {
+      if (!document.getElementById('local-pane').classList.contains('hidden')) localPane.gotoHit(r);
+      return;
+    }
+    gotoSearchHit(r);
+  });
   // Guarded exit: the backend refused an exit that would lose work (the X
   // button or File → Exit while transfers run / the profile is dirty) and
   // asks here. "Exit anyway" force-quits through ConfirmExit.

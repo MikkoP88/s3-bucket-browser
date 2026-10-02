@@ -8,6 +8,28 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A global bar under the menubar carries the app-scope controls.**
+  The controls that act on the app as a whole — **Dual-pane** (F9),
+  **Compare** (it needs both panes by definition), the light/dark
+  theme toggle and **?** (F1) — now live on a slim bar of their own
+  directly under the menubar, lifted out of the content panes.
+  Each pane's toolbar keeps only what acts on that pane — back,
+  forward, refresh, upload, download, new folder, new file, Search
+  — the same set in the same order on both sides, so the main view
+  and the secondary pane stay button-for-button twins below the
+  global bar and each column keeps its full width for its own
+  controls.
+
+- **The secondary pane's Search scopes to the pane alone.** The
+  pane's own Search button opens the Search window with exactly one
+  scope: the pane's current binding — an S3 binding searches its
+  bucket and prefix, a remote binding its folder, and a local
+  binding walks the workstation's filesystem under the pane's
+  directory (a new local mode in the search engine) — labeled by
+  its path in the dropdown with no *All data sources* entry. A
+  pick navigates the pane through its own history and selects the
+  row, the twin of the main view's search-pick behavior.
+
 - **Dual pane: a fresh pane opens on the workstation's home folder.**
   A pane with nothing remembered no longer stops on an onboarding
   picker — it opens straight on the local directory (the old Panes
@@ -237,6 +259,15 @@ follow [Semantic Versioning](https://semver.org/).
   is verified against a real Vault.
 
 ### Fixed
+
+- Forward now arms on every climb to an ancestor, not only after
+  the Back button: clicking a breadcrumb segment above the current
+  folder, a data-source tree node above it, the parent row or a
+  typed path above where you stand all leave the deeper view one
+  Forward away instead of cutting it — Explorer's rule — and
+  re-listing the very same place (clicking the crumb or tree node
+  that is already current) moves no history at all. Both history
+  engines follow: the main view's and the secondary pane's own.
 
 - The seam between the Data sources sidebar and the content area no
   longer opens a grey gutter: the resize strip now fully straddles the

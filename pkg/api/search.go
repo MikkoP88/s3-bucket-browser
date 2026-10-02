@@ -7,11 +7,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/search"
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
@@ -61,7 +63,10 @@ func (o SearchOptions) filter() search.Filter {
 // engine from its root. Mode "s3" walks one bucket/prefix of one S3 source
 // (Bucket "" = every bucket of the source; Source "" = the source the main
 // view is browsing). Mode "remote" walks one remote source from Path
-// (default "/").
+// (default "/"). Mode "local" walks the workstation's filesystem under
+// Prefix ("" or "~" = the home directory) — the secondary pane's own
+// search scope. Hit keys are absolute local paths, the shape the pane's
+// rows navigate by.
 type SearchScope struct {
 	Mode   string `json:"mode"`
 	Source string `json:"source"`
@@ -94,8 +99,9 @@ type SearchDone struct {
 type searchJob struct {
 	name   string // source name (routing + per-source errors)
 	s3     bool
+	local  bool // local mode: prefix is an absolute directory, not a source
 	bucket string // s3 scoped mode: one bucket; "": every bucket
-	prefix string // s3 prefix | remote root path
+	prefix string // s3 prefix | remote root path | local absolute directory
 }
 
 // Search starts a cancelable search and returns immediately with a token.
@@ -146,6 +152,19 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 			root = "/"
 		}
 		jobs = append(jobs, searchJob{name: src.Name, prefix: root})
+	case "local": // the workstation's filesystem under one directory
+		if opts.Class != "" {
+			return "", errors.New("local files carry no storage class — drop the class filter or search S3 only")
+		}
+		root := scope.Prefix
+		if root == "" || root == "~" {
+			home, err := a.LocalHome()
+			if err != nil {
+				return "", err
+			}
+			root = home
+		}
+		jobs = append(jobs, searchJob{name: "local", local: true, prefix: filepath.Clean(root)})
 	default:
 		return "", fmt.Errorf("unknown search scope %q", scope.Mode)
 	}
@@ -169,6 +188,8 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 		} else {
 			label = fmt.Sprintf("%q — %s", opts.Pattern, jobs[0].name)
 		}
+	} else if scope.Mode == "local" {
+		label = fmt.Sprintf("%q — %s", opts.Pattern, jobs[0].prefix)
 	}
 	// The search rides the unified task registry under its token, so
 	// CancelTask and the search window's own cancel agree on one ID.
@@ -235,6 +256,30 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 					if err != nil && ctx.Err() == nil {
 						srcErrs = append(srcErrs, fmt.Sprintf("%s: %v", j.name, err))
 					}
+				}
+				continue
+			}
+			if j.local {
+				// workstation filesystem: the FS is rooted at the directory
+				// itself, so the walk starts at its root and every hit key
+				// is re-anchored onto the absolute path the local pane
+				// navigates by (no trailing separator — IsDir carries
+				// dirness, matching ListLocal row paths). Not a data
+				// source: hits carry no Source.
+				fs, err := remotefs.NewLocal(j.prefix)
+				if err != nil {
+					srcErrs = append(srcErrs, fmt.Sprintf("%s: %v", j.prefix, err))
+					continue
+				}
+				searched["local"] = true
+				hit := onHit("")
+				st, err := search.RunRemote(ctx, fs, "/", filt, func(r search.Result) error {
+					r.Entry.Key = filepath.Join(j.prefix, filepath.FromSlash(r.Entry.Key))
+					return hit(r)
+				})
+				scanned += st.Scanned
+				if err != nil && ctx.Err() == nil {
+					srcErrs = append(srcErrs, fmt.Sprintf("%s: %v", j.prefix, err))
 				}
 				continue
 			}
