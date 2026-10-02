@@ -270,6 +270,12 @@ directory compare) with S3 and the secondary pane.
   back/forward history, parent row and status line. It opens empty with
   a source picker, or right-click any data source, bucket or folder in
   the tree and choose **Open on secondary pane** to land there directly.
+  The pane's path bar carries the main one's every function: click its
+  empty area and the breadcrumb becomes an editable line holding the
+  pane's canonical path — copy it out, paste any source's `Name://`
+  path to point the pane there (a bare directory navigates the local
+  side, and a pasted path binds a fresh pane past its picker), Enter
+  goes, Esc cancels.
   Any source type binds to it — S3, SFTP, FTP, WebDAV, local drives —
   and it remembers where you left it, reopening there. Drag between
   panes transfers, and **Compare** color-codes newer / older /

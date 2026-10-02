@@ -1,6 +1,6 @@
 // S3 Bucket Browser — application shell (Explorer layout).⁠​‌‌‌​​‌‌​​‌‌​​‌‌​‌‌​​​‌​​​‌​‌‌​‌​‌‌‌​​​​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌‌​​‌‌​​​‌‌​‌‌​​‌​‌​​‌​‌‌​‌​‌‌‌​‌‌​​​‌‌​​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​​​​‌‌​‌‌​‌‌‌‌​‌‌‌​​​​​‌‌‌‌​​‌​‌‌‌​​‌​​‌‌​‌​​‌​‌‌​​‌‌‌​‌‌​‌​​​​‌‌‌​‌​​​​‌​​​​​​​‌​‌​​​​‌‌​​​‌‌​​‌​‌​​‌​​‌​​​​​​​‌‌​​‌​​​‌‌​​​​​​‌‌​​‌​​​‌‌​‌‌​​​‌​​​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​​‌​​​​​​‌​‌​​​​​‌‌​​‌​‌​‌‌‌​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​​‌​​​​​​​‌​‌​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​‌​​​​​‌‌​‌‌‌‌​‌‌​‌‌​​​‌‌‌‌​​‌​‌​​​‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​​‌‌​‌‌​‌​​‌​​​​​​‌​​‌​​‌​‌‌​‌‌‌​​‌‌‌​‌​​​‌‌​​‌​‌​‌‌‌​​‌​​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌​​​​‌​​​​​​‌​‌​‌​‌​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​‌​​‌‌​​​‌‌​‌​​‌​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​​‌‌​​​‌​​‌​‌‌‌​​​‌‌​​​​​​‌​‌‌‌​​​‌‌​​​​​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌‌​​‌‌‌​‌‌​‌​​‌​‌‌‌​‌​​​‌‌​‌​​​​‌‌‌​‌​‌​‌‌​​​‌​​​‌​‌‌‌​​‌‌​​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌​‌​​‌​‌‌‌‌​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌‌‌‌​‌‌‌​​‌‌​​‌‌​​‌‌​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​‌​‌​‌‌​​​‌‌​‌‌​‌​‌‌​‌‌​​‌​‌​‌‌‌​‌​​​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌‌​‌‌‌​​‌‌​‌‌​​‌​‌​‌‌‌​​‌​⁠
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl, parseSourcePath } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
 import { Tree } from './tree.js';
@@ -1352,41 +1352,6 @@ function canonicalPath(loc) {
   return '';
 }
 
-// parsePath maps a pasted path back to a location: the scheme must match a
-// source's name or id (the source name IS the scheme). Returns { loc } or
-// null when nothing matches.
-function parsePath(str) {
-  const m = String(str || '').trim().match(/^([A-Za-z0-9._-]+):\/\/(.*)$/);
-  if (!m) return null;
-  const scheme = m[1].toLowerCase();
-  const rest = m[2].replace(/\\/g, '/').replace(/^\/+/, '');
-  const src = sources.find((s) => s.name.toLowerCase() === scheme
-    || String(s.id || '').toLowerCase() === scheme);
-  if (!src) return null;
-  if (src.type === 's3') {
-    // bucket-scoped source: the whole rest is content INSIDE its one
-    // bucket (NAME:// alone opens the contents). The legacy doubled
-    // form — the bucket repeated as the first segment — is accepted and
-    // folded away so paths copied under the old rendering still resolve.
-    if (src.bucket) {
-      let content = rest;
-      if (content === src.bucket) content = '';
-      else if (content.startsWith(`${src.bucket}/`)) content = content.slice(src.bucket.length + 1);
-      if (!content) return { loc: { kind: 'objects', source: src.name, bucket: src.bucket, prefix: '' } };
-      const parts = content.replace(/\/+$/g, '').split('/');
-      return { loc: { kind: 'objects', source: src.name, bucket: src.bucket, prefix: `${parts.join('/')}/` } };
-    }
-    if (!rest) return { loc: { kind: 'buckets', source: src.name } };
-    const parts = rest.replace(/\/+$/g, '').split('/');
-    const bucket = parts.shift();
-    if (!bucket) return null;
-    const prefix = parts.length ? `${parts.join('/')}/` : '';
-    return { loc: { kind: 'objects', source: src.name, bucket, prefix } };
-  }
-  const path = rest ? `/${rest.replace(/\/+$/g, '')}/` : '/';
-  return { loc: { kind: 'remote', source: src.name, path } };
-}
-
 // editPath swaps the breadcrumb for a one-line editable field holding the
 // canonical path: copy out, paste in, Enter navigates, Esc cancels.
 function editPath() {
@@ -1402,7 +1367,7 @@ function editPath() {
   inp.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const parsed = parsePath(inp.value);
+      const parsed = parseSourcePath(inp.value, sources);
       if (parsed) {
         nav.to(parsed.loc);
       } else {

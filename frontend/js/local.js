@@ -8,8 +8,8 @@
 // (uploads land on folder rows of the remote/S3 binding, downloads on
 // folder rows / the body of the local binding).
 import { Grid } from './grid.js';
-import { browseDirDialog, prompt } from './dialogs.js';
-import { el, fmtBytes, debounce, srcIconEl } from './util.js';
+import { toast } from './dialogs.js';
+import { el, fmtBytes, debounce, srcIconEl, parseSourcePath } from './util.js';
 import { api, subscribeStream } from './api.js';
 import { t } from './i18n.js';
 import { updateCommandState } from './commands.js';
@@ -155,10 +155,15 @@ export class SidePane {
     // (the body's Backspace handler must not see it)
     $('local-upbar').onclick = () => this.up();
     $('local-upbar').addEventListener('keydown', (e) => e.stopPropagation());
-    // the breadcrumb's segments navigate; a click on the bar's own empty
-    // tail (no segment) opens the type-a-path prompt
-    const crumb = $('local-crumb');
-    crumb.addEventListener('click', (e) => { if (e.target === crumb) this.promptPath(); });
+    // the breadcrumb's segments navigate; a click on the navbar's empty
+    // area (not a segment, the filter or a button) opens the inline
+    // path editor — the same affordance the main pane's navbar carries
+    const navbar = document.querySelector('#local-pane .navbar');
+    navbar.title = t('pathClickHint');
+    navbar.addEventListener('click', (e) => {
+      if (e.target.closest('.crumb, .crumb-sep, input, button')) return;
+      this.editPath();
+    });
     // the Name-column seat stays live against the pane grid's own template
     // (mirrors main's observer on #grid-head)
     new MutationObserver(() => this.syncUpbarLayout()).observe($('local-grid-head'),
@@ -664,44 +669,72 @@ export class SidePane {
     this.settled();
   }
 
-  async promptPath() {
-    // Browse-style pickers on every binding: remote and S3 sources open the
-    // directory browser dialog (connected, unsaved-state-free), the local
-    // binding uses the native folder picker.
-    if (this.binding.kind === 'remote') {
-      const p = await browseDirDialog({
-        title: 'Folder on ' + (this.binding.name || this.binding.source),
-        kind: 'remote',
-        source: this.binding.source,
-        name: this.binding.name,
-        start: this.dir || '/',
-      });
-      if (p) this.go({ kind: 'remote', source: this.binding.source, dir: p });
-      return;
-    }
+  // paneCanonical is the pane's twin of main's canonicalPath: the
+  // one-line path the path editor holds. Source bindings speak
+  // NAME://content ('' while unbound); the local binding's canonical
+  // form is the raw directory itself ('' at the filesystem-roots view),
+  // so the editor always hands back what it was given.
+  paneCanonical() {
+    if (!this.bound) return '';
+    const name = this.binding.name || this.binding.source || '';
+    if (this.binding.kind === 'remote') return `${name}://${this.dir || '/'}`;
     if (this.binding.kind === 's3') {
-      const p = await browseDirDialog({
-        title: 'Path on ' + (this.binding.name || this.binding.source),
-        kind: 's3',
-        source: this.binding.source,
-        name: this.binding.name,
-        startBucket: this.bucket,
-        // a bucket-scoped source has nothing above its bucket root:
-        // the picker must never offer the account's bucket list
-        scopeBucket: this.binding.bucket || '',
-        startPrefix: this.dir || '',
-      });
-      if (p) this.go({ kind: 's3', source: this.binding.source, bucket: p.bucket, dir: p.prefix || '' });
-      return;
+      if (this.binding.bucket) return `${name}://${this.dir || ''}`;
+      return this.bucket ? `${name}://${this.bucket}/${this.dir || ''}` : `${name}://`;
     }
-    let p = null;
-    try {
-      p = await api.PickFolder('Choose a folder');
-    } catch {
-      // native picker unavailable (gui-live bridge) — ask for the path
-      p = await prompt({ title: 'Open folder', label: 'Folder path', value: this.dir || '', okLabel: 'Open' });
+    return this.dir || '';
+  }
+
+  // editPath swaps the breadcrumb for a one-line editable field holding
+  // the canonical path — the twin of the main pane's editor: copy out,
+  // paste in, Enter navigates (any source's NAME:// path rebinds the
+  // pane; a bare directory navigates the local binding), Esc cancels.
+  // An unbound pane opens the editor empty — a pasted path is one more
+  // way past the onboarding picker.
+  editPath() {
+    const bc = $('local-crumb');
+    if (bc.querySelector('input.path-edit')) return;
+    const restore = () => this.updateCrumb();
+    const inp = el('input', { type: 'text', class: 'filter path-edit', spellcheck: 'false' });
+    inp.value = this.paneCanonical();
+    bc.replaceChildren(inp);
+    inp.focus();
+    inp.select();
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const entry = this.parsePanePath(inp.value);
+        if (entry) {
+          if (entry.kind === 'local' && !this.bound) this.bindTo(null);
+          this.go(entry);
+        } else {
+          toast(t('pathInvalid', { p: inp.value.trim() || '?' }), 'error');
+          inp.focus();
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        restore();
+      }
+    });
+    inp.addEventListener('blur', restore);
+  }
+
+  // parsePanePath maps an edited line to a pane history entry: a
+  // NAME:// path matches any configured source through parseSourcePath
+  // (rebinding the pane when the scheme names a different one), and a
+  // bare directory navigates the local binding. Returns null when
+  // nothing matches.
+  parsePanePath(str) {
+    const parsed = parseSourcePath(str, this.sources);
+    if (parsed) {
+      const { loc } = parsed;
+      if (loc.kind === 'remote') return { kind: 'remote', source: loc.source, dir: loc.path || '/' };
+      return { kind: 's3', source: loc.source, bucket: loc.bucket || '', dir: loc.prefix || '' };
     }
-    if (p) this.go({ kind: 'local', dir: p });
+    const v = String(str || '').trim();
+    if (v && this.binding.kind === 'local') return { kind: 'local', dir: v };
+    return null;
   }
 
   setCompare(rows) { this.grid.setCmp(aggregateCompare(rows)); }

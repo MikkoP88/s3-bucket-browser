@@ -5928,6 +5928,76 @@ await step('dual-pane', async () => {
       - document.getElementById('local-pane').getBoundingClientRect().width) < 4));
 });
 
+await step('side-pane-editpath', async () => {
+  // the pane's path bar is the main pane's twin: clicking the navbar's
+  // empty area swaps the crumb for the inline path editor holding the
+  // pane's canonical path
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
+  await ok('both path bars carry the same click hint', evalPage(() =>
+    document.querySelector('#local-pane .navbar').title === document.querySelector('#main-pane .navbar').title
+    && document.querySelector('#local-pane .navbar').title !== ''));
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'pane path editor');
+  await ok('pane path field holds the canonical path', evalPage(() =>
+    document.querySelector('#local-crumb input.path-edit')?.value === 'backup-box:///'));
+  await shot('pane-path-edit');
+  // Escape restores the breadcrumb; a second click reopens the editor
+  await page.keyboard.press('Escape');
+  await ok('Escape restores the pane breadcrumb', evalPage(() =>
+    !document.querySelector('#local-crumb input.path-edit')
+    && document.querySelectorAll('#local-crumb .crumb').length > 0));
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor again');
+  // pasting another source's NAME:// path rebinds the pane (it was
+  // bound to backup-box) and navigates
+  await page.fill('#local-crumb input.path-edit', 'hetzner://logs-2026/');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await sideKeys()).includes('app/'), 6000, 'pane navigated via path');
+  await ok('pasting a NAME:// path rebinds and navigates the pane', (await txt('#local-crumb')).includes('logs-2026'));
+  // an unparsable line toasts and keeps the editor
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor third');
+  await page.fill('#local-crumb input.path-edit', 'nope://void');
+  await page.keyboard.press('Enter');
+  await sleep(120);
+  await ok('an invalid path toasts and keeps the editor', evalPage(() =>
+    !!document.querySelector('#toasts .toast.error')
+    && !!document.querySelector('#local-crumb input.path-edit')));
+  await page.keyboard.press('Escape');
+  // the local binding's canonical form is the raw directory: paste one
+  // back to navigate the workstation side
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
+  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane local bound');
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor local');
+  await ok('the local canonical path is the raw directory', evalPage(() =>
+    /^C:\\/.test(document.querySelector('#local-crumb input.path-edit')?.value || '')));
+  await page.fill('#local-crumb input.path-edit', 'C:\\Users\\demo\\Downloads');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await txt('#local-crumb')).includes('Downloads'), 6000, 'pane navigated via local path');
+  await ok('a bare local path navigates the pane', evalPage(() =>
+    !document.querySelector('#local-crumb input.path-edit')
+    && window.__s3bSidePane.dir.endsWith('Downloads')));
+  // an unbound pane opens the editor empty — a pasted path binds it
+  await evalPage(() => { window.__s3bSidePane.reset(); });
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor unbound');
+  await ok('the unbound pane edits an empty path', evalPage(() =>
+    document.querySelector('#local-crumb input.path-edit')?.value === ''));
+  await page.fill('#local-crumb input.path-edit', 'backup-box:///');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane bound via pasted path');
+  await ok('a pasted path binds an unbound pane', (await txt('#local-crumb')).includes('backup-box'));
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+});
+
 await step('side-pane-delete-window', async () => {
   // remote (sftp) and local side panes route through the same unified
   // Delete Window: count-then-act previews first, one danger click each.

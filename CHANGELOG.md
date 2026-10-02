@@ -26,6 +26,17 @@ follow [Semantic Versioning](https://semver.org/).
   folds the menu-covered buttons) on its own, so neither column
   overflows at any width.
 
+- **Dual pane: the secondary pane's path bar is the main one's twin,
+  function for function.** Clicking the pane navbar's empty area swaps
+  the breadcrumb for the same inline editable path line the main view
+  has: it holds the pane's canonical path (`Name://bucket/prefix/` for
+  sources, the raw directory for the local side), copies out, and a
+  pasted `Name://` path of any source points the pane there — a bare
+  directory navigates the local binding, and an unbound pane binds
+  straight from a pasted path. Enter navigates, Esc restores, an
+  unparsable line toasts; the parser is one shared routine
+  (`parseSourcePath`), so a path means the same thing in either pane.
+
 - **Not-connected is now a first-class state.** A source that drops
   mid-session becomes visible without any refresh: the source behind
   the active view is probed once a minute, and a failed connection

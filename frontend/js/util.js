@@ -107,6 +107,42 @@ export function parseDurStr(s) {
   return parseInt(m[1], 10) * mult;
 }
 
+// parseSourcePath maps a pasted NAME:// path back to a location: the
+// scheme must match a source's name or id (the source name IS the
+// scheme). Shared by the main pane's and the secondary pane's path
+// editors. Returns { loc } or null when nothing matches.
+export function parseSourcePath(str, sources) {
+  const m = String(str || '').trim().match(/^([A-Za-z0-9._-]+):\/\/(.*)$/);
+  if (!m) return null;
+  const scheme = m[1].toLowerCase();
+  const rest = m[2].replace(/\\/g, '/').replace(/^\/+/, '');
+  const src = sources.find((s) => s.name.toLowerCase() === scheme
+    || String(s.id || '').toLowerCase() === scheme);
+  if (!src) return null;
+  if (src.type === 's3') {
+    // bucket-scoped source: the whole rest is content INSIDE its one
+    // bucket (NAME:// alone opens the contents). The legacy doubled
+    // form — the bucket repeated as the first segment — is accepted and
+    // folded away so paths copied under the old rendering still resolve.
+    if (src.bucket) {
+      let content = rest;
+      if (content === src.bucket) content = '';
+      else if (content.startsWith(`${src.bucket}/`)) content = content.slice(src.bucket.length + 1);
+      if (!content) return { loc: { kind: 'objects', source: src.name, bucket: src.bucket, prefix: '' } };
+      const parts = content.replace(/\/+$/g, '').split('/');
+      return { loc: { kind: 'objects', source: src.name, bucket: src.bucket, prefix: `${parts.join('/')}/` } };
+    }
+    if (!rest) return { loc: { kind: 'buckets', source: src.name } };
+    const parts = rest.replace(/\/+$/g, '').split('/');
+    const bucket = parts.shift();
+    if (!bucket) return null;
+    const prefix = parts.length ? `${parts.join('/')}/` : '';
+    return { loc: { kind: 'objects', source: src.name, bucket, prefix } };
+  }
+  const path = rest ? `/${rest.replace(/\/+$/g, '')}/` : '/';
+  return { loc: { kind: 'remote', source: src.name, path } };
+}
+
 // parentPrefix returns the folder prefix containing a key ("a/b/c.txt" ->
 // "a/b/"; "x.txt" -> "").
 export function parentPrefix(key) {
