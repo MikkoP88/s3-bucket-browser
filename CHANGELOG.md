@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The secondary pane starts every app run fresh.** Where the pane
+  stood is now session-scoped: closing the app forgets it, so each
+  run's first pane open lands on the workstation's home folder —
+  never the onboarding picker (which used to stand up when a
+  location remembered by an earlier run pointed at a source that no
+  longer existed) and never a stale cross-run location. Inside a
+  run the memory is unchanged: × closes honestly and the next open
+  returns to where the pane stood, and the view picker's **Return
+  to last view** keeps its target. The pane's canvas also matches
+  the primary's now — its background and bottom strip sit on the
+  app's base color instead of a step-brighter panel tint, so the
+  two columns read as true twins edge to edge.
+
 - **A global bar under the menubar carries the app-scope controls.**
   The controls that act on the app as a whole — **Dual-pane** (F9),
   **Compare** (it needs both panes by definition), the light/dark
@@ -259,6 +272,13 @@ follow [Semantic Versioning](https://semver.org/).
   is verified against a real Vault.
 
 ### Fixed
+
+- The secondary pane sometimes opened on the onboarding source
+  picker instead of the workstation home: a location remembered by
+  an earlier app run pointed at a source that no longer existed
+  (or had not loaded yet), and the picker stood up for it.
+  Remembered locations no longer cross app restarts, so a fresh
+  run's first open always starts at the home folder.
 
 - Forward now arms on every climb to an ancestor, not only after
   the Back button: clicking a breadcrumb segment above the current

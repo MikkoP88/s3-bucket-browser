@@ -289,9 +289,9 @@ directory compare) with S3 and the secondary pane.
   twin of the content area — its own toolbar (back, forward,
   refresh, upload, download, new folder, new file, search),
   interactive breadcrumb, quick filter,
-  back/forward history, parent row and status line. It opens on the
-  workstation's home folder (like the old Panes panel, never an empty
-  stop) or wherever it last stood; right-click any data source, bucket
+  back/forward history, parent row and status line. Each app run
+  opens it on the workstation's home folder (like the old Panes
+  panel, never an empty stop); right-click any data source, bucket
   or folder in the tree and choose **Open on secondary pane** to land
   there directly, and if the remembered source ever disappears the
   pane's source picker stands up to choose another.
@@ -302,7 +302,9 @@ directory compare) with S3 and the secondary pane.
   side, and a pasted path binds an unbound pane directly), Enter
   goes, Esc cancels.
   Any source type binds to it — S3, SFTP, FTP, WebDAV, local drives —
-  and it remembers where you left it, reopening there. Drag between
+  and inside the run it remembers where you left it, reopening
+  there (closing the app forgets: the next run starts over at the
+  home folder). Drag between
   panes transfers, and **Compare** — on the global bar, since it
   needs both sides — color-codes newer / older / size-diff /
   only-here between the two sides. With the pane open,

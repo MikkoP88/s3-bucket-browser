@@ -311,6 +311,15 @@ async function boot() {
   $('conn-banner-x').title = t('connDismiss');
   $('conn-banner-x').onclick = () => hideConnBanner();
 
+  // the secondary pane's remembered location is session-scoped: a
+  // fresh app run forgets where the pane stood (its first open
+  // lands on the workstation home, never the onboarding picker),
+  // while × and reopen inside the run keep the memory — boot clears
+  // the pair before any reader runs, so a crash-close leaves
+  // nothing behind either
+  localStorage.removeItem('s3b-side-src');
+  localStorage.removeItem('s3b-side-loc');
+
   const ok = await refreshSources();
   if (ok) nav.to(sourceHomeLoc());
   initSidebarResize();

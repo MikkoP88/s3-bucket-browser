@@ -5769,6 +5769,11 @@ await step('dual-pane', async () => {
     return bad.join('; ');
   });
   await ok('pane toolbar stays inside its bar' + (ptool ? ' [' + ptool + ']' : ''), !ptool);
+  // the twin sits on the same canvas the primary shows through the
+  // body — background and bottom strip match, theme-agnostic
+  await ok('the pane canvas matches the primary pane (background and bottom strip)', evalPage(() =>
+    getComputedStyle(document.getElementById('local-pane')).backgroundColor
+    === getComputedStyle(document.body).backgroundColor));
   // the app-scope quartet now lives on the global bar between the menubar
   // and the content — Dual-pane, Compare, theme, help — and neither
   // content toolbar carries them anymore (each pane keeps only its own)
@@ -5939,18 +5944,20 @@ await step('dual-pane', async () => {
     !document.getElementById('local-btn-download').disabled));
   // close ×, then reload: the × is an honest close (setPanes(false) writes
   // s3b-panes '0' — the settings checkbox agrees), so boot keeps the pane
-  // shut; the remembered location (s3b-side-loc) restores when the pane
-  // is opened again
+  // shut; the remembered location is session-scoped — boot wipes the
+  // side pair before any reader runs, so the pane's first open of a
+  // fresh run lands on the workstation home, never the pre-close
+  // folder and never the onboarding picker
   await evalPage(() => { window.__s3bSidePane.rebind('local'); });
-  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane to local for the remember leg');
-  const before = await sideKeys();
+  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane to local for the forget leg');
   await page.click('#local-btn-close');
   await ok('the pane close button hides the pane', waitFor(async () =>
     evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed'));
   // the harness shim wipes every s3b-* key at each boot (deterministic
   // seeds); stage its one-shot keep flag so the reload carries the pane
-  // keys — s3b-panes '0' and the remembered binding — into the new
-  // document (the same idiom the search-window walk uses)
+  // keys — s3b-panes '0' survives (the layout choice), and the side
+  // pair rides along only to prove the APP-side boot wipe, not the
+  // shim, is what forgets the location (the search-window idiom)
   await evalPage(() => { localStorage.setItem('s3b-shim-keep', '1'); });
   await page.reload({ waitUntil: 'load' });
   await page.waitForFunction(() => window.__shim !== undefined
@@ -5959,12 +5966,17 @@ await step('dual-pane', async () => {
   await ok('boot keeps the pane closed after an honest × close', evalPage(() =>
     localStorage.getItem('s3b-panes') === '0'
     && document.getElementById('local-pane').classList.contains('hidden')));
+  await ok('a fresh run forgets the remembered location (the side pair is gone at boot)', evalPage(() =>
+    localStorage.getItem('s3b-side-src') === null
+    && localStorage.getItem('s3b-side-loc') === null));
   await page.click('#btn-panes');
-  await waitFor(async () => !!(await sideRow('Downloads')), 8000, 'pane reopened at the remembered location');
-  await ok('reopen restores the remembered location after a reload', evalPage(() =>
-    !document.getElementById('local-pane').classList.contains('hidden')));
-  const after = await sideKeys();
-  await ok('same rows after the reopen', JSON.stringify(before) === JSON.stringify(after));
+  await waitFor(async () => !!(await sideRow('Pictures')), 8000, 'pane reopened on the workstation home');
+  await ok('the first open of a fresh run lands on the workstation home, never the picker', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && document.getElementById('local-empty-picker').classList.contains('hidden')));
+  const after = (await sideKeys()).join('|');
+  await ok('home rows after the reopen, not the pre-close folder', after.includes('Documents')
+    && !after.includes('invoice.pdf') && !after.includes('spec.docx'));
   // the seam: drag resizes the pane and persists; a double-click resets
   const w0 = await evalPage(() => document.getElementById('local-pane').getBoundingClientRect().width);
   const sp = await elOrNull(() => document.getElementById('pane-split'));
@@ -6061,6 +6073,16 @@ await step('side-pane-destpop', async () => {
   // offers where the pane should point — the workstation's home view, or
   // the view the pane was opened on — instead of closing it. F9 and the
   // pane’s × stay the honest closers.
+  // stage the opening view first: the fresh-run boot forgets cross-run
+  // locations, so the step owns its last view — rebind local (the pair
+  // persists on the landing), close, reopen: show() captures the
+  // workstation home as openedLoc before the pane wanders away
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
+  await waitFor(async () => !!(await sideRow('Pictures')), 6000, 'pane staged on the local home');
+  await page.keyboard.press('F9');
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for the staging');
+  await page.click('#btn-panes');
+  await waitFor(async () => !!(await sideRow('Pictures')), 6000, 'pane reopened on its opening view');
   await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
   await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
   const anchor = await evalPage(() => {

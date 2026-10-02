@@ -1001,7 +1001,12 @@ kbd {
 .local-pane {
   flex: 1 1 50%; min-width: 300px;
   display: flex; flex-direction: column;
-  background: var(--panel);
+  /* the pane's canvas is the app canvas: the primary column paints
+     nothing and lets the body's --bg show through, so the twin must
+     sit on the same color or its empty space and bottom strip read
+     one step brighter — still opaque, it keeps its cover duty
+     (z-index below) */
+  background: var(--bg);
   border-left: 1px solid var(--border);
   /* stay on top of anything bleeding out of the center column */
   position: relative; z-index: 2;
