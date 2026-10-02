@@ -1505,16 +1505,16 @@ await step('loading-states', async () => {
     return rows.includes('readme.md') && !rows.some((k) => k.startsWith('/'));
   }));
 
-  // -- secondary pane: the onboarding empty state first, then the dimmed
-  //    pane + ellipsis status while its listing pends --
+  // -- secondary pane: a fresh pane opens straight on the workstation's
+  //    home folder (never an empty stop), then the dimmed pane + ellipsis
+  //    status while its listing pends --
   await page.click('#btn-panes');
-  await ok('fresh pane opens on its onboarding empty state', evalPage(() =>
+  await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'fresh pane opens at local home');
+  await ok('fresh pane opens on the workstation home, not an empty stop', evalPage(() =>
     !document.getElementById('local-pane').classList.contains('hidden')
-    && !document.getElementById('local-empty').classList.contains('hidden')
-    && !document.getElementById('local-empty-picker').classList.contains('hidden')
-    && document.getElementById('local-empty-title').textContent === 'Secondary pane'));
-  await page.selectOption('#local-src', 'local');
-  await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane open at local home');
+    && document.getElementById('local-empty').classList.contains('hidden')
+    && window.__s3bSidePane.binding.kind === 'local'
+    && window.__s3bSidePane.dir.length > 1));
   await evalPage(() => { window.__shim.world.fault = { remoteDelayMs: 800 }; });
   // the picker hides once a binding exists — rebind() is the pane's own API
   await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
@@ -5698,12 +5698,27 @@ await step('popout-window-views', async () => {
 });
 
 await step('dual-pane', async () => {
-  // a pane with no remembered binding opens on its onboarding empty state
-  await evalPage(() => { window.__s3bSidePane.reset(); });
+  // nothing remembered: the pane opens straight on the workstation's home
+  // folder — the old Panes panel's default, never an empty stop
+  await evalPage(() => {
+    localStorage.removeItem('s3b-side-src');
+    localStorage.removeItem('s3b-side-loc');
+    if (!document.getElementById('local-pane').classList.contains('hidden')) {
+      document.getElementById('local-btn-close').click();
+    }
+  });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed baseline');
   await page.click('#btn-panes');
-  await ok('pane visible', evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')));
-  await ok('fresh pane shows the onboarding picker, not content', evalPage(() =>
-    !document.getElementById('local-empty').classList.contains('hidden')
+  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'fresh pane at workstation home');
+  await ok('nothing remembered opens the workstation home, not an empty stop', evalPage(() =>
+    document.getElementById('local-empty').classList.contains('hidden')
+    && window.__s3bSidePane.binding.kind === 'local'));
+  // the onboarding picker keeps its one real job: the remembered source
+  // vanished — reset() stands it back up while the pane stays open
+  await evalPage(() => { window.__s3bSidePane.reset(); });
+  await ok('a vanished source stands the onboarding picker up', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && !document.getElementById('local-empty').classList.contains('hidden')
     && !document.getElementById('local-empty-picker').classList.contains('hidden')
     && document.getElementById('local-empty-title').textContent === 'Secondary pane'));
   await shot('pane-onboarding');
@@ -5728,7 +5743,8 @@ await step('dual-pane', async () => {
     return bad.join('; ');
   });
   await ok('pane toolbar stays inside its bar' + (ptool ? ' [' + ptool + ']' : ''), !ptool);
-  // the onboarding picker is one way in — the workstation first
+  // the onboarding picker is one way in — the workstation first (a
+  // direct rebind, the same act the picker's choice performs)
   await page.selectOption('#local-src', 'local');
   await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'local home');
   await ok('local home listed', true);

@@ -267,14 +267,17 @@ directory compare) with S3 and the secondary pane.
   optional secondary pane beside the main view: a full twin of the
   content area — its own toolbar (upload, download, new folder, new
   file, compare, search), interactive breadcrumb, quick filter,
-  back/forward history, parent row and status line. It opens empty with
-  a source picker, or right-click any data source, bucket or folder in
-  the tree and choose **Open on secondary pane** to land there directly.
+  back/forward history, parent row and status line. It opens on the
+  workstation's home folder (like the old Panes panel, never an empty
+  stop) or wherever it last stood; right-click any data source, bucket
+  or folder in the tree and choose **Open on secondary pane** to land
+  there directly, and if the remembered source ever disappears the
+  pane's source picker stands up to choose another.
   The pane's path bar carries the main one's every function: click its
   empty area and the breadcrumb becomes an editable line holding the
   pane's canonical path — copy it out, paste any source's `Name://`
   path to point the pane there (a bare directory navigates the local
-  side, and a pasted path binds a fresh pane past its picker), Enter
+  side, and a pasted path binds an unbound pane directly), Enter
   goes, Esc cancels.
   Any source type binds to it — S3, SFTP, FTP, WebDAV, local drives —
   and it remembers where you left it, reopening there. Drag between

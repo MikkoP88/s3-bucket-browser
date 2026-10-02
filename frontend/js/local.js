@@ -274,7 +274,10 @@ export class SidePane {
   // restore re-applies the remembered state once, after the first sources
   // load (later refreshes keep the user's current binding): the exact last
   // location when it is still reachable, else the remembered source's
-  // opening view, else the onboarding empty state.
+  // opening view, else the workstation's home folder — a fresh pane opens
+  // on the local directory (the old Panes panel's default), never an empty
+  // stop; the onboarding picker stands only for a vanished remembered
+  // source.
   restore() {
     if (this.bound) return;
     const savedSrc = localStorage.getItem('s3b-side-src');
@@ -298,7 +301,11 @@ export class SidePane {
       this.start();
       return;
     }
-    this.showOnboarding();
+    // nothing remembered: the workstation's home folder, the old Panes
+    // panel's default — a fresh pane opens on the local directory, never
+    // on an empty stop
+    this.bindTo(null);
+    this.start();
   }
 
   // applyDragPayload: remote and S3 bindings drag origin-tagged payloads

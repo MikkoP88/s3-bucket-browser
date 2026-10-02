@@ -8,6 +8,13 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Dual pane: a fresh pane opens on the workstation's home folder.**
+  A pane with nothing remembered no longer stops on an onboarding
+  picker — it opens straight on the local directory (the old Panes
+  panel's default, never an empty stop). The picker keeps its one
+  real job: it stands only when a remembered source has vanished,
+  asking which source should take its place.
+
 - **Dual pane: the Dual-pane button's second act is a view picker.**
   With the pane already open, clicking the toolbar's **Dual-pane**
   button (either pane's copy) no longer closes it — a small anchored
@@ -26,8 +33,8 @@ follow [Semantic Versioning](https://semver.org/).
   the right that mirrors the content area button for button — its own
   toolbar (upload, download, new folder, new file, compare, search),
   interactive breadcrumb, quick filter, back/forward/refresh history,
-  parent row and status line. A fresh pane opens on an onboarding
-  picker; the tree's right-click menu gains **Open on secondary pane**
+  parent row and status line. A fresh pane opens on the workstation's
+  home folder; the tree's right-click menu gains **Open on secondary pane**
   on every data source, bucket and folder, landing the pane there
   directly. Any source type binds to it — S3, SFTP, FTP, WebDAV, local
   drives — the last location is remembered across reopens, the pane's ×
