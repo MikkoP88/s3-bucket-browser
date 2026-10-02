@@ -1608,13 +1608,16 @@ await step('objects-view', async () => {
 
 await step('filter', async () => {
   await page.fill('#filter', 'read');
-  await sleep(120);
   // the global filter spans every visible column: "read" hits the
-  // readme.md name AND budget-2026.xlsx's Type cell ("Excel spreadsheet")
-  await ok('filter narrows to the read hits (name + Type column)', (await rowKeys()).sort().join(',') === 'budget-2026.xlsx,readme.md');
+  // readme.md name AND budget-2026.xlsx's Type cell ("Excel spreadsheet").
+  // The app debounces the quick filter at 120ms, so a fixed 120ms sleep
+  // ties the timer exactly — await the narrowed set instead (the same
+  // idiom loading-states uses), and the clear the same way
+  await ok('filter narrows to the read hits (name + Type column)',
+    waitFor(async () => (await rowKeys()).sort().join(',') === 'budget-2026.xlsx,readme.md', 2000, 'filter hits'));
   await shot('filter');
   await page.fill('#filter', '');
-  await sleep(120);
+  await waitFor(async () => (await rowKeys()).includes('scan.png'), 2000, 'filter cleared');
 });
 
 // The loading/timeout contract (M-slow-connections): a listing that has not
@@ -1936,8 +1939,13 @@ await step('header-column-menu', async () => {
   });
   await openHead();
   await sleep(80);
-  const n = await evalPage(() => document.querySelectorAll('#ctxmenu:not(.hidden) .item').length);
-  await ok('header menu lists the whole column catalog', n >= 8);
+  await ok('header menu lists the whole column catalog', evalPage(() => {
+    const labels = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .map((i) => i.textContent.trim().replace(/^\u2713\s*/, ''))
+      .filter((x) => x && !/^reset columns$/i.test(x));
+    return JSON.stringify(labels) === JSON.stringify(
+      ['Name', 'Type', 'Mode', 'Size', 'Date modified', 'Date created', 'Storage class', 'ETag']);
+  }));
   await ok('name column is checked and locked', evalPage(() => {
     const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
       .find((i) => /^\u2713 name$/i.test(i.textContent.trim()));
@@ -2992,7 +3000,7 @@ await step('settings-dialog', async () => {
   // Name is locked on, the chooser swaps lists, and the arrows reorder
   // (a full round trip leaves the draft content-clean, so no column
   // change rides the Save at the end of this step)
-  await ok('column manager: chooser + ordered list + chips', evalPage(() => {
+  await ok('column manager: chooser + ordered list + chips + full set', evalPage(() => {
     const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
       .find((s) => Array.from(s.options).some((o) => o.textContent === 'Search window'));
     const rows = Array.from(document.querySelectorAll('#modal-root .set-colrow'));
@@ -3000,6 +3008,8 @@ await step('settings-dialog', async () => {
     const kinds = rows.map((r) => (r.querySelector('.set-colkind')?.textContent || '').trim());
     return !!sel && sel.value === 'cols' && rows.length === 8
       && names[0] === 'Name' && kinds[0] === 'Text'
+      && JSON.stringify([...names].sort()) === JSON.stringify(
+        ['Date created', 'Date modified', 'ETag', 'Mode', 'Name', 'Size', 'Storage class', 'Type'])
       && kinds.includes('Number') && kinds.includes('Date & time')
       && /tick to show a column/i.test(document.querySelector('#modal-root .set-colhint')?.textContent || '');
   }));
@@ -4427,6 +4437,23 @@ await step('search-window', async () => {
       .find((i) => /^\u2713 name$/i.test(i.textContent.trim()));
     return !!it && it.classList.contains('disabled');
   }));
+  // cross-view parity: one catalog seats every view — re-open the shared
+  // #ctxmenu on the main view's own header and compare the two pickers
+  // label for label (the Settings manager seats the same eight rows; the
+  // settings-dialog step pins that side)
+  await ok('search: the picker seats the main view\'s exact catalog', evalPage((s) => {
+    const labels = () => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .map((i) => i.textContent.trim().replace(/^\u2713\s*/, ''))
+      .filter((x) => x && !/^reset columns$/i.test(x));
+    const sr = labels();
+    document.getElementById('grid-head')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 30 }));
+    const main = labels();
+    const cell = document.querySelector(s + ' .grid-head .gh[data-col="name"]');
+    const r = cell.getBoundingClientRect();
+    cell.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 20, clientY: r.y + 8 }));
+    return sr.length === 8 && main.length === 8 && JSON.stringify(sr) === JSON.stringify(main);
+  }, S));
   await page.locator('#ctxmenu .item', { hasText: 'ETag' }).first().click();
   await sleep(120);
   await ok('search: ETag appears with real hit text, Source still parked last', evalPage((s) => {

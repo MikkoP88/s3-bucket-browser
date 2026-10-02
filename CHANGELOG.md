@@ -8,6 +8,20 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Column parity pinned: the one global column catalog seats
+  every view end to end.** The main view, the secondary pane and
+  the Search window draw the same eight columns through their
+  headers, their header pickers and the Settings partition — one
+  catalog, three views — and the battery now pins it at runtime:
+  the search window's picker and the main view's own picker list
+  the identical labels, and the Settings manager seats the same
+  eight rows. A column whose data an engine doesn't carry
+  (Storage class outside S3, Mode outside local and SFTP, Date
+  created where no birth time exists) renders empty cells — the
+  column never hides itself; the Search window's only extra is
+  the automatic Source column on multi-origin runs, which never
+  lists. No new behavior — the parity the settings-columns work
+  delivered is now asserted so drift is caught.
 - **Normalized paths and a universal paste: every data source's
   address reads `name/contents`, and every path input takes any
   address.** The path bars, breadcrumbs, properties dialogs,

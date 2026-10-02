@@ -192,10 +192,17 @@ directory compare) with S3 and the secondary pane.
   Opt-in columns: Date created (bucket views, WebDAV
   creationdate, Windows local birth times), Mode (local and SFTP
   permission bits), Storage class and ETag — via the header menu or
-  Settings. Columns resize by dragging a header edge — the edge
-  follows the pointer exactly, and growth beyond what the pane has
-  becomes the horizontal scrollbar rather than squeezing the other
-  columns (double-click resets; Arrow keys resize a focused edge) —
+  Settings. One catalog seats every view: the main view, the
+  secondary pane and the Search window carry the same column set
+  through their headers, their header pickers and that Settings
+  partition, and a column whose data an engine does not carry
+  (Storage class outside S3, Mode outside local and SFTP, Date
+  created where no birth time exists) shows empty cells — the
+  column never hides itself. Columns resize by dragging a header
+  edge — the edge follows the pointer exactly, and growth beyond
+  what the pane has becomes the horizontal scrollbar rather than
+  squeezing the other columns (double-click resets; Arrow keys
+  resize a focused edge) —
   and reorder by dragging the header itself; widths and order persist
   per pane, and the header picker's Reset columns brings the
   out-of-box set, order and widths back in one click.
@@ -287,7 +294,8 @@ directory compare) with S3 and the secondary pane.
   button resets the whole form. Results stream in as grid rows
   with type-matched icons (folder, image, video, archive,
   document …); clicking a column header sorts ascending, again
-  descending. The columns carry the main view's whole mechanics:
+  descending. The columns are the main view's own — the one
+  catalog seats both views — and carry its whole mechanics:
   drag a boundary to resize (arrow keys resize from the keyboard,
   a double-click hands a column its standard width back), drag a
   header sideways to reorder, right-click one for the add/remove
