@@ -1,6 +1,6 @@
 // S3 Bucket Browser — application shell (Explorer layout).⁠​‌‌‌​​‌‌​​‌‌​​‌‌​‌‌​​​‌​​​‌​‌‌​‌​‌‌‌​​​​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌‌​​‌‌​​​‌‌​‌‌​​‌​‌​​‌​‌‌​‌​‌‌‌​‌‌​​​‌‌​​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​​​​‌‌​‌‌​‌‌‌‌​‌‌‌​​​​​‌‌‌‌​​‌​‌‌‌​​‌​​‌‌​‌​​‌​‌‌​​‌‌‌​‌‌​‌​​​​‌‌‌​‌​​​​‌​​​​​​​‌​‌​​​​‌‌​​​‌‌​​‌​‌​​‌​​‌​​​​​​​‌‌​​‌​​​‌‌​​​​​​‌‌​​‌​​​‌‌​‌‌​​​‌​​​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​​‌​​​​​​‌​‌​​​​​‌‌​​‌​‌​‌‌‌​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​​‌​​​​​​​‌​‌​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​‌​​​​​‌‌​‌‌‌‌​‌‌​‌‌​​​‌‌‌‌​​‌​‌​​​‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​​‌‌​‌‌​‌​​‌​​​​​​‌​​‌​​‌​‌‌​‌‌‌​​‌‌‌​‌​​​‌‌​​‌​‌​‌‌‌​​‌​​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌​​​​‌​​​​​​‌​‌​‌​‌​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​‌​​‌‌​​​‌‌​‌​​‌​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​​‌‌​​​‌​​‌​‌‌‌​​​‌‌​​​​​​‌​‌‌‌​​​‌‌​​​​​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌‌​​‌‌‌​‌‌​‌​​‌​‌‌‌​‌​​​‌‌​‌​​​​‌‌‌​‌​‌​‌‌​​​‌​​​‌​‌‌‌​​‌‌​​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌​‌​​‌​‌‌‌‌​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌‌‌‌​‌‌‌​​‌‌​​‌‌​​‌‌​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​‌​‌​‌‌​​​‌‌​‌‌​‌​‌‌​‌‌​​‌​‌​‌‌‌​‌​​​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌‌​‌‌‌​​‌‌​‌‌​​‌​‌​‌‌‌​​‌​⁠
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl, parseSourcePath } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
 import { Tree } from './tree.js';
@@ -30,6 +30,9 @@ const grid = new Grid();
 // observe and reveal any row without reaching into grid internals.
 window.__s3bGrid = grid;
 const localPane = new SidePane();
+// the pane's path editor saves stood-up sources itself (parsePaneAddress);
+// main's refreshSources is the rebuild that follows a save
+localPane.onSourcesChanged = refreshSources;
 window.__s3bSidePane = localPane; // battery handle: gui-visual drives the pane directly
 const tree = new Tree({
   onNavigate: (loc) => nav.to(loc),
@@ -1362,7 +1365,11 @@ function canonicalPath(loc) {
 }
 
 // editPath swaps the breadcrumb for a one-line editable field holding the
-// canonical path: copy out, paste in, Enter navigates, Esc cancels.
+// canonical path: copy out, paste in, Enter navigates, Esc cancels. The
+// line goes through resolveAddress — the backend's universal ladder — so
+// any address works: app paths (NAME://...), s3:// URIs, connection URIs
+// (an unconfigured one stands its source up), local:// and file:/// URLs
+// and bare local paths — the pane's surface, so one opens the pane there.
 function editPath() {
   const bc = $('breadcrumb');
   const cur = canonicalPath(nav.current);
@@ -1373,16 +1380,13 @@ function editPath() {
   bc.replaceChildren(inp);
   inp.focus();
   inp.select();
-  inp.addEventListener('keydown', (e) => {
+  inp.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const parsed = parseSourcePath(inp.value, sources);
-      if (parsed) {
-        nav.to(parsed.loc);
-      } else {
-        toast(t('pathInvalid', { p: inp.value.trim() || '?' }), 'error');
-        inp.focus();
-      }
+      const loc = await resolveAddress(inp.value);
+      if (loc && loc.pane) restore(); // a local address opened the pane
+      else if (loc) nav.to(loc);
+      else inp.focus();
     } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -1390,6 +1394,41 @@ function editPath() {
     }
   });
   inp.addEventListener('blur', restore);
+}
+
+// resolveAddress runs one edited line through the backend's ParseAddress
+// ladder: any app path (NAME://...), s3:// URI, connection URI (a
+// configured source opens at the URI's root; an unconfigured one stands
+// up through SaveSource and lands in the tree), local:// form, file URL
+// or bare local path maps to a location. Local addresses are the
+// secondary pane's surface (the main view has no local kind) — one opens
+// the pane at the directory. Returns the location for nav.to,
+// {pane:true} when the pane opened (a local address), or null with the
+// failure already toasted.
+async function resolveAddress(value) {
+  let r;
+  try {
+    r = await api.ParseAddress(value, nav.current?.source || viewSource || '');
+  } catch (err) {
+    toast(`${t('pathInvalid', { p: value.trim() || '?' })} (${err})`, 'error');
+    return null;
+  }
+  if (r.newSource) {
+    try {
+      await api.SaveSource(r.newSource);
+      await refreshSources();
+    } catch (err) {
+      toast(`Save source: ${err}`, 'error');
+      return null;
+    }
+  }
+  if (r.kind === 'local') {
+    localPane.openAt({ kind: 'local', dir: r.prefix || '' });
+    return { pane: true };
+  }
+  if (r.kind === 'remote') return { kind: 'remote', source: r.source, path: r.prefix || '/' };
+  if (r.kind === 'buckets') return { kind: 'buckets', source: r.source };
+  return { kind: 'objects', source: r.source, bucket: r.bucket || '', prefix: r.prefix || '' };
 }
 
 // ====================== bucket guard state (M10.4) ======================
@@ -1795,7 +1834,7 @@ function showContextMenu(e, rows) {
     items.push(['Search in bucket\u2026', '', () => searchWindow({ scopes: searchScopes(), preset: { mode: 's3', source: loc.source || viewSource, bucket: b.key, prefix: '' }, onOpen: gotoSearchHit })]);
     items.push(null);
     items.push(['Copy name', '', () => copyAsText(rows, 'name')]);
-    items.push(['Copy S3 URI', '', () => copyAsText(rows, 'uri')]);
+    items.push(['Copy path', '', () => copyAsText(rows, 'path')]);
     items.push(null);
     items.push(['Admin panel\u2026', '', () => adminDialog(b.key, refreshCurrent)]);
     items.push(['Doctor\u2026', '', async () => runDoctor(b.key)]);
@@ -1835,9 +1874,8 @@ function showContextMenu(e, rows) {
     items.push(['Paste', 'Ctrl+V', () => paste(), !pasteReady() || !inObjects]);
     items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
     items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
-    items.push(['Copy S3 URI', '', () => copyAsText(rows, 'uri'), !sel]);
     // the real address (WinSCP's Copy URI): the endpoint-resolved URL of
-    // the browsing source; the s3:// URI above stays as the CLI form
+    // the browsing source
     items.push(['Copy URL', '', () => copyAsText(rows, 'url'), !sel]);
     items.push(null);
     items.push(['Rename', 'F2', () => renameSelection(), sel !== 1]);
@@ -3087,7 +3125,7 @@ async function selectionProperties() {
           ['Last modified', fmtDate(st.lastModified)],
         ] : []),
         ['Source', `${loc.source} (${sources.find((s) => s.name === loc.source)?.type || '?'})`],
-        ['Path', row.key],
+        ['Path', `${loc.source}://${row.key}`],
       ]);
     } catch (err) {
       toast(`Properties failed: ${err}`, 'error');
@@ -3536,7 +3574,7 @@ function showLocalRowMenu(e, rows) {
       properties(`Properties — ${r.name}`, [
         ['Type', r.isDir ? 'Folder' : 'File'],
         ...(!r.isDir ? [['Size', fmtBytes(r.size || 0)]] : []),
-        ['Path', r.path],
+        ['Path', `local://${r.path}`],
       ]);
     }, sel !== 1],
   ]);
@@ -3665,7 +3703,7 @@ async function sideRemoteProperties(row) {
         ['Last modified', fmtDate(st.lastModified)],
       ] : []),
       ['Source', b.source],
-      ['Path', row.key],
+      ['Path', `${b.name || b.source}://${row.key}`],
     ]);
   } catch (err) {
     toast(`Properties failed: ${err}`, 'error');
@@ -3693,8 +3731,7 @@ function showSideS3RowMenu(e, rows) {
     ['Copy', 'Ctrl+C', () => copySelection(), hasBucketRow],
     ['Cut', 'Ctrl+X', () => cutSelection(), hasBucketRow],
     ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
-    ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
-    ['Copy S3 URI', '', () => copyAsText(rows, 'uri', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
+    ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'objects', bucket: localPane.bucket, source: b.source }), hasBucketRow],
     ['Copy URL', '', () => copyAsText(rows, 'url', { kind: 'objects', bucket: localPane.bucket, source: b.source }), hasBucketRow],
     null,
     ['Rename', 'F2', async () => {
@@ -4235,7 +4272,6 @@ function mountMenubar() {
           items: [
             { label: t('menu.copyName'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'name', c.ctx); }, enabled: () => st().canCopy },
             { label: t('menu.copyPath'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'path', c.ctx); }, enabled: () => st().canCopy },
-            { label: t('menu.copyUri'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'uri', c.ctx); }, enabled: () => st().canCopy && canCopyUriFromMenu() },
             { label: t('menu.copyUrl'), action: () => { const c = copyAsFromMenu(); copyAsText(c.rows, 'url', c.ctx); }, enabled: () => st().canCopy && canCopyUrlFromMenu() },
           ],
         },
@@ -4487,20 +4523,24 @@ async function osCopyRemote(items) {
 }
 
 // copyAsText puts rows on the OS clipboard as plain text (api.ClipboardSetText)
-// — the Explorer-style "copy name / copy path / copy S3 URI / copy URL"
-// actions. Ctrl+C mirrors the selection as files through hidden staging (see
-// osCopyRemote); these explicit actions copy text for editors, tickets and
-// terminals. what: 'name' | 'path' | 'uri' | 'url'. ctx: {kind, bucket,
-// source} — 'objects' rows format bucket/key and s3://bucket/key, 'buckets'
-// rows the bare bucket name (and s3://bucket), 'remote' rows the source
-// path, 'local' rows the absolute path. 'uri' is the S3 CLI-interop form;
-// 'url' is the REAL address (WinSCP's Copy URI purpose): the
-// endpoint-resolved https URL for S3 objects, scheme://user@host[:port]/
-// server-path for remote sources, file:/// for local rows.
+// — the Explorer-style "copy name / copy path / copy URL" actions. Ctrl+C
+// mirrors the selection as files through hidden staging (see osCopyRemote);
+// these explicit actions copy text for editors, tickets and terminals.
+// what: 'name' | 'path' | 'url'. ctx: {kind, bucket, source} — 'path' is
+// the app's normalized NAME:// form for every kind, the same string the
+// path editors speak (it round-trips straight back into one): objects
+// rows through s3TreePath (the bucket folded away for scoped sources),
+// buckets rows NAME://bucket, remote rows NAME://server-path, local rows
+// local://<directory>. 'url' is the REAL address (WinSCP's Copy URI
+// purpose): the endpoint-resolved https URL for S3 objects,
+// scheme://user@host[:port]/server-path for remote sources, file:/// for
+// local rows.
 async function copyAsText(rows, what, ctx = {}) {
   if (!rows.length) return;
   const kind = ctx.kind || nav.current?.kind || 'objects';
   const bucket = ctx.bucket ?? nav.current?.bucket;
+  // the NAME in NAME:// — pane bindings carry the source id
+  const sname = (s) => sources.find((x) => x.id === s || x.name === s)?.name || s || viewSource;
   if (what === 'url' && (kind === 'objects' || kind === 'remote')) {
     // real addresses come from the backend: the source's endpoint,
     // addressing style and root are backend-side facts, and one call
@@ -4520,21 +4560,17 @@ async function copyAsText(rows, what, ctx = {}) {
   }
   let fmt;
   if (what === 'name') fmt = (r) => r.name;
-  else if (what === 'uri') {
-    if (kind === 'objects') fmt = (r) => `s3://${bucket}/${r.key}`;
-    else if (kind === 'buckets') fmt = (r) => `s3://${r.key}`;
-    else return;
-  } else if (what === 'url') {
+  else if (what === 'url') {
     // local rows: the file URL is pure path reshaping (UNC paths keep
     // the //server/share authority form)
     fmt = (r) => {
       const p = encodeURI(String(r.path).replace(/\\/g, '/'));
       return p.startsWith('//') ? `file:${p}` : `file:///${p.replace(/^\/+/, '')}`;
     };
-  } else if (kind === 'objects') fmt = (r) => `${bucket}/${r.key}`;
-  else if (kind === 'local') fmt = (r) => r.path;
-  else fmt = (r) => r.key; // buckets: name; remote: source path
-  const label = what === 'uri' ? 'URI' : what;
+  } else if (kind === 'objects') fmt = (r) => s3TreePath(sname(ctx.source ?? nav.current?.source), bucket, r.key);
+  else if (kind === 'local') fmt = (r) => `local://${r.path}`;
+  else fmt = (r) => `${sname(ctx.source ?? nav.current?.source)}://${r.key}`; // buckets: NAME://bucket; remote: NAME://server-path
+  const label = what;
   try {
     await api.ClipboardSetText(rows.map(fmt).join('\n'));
     toast(`Copied ${rows.length} ${label}${rows.length === 1 ? '' : 's'}`, 'ok');
@@ -4562,15 +4598,8 @@ function copyAsFromMenu() {
   return { rows: [], ctx: {} };
 }
 
-// canCopyUriFromMenu: the s3:// form exists only for S3-addressed selections.
-function canCopyUriFromMenu() {
-  const loc = nav.current;
-  if (grid.selectedRows().length) return loc?.kind === 'objects' || loc?.kind === 'buckets';
-  return localPane.visible && localPane.binding.kind === 's3' && !!localPane.bucket;
-}
-
 // canCopyUrlFromMenu: every pane kind has a real-address form (S3 object,
-// remote path, local file) — unlike the s3:// URI, which is S3-only.
+// remote path, local file).
 function canCopyUrlFromMenu() {
   if (grid.selectedRows().length) {
     const k = nav.current?.kind;

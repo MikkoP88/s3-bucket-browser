@@ -209,8 +209,17 @@ directory compare) with S3 and the secondary pane.
   the main view and the secondary pane stay button-for-button
   twins of each other below the global bar.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
-  edit icon) and type a path like `s3://bucket/folder/` — or
-  `source://path` for any source — to jump directly. Back / forward
+  edit icon) and it becomes an editable line holding the view's
+  normalized path, `Source://bucket/folder/` — the same `Name://`
+  form the Copy path action puts on the clipboard. The line is a
+  universal address bar: a bare local path (`C:\Projects`,
+  `\\server\share`, `~`, a `file:///C:/Users/...` or
+  `file:///home/...` URL), an `s3://bucket/key` URI or a connection
+  URI (`ftp://user:pass@host:21/root`, `sftp://`, `webdav://`) opens
+  where it points. A local address opens the secondary pane at the
+  directory; an `s3://` URI resolves the source that owns the bucket;
+  a connection URI no source matches stands its source up on the fly
+  and opens its root. Back / forward
   history works like Explorer — including its finer rule: any climb
   to an ancestor (a breadcrumb segment, the data-source tree, the
   parent row, a typed path above the current one) leaves the deeper
@@ -300,10 +309,13 @@ directory compare) with S3 and the secondary pane.
   pane's source picker stands up to choose another.
   The pane's path bar carries the main one's every function: click its
   empty area and the breadcrumb becomes an editable line holding the
-  pane's canonical path — copy it out, paste any source's `Name://`
-  path to point the pane there (a bare directory navigates the local
-  side, and a pasted path binds an unbound pane directly), Enter
-  goes, Esc cancels.
+  pane's canonical path (`local://C:\Users\...` when the workstation
+  side is bound) — copy it out, paste any address the main bar takes
+  and the pane goes there: another source's `Name://` path points the
+  pane at it, a bare local path or `file:///` URL rebinds the pane to
+  the workstation, an `s3://` URI or a connection URI binds it to
+  that source (standing one up when none matches), Enter goes, Esc
+  cancels.
   Any source type binds to it — S3, SFTP, FTP, WebDAV, local drives —
   and inside the run it remembers where you left it, reopening
   there (closing the app forgets: the next run starts over at the
@@ -410,7 +422,8 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   touch the OS clipboard can turn the whole bridge off: Settings →
   File transfers → *Explorer copy & paste* (on by default).
 - **Text instead of files** — the context menu (or Edit → Copy as)
-  copies names, full paths or `s3://` URIs to the OS clipboard.
+  copies names, normalized `Source://bucket/key` paths (the form the
+  path bars paste straight back) or URLs to the OS clipboard.
 - **Conflicts & speed** — every transfer states a conflict policy
   (overwrite / skip / rename) with a live pre-check that lists exactly
   which files collide, and can be throttled (256 kB/s … 1000 MB/s).

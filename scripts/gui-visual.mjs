@@ -598,6 +598,145 @@ function shim() {
     return /:[\\/]{0,1}$/.test(parent.slice(0, 3)) ? parent.replace(/[\\/]+$/, '') + '\\' : parent;
   };
 
+  // ---- universal address ladder (ParseAddress mirror) ----
+  // A faithful JS mirror of pkg/api/address.go — the ladder both path
+  // editors submit their lines to. Local separators are Windows-native
+  // (the world's fixtures are backslashed) and ~ expands to the LocalHome
+  // fixture, standing in for os.UserHomeDir.
+  const CONN_TYPES = ['sftp', 'scp', 'ftp', 'ftps', 'webdav', 'webdavs'];
+  const toWin = (p) => String(p || '').replace(/\//g, '\\');
+  const dec = (v) => { try { return decodeURIComponent(v); } catch (e) { return v; } };
+  const bareLocalDir = (r) => {
+    if (r === '~' || r.startsWith('~\\') || r.startsWith('~/')) {
+      return 'C:\\Users\\demo' + toWin(r.slice(1));
+    }
+    if (/^[A-Za-z]:[\\/]/.test(r) || r.startsWith('\\\\') || r.startsWith('//')) return toWin(r);
+    return null;
+  };
+  // parseConnURI mirrors profile.ParseConnURI: schemes the connection
+  // engine speaks, a URL with host/port/user/pass/root. {ok:false} means
+  // "not a connection scheme" (caller walks on); {ok:true, err} means
+  // malformed in an actionable way.
+  const parseConnURI = (r) => {
+    const i = r.indexOf('://');
+    if (i <= 0) return { ok: false };
+    const scheme = r.slice(0, i).toLowerCase();
+    if (!CONN_TYPES.includes(scheme)) return { ok: false };
+    let u;
+    try { u = new URL(r); } catch (e) { return { ok: true, err: 'malformed URL "' + r + '": ' + e }; }
+    if (!u.hostname) return { ok: true, err: 'URL "' + r + '" has no host' };
+    if (u.search || u.hash) return { ok: true, err: 'URL "' + r + '": query strings and fragments are not valid here' };
+    // the WHATWG parser drops a scheme-default port (ftp's 21) from
+    // u.port, but the raw authority still says it was explicit — recover
+    // it so the mirror matches Go's url.Parse, which never drops defaults
+    let port = 0;
+    const auth = (r.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i) || [])[1] || '';
+    const rawPort = u.port
+      || ((auth.slice(auth.lastIndexOf('@') + 1).match(/:(\d+)$/) || [])[1] || '');
+    if (rawPort) {
+      port = parseInt(rawPort, 10);
+      if (!(port >= 1 && port <= 65535)) return { ok: true, err: 'URL "' + r + '": invalid port "' + rawPort + '"' };
+    }
+    return { ok: true, type: scheme, host: u.hostname, port,
+      username: dec(u.username), password: dec(u.password),
+      root: u.pathname.replace(/\/$/, '') };
+  };
+  // sourceLoc mirrors the NAME:// leg for a matched source: S3 speaks
+  // buckets/objects (a scoped source folds its own bucket away), every
+  // other type is remote-rooted.
+  const sourceLoc = (src, restIn) => {
+    const rest = restIn.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (src.type === 's3') {
+      if (src.bucket) {
+        let content = rest;
+        if (content === src.bucket) content = '';
+        else if (content.startsWith(src.bucket + '/')) content = content.slice(src.bucket.length + 1);
+        return { kind: 'objects', source: src.name, bucket: src.bucket,
+          prefix: content ? content.replace(/\/+$/g, '') + '/' : '' };
+      }
+      if (!rest) return { kind: 'buckets', source: src.name };
+      const parts = rest.replace(/\/+$/g, '').split('/');
+      const bucket = parts.shift();
+      return { kind: 'objects', source: src.name, bucket, prefix: parts.length ? parts.join('/') + '/' : '' };
+    }
+    return { kind: 'remote', source: src.name, prefix: rest ? '/' + rest.replace(/\/+$/g, '') + '/' : '/' };
+  };
+  // s3Loc resolves a bare s3://bucket/key: the scoped owner wins, then
+  // the hinted source, then the only account-wide source — else the
+  // error names the candidates, exactly as the backend does.
+  const s3Loc = (srcs, restIn, hint) => {
+    const parts = String(restIn || '').split('/');
+    const bucket = parts.shift().replace(/^\/+|\/+$/g, '');
+    const key = parts.join('/');
+    if (!bucket || /[@:?#]/.test(bucket)) throw new Error('s3:// address must name a bucket: s3://my-bucket/path');
+    const s3s = srcs.filter((x) => x.type === 's3');
+    let pick = s3s.find((x) => x.bucket === bucket) || null;
+    if (!pick && hint) {
+      pick = s3s.find((x) => !x.bucket
+        && (x.name.toLowerCase() === String(hint).toLowerCase()
+          || String(x.id || '').toLowerCase() === String(hint).toLowerCase())) || null;
+    }
+    if (!pick) {
+      const aw = s3s.filter((x) => !x.bucket);
+      if (aw.length === 1) pick = aw[0];
+    }
+    if (!pick) {
+      const names = s3s.map((x) => x.name);
+      if (!names.length) throw new Error('no S3 data source is configured — add one first');
+      throw new Error('several S3 data sources could own "' + bucket + '" — name one (NAME://…): ' + names.join(', '));
+    }
+    return { kind: 'objects', source: pick.name, bucket: pick.bucket || bucket,
+      prefix: key ? key.replace(/\/+$/g, '') + '/' : '' };
+  };
+  // connLoc matches a configured source (type+host+username) or stands a
+  // new one up — SaveSource-ready, named host or "host - root".
+  const connLoc = (srcs, u) => {
+    const path = u.root ? u.root + '/' : '/';
+    const m = srcs.find((x) => x.type === u.type
+      && String(x.host || '').toLowerCase() === u.host.toLowerCase()
+      && (x.username || '') === u.username);
+    if (m) return { kind: 'remote', source: m.name, prefix: path };
+    const name = u.root ? u.host + ' - ' + u.root.replace(/^\//, '') : u.host;
+    return { kind: 'remote', source: name, prefix: path,
+      newSource: { name, type: u.type, host: u.host, port: u.port,
+        username: u.username, password: u.password, root: u.root } };
+  };
+  // fileLoc maps a file:/// URL to the workstation: a host is a UNC
+  // share, a /C:/ drive folds to C:, everything else is an absolute path.
+  const fileLoc = (r) => {
+    let u;
+    try { u = new URL(r); } catch (e) { throw new Error('malformed file URL: ' + e); }
+    if (u.host) return { kind: 'local', prefix: '\\\\' + u.host + toWin(u.pathname) };
+    let p = dec(u.pathname);
+    if (/^\/[A-Za-z]:/.test(p)) p = p.slice(1);
+    return { kind: 'local', prefix: toWin(p) };
+  };
+  const parseAddress = (rawIn, hint) => {
+    const r = String(rawIn || '').trim();
+    if (!r) throw new Error('empty address');
+    const i = r.indexOf('://');
+    if (i > 0) {
+      const scheme = r.slice(0, i);
+      const rest = r.slice(i + 3);
+      const srcs = world.sources;
+      const src = srcs.find((x) => x.name.toLowerCase() === scheme.toLowerCase()
+        || String(x.id || '').toLowerCase() === scheme.toLowerCase());
+      if (src) return sourceLoc(src, rest);
+      if (scheme.toLowerCase() === 's3') return s3Loc(srcs, rest, hint);
+      if (scheme.toLowerCase() === 'local') return { kind: 'local', prefix: toWin(rest) };
+      const u = parseConnURI(r);
+      if (u.ok) {
+        if (u.err) throw new Error(u.err);
+        return connLoc(srcs, u);
+      }
+      if (scheme.toLowerCase() === 'file') return fileLoc(r);
+      throw new Error('unrecognized address "' + r + '"');
+    }
+    const dir = bareLocalDir(r);
+    if (dir) return { kind: 'local', prefix: dir };
+    throw new Error('unrecognized address "' + r + '"');
+  };
+
   // ---- event registry (window.runtime shim) ----
   const listeners = new Map();
   // payload arrives as positional arguments — the same contract as the
@@ -650,6 +789,23 @@ function shim() {
     GetVersion: () => '1.1.0-beta.13',
     GetLicenseState: () => ({ required: false }), // shim world: no setup phase
     ListSources: () => JSON.parse(JSON.stringify(world.sources)),
+    // the universal address ladder both path editors submit to — the
+    // pkg/api/address.go mirror above; rejects carry the same errors
+    ParseAddress: (rawAddr, hint) => parseAddress(rawAddr, hint),
+    // SaveSource upserts into the shim world (the backend persists into
+    // the open profile): the next ListSources — and the tree it feeds —
+    // sees the saved source
+    SaveSource: (src) => {
+      const v = src || {};
+      const cur = world.sources.find((x) => x.name === v.name || (v.id && x.id === v.id));
+      if (cur) Object.assign(cur, v);
+      else {
+        const slug = String(v.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+        world.sources.push({ ...v, id: v.id || 'src-' + slug });
+      }
+      world.pfState.sourceCount = world.sources.length;
+      return {};
+    },
     // fault-injectable listing paths: delays hold the answer past the
     // navigation so in-flight UI states are observable; listError rides the
     // done page exactly like the backend watchdog timeout does; listBeginError
@@ -1732,15 +1888,12 @@ await step('copy-as-ctxmenu', async () => {
   await openCtx('readme.md');
   const items = await evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
     .map((i) => i.textContent.trim()));
-  await ok('row menu offers copy-as actions', ['copy name', 'copy path', 'copy s3 uri']
+  await ok('row menu offers copy-as actions', ['copy name', 'copy path', 'copy url']
     .every((s) => items.some((x) => x.toLowerCase() === s)));
+  await ok('the s3:// URI action is gone — Copy path carries the NAME:// form', !items.some((x) => /s3 uri/i.test(x)));
   await ctxItem(/^copy path$/i);
   let c = await findCall('ClipboardSetText');
-  await ok('copy path puts bucket/key on the clipboard', !!c && c.args[0] === 'team-files/readme.md');
-  await openCtx('readme.md');
-  await ctxItem(/copy s3 uri/i);
-  c = await findCall('ClipboardSetText');
-  await ok('copy s3 uri formats s3://bucket/key', !!c && c.args[0] === 's3://team-files/readme.md');
+  await ok('copy path puts the normalized path on the clipboard', !!c && c.args[0] === 'hetzner://team-files/readme.md');
   await openCtx('readme.md');
   await ctxItem(/^copy name$/i);
   c = await findCall('ClipboardSetText');
@@ -6056,21 +6209,32 @@ await step('side-pane-editpath', async () => {
     !!document.querySelector('#toasts .toast.error')
     && !!document.querySelector('#local-crumb input.path-edit')));
   await page.keyboard.press('Escape');
-  // the local binding's canonical form is the raw directory: paste one
-  // back to navigate the workstation side
+  // the local binding's canonical form is local://<dir>: paste one back
+  // to navigate the workstation side
   await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane local bound');
   await evalPage(() => document.querySelector('#local-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor local');
-  await ok('the local canonical path is the raw directory', evalPage(() =>
-    /^C:\\/.test(document.querySelector('#local-crumb input.path-edit')?.value || '')));
+  await ok('the local canonical path is the local:// form', evalPage(() =>
+    document.querySelector('#local-crumb input.path-edit')?.value === 'local://C:\\Users\\demo'));
   await page.fill('#local-crumb input.path-edit', 'C:\\Users\\demo\\Downloads');
   await page.keyboard.press('Enter');
   await waitFor(async () => (await txt('#local-crumb')).includes('Downloads'), 6000, 'pane navigated via local path');
   await ok('a bare local path navigates the pane', evalPage(() =>
     !document.querySelector('#local-crumb input.path-edit')
     && window.__s3bSidePane.dir.endsWith('Downloads')));
+  // the local:// canonical form navigates too — a round-trip: what the
+  // editor shows is what it takes
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor local again');
+  await page.fill('#local-crumb input.path-edit', 'local://C:\\Users\\demo\\Documents');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane navigated via local:// path');
+  await ok('a local:// path navigates the pane', evalPage(() =>
+    !document.querySelector('#local-crumb input.path-edit')
+    && window.__s3bSidePane.dir.endsWith('Documents')));
   // an unbound pane opens the editor empty — a pasted path binds it
   await evalPage(() => { window.__s3bSidePane.reset(); });
   await evalPage(() => document.querySelector('#local-pane .navbar')
@@ -7032,6 +7196,89 @@ await step('breadcrumb-path-nav', async () => {
   await page.keyboard.press('Enter');
   await waitFor(async () => (await rowKeys()).includes('app/'), 6000, 'navigated via path');
   await ok('pasting a Source://bucket/ path navigates', (await txt('#breadcrumb')).includes('logs-2026'));
+});
+
+// the path editors are universal address lines: local machine paths open
+// the secondary pane (the local surface), external URIs land on their
+// source — an unconfigured one stands up, saves and joins the tree — and
+// nothing unrecognized navigates anywhere
+await step('path-address', async () => {
+  await navObjectsOf('hetzner', 'team-files');
+  const openEditor = () => evalPage(() => document.querySelector('#main-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  const editorOpen = () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit'));
+  const editorValue = () => evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value || '');
+  // a bare local path opens the pane at the directory
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open');
+  await page.fill('#breadcrumb input.path-edit', 'C:\\Users\\demo\\Downloads');
+  await page.keyboard.press('Enter');
+  await waitFor(() => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane opens');
+  await waitFor(async () => !!(await sideRow('invoice.pdf')), 6000, 'pane lists the pasted directory');
+  await ok('a bare local path opens the pane at the directory', evalPage(() =>
+    window.__s3bSidePane.binding.kind === 'local'
+    && window.__s3bSidePane.dir.endsWith('Downloads')));
+  // a file:/// URL lands on the pane the same way
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open again');
+  await page.fill('#breadcrumb input.path-edit', 'file:///C:/Users/demo/Documents');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane lists the file-URL target');
+  await ok('a file:/// URL opens the pane at the directory', evalPage(() =>
+    window.__s3bSidePane.dir.endsWith('Documents')));
+  // an s3:// URI resolves the owning account and navigates the main view
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open s3');
+  await page.fill('#breadcrumb input.path-edit', 's3://team-files/docs/');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'main navigated via s3://');
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor canonical s3');
+  await ok('an s3:// URI lands on the owning source', (await editorValue()) === 'hetzner://team-files/docs/');
+  await page.keyboard.press('Escape');
+  // an unconfigured connection URI stands its source up, saves it and
+  // opens its root
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open ftp');
+  await page.fill('#breadcrumb input.path-edit', 'ftp://demo@newhost.example.test:21/incoming');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await findCall('SaveSource')) !== null, 4000, 'SaveSource called');
+  const sc = await findCall('SaveSource');
+  await ok('the connection URI stands the source up', !!sc
+    && sc.args[0].name === 'newhost.example.test - incoming'
+    && sc.args[0].type === 'ftp' && sc.args[0].host === 'newhost.example.test'
+    && sc.args[0].port === 21 && sc.args[0].username === 'demo');
+  await waitFor(async () => (await txt('#tree')).includes('newhost.example.test'), 6000, 'tree gains the source');
+  await waitFor(async () => (await txt('#breadcrumb')).includes('newhost.example.test'), 6000, 'view opens the new source');
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor canonical ftp');
+  await ok('the new source opens at the URI root', (await editorValue()) === 'newhost.example.test - incoming:///incoming/');
+  await page.keyboard.press('Escape');
+  // an unrecognized address toasts and keeps the editor
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open bad');
+  await page.fill('#breadcrumb input.path-edit', 'nope://void');
+  await page.keyboard.press('Enter');
+  await sleep(120);
+  await ok('an unrecognized address toasts and keeps the editor', evalPage(() =>
+    !!document.querySelector('#toasts .toast.error')
+    && !!document.querySelector('#breadcrumb input.path-edit')));
+  await page.keyboard.press('Escape');
+  // the pane's editor takes the same families: a bare local path while a
+  // remote source is bound rebinds the pane to the workstation
+  await evalPage(() => { window.__s3bSidePane.show(); window.__s3bSidePane.rebind('src-box'); });
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'pane editor');
+  await page.fill('#local-crumb input.path-edit', 'C:\\Users\\demo\\Downloads');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => !!(await sideRow('invoice.pdf')), 6000, 'pane rebound to local');
+  await ok('a bare local path rebinds a remote pane', evalPage(() =>
+    window.__s3bSidePane.binding.kind === 'local'
+    && window.__s3bSidePane.dir.endsWith('Downloads')));
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
 });
 
 await step('sidebar-resize', async () => {

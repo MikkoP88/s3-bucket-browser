@@ -10,10 +10,8 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
@@ -139,10 +137,10 @@ func sourceAddCmd() *cobra.Command {
 				return err
 			}
 			name := args[0]
-			var u sourceURL
+			var u profile.ConnURI
 			// s3://BUCKET shorthand: sets the bucket (and the name when
 			// no explicit NAME is given); credentials come from flags/env.
-			if b, isS3 := parseS3BucketURL(args[len(args)-1]); isS3 {
+			if b, isS3 := profile.ParseS3BucketURI(args[len(args)-1]); isS3 {
 				if b == "" {
 					return usageErr("s3:// shorthand must name a bucket: s3://my-bucket")
 				}
@@ -154,7 +152,7 @@ func sourceAddCmd() *cobra.Command {
 					name = b
 				}
 			} else if len(args) == 2 {
-				parsed, ok, perr := parseSourceURL(args[1])
+				parsed, ok, perr := profile.ParseConnURI(args[1])
 				if !ok {
 					return usageErr("second argument must be a sftp:// scp:// ftp:// ftps:// webdav:// webdavs:// or s3:// URL")
 				}
@@ -162,24 +160,24 @@ func sourceAddCmd() *cobra.Command {
 					return usageErr("%v", perr)
 				}
 				u = parsed
-			} else if parsed, ok, perr := parseSourceURL(args[0]); ok {
+			} else if parsed, ok, perr := profile.ParseConnURI(args[0]); ok {
 				if perr != nil {
 					return usageErr("%v", perr)
 				}
-				u, name = parsed, parsed.host
+				u, name = parsed, parsed.Host
 			}
 			bucket = strings.TrimSpace(bucket)
-			if u.typ != "" {
-				if cmd.Flags().Changed("type") && typ != u.typ {
-					return usageErr("--type %s conflicts with the URL (its scheme implies --type %s)", typ, u.typ)
+			if u.Type != "" {
+				if cmd.Flags().Changed("type") && typ != u.Type {
+					return usageErr("--type %s conflicts with the URL (its scheme implies --type %s)", typ, u.Type)
 				}
 				for _, f := range []string{"host", "port", "username", "password", "root"} {
 					if cmd.Flags().Changed(f) {
 						return usageErr("--%s cannot be combined with a URL argument (the URL sets it)", f)
 					}
 				}
-				typ, host, port = u.typ, u.host, u.port
-				username, password, root = u.username, u.password, u.root
+				typ, host, port = u.Type, u.Host, u.Port
+				username, password, root = u.Username, u.Password, u.Root
 			}
 			var src profile.Source
 			switch typ {
@@ -316,73 +314,6 @@ func sourceAddCmd() *cobra.Command {
 	f.BoolVar(&virtualHosted, "virtual-hosted", false, "virtual-hosted addressing (s3)")
 	f.BoolVar(&insecure, "insecure", false, "skip TLS verification (labs only)")
 	return cmd
-}
-
-// sourceURL is a parsed sftp:// scp:// ftp:// ftps:// webdav://
-// webdavs:// connection URL — the `source add [NAME] URL` shorthand.
-type sourceURL struct {
-	typ      string
-	host     string
-	port     int
-	username string
-	password string
-	root     string
-}
-
-// parseS3BucketURL matches the s3://BUCKET shorthand (ok=false for
-// anything else; ok=true with an empty bucket means malformed).
-func parseS3BucketURL(raw string) (bucket string, ok bool) {
-	if !strings.HasPrefix(strings.ToLower(raw), "s3://") {
-		return "", false
-	}
-	b := strings.Trim(raw[5:], "/")
-	if b == "" || strings.ContainsAny(b, "@:/?#") {
-		return "", true
-	}
-	return b, true
-}
-
-// parseSourceURL parses a scheme://user:pass@host:port/root connection
-// URL. ok=false for anything that is not one of the six remote schemes
-// (plain names, s3:// URIs); err carries malformed-URL detail when ok=true.
-func parseSourceURL(raw string) (u sourceURL, ok bool, err error) {
-	i := strings.Index(raw, "://")
-	if i <= 0 {
-		return sourceURL{}, false, nil
-	}
-	typ, known := map[string]string{
-		"sftp":    profile.TypeSFTP,
-		"scp":     profile.TypeSCP,
-		"ftp":     profile.TypeFTP,
-		"ftps":    profile.TypeFTPS,
-		"webdav":  profile.TypeWebDAV,
-		"webdavs": profile.TypeWebDAVS,
-	}[strings.ToLower(raw[:i])]
-	if !known {
-		return sourceURL{}, false, nil
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return sourceURL{}, true, fmt.Errorf("malformed URL %q: %v", raw, err)
-	}
-	if parsed.Hostname() == "" {
-		return sourceURL{}, true, fmt.Errorf("URL %q has no host", raw)
-	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return sourceURL{}, true, fmt.Errorf("URL %q: query strings and fragments are not valid here", raw)
-	}
-	u = sourceURL{typ: typ, host: parsed.Hostname(), username: parsed.User.Username()}
-	u.password, _ = parsed.User.Password()
-	if p := parsed.Port(); p != "" {
-		u.port, err = strconv.Atoi(p)
-		if err != nil || u.port < 1 || u.port > 65535 {
-			return sourceURL{}, true, fmt.Errorf("URL %q: invalid port %q", raw, p)
-		}
-	}
-	// Root keeps the URL's leading slash: both engines anchor "/" at
-	// Root ("/srv/data"), and an empty path stays the login directory.
-	u.root = strings.TrimSuffix(parsed.Path, "/")
-	return u, true, nil
 }
 
 // sourceDetail is the one-line human summary per source type.

@@ -8,6 +8,24 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Path bars take any address, and every path normalizes to
+  `Source://`.** Both content panes' path lines are universal
+  address bars now: paste a bare local path (`C:\Projects`,
+  `\\server\share`, `~`, a `file:///` URL), an `s3://bucket/key`
+  URI or a connection URI (`ftp://user:pass@host:21/root`,
+  `sftp://`, `webdav://`) and Enter opens where it points — a local
+  address opens the secondary pane at the directory (rebinding it
+  from a remote source), an `s3://` URI resolves the source that
+  owns the bucket, and a connection URI no source matches stands
+  its source up on the fly and opens its root. One resolver ladder
+  behind both bars — a new App.ParseAddress sharing the CLI's
+  connection-URI parser — keeps GUI and CLI in agreement, and the
+  pane's local side reports its directory as `local://C:\...`.
+  Copy path now carries the normalized `Source://` form everywhere
+  it lands (context menus, the Edit menu, properties dialogs), so a
+  copied path pastes straight back into any path bar; the separate
+  Copy S3 URI action is gone and Copy URL keeps real addresses.
+
 - **Data source types read as bold text.** Every surface that
   identified a source by an icon — the sidebar tree, the breadcrumb
   roots of both content panes, the Doctor and view pickers — now

@@ -9,7 +9,7 @@
 // folder rows / the body of the local binding).
 import { Grid } from './grid.js';
 import { toast } from './dialogs.js';
-import { el, fmtBytes, debounce, srcIconEl, parseSourcePath, parentPrefix } from './util.js';
+import { el, fmtBytes, debounce, srcIconEl, parentPrefix } from './util.js';
 import { api, subscribeStream } from './api.js';
 import { t } from './i18n.js';
 import { updateCommandState } from './commands.js';
@@ -101,6 +101,7 @@ export class SidePane {
     this.hasListed = false; // some listing has landed for the current binding
     this.painted = false; // streaming leg: first page arrived
     this.sources = [];    // [{id,name,type}] fed by main after ListSources
+    this.onSourcesChanged = null; // main's refreshSources, injected after construction
     this.hist = [];       // back stack of location entries
     this.futr = [];       // forward stack of location entries
     this.upWanted = false; // the current listing's parent-row verdict
@@ -412,11 +413,12 @@ export class SidePane {
   }
 
   // entryOf normalizes an openAt target (the tree's kind/path/prefix
-  // vocabulary) into a history entry.
+  // vocabulary, the main editor's local addresses) into a history entry.
   entryOf(target) {
     if (!target) return null;
     if (target.kind === 'remote') return { kind: 'remote', source: target.source, dir: target.path || '/' };
     if (target.kind === 's3') return { kind: 's3', source: target.source, bucket: target.bucket || '', dir: target.prefix || '' };
+    if (target.kind === 'local') return { kind: 'local', dir: target.dir || '' };
     return null;
   }
 
@@ -454,18 +456,22 @@ export class SidePane {
     }
   }
 
-  // openAt is the tree's "Open on secondary pane": ensure the pane is
+  // openAt lands a target on the pane — the tree's "Open on secondary
+  // pane" and the main editor's local addresses: ensure the pane is
   // visible, then list the target through the pane's history. A fresh
-  // pane binds straight to the target's source and starts its history
-  // there.
+  // pane binds straight to the target's source (the workstation itself,
+  // for a local target) and starts its history there.
   openAt(target) {
     const entry = this.entryOf(target);
-    this.show();
-    if (!entry) return;
+    if (!entry) { this.show(); return; }
+    this.show({ drive: false });
     if (!this.bound) {
-      const src = this.sources.find((s) => s.id === entry.source || s.name === entry.source);
-      if (!src) return;
-      this.bindTo(src);
+      if (entry.kind === 'local') this.bindTo(null);
+      else {
+        const src = this.sources.find((s) => s.id === entry.source || s.name === entry.source);
+        if (!src) return;
+        this.bindTo(src);
+      }
       this.hist.length = 0;
       this.futr.length = 0;
     }
@@ -483,7 +489,11 @@ export class SidePane {
     }
   }
 
-  show() {
+  // drive=false makes the pane visible WITHOUT the default open — for
+  // openAt, which binds and lists the pane itself right after: the
+  // default's async landing (LocalHome, then the home listing) would
+  // race the target's listing and clobber it after it already ran.
+  show({ drive = true } = {}) {
     const wasHidden = !this.visible;
     $('local-pane').classList.remove('hidden');
     $('pane-split').classList.remove('hidden');
@@ -491,6 +501,7 @@ export class SidePane {
     // remembered spot with every landing, so this one capture is the
     // view picker's "return to last view" target
     if (wasHidden) this.openedLoc = this.rememberedLoc();
+    if (!drive) return;
     if (!this.bound) this.restore();
     else if (!this.hasListed) this.start();
   }
@@ -914,9 +925,9 @@ export class SidePane {
 
   // paneCanonical is the pane's twin of main's canonicalPath: the
   // one-line path the path editor holds. Source bindings speak
-  // NAME://content ('' while unbound); the local binding's canonical
-  // form is the raw directory itself ('' at the filesystem-roots view),
-  // so the editor always hands back what it was given.
+  // NAME://content ('' while unbound); the local binding speaks
+  // local://<directory> (local:// alone at the filesystem-roots view) —
+  // one universal form, pastable straight into either editor.
   paneCanonical() {
     if (!this.bound) return '';
     const name = this.binding.name || this.binding.source || '';
@@ -925,15 +936,16 @@ export class SidePane {
       if (this.binding.bucket) return `${name}://${this.dir || ''}`;
       return this.bucket ? `${name}://${this.bucket}/${this.dir || ''}` : `${name}://`;
     }
-    return this.dir || '';
+    return `local://${this.dir || ''}`;
   }
 
   // editPath swaps the breadcrumb for a one-line editable field holding
   // the canonical path — the twin of the main pane's editor: copy out,
-  // paste in, Enter navigates (any source's NAME:// path rebinds the
-  // pane; a bare directory navigates the local binding), Esc cancels.
-  // An unbound pane opens the editor empty — a pasted path is one more
-  // way past the onboarding picker.
+  // paste in, Enter navigates through the same universal address ladder
+  // (any address works — another source's NAME:// path rebinds the pane,
+  // a local or external path lands on the workstation or its source),
+  // Esc cancels. An unbound pane opens the editor empty — a pasted path
+  // is one more way past the onboarding picker.
   editPath() {
     const bc = $('local-crumb');
     if (bc.querySelector('input.path-edit')) return;
@@ -943,15 +955,14 @@ export class SidePane {
     bc.replaceChildren(inp);
     inp.focus();
     inp.select();
-    inp.addEventListener('keydown', (e) => {
+    inp.addEventListener('keydown', async (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        const entry = this.parsePanePath(inp.value);
+        const entry = await this.parsePaneAddress(inp.value);
         if (entry) {
           if (entry.kind === 'local' && !this.bound) this.bindTo(null);
           this.go(entry);
         } else {
-          toast(t('pathInvalid', { p: inp.value.trim() || '?' }), 'error');
           inp.focus();
         }
       } else if (e.key === 'Escape') {
@@ -963,21 +974,37 @@ export class SidePane {
     inp.addEventListener('blur', restore);
   }
 
-  // parsePanePath maps an edited line to a pane history entry: a
-  // NAME:// path matches any configured source through parseSourcePath
-  // (rebinding the pane when the scheme names a different one), and a
-  // bare directory navigates the local binding. Returns null when
-  // nothing matches.
-  parsePanePath(str) {
-    const parsed = parseSourcePath(str, this.sources);
-    if (parsed) {
-      const { loc } = parsed;
-      if (loc.kind === 'remote') return { kind: 'remote', source: loc.source, dir: loc.path || '/' };
-      return { kind: 's3', source: loc.source, bucket: loc.bucket || '', dir: loc.prefix || '' };
-    }
+  // parsePaneAddress maps an edited line to a pane history entry through
+  // the backend's ParseAddress ladder: any app path (NAME:// — rebinding
+  // the pane when the scheme names a different source), s3:// URI,
+  // connection URI (an unconfigured one stands its source up and saves
+  // it through SaveSource), local:// form, file URL or bare local path.
+  // A bare path while locally bound navigates without the round-trip —
+  // the pane's own grammar. Returns the entry, or null with the failure
+  // already toasted.
+  async parsePaneAddress(str) {
     const v = String(str || '').trim();
-    if (v && this.binding.kind === 'local') return { kind: 'local', dir: v };
-    return null;
+    if (v && !v.includes('://') && this.binding.kind === 'local') return { kind: 'local', dir: v };
+    const hint = this.binding.kind === 'local' ? '' : (this.binding.source || '');
+    let r;
+    try {
+      r = await app().ParseAddress(v, hint);
+    } catch (err) {
+      toast(`${t('pathInvalid', { p: v || '?' })} (${err})`, 'error');
+      return null;
+    }
+    if (r.newSource) {
+      try {
+        await app().SaveSource(r.newSource);
+        if (this.onSourcesChanged) await this.onSourcesChanged();
+      } catch (err) {
+        toast(`Save source: ${err}`, 'error');
+        return null;
+      }
+    }
+    if (r.kind === 'local') return { kind: 'local', dir: r.prefix || '' };
+    if (r.kind === 'remote') return { kind: 'remote', source: r.source, dir: r.prefix || '/' };
+    return { kind: 's3', source: r.source, bucket: r.bucket || '', dir: r.prefix || '' };
   }
 
   setCompare(rows) { this.grid.setCmp(aggregateCompare(rows)); }

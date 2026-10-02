@@ -629,8 +629,10 @@ async function walk() {
   });
 
   await step('copy-as → OS clipboard bridge', async () => {
-    // Copy path / Copy S3 URI run through the real backend binding; the
-    // harness seam records the text, served back at /__live/clipboard
+    // Copy path runs through the real backend binding; the harness seam
+    // records the text, served back at /__live/clipboard. Copy path now
+    // carries the normalized NAME:// form (the separate URI action folded
+    // into it): a per-bucket source speaks its prefix without the bucket.
     const clip = () => evalPage(async () => {
       const r = await fetch('/__live/clipboard');
       return ((await r.json()).text) || '';
@@ -639,11 +641,7 @@ async function walk() {
     await rightClickRow(SEED);
     await sleep(80);
     await ctxItem(/^copy path$/i);
-    await ok(`copy path → "${await clip()}"`, (await clip()) === `${BUCKET}/${SEED}/`);
-    await rightClickRow(SEED);
-    await sleep(80);
-    await ctxItem(/copy s3 uri/i);
-    await ok(`copy s3 uri → "${await clip()}"`, (await clip()) === `s3://${BUCKET}/${SEED}/`);
+    await ok(`copy path → "${await clip()}"`, (await clip()) === `${SRCNAME}://${SEED}/`);
     await rightClickRow(SEED);
     await sleep(80);
     await ctxItem(/^copy name$/i);
