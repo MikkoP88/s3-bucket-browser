@@ -123,9 +123,12 @@ directory compare) with S3 and the secondary pane.
 
 ![Main window](screenshots/main-view.png)
 
-- **Sidebar tree** — sources → buckets → folders. Click to navigate;
-  right-click a node for Properties, the Admin panel, transfers and
-  more. Folders expand lazily; buckets with versioning carry a 🔄 icon,
+- **Sidebar tree** — sources → buckets → folders. Every source wears
+  its type as a bold text label (S3, SFTP, WebDAV, …) painted in its
+  accent color — the same badge rides the breadcrumb roots and the
+  source pickers. Click to navigate; right-click a node for
+  Properties, the Admin panel, transfers and more. Folders expand
+  lazily; buckets with versioning carry a 🔄 icon,
   object-lock buckets a 🔒 icon. Drag the sidebar's right edge to
   resize it (double-click resets).
 - **Data sources filter** — the funnel left of the **+** in the sidebar

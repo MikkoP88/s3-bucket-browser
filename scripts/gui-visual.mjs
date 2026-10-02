@@ -1408,16 +1408,16 @@ await step('boot', async () => {
   await ok('buckets listed', waitFor(async () => (await rowKeys()).length >= 4, 6000, 'buckets'));
   await ok('tree shows all sources', evalPage(() => ['hetzner', 'backup-box', 'dav-claims']
     .every((n) => Array.from(document.querySelectorAll('#tree .tlabel')).some((l) => l.textContent === n))));
-  // source rows render the hand-drawn SVG glyph set (license-free) and the
-  // three source types here (s3, sftp, webdav) are visually distinct
-  await ok('source rows carry distinct SVG glyphs', evalPage(() => {
-    const glyph = (name) => {
+  // source rows wear the bold type label — the three source types
+  // here (s3, sftp, webdav) read as distinct text badges
+  await ok('source rows carry distinct bold type labels', evalPage(() => {
+    const label = (name) => {
       const row = Array.from(document.querySelectorAll('#tree .tnode'))
         .find((r) => r.querySelector('.tlabel')?.textContent === name);
-      return row?.querySelector('.ticon svg')?.innerHTML || '';
+      return (row?.querySelector('.ticon')?.textContent || '').trim();
     };
-    const s3 = glyph('hetzner'), sftp = glyph('backup-box'), dav = glyph('dav-claims');
-    return !!s3 && !!sftp && !!dav && s3 !== sftp && sftp !== dav && s3 !== dav;
+    const s3 = label('hetzner'), sftp = label('backup-box'), dav = label('dav-claims');
+    return s3 === 'S3' && sftp === 'SFTP' && dav === 'WebDAV';
   }));
   await shot('boot-buckets');
 });
@@ -2166,14 +2166,14 @@ await step('tree-lazy', async () => {
   // prefix listings carry anchored keys ('docs/notes.md'), not bare names
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'docs objects');
   await ok('tree click navigates into docs', (await txt('#breadcrumb')).includes('docs'));
-  // the breadcrumb's root crumb carries the SAME type glyph as the sidebar
-  // row, painted in the source's accent color
-  await ok('breadcrumb root carries the source glyph in color', evalPage(() => {
+  // the breadcrumb's root crumb carries the SAME bold type label as
+  // the sidebar row, painted in the source's accent color
+  await ok('breadcrumb root carries the source type label in color', evalPage(() => {
     const root = document.querySelector('#breadcrumb .crumb');
     const ic = root?.querySelector('.src-ic');
     // style.color serializes '#0b63ce' to rgb() in Chromium — accept both
     const c = ic?.style.color || '';
-    return !!ic && !!ic.querySelector('svg') && ['#0b63ce', 'rgb(11, 99, 206)'].includes(c)
+    return !!ic && ic.textContent === 'S3' && ['#0b63ce', 'rgb(11, 99, 206)'].includes(c)
       && (root.textContent || '').includes('hetzner');
   }));
   await shot('tree-docs');
@@ -2219,7 +2219,13 @@ await step('tree-single-bucket-first-click', async () => {
   // breadcrumb at the content root is exactly the source — one crumb,
   // and the bucket name never repeats after ://
   await ok('first click opens bucket contents', evalPage(() => {
-    const crumbs = Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => (c.textContent || '').trim());
+    // the root crumb leads with its bold type badge (S3, SFTP, …) — the
+    // canonical-hierarchy check reads the label without the badge
+    const crumbs = Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => {
+      const clone = c.cloneNode(true);
+      clone.querySelectorAll('.src-ic').forEach((i) => i.remove());
+      return (clone.textContent || '').trim();
+    });
     return crumbs.length === 1 && crumbs[0] === 'nightly';
   }));
 });
@@ -2250,7 +2256,13 @@ await step('tree-bucket-scoped-source', async () => {
   // bucket never repeats after :// and the buckets view is unreachable
   // from a single data source
   await ok('click opens bucket contents directly', evalPage(() => {
-    const crumbs = Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => (c.textContent || '').trim());
+    // the root crumb leads with its bold type badge (S3, SFTP, …) — the
+    // canonical-hierarchy check reads the label without the badge
+    const crumbs = Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => {
+      const clone = c.cloneNode(true);
+      clone.querySelectorAll('.src-ic').forEach((i) => i.remove());
+      return (clone.textContent || '').trim();
+    });
     return crumbs.length === 1 && crumbs[0] === 'website-prod';
   }));
   await ok('bucket-scoped source row highlighted', evalPage(() => Array.from(document.querySelectorAll('#tree .tnode'))
@@ -3310,13 +3322,17 @@ await step('conflict-view', async () => {
 await step('sources-in-tree', async () => {
   await ok('source listed in sidebar tree', (await txt('#tree')).includes('backup-box'));
   await ok('sidebar header says Data sources', (await txt('#sidebar-head')).toLowerCase().includes('data sources'));
-  // every source row carries its SVG type glyph (bucket/terminal/globe/…)
+  // every source row carries its bold type label (S3 / SFTP / WebDAV / …)
   // painted in the source's own accent color
-  await ok('source rows carry SVG type glyphs', evalPage(() => {
+  await ok('source rows carry bold type labels', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
-    return rows.length >= 3 && rows.every((r) => !!r.querySelector('.ticon svg'));
+    return rows.length >= 3 && rows.every((r) => {
+      const t = r.querySelector('.ticon');
+      return !!t && t.textContent.trim() !== '' && !t.querySelector('svg')
+        && parseInt(getComputedStyle(t).fontWeight, 10) >= 600;
+    });
   }));
-  await ok('glyphs painted in the source accent color', evalPage(() => {
+  await ok('type labels painted in the source accent color', evalPage(() => {
     const r = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'))
       .find((x) => x.dataset.source === 'backup-box');
     // style.color serializes '#1b7f3b' to rgb() in Chromium — accept both
@@ -6074,9 +6090,14 @@ await step('side-pane-destpop', async () => {
   // the view the pane was opened on — instead of closing it. F9 and the
   // pane’s × stay the honest closers.
   // stage the opening view first: the fresh-run boot forgets cross-run
-  // locations, so the step owns its last view — rebind local (the pair
-  // persists on the landing), close, reopen: show() captures the
+  // locations, so the step owns its last view — and it must not lean on
+  // whichever state a predecessor left the pane in: open it if shut,
+  // rebind local (the pair persists on the landing), then a
+  // deterministic hidden-to-visible cycle — show() captures the
   // workstation home as openedLoc before the pane wanders away
+  if (await evalPage(() => document.getElementById('local-pane').classList.contains('hidden'))) {
+    await page.click('#btn-panes'); // closed -> a plain open, no picker
+  }
   await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Pictures')), 6000, 'pane staged on the local home');
   await page.keyboard.press('F9');

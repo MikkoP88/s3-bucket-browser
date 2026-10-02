@@ -193,7 +193,15 @@ svg.flip { transform: scaleX(-1); }
 .crumb-sep { color: var(--text-dim); padding: 0 1px; }
 /* source-type glyph (sidebar rows, breadcrumb root crumb): strokes use
    currentColor, so an inline color paints the source's accent */
-.src-ic { display: inline-flex; line-height: 0; }
+/* the source-type badge: bold text where a glyph used to sit —
+   compact so the longest label (WebDAVS) still reads as a badge;
+   the one remaining svg rider (the view picker's arrow) stays
+   block-level so the span keeps its own box */
+.src-ic {
+  font-weight: 700; font-size: 10px; letter-spacing: 0.02em;
+  line-height: 1; white-space: nowrap;
+}
+.src-ic svg { display: block; }
 .crumb .src-ic { margin-right: 5px; }
 .filter {
   width: 220px; font: var(--font);
@@ -290,8 +298,14 @@ svg.flip { transform: scaleX(-1); }
 .tnode.sel { background: var(--sel); }
 .tnode.drop-target { background: var(--accent-soft); outline: 1px dashed var(--accent); }
 .tnode .twist { width: 14px; text-align: center; color: var(--text-dim); flex: none; font-size: 9px; }
-.tnode .ticon { flex: none; width: 16px; text-align: center; }
-.tnode .ticon svg { display: inline-block; vertical-align: -2px; }
+/* the type column: bold labels (S3, SFTP, WebDAV, …) need more
+   room than a glyph, and one fixed width keeps every row's label
+   on the same stop — folder and bucket emojis center in it too */
+.tnode .ticon { flex: none; width: 48px; text-align: center; }
+.tnode[data-tkind="source"] .ticon {
+  font-weight: 700; font-size: 10px; letter-spacing: 0.02em;
+  white-space: nowrap;
+}
 .tnode .tlabel { overflow: hidden; text-overflow: ellipsis; }
 
 /* ================= Grid ================= */
@@ -959,7 +973,7 @@ html[data-theme="dark"] .doc-pill.warn { background: rgba(253, 214, 99, .12); }
   padding: 8px 10px; cursor: pointer;
 }
 .picker-row:hover, .picker-row:focus-visible { background: var(--hover); outline: none; }
-.picker-row svg { flex: none; }
+.picker-row .src-ic { flex: none; }
 .picker-name { font-weight: 600; font-size: 13px; }
 .picker-sub { color: var(--text-dim); font-size: 11.5px; margin-top: 1px; }
 

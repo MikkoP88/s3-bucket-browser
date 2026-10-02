@@ -8,6 +8,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Data source types read as bold text.** Every surface that
+  identified a source by an icon — the sidebar tree, the breadcrumb
+  roots of both content panes, the Doctor and view pickers — now
+  shows the type as a bold label (S3, SFTP, FTPS, WebDAV, Local, …)
+  painted in the source's accent color. The labels match the
+  Add-source dialog's type list, and the secured variants no longer
+  lean on composite lock badges — the name itself carries the
+  distinction. With the glyph set gone the app embeds no
+  third-party icon data anymore (the NOTICE drops its Bootstrap
+  Icons entry; the remaining arrows and funnels are hand-drawn).
+
 - **The secondary pane starts every app run fresh.** Where the pane
   stood is now session-scoped: closing the app forgets it, so each
   run's first pane open lands on the workstation's home folder —

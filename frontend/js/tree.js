@@ -598,9 +598,9 @@ export class Tree {
     if (!hasKids && !open) twist.style.visibility = 'hidden';
     const ticon = el('span', { class: 'ticon' });
     if (n.kind === 'source') {
-      // the type glyph painted in the source's own accent color — the
-      // same icon the breadcrumb's root crumb carries
-      ticon.innerHTML = srcIcon(n.stype);
+      // the bold type label painted in the source's own accent color —
+      // the same badge the breadcrumb's root crumb carries
+      ticon.textContent = srcIcon(n.stype);
       if (n.color) ticon.style.color = n.color;
     } else ticon.textContent = n.kind === 'rdir' ? '\u{1F4C1}' : n.prefix === '' ? '\u{1F5C0}' : '\u{1F4C1}';
     const row = el('div', {
