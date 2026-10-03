@@ -396,6 +396,14 @@ build stay multi-instance.
 
 ### Fixed
 
+- The tree's source-type chips hugged the type column's left edge,
+  leaving a band of dead air between the type (S3, SFTP, WebDAVS, ...)
+  and the source name beside it. Chips now right-align inside the fixed
+  62px column — the row gap plus a 2px cushion is all the air between
+  the chip and the name — while folder and bucket glyphs keep centering
+  and source names keep their aligned stop (battery-asserted: every
+  source row's chip sits 4-8px from its label).
+
 - The secondary pane sometimes opened on the onboarding source
   picker instead of the workstation home: a location remembered by
   an earlier app run pointed at a source that no longer existed

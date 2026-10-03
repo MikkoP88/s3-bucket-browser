@@ -3588,6 +3588,17 @@ await step('sources-in-tree', async () => {
         && chip.getBoundingClientRect().width <= col.getBoundingClientRect().width + 0.5;
     });
   }));
+  // chips hug the name: the fixed column's right edge + the row gap is
+  // all the air between the chip and the label (4px gap + 2px column
+  // padding = 6, tolerance for rounding) — no dead space to the name
+  await ok('type chips hug the source name, not the column left edge', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
+    return rows.length >= 3 && rows.every((r) => {
+      const c = r.querySelector('.ticon .src-ic')?.getBoundingClientRect();
+      const l = r.querySelector('.tlabel')?.getBoundingClientRect();
+      return !!c && !!l && l.left - c.right >= 4 && l.left - c.right <= 8;
+    });
+  }));
   await shotOf('sources-tree', '#tree');
 });
 

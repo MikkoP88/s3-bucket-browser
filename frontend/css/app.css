@@ -305,10 +305,11 @@ svg.flip { transform: scaleX(-1); }
 .tnode .twist { width: 14px; text-align: center; color: var(--text-dim); flex: none; font-size: 9px; }
 /* the type column: the source chip (S3, SFTP, WebDAVS, …) needs more
    room than a glyph, and one fixed width keeps every row's badge on
-   the same stop — chips align left at the column's edge (the label-
-   column look), folder and bucket emojis center in it too */
+   the same stop — chips hug the label at the column's right edge, so
+   no dead air opens between the type and the name, while folder and
+   bucket emojis keep centering in it */
 .tnode .ticon { flex: none; width: 62px; display: flex; align-items: center; justify-content: center; }
-.tnode[data-tkind="source"] .ticon { justify-content: flex-start; padding-left: 2px; white-space: nowrap; }
+.tnode[data-tkind="source"] .ticon { justify-content: flex-end; padding-right: 2px; white-space: nowrap; }
 .tnode .tlabel { overflow: hidden; text-overflow: ellipsis; }
 
 /* ================= Grid ================= */
