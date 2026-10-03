@@ -2757,11 +2757,23 @@ function updateEditingStatus() {
 
 function togglePanes() { setPanes(!localPane.visible); }
 
-// paneDestPop is the Dual-pane button: a closed pane opens; an open pane
-// gets the view picker (Home / last view) instead of a close — F9 and
-// the pane's × stay the honest closers.
-function paneDestPop(btn) {
-  if (localPane.visible) localPane.destPop(btn);
+// paneDestPop is the Dual-pane button: an open pane closes — the plain
+// toggle users expect; a closed pane opens, unless a remembered view
+// that is not the default exists, in which case the picker (Home view /
+// Return to last view) stands under the button while the pane stays
+// hidden — a pick opens the pane straight on the chosen view. F9 stays
+// the plain toggle either way, and the pane's × stays a closer.
+async function paneDestPop(btn) {
+  if (localPane.visible) { setPanes(false); return; }
+  let worth = false;
+  try {
+    const loc = localPane.rememberedLoc();
+    if (loc) {
+      worth = loc.kind !== 'local'
+        || (loc.dir || '') !== (await api.LocalHome() || '');
+    }
+  } catch { worth = false; }
+  if (worth) localPane.destPop(btn);
   else setPanes(true);
 }
 

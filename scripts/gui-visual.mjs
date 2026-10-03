@@ -1722,7 +1722,7 @@ await step('loading-states', async () => {
   await evalPage(() => { window.__shim.world.fault = null; });
   await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane back to local');
-  await page.keyboard.press('F9'); // close: later steps expect a single pane (the button now picks the view)
+  await page.keyboard.press('F9'); // close: later steps expect a single pane
 });
 
 // The not-connected contract: a connection-class failure names the problem
@@ -6596,25 +6596,39 @@ await step('side-pane-editpath', async () => {
   await evalPage(() => document.getElementById('toasts').replaceChildren());
 });
 await step('side-pane-destpop', async () => {
-  // the Dual-pane button's second act: with the pane already open it
-  // offers where the pane should point — the workstation's home view, or
-  // the view the pane was opened on — instead of closing it. F9 and the
-  // pane’s × stay the honest closers.
-  // stage the opening view first: the fresh-run boot forgets cross-run
-  // locations, so the step owns its last view — and it must not lean on
-  // whichever state a predecessor left the pane in: open it if shut,
-  // rebind local (the pair persists on the landing), then a
-  // deterministic hidden-to-visible cycle — show() captures the
-  // workstation home as openedLoc before the pane wanders away
+  // the Dual-pane button's honest shape: an open pane closes on the
+  // click — the plain toggle users expect — and a closed pane opens,
+  // unless a remembered view that is not the default stands: then the
+  // Home / last-view picker anchors under the button while the pane
+  // stays hidden, and a pick opens the pane straight on the chosen
+  // view. F9 stays the plain toggle either way, and the pane's ×
+  // stays a closer.
+  // stage deterministically — never lean on whichever state a
+  // predecessor left the pane in: open it if shut (clearing the side
+  // pair first — a remembered non-default would stand the picker
+  // instead of opening), then rebind local so the home listing is
+  // the remembered view
   if (await evalPage(() => document.getElementById('local-pane').classList.contains('hidden'))) {
-    await page.click('#btn-panes'); // closed -> a plain open, no picker
+    await evalPage(() => {
+      localStorage.removeItem('s3b-side-src');
+      localStorage.removeItem('s3b-side-loc');
+      document.getElementById('btn-panes').click();
+    });
+    await waitFor(() => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane staged open');
   }
   await evalPage(() => { window.__s3bSidePane.rebind('local'); });
   await waitFor(async () => !!(await sideRow('Pictures')), 6000, 'pane staged on the local home');
   await page.keyboard.press('F9');
   await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for the staging');
+  // the remembered workstation home IS the default: the reopen is
+  // plain, never the picker
   await page.click('#btn-panes');
-  await waitFor(async () => !!(await sideRow('Pictures')), 6000, 'pane reopened on its opening view');
+  await waitFor(async () => !!(await sideRow('Pictures')), 6000, 'default remembered reopens');
+  await ok('a remembered default opens the pane plainly, no picker', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && document.getElementById('pane-dest').classList.contains('hidden')));
+  // a remembered non-default: rebind remote, and the open-pane click
+  // closes — the honest toggle
   await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
   await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
   const anchor = await evalPage(() => {
@@ -6622,8 +6636,15 @@ await step('side-pane-destpop', async () => {
     return { l: b.left, btm: b.bottom };
   });
   await page.click('#btn-panes');
-  await ok('button on an open pane offers views, not a close', evalPage(() =>
-    !document.getElementById('local-pane').classList.contains('hidden')
+  await ok('the button closes an open pane', evalPage(() =>
+    document.getElementById('local-pane').classList.contains('hidden')
+    && document.getElementById('pane-dest').classList.contains('hidden')
+    && localStorage.getItem('s3b-panes') === '0'));
+  // the closed reopen: the remembered remote stands the picker while
+  // the pane stays hidden
+  await page.click('#btn-panes');
+  await ok('a remembered non-default stands the picker over a hidden pane', evalPage(() =>
+    document.getElementById('local-pane').classList.contains('hidden')
     && !document.getElementById('pane-dest').classList.contains('hidden')
     && document.getElementById('pane-dest').querySelectorAll('.dest-opt').length === 2
     && document.getElementById('btn-panes').getAttribute('aria-expanded') === 'true'));
@@ -6631,63 +6652,92 @@ await step('side-pane-destpop', async () => {
     const p = document.getElementById('pane-dest').getBoundingClientRect();
     return p.top >= a.btm - 2 && p.left >= a.l - 2 && p.right <= innerWidth - 4 && p.bottom <= innerHeight - 4;
   }, anchor));
-  // the "last view" names where the pane stood when it was opened —
-  // here: the reload-open at the remembered workstation home
-  await ok('last-view option carries the opening location', evalPage(() => {
+  // the "last view" names the remembered spot — here: the remote root
+  await ok('last-view option carries the remembered location', evalPage(() => {
     const o = document.getElementById('pane-dest').querySelectorAll('.dest-opt')[1];
-    return !!o && !o.disabled && o.textContent.includes('C:\\Users\\demo');
+    return !!o && !o.disabled && o.textContent.includes('backup-box');
   }));
   await shot('pane-dest-pop');
+  // the remembered spot IS the view the hidden pane still holds, so the
+  // pick re-lists the very same place — the history rule moves nothing
+  // (Back rests); Home view is the pick that restarts
+  const rlBefore = (await calls()).filter((c) => c.m === 'RemoteList').length;
   await page.click('#pane-dest .dest-opt:nth-child(2)');
-  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane back at its opening view');
-  await ok('last view returns the pane through history', evalPage(() =>
-    window.__s3bSidePane.binding.kind === 'local'
-    && window.__s3bSidePane.dir === 'C:\\Users\\demo'
-    && window.__s3bSidePane.hist.length >= 1));
-  // wander away, then Home view: the fresh start (history cut)
+  await waitFor(async () =>
+    (await calls()).filter((c) => c.m === 'RemoteList').length > rlBefore, 6000, 'last view re-listed');
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'last view reopened the pane');
+  await ok('the pick opens the pane on the remembered view', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && window.__s3bSidePane.binding.kind === 'remote'
+    && window.__s3bSidePane.dir === '/'
+    && window.__s3bSidePane.hist.length === 0));
+  // wander to a non-default local view; the Home view pick restarts
+  // the reopened pane fresh (history cut)
   await evalPage(() => window.__s3bSidePane.go({ kind: 'local', dir: 'C:\\Users\\demo\\Downloads' }));
   await waitFor(async () => (await txt('#local-crumb')).includes('Downloads'), 6000, 'pane wandered into Downloads');
   await page.click('#btn-panes');
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed again');
+  await page.click('#btn-panes');
+  await ok('a remembered non-default local view stands the picker too', evalPage(() =>
+    document.getElementById('local-pane').classList.contains('hidden')
+    && !document.getElementById('pane-dest').classList.contains('hidden')
+    && document.getElementById('pane-dest').querySelectorAll('.dest-opt')[1].textContent.includes('Downloads')));
   await page.click('#pane-dest .dest-opt:nth-child(1)');
   await waitFor(() => evalPage(() =>
     window.__s3bSidePane.dir === 'C:\\Users\\demo' && !window.__s3bSidePane.canBack()), 6000, 'home restart lands');
   await ok('home view restarts the pane fresh at the workstation home', evalPage(() =>
-    window.__s3bSidePane.binding.kind === 'local'
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && window.__s3bSidePane.binding.kind === 'local'
     && window.__s3bSidePane.dir === 'C:\\Users\\demo'
     && window.__s3bSidePane.hist.length === 0));
   // dismissals: the button toggles the picker; Escape and an outside
-  // click close it — the pane stays open throughout
+  // click close it — a dismissal is not a choice, so the pane stays
+  // hidden throughout
+  await evalPage(() => window.__s3bSidePane.go({ kind: 'local', dir: 'C:\\Users\\demo\\Downloads' }));
+  await waitFor(async () => (await txt('#local-crumb')).includes('Downloads'), 6000, 'pane wandered for dismissals');
   await page.click('#btn-panes');
-  await ok('picker reopened over the open pane', evalPage(() =>
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for dismissals');
+  await page.click('#btn-panes');
+  await ok('picker stood again', evalPage(() =>
     !document.getElementById('pane-dest').classList.contains('hidden')));
   await page.click('#btn-panes');
-  await ok('the button toggles the picker closed', evalPage(() =>
+  await ok('the button toggles the picker closed, pane still hidden', evalPage(() =>
     document.getElementById('pane-dest').classList.contains('hidden')
-    && document.getElementById('btn-panes').getAttribute('aria-expanded') === null));
+    && document.getElementById('btn-panes').getAttribute('aria-expanded') === null
+    && document.getElementById('local-pane').classList.contains('hidden')));
   await page.click('#btn-panes');
   await page.keyboard.press('Escape');
   await ok('escape dismisses the picker', evalPage(() =>
-    document.getElementById('pane-dest').classList.contains('hidden')));
+    document.getElementById('pane-dest').classList.contains('hidden')
+    && document.getElementById('local-pane').classList.contains('hidden')));
   await page.click('#btn-panes');
   await page.click('#sidebar');
   await ok('an outside click dismisses the picker', evalPage(() =>
     document.getElementById('pane-dest').classList.contains('hidden')));
-  await ok('the pane stayed open through every dismissal', evalPage(() =>
+  await ok('the pane stayed hidden through every dismissal', evalPage(() =>
+    document.getElementById('local-pane').classList.contains('hidden')
+    && localStorage.getItem('s3b-panes') === '0'));
+  // F9 stays the plain toggle: the remembered Downloads still stands,
+  // yet F9 opens the pane straight on it — no picker
+  await page.keyboard.press('F9');
+  await ok('F9 opens plainly even with a non-default remembered', evalPage(() =>
     !document.getElementById('local-pane').classList.contains('hidden')
-    && localStorage.getItem('s3b-panes') === '1'));
-  // nothing remembered → the last view rests (disabled); F9 closes honestly
+    && document.getElementById('pane-dest').classList.contains('hidden')));
+  await waitFor(async () => !!(await sideRow('invoice.pdf')), 6000, 'F9 opened on the standing view');
   await page.keyboard.press('F9');
   await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed by F9');
-  await evalPage(() => localStorage.removeItem('s3b-side-loc'));
-  await page.click('#btn-panes'); // closed → opens (no remembered loc → the local home)
-  await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'pane reopened');
+  // nothing remembered → the plain open, never the picker (the pane
+  // keeps its live binding; the remembered pair only steers restores)
+  await evalPage(() => {
+    localStorage.removeItem('s3b-side-src');
+    localStorage.removeItem('s3b-side-loc');
+  });
   await page.click('#btn-panes');
-  await ok('last view rests when nothing was remembered', evalPage(() =>
-    document.getElementById('pane-dest').querySelectorAll('.dest-opt')[1].disabled === true));
-  await page.keyboard.press('Escape');
-  await ok('picker away, pane still open', evalPage(() =>
-    document.getElementById('pane-dest').classList.contains('hidden')
-    && !document.getElementById('local-pane').classList.contains('hidden')));
+  await waitFor(() => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'plain open');
+  await ok('nothing remembered opens the pane plainly, never the picker', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && document.getElementById('pane-dest').classList.contains('hidden')
+    && document.getElementById('local-empty-picker').classList.contains('hidden')));
 });
 
 await step('side-pane-delete-window', async () => {
@@ -6983,8 +7033,13 @@ await step('pane-history', async () => {
   // view's learned: a crumb climb on the pane's path bar leaves the
   // deeper view one pane-Forward away, the roots view above every drive
   // qualifies too, and going deeper still cuts it
+  // the button closes an open pane and stands the picker when a
+  // remembered non-default view sits on a closed one — clear the pair
+  // so a hidden pane opens the plain way
   await evalPage(() => {
     if (document.getElementById('local-pane').classList.contains('hidden')) {
+      localStorage.removeItem('s3b-side-src');
+      localStorage.removeItem('s3b-side-loc');
       document.getElementById('btn-panes').click();
     }
   });
@@ -8937,10 +8992,14 @@ await step('size-bar', async () => {
   //     first so both measurements mean what they say
   await evalPage(() => {
     const p = document.getElementById('local-pane');
-    // the button now offers views on an open pane — F9 stays the honest close
+    // the button closes an open pane and stands the picker when a
+    // remembered non-default view sits on a closed one — F9 stays the
+    // plain toggle, and the pair goes so the reopen below opens plainly
     if (!p.classList.contains('hidden')) {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F9', bubbles: true }));
     }
+    localStorage.removeItem('s3b-side-src');
+    localStorage.removeItem('s3b-side-loc');
   });
   await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed baseline');
   const geo1 = await evalPage(() => {
@@ -8963,7 +9022,7 @@ await step('size-bar', async () => {
   await ok('with the pane open the bar ends at the pane boundary',
     Math.abs(geo2.br - geo2.wr) < 2 && Math.abs(geo2.wr - geo2.pl) < 2
     && geo2.pr > geo2.vw - 40);
-  await page.keyboard.press('F9'); // close: later steps expect a single pane (the button now picks the view)
+  await page.keyboard.press('F9'); // close: later steps expect a single pane
   await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed');
 
   // 17. localized bar: a second page booted in Finnish (the main page

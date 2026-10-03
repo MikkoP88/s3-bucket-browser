@@ -208,8 +208,9 @@ export class SidePane {
       this.editPath();
     });
     // the view picker's lifecycle: any click outside it (or its trigger
-    // button in the global bar) and any Escape close it — the pane itself
-    // stays open. The picker's own keys (Escape / arrows) rest inside it.
+    // button in the global bar) and any Escape close it — the pane keeps
+    // whatever visibility it had (the picker stands for a closed pane).
+    // The picker's own keys (Escape / arrows) rest inside it.
     document.addEventListener('click', (e) => {
       if (e.target.closest('#pane-dest, #btn-panes')) return;
       this.hideDestPop();
@@ -457,13 +458,20 @@ export class SidePane {
   }
 
   // openAt lands a target on the pane — the tree's "Open on secondary
-  // pane" and the main editor's local addresses: ensure the pane is
-  // visible, then list the target through the pane's history. A fresh
-  // pane binds straight to the target's source (the workstation itself,
-  // for a local target) and starts its history there.
+  // pane" and the main editor's local addresses.
   openAt(target) {
     const entry = this.entryOf(target);
     if (!entry) { this.show(); return; }
+    this.openEntry(entry);
+  }
+
+  // openEntry seats one navEntry on the pane: ensure the pane is
+  // visible, then list the entry through the pane's history. A fresh
+  // pane binds straight to the entry's source (the workstation itself,
+  // for a local entry) and starts its history there. The view picker's
+  // "Return to last view" lands through the same door — its remembered
+  // location is already a navEntry shape.
+  openEntry(entry) {
     this.show({ drive: false });
     if (!this.bound) {
       if (entry.kind === 'local') this.bindTo(null);
@@ -550,18 +558,28 @@ export class SidePane {
 
   // goHome is the picker's "Home view": a fresh start on the workstation's
   // home folder — the same reset the onboarding picker's choice performs.
-  goHome() { this.rebind('local'); }
-
-  // goLast is the picker's "Return to last view": back to where the pane
-  // stood when it was opened, through history (Back undoes the jump).
-  goLast() {
-    if (this.openedLoc) this.go(this.openedLoc);
+  // The picker stands for a closed pane now, so the pane must come back
+  // into view before the rebind lists into it.
+  goHome() {
+    if (!this.visible) this.show({ drive: false });
+    this.rebind('local');
   }
 
-  // destPop is the Dual-pane button's second act: with the pane already
-  // open the button no longer closes it — it offers where the pane should
-  // point, anchored under the button. F9 and the pane's × remain the
-  // honest closers.
+  // goLast is the picker's "Return to last view": back to where the pane
+  // stood, through history (Back undoes the jump). The live remembered
+  // location leads (it tracks every landing); openedLoc — captured at
+  // the last open — is the fallback. openEntry brings the closed pane
+  // back into view and seats the entry, cold or warm.
+  goLast() {
+    const target = this.rememberedLoc() || this.openedLoc;
+    if (target) this.openEntry(target);
+  }
+
+  // destPop is the Dual-pane button's second act: with the pane closed
+  // and a remembered non-default view standing, the button offers where
+  // the reopened pane should point, anchored under the button while the
+  // pane stays hidden — a pick opens the pane right on the chosen view.
+  // F9 stays the plain toggle, and the pane's × stays a closer.
   destPop(btn) {
     const pop = $('pane-dest');
     if (!pop.classList.contains('hidden')) { this.hideDestPop(); btn.focus(); return; }
@@ -584,9 +602,10 @@ export class SidePane {
   }
 
   // renderDestPop rebuilds the picker from the pane's state: the Home view
-  // always; the last view when one was captured (else it rests disabled).
+  // always; the last view when one was remembered (else it rests
+  // disabled — defensive, the picker only stands when one was).
   renderDestPop() {
-    const last = this.openedLoc;
+    const last = this.rememberedLoc() || this.openedLoc;
     const pop = $('pane-dest');
     pop.setAttribute('aria-label', t('pane.emptyTitle'));
     pop.replaceChildren(

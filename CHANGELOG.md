@@ -173,17 +173,22 @@ build stay multi-instance.
   real job: it stands only when a remembered source has vanished,
   asking which source should take its place.
 
-- **Dual pane: the Dual-pane button's second act is a view picker.**
-  With the pane already open, clicking the toolbar's **Dual-pane**
-  button (either pane's copy) no longer closes it — a small anchored
-  picker appears under the button offering where the pane should
-  point: **Home view** starts over at the workstation's home folder
-  with the history cut clean, and **Return to last view** jumps back
-  to the spot the pane stood on when it was opened, through history
-  so Back undoes the jump (the option rests disabled when nothing
-  was remembered). Escape, an outside click, or the button again
-  dismisses the picker — the pane stays open throughout. F9, the View
-  menu and the pane's × remain the honest closers.
+- **Dual pane: the Dual-pane button does what it says — close — with
+  one courtesy for a remembered view.** With the pane open, clicking
+  the toolbar's **Dual-pane** button (either pane's copy) closes it.
+  With the pane closed it opens — plainly on the standing view —
+  unless the pane was left somewhere that is not the default home
+  (a remote source, a wandered folder): then a small anchored picker
+  stands under the button while the pane stays hidden. **Home view**
+  reopens the pane fresh at the workstation's home folder with the
+  history cut clean, and **Return to last view** reopens straight on
+  the remembered spot — the same door as any navigation, so when the
+  remembered spot is the view the hidden pane still holds, the pick
+  re-lists that very place and history moves nothing (Back rests).
+  Escape, an outside click, or the button again dismisses the picker
+  and the pane stays hidden. F9 and the View menu stay the plain
+  toggle (they open on the standing view, never the picker), and the
+  pane's × stays a closer.
 
 - **Dual pane: the secondary pane is a full twin of the main view.** The
   old "Panes" side panel and its Sync toggle are gone; F9 or the
