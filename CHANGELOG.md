@@ -306,6 +306,20 @@ build stay multi-instance.
 
 ### Changed
 
+- **Settings COLUMNS orders by drag: grab a row, drop it in place.**
+  The column manager's list rows are now draggable — the live insertion
+  slot marks as an inset accent bar on the target row's top or bottom
+  edge while the pointer travels, the dragged row fades to 45%, and the
+  checkbox never starts a drag (the same guard the main grid's rows
+  carry), so a tick can't ghost the row. Alt+Up / Alt+Down move the
+  focused row for keyboard reach, the rows take a grab cursor, and the
+  ▲/▼ buttons retire along with their col.moveUp/col.moveDown keys in
+  all 15 languages; every colsHint learns the drag wording, the
+  battery's reorder legs turn into synthetic DataTransfer drags over
+  the neighbour row's halves (settings-honor walks to the View page
+  first — a drag reads row geometry, and the book hides inactive
+  pages), and usage documents the drag.
+
 - **The content bottom bar says whose files it is counting.** The
   active data source's name moves from the app footer to the content
   area's own bottom bar — bold, on the bar's right end, where

@@ -185,7 +185,8 @@ directory compare) with S3 and the secondary pane.
   partition for every view — main view, secondary pane, Search
   window — under a chooser: the full catalog as an ordered
   check-list where a tick shows a column, the list order is the
-  column order (the arrow buttons move a column), each row names
+  column order (drag a row — or press Alt+Up / Alt+Down on a focused
+  row — to move a column), each row names
   its data type (Text, Number, Date & time) and Name stays locked
   on; the out-of-box set is Name, Type, Size and Date modified
   (the Search window starts at Name, Size, Date modified).

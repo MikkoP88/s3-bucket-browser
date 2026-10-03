@@ -73,8 +73,9 @@ const COL_KIND = {
 // colManager renders the ONE column partition: a view chooser — the
 // main view, the secondary pane, the Search window — and, under it, the
 // full catalog as an ordered check-list. Tick = visible, the list order
-// IS the column order (top to bottom, left to right), the arrow buttons
-// move a column, and the identity "Name" column stays locked on. The
+// IS the column order (top to bottom, left to right), dragging a row
+// moves a column (Alt+Up/Down moves the focused row), and the identity
+// "Name" column stays locked on. The
 // panes persist visible ids only (hidden columns carry no stored
 // position), so still-hidden ones seat after the visible set in catalog
 // order — checking one seats it right where it sits. set receives the
@@ -86,8 +87,9 @@ function colManager(d, set) {
     { key: 'colsSr', labelKey: 'settings.colsViewSearch' },
   ];
   // per-view full order + visible set, derived once per render: ticks
-  // never re-order anything (rows stay put under the pointer), only the
-  // arrows and the draft move things — and a render rebuild (Reset,
+  // never re-order anything (rows stay put under the pointer), only a
+  // drag (or Alt+Up/Down on the focused row) and the draft move things —
+  // and a render rebuild (Reset,
   // security re-sync) re-derives from the fresh draft
   const order = {};
   const on = {};
@@ -100,6 +102,21 @@ function colManager(d, set) {
   const stage = () => set(cur, order[cur].filter((id) => on[cur].has(id)));
 
   const list = el('div', { class: 'set-collist', role: 'list' });
+  // drag = the row id in flight + the insertion slot under the pointer
+  // (an index into the live order, at slot i = above row i); the
+  // keyboard drag seats directly and never marks a slot
+  const drag = { id: null, at: -1 };
+  const seat = (id, to) => {
+    const ids = order[cur];
+    const from = ids.indexOf(id);
+    if (from < 0 || to < 0 || to > ids.length) return;
+    if (to > from) to -= 1;
+    if (to === from) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, id);
+    draw();
+    stage();
+  };
   const draw = () => {
     const ids = order[cur];
     list.replaceChildren(...ids.map((id, i) => {
@@ -110,26 +127,49 @@ function colManager(d, set) {
         if (cb.checked) on[cur].add(id); else on[cur].delete(id);
         stage();
       });
-      const move = (delta) => {
-        const j = i + delta;
-        if (j < 0 || j >= ids.length) return;
-        ids.splice(i, 1);
-        ids.splice(j, 0, id);
-        draw();
-        stage();
-      };
-      const mk = (glyph, key, delta) => {
-        const b = el('button', { type: 'button', class: 'btn set-colbtn', text: glyph,
-          'aria-label': t(key), title: t(key), disabled: delta < 0 ? i === 0 : i === ids.length - 1 });
-        b.addEventListener('click', () => move(delta));
-        return b;
-      };
-      return el('div', { class: 'set-colrow', role: 'listitem' },
+      const row = el('div', { class: 'set-colrow', role: 'listitem', draggable: 'true', tabindex: '0' },
         cb,
         el('span', { class: 'set-colname', text: t(c.labelKey) }),
-        el('span', { class: 'set-colkind', text: t(COL_KIND[id] || 'col.kindText') }),
-        mk('▲', 'col.moveUp', -1),
-        mk('▼', 'col.moveDown', 1));
+        el('span', { class: 'set-colkind', text: t(COL_KIND[id] || 'col.kindText') }));
+      // the checkbox is its own drag target — a tick gone sideways
+      // must not ghost the row (the main grid rows carry the same guard)
+      row.addEventListener('dragstart', (e) => {
+        if (e.target === cb) { e.preventDefault(); return; }
+        drag.id = id;
+        row.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', id);
+      });
+      row.addEventListener('dragover', (e) => {
+        if (drag.id === null || id === drag.id) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const r = row.getBoundingClientRect();
+        const at = (e.clientY - r.top) < r.height / 2 ? i : i + 1;
+        if (drag.at !== at) {
+          drag.at = at;
+          for (const x of list.children) x.classList.remove('drop-above', 'drop-below');
+          row.classList.add(at <= i ? 'drop-above' : 'drop-below');
+        }
+      });
+      row.addEventListener('drop', (e) => {
+        if (drag.id === null) return;
+        e.preventDefault();
+        seat(drag.id, drag.at >= 0 ? drag.at : i);
+      });
+      row.addEventListener('dragend', () => {
+        drag.id = null;
+        drag.at = -1;
+        for (const x of list.children) x.classList.remove('dragging', 'drop-above', 'drop-below');
+      });
+      // Alt+Up / Alt+Down: the keyboard drag — the focused row seats
+      // one place up or down (seat takes the slot past the neighbour)
+      row.addEventListener('keydown', (e) => {
+        if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+        e.preventDefault();
+        seat(id, e.key === 'ArrowUp' ? i - 1 : i + 2);
+      });
+      return row;
     }));
   };
   draw();

@@ -2997,9 +2997,9 @@ await step('settings-dialog', async () => {
   }));
   // the one Columns partition: a chooser for all three views and the
   // ordered check-list under it — chips name each column's data type,
-  // Name is locked on, the chooser swaps lists, and the arrows reorder
-  // (a full round trip leaves the draft content-clean, so no column
-  // change rides the Save at the end of this step)
+  // Name is locked on, the chooser swaps lists, and rows reorder by
+  // drag (a full round trip leaves the draft content-clean, so no
+  // column change rides the Save at the end of this step)
   await ok('column manager: chooser + ordered list + chips + full set', evalPage(() => {
     const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
       .find((s) => Array.from(s.options).some((o) => o.textContent === 'Search window'));
@@ -3007,6 +3007,7 @@ await step('settings-dialog', async () => {
     const names = rows.map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
     const kinds = rows.map((r) => (r.querySelector('.set-colkind')?.textContent || '').trim());
     return !!sel && sel.value === 'cols' && rows.length === 8
+      && rows.every((r) => r.getAttribute('draggable') === 'true' && !r.querySelector('button'))
       && names[0] === 'Name' && kinds[0] === 'Text'
       && JSON.stringify([...names].sort()) === JSON.stringify(
         ['Date created', 'Date modified', 'ETag', 'Mode', 'Name', 'Size', 'Storage class', 'Type'])
@@ -3038,22 +3039,44 @@ await step('settings-dialog', async () => {
     sel.dispatchEvent(new Event('change', { bubbles: true }));
   });
   await evalPage(() => {
-    const row = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
-      .find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === 'Date modified');
-    row?.querySelector('button[aria-label="Move up"]').click();
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-colrow'));
+    const row = rows.find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === 'Date modified');
+    const over = rows.find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === 'Size');
+    if (!row || !over) return false;
+    const rc = over.getBoundingClientRect();
+    const y = rc.top + 1; // the top half seats the dragged row above
+    const dt = new DataTransfer();
+    row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    over.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt,
+      clientX: rc.left + rc.width / 2, clientY: y }));
+    return over.classList.contains('drop-above')
+      && (over.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt,
+        clientX: rc.left + rc.width / 2, clientY: y })),
+        row.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt })), true);
   });
-  await ok('move up seats date modified above size', evalPage(() => {
+  await ok('drag up seats date modified above size', evalPage(() => {
     const names = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
       .map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
     return names.indexOf('Date modified') === names.indexOf('Size') - 1
       && document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === false;
   }));
   await evalPage(() => {
-    const row = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
-      .find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === 'Date modified');
-    row?.querySelector('button[aria-label="Move down"]').click();
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-colrow'));
+    const row = rows.find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === 'Date modified');
+    const over = rows.find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === 'Size');
+    if (!row || !over) return false;
+    const rc = over.getBoundingClientRect();
+    const y = rc.bottom - 1; // the bottom half seats it back below
+    const dt = new DataTransfer();
+    row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    over.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt,
+      clientX: rc.left + rc.width / 2, clientY: y }));
+    return over.classList.contains('drop-below')
+      && (over.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt,
+        clientX: rc.left + rc.width / 2, clientY: y })),
+        row.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt })), true);
   });
-  await ok('move back leaves a clean draft', evalPage(() => {
+  await ok('drag back leaves a clean draft', evalPage(() => {
     const names = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
       .map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
     return document.querySelector('#modal-root .modal-foot .btn.primary')?.disabled === true
@@ -9241,10 +9264,19 @@ await step('settings-honor', async () => {
     return cb ? cb.checked : null;
   }, label);
   // the column manager: colPick seats a view in the chooser, colTickTo
-  // drives a column row's checkbox to the wanted state, colMove clicks
-  // its arrow — all against the list the chooser currently shows (the
-  // rows live on the View page, present in the DOM whatever page is
-  // active, and programmatic clicks need no visibility)
+  // drives a column row's checkbox to the wanted state, colMove drags
+  // it over its neighbour — a synthetic DataTransfer drag, so the list
+  // must sit on the VISIBLE page: the book hides inactive pages and a
+  // zero-height row has no top half to drop above. Ticks and picks
+  // stay page-agnostic (the rows live on the View page whatever page
+  // is active, and programmatic clicks need no visibility)
+  const navTo = (label) => evalPage((lb) => {
+    const b = Array.from(document.querySelectorAll('#modal-root .set-nav-item'))
+      .find((n) => new RegExp('^' + lb, 'i').test(n.querySelector('.set-nav-label')?.textContent || ''));
+    if (!b) return false;
+    b.click();
+    return true;
+  }, label);
   const colPick = (label) => evalPage((lb) => {
     const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
       .find((s) => Array.from(s.options).some((o) => o.textContent === lb));
@@ -9264,13 +9296,26 @@ await step('settings-honor', async () => {
     return true;
   }, { c: col, w: want });
   const colMove = (col, dir) => evalPage(({ c, d }) => {
-    const row = Array.from(document.querySelectorAll('#modal-root .set-colrow'))
-      .find((r) => (r.querySelector('.set-colname')?.textContent || '').trim() === c);
-    const b = row?.querySelector('button[aria-label="' + d + '"]');
-    if (!b || b.disabled) return false;
-    b.click();
+    const rows = Array.from(document.querySelectorAll('#modal-root .set-colrow'));
+    const names = rows.map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
+    const i = names.indexOf(c);
+    if (i < 0) return false;
+    // a synthetic drag: the neighbour row is the drop target — its
+    // top half for a move up, its bottom half for a move down
+    const j = d === 'up' ? i - 1 : i + 1;
+    if (j < 0 || j >= rows.length) return false;
+    const rc = rows[j].getBoundingClientRect();
+    const x = rc.left + rc.width / 2;
+    const y = d === 'up' ? rc.top + 1 : rc.bottom - 1;
+    const dt = new DataTransfer();
+    rows[i].dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    rows[j].dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt,
+      clientX: x, clientY: y }));
+    rows[j].dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt,
+      clientX: x, clientY: y }));
+    rows[i].dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
     return true;
-  }, { c: col, d: dir === 'up' ? 'Move up' : 'Move down' });
+  }, { c: col, d: dir });
   // appearance: language is the one control whose apply reloads the
   // window - stage it, prove it stays deferred, hand it back (the apply
   // path gets its own dedicated reload pass at the end of this step)
@@ -9287,6 +9332,11 @@ await step('settings-honor', async () => {
   await tickTo('Show parent directory row', true);
   await tickTo('Remember popout window positions', false);
   await pick('Popout windows open centered on', 'app');
+  // the columns chain ends in a drag — walk to the View page so the
+  // list is visible (its rows carry the geometry a drag reads), and
+  // back to the first page after so the staged shot below keeps the
+  // face it always had
+  await navTo('view');
   await ok('columns stage per view through the manager', await colPick('Search window')
     && await colTickTo('Date modified', false)
     && await colPick('Main view')
@@ -9294,6 +9344,7 @@ await step('settings-honor', async () => {
     && await colMove('Date modified', 'up')
     && await colPick('Secondary pane')
     && await colTickTo('Size', false));
+  await navTo('appearance');
   await ok('view rows stage without applying', evalPage(() =>
     localStorage.getItem('s3b-panes') === null && localStorage.getItem('s3b-log') === null
     && localStorage.getItem('s3b-cols') === null && localStorage.getItem('s3b-cols-sr') === null
