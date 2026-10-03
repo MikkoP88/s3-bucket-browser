@@ -2,6 +2,7 @@
 // Locations: {kind:'buckets', source}                    — buckets of one S3 source
 //          | {kind:'objects', source, bucket, prefix}    — objects of one S3 source
 //          | {kind:'remote', source, path}               — sftp/scp/ftp/ftps/webdav/local
+//          | {kind:'local', dir}                        — a workstation folder (native path)
 
 export const nav = {
   stack: [],       // back stack
@@ -56,6 +57,34 @@ export const nav = {
   onNavigate(fn) { this.listeners.push(fn); },
 };
 
+// localParentDir: the parent of a native workstation path, mirroring the
+// backend's LocalParent (filepath.Dir of the cleaned path) — the drive
+// root (C:\), a UNC share root (\\server\share) and the unix root sit at
+// the top and answer null, so the climb just ends ('' and '~' — the
+// pane's roots/home shorthands — never reach a main view).
+function localParentDir(p) {
+  const s = String(p || '');
+  if (s === '' || s === '~') return null;
+  if (s.startsWith('\\\\')) {
+    const parts = s.replace(/\\+$/, '').split('\\').filter(Boolean);
+    if (parts.length <= 2) return null; // \\server\share is the top
+    return `\\\\${parts.slice(0, -1).join('\\')}`;
+  }
+  const d = s.match(/^([a-zA-Z]:)([\\/](.*))?$/);
+  if (d) {
+    const segs = (d[3] || '').split(/[\\/]/).filter(Boolean);
+    if (!segs.length) return null; // the drive root
+    return `${d[1]}\\${segs.slice(0, -1).join('\\')}`;
+  }
+  const u = s.replace(/\/+$/, '');
+  if (u.startsWith('/')) {
+    const segs = u.slice(1).split('/').filter(Boolean);
+    if (segs.length > 1) return `/${segs.slice(0, -1).join('/')}`;
+    return null; // the unix root
+  }
+  return null; // relative junk — no parent to climb to
+}
+
 // Parent of a location; null when already at top.
 export function parentOf(loc) {
   if (loc.kind === 'buckets') return null;
@@ -64,6 +93,10 @@ export function parentOf(loc) {
     const p = loc.path.replace(/\/+$/, '');
     const i = p.lastIndexOf('/');
     return { kind: 'remote', source: loc.source, path: i >= 0 ? p.slice(0, i + 1) : '' };
+  }
+  if (loc.kind === 'local') {
+    const up = localParentDir(loc.dir);
+    return up === null ? null : { kind: 'local', dir: up };
   }
   if (!loc.prefix || loc.prefix === '') return { kind: 'buckets', source: loc.source };
   const p = loc.prefix.replace(/\/+$/, '');
@@ -87,6 +120,7 @@ export function sameLoc(a, b) {
     if ((a.bucket || '') !== (b.bucket || '')) return false;
     return (a.prefix || '').replace(/\/+$/, '') === (b.prefix || '').replace(/\/+$/, '');
   }
+  if (a.kind === 'local') return (a.dir || '') === (b.dir || ''); // native paths, exact spelling
   return true; // buckets (and any kind keyed by source alone)
 }
 

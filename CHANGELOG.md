@@ -8,6 +8,27 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Local addresses open the primary pane: the workstation is a
+  first-class main view.** Pasting a bare path (`C:\Projects`,
+  `\servershare`, `~`) or a `file:///` URL into the main path bar
+  no longer bounces the address to the secondary pane — the main
+  view lists the folder itself: rows with sizes, modified and
+  created times, a breadcrumb walking the native path (a `C:` root
+  crumb or a `\servershare` UNC root), folder activation, the
+  parent-row climb, folder and selection properties, a Find scoped
+  to the open folder, and the operations the folder honestly
+  supports — Copy / Cut land real files on the OS clipboard, Paste
+  and OS drops transfer in from any remote or S3 view, Delete walks
+  the unified confirm, upload copies files and folders in, and the
+  size bar reports the level-sum floor (no recursive local walk
+  exists). Rename, New folder and New file rest where no API exists
+  (their toasts point at Explorer), drags between two local spots
+  stay Explorer's job while remote-origin drags drop into the
+  folder and its rows, and the menubar's Copy URL admits the local
+  kind (`file:///` addresses). The secondary pane is untouched — its
+  own path bar still rebinds it to the workstation exactly as
+  before.
+
 - **Column parity pinned: the one global column catalog seats
   every view end to end.** The main view, the secondary pane and
   the Search window draw the same eight columns through their

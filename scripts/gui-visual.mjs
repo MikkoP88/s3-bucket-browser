@@ -7260,8 +7260,9 @@ await step('dnd-s3-onto-itself-rejected', async () => {
 await step('dnd-local-to-s3', async () => {
   // pane on local Downloads, main grid on team-files objects.
   // sideKeys returns absolute paths ('C:\Users\demo\Downloads') — match the
-  // visible .tname label instead
-  await evalPage(() => { window.__s3bSidePane.rebind('local'); });
+  // visible .tname label instead. Bind before show so a virgin pane
+  // never runs restore() into the rebind.
+  await evalPage(() => { window.__s3bSidePane.rebind('local'); window.__s3bSidePane.show(); });
   await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane local');
   const dl = await sideRow('Downloads');
   await dl.asElement().dblclick();
@@ -7610,24 +7611,30 @@ await step('path-address', async () => {
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   const editorOpen = () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit'));
   const editorValue = () => evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value || '');
-  // a bare local path opens the pane at the directory
+  // a bare local path opens the workstation folder in the MAIN view —
+  // the primary pane is a local citizen now, the secondary never wakes
+  await evalPage(() => { window.__s3bSidePane.hide(); });
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor open');
   await page.fill('#breadcrumb input.path-edit', 'C:\\Users\\demo\\Downloads');
   await page.keyboard.press('Enter');
-  await waitFor(() => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane opens');
-  await waitFor(async () => !!(await sideRow('invoice.pdf')), 6000, 'pane lists the pasted directory');
-  await ok('a bare local path opens the pane at the directory', evalPage(() =>
-    window.__s3bSidePane.binding.kind === 'local'
-    && window.__s3bSidePane.dir.endsWith('Downloads')));
-  // a file:/// URL lands on the pane the same way
+  await waitFor(async () => (await rowKeys()).includes('C:\\Users\\demo\\Downloads\\invoice.pdf'), 6000, 'main lists the pasted directory');
+  await ok('a bare local path opens the workstation folder in the main view', evalPage(() =>
+    document.getElementById('local-pane').classList.contains('hidden')
+    && document.querySelector('#breadcrumb .crumb.current')?.textContent === 'Downloads'));
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor canonical local');
+  await ok('the native path is the canonical form', evalPage(() =>
+    document.querySelector('#breadcrumb input.path-edit')?.value === 'C:\\Users\\demo\\Downloads'));
+  await page.keyboard.press('Escape');
+  // a file:/// URL lands in the main view the same way
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor open again');
   await page.fill('#breadcrumb input.path-edit', 'file:///C:/Users/demo/Documents');
   await page.keyboard.press('Enter');
-  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane lists the file-URL target');
-  await ok('a file:/// URL opens the pane at the directory', evalPage(() =>
-    window.__s3bSidePane.dir.endsWith('Documents')));
+  await waitFor(async () => (await rowKeys()).includes('C:\\Users\\demo\\Documents\\tax-2025.pdf'), 6000, 'main lists the file-URL target');
+  await ok('a file:/// URL opens the workstation folder in the main view', evalPage(() =>
+    document.querySelector('#breadcrumb .crumb.current')?.textContent === 'Documents'));
   // an s3:// URI resolves the owning account and navigates the main view
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor open s3');
@@ -7691,7 +7698,9 @@ await step('path-address', async () => {
   await page.keyboard.press('Escape');
   // the pane's editor takes the same families: a bare local path while a
   // remote source is bound rebinds the pane to the workstation
-  await evalPage(() => { window.__s3bSidePane.show(); window.__s3bSidePane.rebind('src-box'); });
+  // bind before show: on a virgin pane show() runs restore(), whose async
+  // local-home listing resolves after the sync rebind and hijacks it
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); window.__s3bSidePane.show(); });
   await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
   await evalPage(() => document.querySelector('#local-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
@@ -7702,6 +7711,91 @@ await step('path-address', async () => {
   await ok('a bare local path rebinds a remote pane', evalPage(() =>
     window.__s3bSidePane.binding.kind === 'local'
     && window.__s3bSidePane.dir.endsWith('Downloads')));
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+});
+
+await step('main-local', async () => {
+  // the workstation folder as a first-class main view: enter through the
+  // path editor, read the listing, walk into a folder, copy out of it,
+  // refresh and climb back — the secondary pane never wakes once
+  await navObjectsOf('hetzner', 'team-files');
+  const openEditor = () => evalPage(() => document.querySelector('#main-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  const editorOpen = () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit'));
+  await evalPage(() => { window.__s3bSidePane.hide(); });
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open');
+  await page.fill('#breadcrumb input.path-edit', 'C:\\Users\\demo');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).includes('C:\\Users\\demo\\notes.txt'), 6000, 'home rows');
+  await ok('the workstation home lists in the main grid, pane at rest', evalPage(() =>
+    document.getElementById('local-pane').classList.contains('hidden')
+    && Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .filter((r) => r.style.display !== 'none' && r._model).length === 5));
+  await ok('the breadcrumb walks the native path', evalPage(() =>
+    Array.from(document.querySelectorAll('#breadcrumb .crumb'))
+      .map((c) => c.textContent.trim()).join('\\') === 'C:\\Users\\demo'));
+  await shot('main-local');
+  await ok('the listing facts paint (size and modified)', evalPage(() => {
+    const g = (k) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((x) => x._model?.key === k)?.textContent || '';
+    return /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(g('C:\\Users\\demo\\notes.txt'))
+      && g('C:\\Users\\demo\\report.docx').includes('KB');
+  }));
+  // activating a folder navigates the main view into it
+  await dblClickRow('Documents');
+  await waitFor(async () => (await rowKeys()).includes('C:\\Users\\demo\\Documents\\tax-2025.pdf'), 6000, 'folder entered');
+  await ok('activating a folder navigates the main view', evalPage(() =>
+    document.querySelector('#breadcrumb .crumb.current')?.textContent === 'Documents'));
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open native');
+  await ok('the native path round-trips through the editor', evalPage(() =>
+    document.querySelector('#breadcrumb input.path-edit')?.value === 'C:\\Users\\demo\\Documents'));
+  await page.keyboard.press('Escape');
+  // copy outs: the native path and its file:/// reshaping
+  await resetCalls();
+  const tr = await gridRow('tax-2025.pdf');
+  if (!tr) throw new Error('no tax row');
+  await tr.asElement().click({ position: await rowClickPoint(tr) });
+  await sleep(80);
+  await tr.asElement().click({ button: 'right' });
+  await sleep(80);
+  await ctxItem(/^copy path$/i);
+  let cc = await findCall('ClipboardSetText');
+  await ok('copy path carries the native path', !!cc && cc.args[0] === 'C:\\Users\\demo\\Documents\\tax-2025.pdf');
+  await tr.asElement().click({ button: 'right' });
+  await sleep(80);
+  await ctxItem(/^copy url$/i);
+  cc = await findCall('ClipboardSetText');
+  await ok('copy url reshapes to file:///', !!cc && cc.args[0] === 'file:///C:/Users/demo/Documents/tax-2025.pdf');
+  await closeCtx();
+  // the empty-area menu speaks the local view
+  await evalPage(() => {
+    document.getElementById('grid-body')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 700, clientY: 500 }));
+  });
+  await sleep(80);
+  await ok('the empty-area menu speaks the local view', evalPage(() => {
+    const m = document.getElementById('ctxmenu');
+    return !m.classList.contains('hidden')
+      && m.textContent.includes('Open terminal here')
+      && m.textContent.includes('Select all');
+  }));
+  await closeCtx();
+  // refresh re-lists the open folder
+  await resetCalls();
+  await evalPage(() => localStorage.setItem('s3b-parent-row', '1'));
+  await page.keyboard.press('F5');
+  await waitFor(async () => (await findCall('ListLocal')) !== null, 4000, 'F5 re-lists');
+  const ll = await findCall('ListLocal');
+  await ok('refresh re-lists the open folder', !!ll && ll.args[0] === 'C:\\Users\\demo\\Documents');
+  // the parent row arms and climbs
+  await waitFor(async () => evalPage(() => !document.getElementById('upbar').classList.contains('hidden')), 4000, 'upbar shows');
+  await evalPage(() => document.getElementById('upbar').click());
+  await waitFor(async () => (await rowKeys()).includes('C:\\Users\\demo\\notes.txt'), 6000, 'climbed home');
+  await ok('the parent-row climb rises out of the folder', evalPage(() =>
+    document.querySelector('#breadcrumb .crumb.current')?.textContent === 'demo'));
+  await evalPage(() => localStorage.removeItem('s3b-parent-row'));
   await evalPage(() => document.getElementById('toasts').replaceChildren());
 });
 

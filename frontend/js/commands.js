@@ -67,6 +67,9 @@ export function commandState(pane = null) {
   const inObjects = loc?.kind === 'objects';
   const inBuckets = loc?.kind === 'buckets';
   const inRemote = loc?.kind === 'remote'; // remote-native ops need no S3 profile
+  const inLocal = loc?.kind === 'local'; // a workstation folder view transfers
+  // and clips like the pane's local binding; its remote-native ops (download,
+  // new folder/file, rename) rest — there are no local create APIs.
   const hasProfile = ctx.hasProfile();
   const sel = ctx.selectionCount();
   const localSel = ctx.localSelectionCount();
@@ -76,22 +79,23 @@ export function commandState(pane = null) {
     hasProfile,
     canBack: nav.canBack(),
     canForward: nav.canForward(),
-    canUpload: (inObjects && hasProfile) || inRemote,
+    canUpload: (inObjects && hasProfile) || inRemote || inLocal,
     canDownload: ((inObjects && hasProfile) || inRemote) && sel >= 1,
     canNewFolder: (inObjects && hasProfile) || inRemote,
     canCreateBucket: inBuckets && hasProfile,
-    canDelete: ((inObjects && hasProfile) || inRemote) && sel >= 1,
+    canDelete: ((inObjects && hasProfile) || inRemote || inLocal) && sel >= 1,
     canRename: ((inObjects && hasProfile) || inRemote) && sel === 1,
-    canCopy: (((inObjects && hasProfile) || inRemote) && sel >= 1) || localSel >= 1,
-    canCut: (((inObjects && hasProfile) || inRemote) && sel >= 1) || localSel >= 1,
+    canCopy: (((inObjects && hasProfile) || inRemote || inLocal) && sel >= 1) || localSel >= 1,
+    canCut: (((inObjects && hasProfile) || inRemote || inLocal) && sel >= 1) || localSel >= 1,
     // Paste acts on the app clipboard OR Explorer files waiting on the OS
     // clipboard (Ctrl+C in Explorer — see main.js osClipPayload).
-    canPaste: (hasClipboard || ctx.osClipFiles()) && ((inObjects && hasProfile) || inRemote || paneTarget()),
+    canPaste: (hasClipboard || ctx.osClipFiles()) && ((inObjects && hasProfile) || inRemote || inLocal || paneTarget()),
     // Compare needs the secondary pane to be open on something
     canCompare: ctx.localPaneOpen() && !!ctx.paneAdapter?.()?.bound,
     hasSelection: sel >= 1,
     selectionCount: sel,
-    canFind: hasProfile,
+    // a local view searches itself (the pane's find scopes the same way)
+    canFind: hasProfile || inLocal,
     canDoctor: hasProfile,
   };
 }

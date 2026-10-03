@@ -243,10 +243,18 @@ directory compare) with S3 and the secondary pane.
   `\\server\share`, `~`, a `file:///C:/Users/...` or
   `file:///home/...` URL), an `s3://bucket/key` URI or a connection
   URI (`ftp://user:pass@host:21/root`, `sftp://`, `webdav://`) opens
-  where it points. A local address opens the secondary pane at the
-  directory; an `s3://` URI resolves the source that owns the bucket;
-  a connection URI no source matches stands its source up on the fly
-  and opens its root. Back / forward
+  where it points. A local address opens the workstation folder right
+  in the main view: the breadcrumb walks the native path (a `C:` root
+  crumb, or `\servershare` for a UNC root), rows carry sizes and
+  timestamps, and the folder's context menus, properties, Find scope
+  and size bar all speak local — Copy / Cut put real files on the OS
+  clipboard, Paste and dropped files transfer in from any view, Delete
+  and upload work as anywhere else, while rename, New folder and New
+  file rest (no local API — Explorer's job, the toasts say so) and
+  drags between two local spots stay Explorer's too. An `s3://` URI
+  resolves the source that owns the bucket; a connection URI no source
+  matches stands its source up on the fly and opens its root. Back /
+  forward
   history works like Explorer — including its finer rule: any climb
   to an ancestor (a breadcrumb segment, the data-source tree, the
   parent row, a typed path above the current one) leaves the deeper

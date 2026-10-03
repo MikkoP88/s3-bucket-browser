@@ -904,6 +904,24 @@ function syncGridStatus() {
   if (bar) bar.classList.toggle('hidden', !gridSourceName && !$('grid-status-text')?.textContent);
 }
 
+// applyMainDragPayload seats the main grid's drag contract for the view
+// being loaded — the twin of the pane's applyDragPayload: remote and
+// objects views drag origin-tagged {keys, entries} under x-s3b and accept
+// both payload kinds; a local view drags bare {paths} under x-s3b-local
+// and accepts remote/S3 payloads only (local-to-local DnD is Explorer's
+// job, exactly as the pane's local binding refuses it).
+function applyMainDragPayload(loc) {
+  if (loc.kind === 'local') {
+    grid.mime = 'application/x-s3b-local';
+    grid.accepts = ['application/x-s3b'];
+    grid.dragPayload = () => ({ paths: grid.selectedRows().map((r) => r.path) });
+  } else {
+    grid.mime = 'application/x-s3b';
+    grid.accepts = null;
+    grid.dragPayload = mainDragPayload; // the origin-tagging wrapper, never the bare prototype
+  }
+}
+
 async function loadView(loc, { silent = false } = {}) {
   // silent (background auto refresh): keep the current rows, selection and
   // breadcrumb on screen while the new listing is fetched — no flicker. New
@@ -918,6 +936,7 @@ async function loadView(loc, { silent = false } = {}) {
   updateNavButtons();
   if (!silent) renderBreadcrumb();
   tree.markCurrent(loc);
+  applyMainDragPayload(loc);
   // Non-silent navigation SHOWS work: skeleton rows + spinner while the
   // listing is in flight — a blank panel reads as "empty folder" on a
   // slow source, which is a lie until the response lands.
@@ -979,20 +998,52 @@ async function loadView(loc, { silent = false } = {}) {
       tree.reveal(loc).catch(() => {});
       tree.updateRemoteDir(loc.source, loc.path || '/', entries);
       setUpbar(parentUp(loc) ? 'on' : 'off');
+    } else if (loc.kind === 'local') {
+      // workstation folder as a primary view: rows shaped like the pane's
+      // local listings (key = native path), no tree node to mark and no
+      // source behind the bottom bar
+      let dir = loc.dir;
+      if (!dir || dir === '~') dir = await api.LocalHome();
+      const entries = await api.ListLocal(dir);
+      if (seq !== viewSeq) return; // superseded — drop the stale rows
+      loc.dir = dir; // home lands as its absolute self in history
+      landed = true;
+      setGridSource('');
+      currentEntries = entries.map((e) => ({
+        name: e.name,
+        key: e.path,
+        path: e.path,
+        isDir: e.isDir,
+        size: e.size,
+        lastModified: e.modTime,
+        modTime: e.modTime,
+        created: e.created || null,
+        mode: e.mode || null,
+      }));
+      hideEmpty();
+      grid.setRows(currentEntries);
+      if (pendingSelect && (pendingSelect.dir ?? '') !== (loc.dir || '')) {
+        pendingSelect = null; // user navigated elsewhere
+      }
+      consumePendingSelect();
+      if (!currentEntries.length) {
+        showEmpty(t('emptyFolder'), t('emptyFolderSub'), []);
+      }
+      setUpbar(parentUp(loc) ? 'on' : 'off');
     }
     if (landed) viewLandedHealthy(landedName);
   } catch (err) {
     // A silent refresh keeps the current view on transient errors — but the
     // FIRST failure of a streak tells the user the rows are now stale.
     if (silent) {
-      if (seq === viewSeq) viewFailed(currentViewSourceName(loc), err, { silent: true });
+      if (seq === viewSeq) viewFailed(loc.kind === 'local' ? '' : currentViewSourceName(loc), err, { silent: true });
       return;
     }
     if (seq !== viewSeq) return;
     currentEntries = [];
     grid.setRows([]);
     showListError(err);
-    viewFailed(currentViewSourceName(loc), err, { silent: false });
+    viewFailed(loc.kind === 'local' ? '' : currentViewSourceName(loc), err, { silent: false });
   }
   updateStatus();
 }
@@ -1196,11 +1247,24 @@ function consumePendingSelect() {
 // the search:open relay from a floating window). Files navigate to the
 // parent folder and select the row; folders open themselves. Remote hits
 // (source set, no bucket) use the remote engine's own nav shape.
-function gotoSearchHit(r) {
+async function gotoSearchHit(r) {
   if (!r?.key) return;
   // An S3 folder placeholder arrives as a plain key with a trailing slash —
   // Entry carries no IsDir for it, so derive dir-ness from the key.
   const isDir = r.isDir || String(r.key).endsWith('/');
+  if (!r.source && !r.bucket) {
+    // a workstation hit (local search hits carry no source): the key is
+    // the absolute native path — folders open themselves, files land
+    // selected in their parent folder
+    if (isDir) {
+      nav.to({ kind: 'local', dir: r.key });
+      return;
+    }
+    const parent = await api.LocalParent(r.key);
+    pendingSelect = { key: r.key, dir: parent || r.key };
+    nav.to({ kind: 'local', dir: parent || r.key });
+    return;
+  }
   if (r.source && !r.bucket) {
     if (isDir) {
       nav.to({ kind: 'remote', source: r.source, path: r.key });
@@ -1289,6 +1353,43 @@ function renderBreadcrumb() {
   // empty — no orphan root icon for a source that isn't there.
   if (loc.kind === 'onboarding') return;
   if (!nav.current && !sources.some((x) => x.name === viewSource)) return;
+  if (loc.kind === 'local') {
+    // workstation folder: the native path's own segments, root first — a
+    // drive letter whose crumb opens the drive root, or a UNC \\server\share
+    // (the pane shows the same walk under a This-PC root; the main view
+    // has no roots view, so the topmost folder IS the root crumb)
+    const dir = String(loc.dir || '');
+    const rootEnd = dir.startsWith('\\\\')
+      ? dir.indexOf('\\', dir.indexOf('\\', 2) + 1) + 1
+      : dir.indexOf('\\') + 1;
+    const rootDir = rootEnd > 0 ? dir.slice(0, rootEnd) : dir;
+    const root = el('span', { class: `crumb${dir === rootDir ? ' current' : ''}`, title: rootDir },
+      rootDir.replace(/\\+$/, '') || rootDir);
+    root.onclick = () => nav.to({ kind: 'local', dir: rootDir });
+    bc.appendChild(root);
+    if (dir !== rootDir) {
+      let prev = rootEnd;
+      for (let i = rootEnd; i < dir.length; i++) {
+        if (dir[i] !== '\\') continue;
+        const part = dir.slice(prev, i);
+        prev = i + 1;
+        if (!part) continue;
+        bc.appendChild(el('span', { class: 'crumb-sep', text: '\u203A' }));
+        const c = el('span', { class: 'crumb', text: part });
+        const target = dir.slice(0, i + 1);
+        c.onclick = () => nav.to({ kind: 'local', dir: target });
+        bc.appendChild(c);
+      }
+      const last = dir.slice(prev);
+      if (last) {
+        bc.appendChild(el('span', { class: 'crumb-sep', text: '\u203A' }));
+        bc.appendChild(el('span', { class: 'crumb current', text: last }));
+      } else {
+        bc.lastChild?.classList.add('current');
+      }
+    }
+    return;
+  }
   if (loc.kind === 'remote') {
     const atRoot = !loc.path || loc.path === '/';
     const s = sources.find((x) => x.name === loc.source);
@@ -1372,6 +1473,7 @@ function canonicalPath(loc) {
   if (loc.kind === 'buckets') return `${loc.source || viewSource}`;
   if (loc.kind === 'objects') return s3TreePath(loc.source, loc.bucket, loc.prefix);
   if (loc.kind === 'remote') return slashPath(loc.source, loc.path || '/');
+  if (loc.kind === 'local') return loc.dir || '';
   return '';
 }
 
@@ -1380,8 +1482,8 @@ function canonicalPath(loc) {
 // line goes through resolveAddress — the backend's universal ladder — so
 // any address works: app paths (Name/contents or NAME://...), s3://
 // URIs, connection URIs (an unconfigured one stands its source up),
-// file:/// URLs and bare local paths
-// and bare local paths — the pane's surface, so one opens the pane there.
+// file:/// URLs and bare local paths — a local address opens the
+// workstation folder right here in the primary pane.
 function editPath() {
   const bc = $('breadcrumb');
   const cur = canonicalPath(nav.current);
@@ -1396,8 +1498,7 @@ function editPath() {
     if (e.key === 'Enter') {
       e.preventDefault();
       const loc = await resolveAddress(inp.value);
-      if (loc && loc.pane) restore(); // a local address opened the pane
-      else if (loc) nav.to(loc);
+      if (loc) nav.to(loc);
       else inp.focus();
     } else if (e.key === 'Escape') {
       e.preventDefault();
@@ -1413,10 +1514,9 @@ function editPath() {
 // connection URI (a configured source opens at the URI's root; an
 // unconfigured one stands up through SaveSource and lands in the tree),
 // file URL
-// or bare local path maps to a location. Local addresses are the
-// secondary pane's surface (the main view has no local kind) — one opens
-// the pane at the directory. Returns the location for nav.to,
-// {pane:true} when the pane opened (a local address), or null with the
+// or bare local path maps to a location. A local address opens the
+// workstation folder in the PRIMARY pane — the same view the secondary
+// pane can hold. Returns the location for nav.to, or null with the
 // failure already toasted.
 async function resolveAddress(value) {
   let r;
@@ -1435,10 +1535,7 @@ async function resolveAddress(value) {
       return null;
     }
   }
-  if (r.kind === 'local') {
-    localPane.openAt({ kind: 'local', dir: r.prefix || '' });
-    return { pane: true };
-  }
+  if (r.kind === 'local') return { kind: 'local', dir: r.prefix || '' };
   if (r.kind === 'remote') return { kind: 'remote', source: r.source, path: r.prefix || '/' };
   if (r.kind === 'buckets') return { kind: 'buckets', source: r.source };
   return { kind: 'objects', source: r.source, bucket: r.bucket || '', prefix: r.prefix || '' };
@@ -1563,6 +1660,11 @@ function wireGrid() {
   };
   grid.on.activate = (row) => {
     const loc = nav.current;
+    if (loc.kind === 'local') {
+      if (row.isDir) nav.to({ kind: 'local', dir: row.path });
+      else api.OpenLocal(row.path).catch((e) => toast(`Local: ${e}`, 'error'));
+      return;
+    }
     if (loc.kind === 'remote') {
       if (row.isDir) nav.to({ kind: 'remote', source: loc.source, path: row.key });
       else downloadSelection([{ key: row.key, size: row.size, name: row.name }]);
@@ -1606,16 +1708,21 @@ function wireGrid() {
     const loc = nav.current;
     if (loc.kind === 'objects') dropToTarget({ kind: 's3', source: loc.source || viewSource, bucket: loc.bucket, dir: targetRow.key }, data, e);
     else if (loc.kind === 'remote') dropToTarget({ kind: 'remote', source: loc.source, dir: targetRow.key }, data, e);
+    else if (loc.kind === 'local') dropToTarget({ kind: 'local', dir: targetRow.path }, data, e);
   };
   // Body-level drop target: the empty area below the rows accepts the same
   // payloads as folder rows and transfers into the current directory.
-  const gridBodyMimes = ['application/x-s3b', 'application/x-s3b-local'];
+  // a local view refuses local-origin drops outright (Explorer's job), so
+  // its body listens for remote/S3 payloads only
+  const gridBodyMimes = () => (nav.current?.kind === 'local'
+    ? ['application/x-s3b']
+    : ['application/x-s3b', 'application/x-s3b-local']);
   grid.body.addEventListener('dragover', (e) => {
     if (e.target.closest('.grid-row')) return; // row handlers own it
     // external OS file drags highlight too (their upload arrives via the
     // wails:file-drop event, not the DOM drop handler below)
     const types = e.dataTransfer.types;
-    if (xferDestOf(nav.current) && (gridBodyMimes.some((t) => types.includes(t)) || types.includes('Files'))) {
+    if (xferDestOf(nav.current) && (gridBodyMimes().some((t) => types.includes(t)) || types.includes('Files'))) {
       e.preventDefault();
       grid.body.classList.add('drop-target');
     }
@@ -1629,7 +1736,7 @@ function wireGrid() {
     const dest = xferDestOf(nav.current);
     if (!dest) return;
     let data = null;
-    for (const t of gridBodyMimes) {
+    for (const t of gridBodyMimes()) {
       const d = e.dataTransfer.getData(t);
       if (d) { data = JSON.parse(d); break; }
     }
@@ -1868,6 +1975,25 @@ function showContextMenu(e, rows) {
     items.push(null);
     items.push(['Refresh', 'F5', () => refreshCurrent()]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties(), !sel]);
+  } else if (loc.kind === 'local') {
+    // workstation rows: the cross-source clipboard ops and the unified
+    // delete; the remote-native create ops rest (no local mkdir/rename
+    // APIs) and local-to-local drags stay Explorer's job
+    if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
+    items.push(null);
+    items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
+    items.push(['Cut', 'Ctrl+X', () => cutSelection(), !sel]);
+    if (sel === 1 && rows[0].isDir) {
+      items.push(['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 'local', dir: rows[0].path }), !pasteReady()]);
+    }
+    items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
+    items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
+    items.push(['Copy URL', '', () => copyAsText(rows, 'url'), !sel]);
+    items.push(null);
+    items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
+    items.push(null);
+    items.push(['Refresh', 'F5', () => refreshCurrent()]);
+    items.push(['Properties', 'Alt+Enter', () => selectionProperties(), !sel]);
   } else {
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
     items.push([`Download${sel ? ` (${sel})` : ''}`, 'Ctrl+D', () => downloadSelection()]);
@@ -1951,6 +2077,22 @@ function showEmptyAreaMenu(e) {
     ]);
     return;
   }
+  if (loc.kind === 'local') {
+    openMenu(e, [
+      ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
+      null,
+      ...uploadMenu(uploadFiles, uploadFolder),
+      null,
+      ['Select all', 'Ctrl+A', () => grid.selectAll()],
+      ['Refresh', 'F5', () => refreshCurrent()],
+      null,
+      ['Open terminal here\u2026', '', async () => {
+        try { await api.OpenTerminal(loc.dir || ''); } catch (err) { toast(`Terminal failed: ${err}`, 'error'); }
+      }, !loc.dir],
+      ['Properties', '', () => folderProperties()],
+    ]);
+    return;
+  }
   openMenu(e, [
     ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
     null,
@@ -1975,6 +2117,18 @@ async function folderProperties() {
     const bytes = files.reduce((s, r) => s + (r.size || 0), 0);
     properties(`Properties — ${loc.source}:${loc.path || '/'}`, [
       ['Source type', sources.find((s) => s.name === loc.source)?.type || '?'],
+      ['Folders', rows.length - files.length],
+      ['Files', files.length],
+      ['Total size', fmtBytes(bytes)],
+      ...(view.filter ? [['Name filter', view.filter]] : []),
+    ]);
+    return;
+  }
+  if (loc?.kind === 'local') {
+    const rows = grid.rows;
+    const files = rows.filter((r) => !r.isDir);
+    const bytes = files.reduce((s, r) => s + (r.size || 0), 0);
+    properties(`Properties — ${loc.dir || ''}`, [
       ['Folders', rows.length - files.length],
       ['Files', files.length],
       ['Total size', fmtBytes(bytes)],
@@ -2312,6 +2466,9 @@ async function uploadFiles() {
   if (!paths?.length) return;
   if (loc?.kind === 'remote') return uploadToRemote(paths, loc.source, loc.path || '/');
   if (loc?.kind === 'objects') return uploadPaths(paths, loc.prefix || '', loc.bucket, loc.source);
+  if (loc?.kind === 'local' && loc.dir) {
+    return startTransfer({ localPaths: paths, dest: { kind: 'local', dir: loc.dir }, label: loc.dir });
+  }
   toast('Open a bucket or folder first');
 }
 
@@ -2321,6 +2478,9 @@ async function uploadFolder() {
   if (!dir) return;
   if (loc?.kind === 'remote') return uploadToRemote([dir], loc.source, loc.path || '/');
   if (loc?.kind === 'objects') return uploadPaths([dir], loc.prefix || '', loc.bucket, loc.source);
+  if (loc?.kind === 'local' && loc.dir) {
+    return startTransfer({ localPaths: [dir], dest: { kind: 'local', dir: loc.dir }, label: loc.dir });
+  }
   toast('Open a bucket or folder first');
 }
 
@@ -2473,6 +2633,7 @@ async function downloadRefs(entries, dest, bucketOverride) {
 function xferDestOf(loc) {
   if (loc?.kind === 'objects') return { kind: 's3', source: loc.source || viewSource, bucket: loc.bucket, dir: loc.prefix || '' };
   if (loc?.kind === 'remote') return { kind: 'remote', source: loc.source, dir: loc.path || '/' };
+  if (loc?.kind === 'local') return loc.dir ? { kind: 'local', dir: loc.dir } : null;
   return null;
 }
 
@@ -2641,6 +2802,9 @@ async function deleteSelection(bucketOverride, keysOverride, sourceOverride, pre
     if (row) deleteBucket(row.key);
     return;
   }
+  if (!bucketOverride && loc.kind === 'local') {
+    return deleteLocalSelection(grid.selectedRows().map((r) => r.path), refreshCurrent);
+  }
   const bucket = bucketOverride || loc.bucket;
   if (!bucket || (!bucketOverride && loc.kind !== 'objects')) return;
   const keys = keysOverride || grid.selectedRows().map((r) => r.key);
@@ -2705,6 +2869,7 @@ function mainCompareRef() {
   const loc = nav.current;
   if (loc?.kind === 'objects') return { kind: 's3', source: loc.source, bucket: loc.bucket, prefix: loc.prefix || '' };
   if (loc?.kind === 'remote') return { kind: 'remote', source: loc.source, dir: loc.path || '/' };
+  if (loc?.kind === 'local') return loc.dir ? { kind: 'local', dir: loc.dir } : null;
   return null;
 }
 
@@ -2787,6 +2952,7 @@ async function renameSelection() {
   const loc = nav.current;
   const row = grid.selectedRows()[0];
   if (!row) return;
+  if (loc.kind === 'local') return; // no local rename API — Explorer's job
   const name = await prompt({ title: 'Rename', label: 'New name', value: row.name });
   if (!name || name === row.name) return;
   try {
@@ -2819,6 +2985,7 @@ async function newFolder() {
     }
     return;
   }
+  if (loc.kind === 'local') { toast('Local folders are created in Explorer'); return; }
   if (loc.kind !== 'objects') { toast('Open a bucket first'); return; }
   const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
   if (!name) return;
@@ -2849,6 +3016,7 @@ async function newFile() {
     }
     return;
   }
+  if (loc.kind === 'local') { toast('Local files are created in Explorer'); return; }
   if (loc.kind !== 'objects') { toast('Open a bucket first'); return; }
   const r = await promptFile({ title: 'New file', dir: loc.prefix || '' });
   if (!r) return;
@@ -3147,6 +3315,19 @@ async function selectionProperties() {
     }
     return;
   }
+  if (loc.kind === 'local') {
+    // the row already carries the listing's facts — no round trip
+    const props = [
+      ['Name', row.name],
+      ['Type', row.isDir ? 'Folder' : 'File'],
+      ...(!row.isDir ? [['Size', fmtBytes(row.size || 0)]] : []),
+    ];
+    if (row.lastModified) props.push(['Last modified', fmtDate(row.lastModified)]);
+    if (row.created) props.push(['Created', fmtDate(row.created)]);
+    props.push(['Path', row.path]);
+    properties(`Properties — ${row.name}`, props);
+    return;
+  }
   try {
     const st = await api.StatObject(loc.bucket, row.key);
     const rows = [
@@ -3208,6 +3389,17 @@ function multiProperties(loc, rows) {
       return cut < 0 ? '' : p.slice(0, cut + 1);
     }, rows[0].key || '');
     props.push(['Common prefix', common || '(none)']);
+  }
+  if (loc?.kind === 'local') {
+    // native paths: the common spine, cut at the last backslash
+    const common = rows.reduce((p, r) => {
+      const k = r.path || '';
+      let i = 0;
+      while (i < p.length && i < k.length && p[i] === k[i]) i++;
+      const cut = p.slice(0, i).lastIndexOf('\\');
+      return cut < 0 ? '' : p.slice(0, cut + 1);
+    }, rows[0].path || '');
+    props.push(['Common path', common || '(none)']);
   }
   if (loc?.kind === 'remote') props.push(['Source', loc.source]);
   else if (loc?.kind === 'objects') props.push(['Bucket', loc.bucket]);
@@ -3351,6 +3543,10 @@ function wireDrop() {
       return;
     }
     const loc = nav.current;
+    if (loc?.kind === 'local' && loc.dir) {
+      startTransfer({ localPaths: paths, dest: { kind: 'local', dir: loc.dir }, label: loc.dir });
+      return;
+    }
     if (loc?.kind === 'remote') { uploadToRemote(paths, loc.source, loc.path || '/'); return; }
     uploadPaths(paths);
   };
@@ -3599,7 +3795,7 @@ function showLocalRowMenu(e, rows) {
 // Delete Window: LocalDeletePreview expands directory trees into counts and
 // bytes first (count-then-act), roots are refused Go-side, and deletion is
 // permanent — the OS trash is not involved.
-async function deleteLocalSelection(paths) {
+async function deleteLocalSelection(paths, after) {
   if (!paths?.length) return;
   try {
     const p = await api.LocalDeletePreview(paths);
@@ -3614,7 +3810,8 @@ async function deleteLocalSelection(paths) {
     // requiresL2 comes from the preview; the backend re-counts at act time.
     const res = await api.LocalRemove(paths, !!p.requiresL2);
     reportDeleteResult(res, (n) => `Deleted ${n} item(s)`);
-    localPane.refresh();
+    if (after) after(); // the caller's own view (the main local view); default = the pane
+    else localPane.refresh();
   } catch (err) {
     toast(`Delete failed: ${err}`, 'error');
   }
@@ -3843,13 +4040,14 @@ async function sideS3Properties(row) {
 // Patch grid drag payload to carry the origin (source + bucket or remote
 // source + dir) so drops build the right TransferCross items.
 const origDragPayload = grid.dragPayload.bind(grid);
-grid.dragPayload = () => {
+const mainDragPayload = () => {
   const loc = nav.current;
   const base = origDragPayload();
   if (loc?.kind === 'objects') return { ...base, source: loc.source || viewSource, bucket: loc.bucket, dir: loc.prefix || '' };
   if (loc?.kind === 'remote') return { ...base, source: loc.source, dir: loc.path || '/' };
   return base;
 };
+grid.dragPayload = mainDragPayload;
 
 // ============================ marquee ============================
 function startMarquee(e) {
@@ -3941,6 +4139,11 @@ function searchScopes() {
 
 // openSearch opens the Search window (toolbar, Ctrl+Shift+F, View menu).
 function openSearch() {
+  if (nav.current?.kind === 'local') {
+    // a local view searches itself, exactly as the pane's find does
+    searchWindow({ scopes: [{ mode: 'local', prefix: nav.current.dir || '' }], solo: true, onOpen: gotoSearchHit });
+    return;
+  }
   searchWindow({ scopes: searchScopes(), onOpen: gotoSearchHit });
 }
 
@@ -4432,6 +4635,27 @@ function setClip(mode) {
     updateCommandState();
     return;
   }
+  if (rows.length && loc?.kind === 'local') {
+    // the main local view: workstation paths are the payload — the same
+    // clipboard the pane's local binding builds
+    Object.assign(clipboard, {
+      mode,
+      kind: 'local',
+      bucket: null,
+      source: null,
+      dir: loc.dir || '',
+      keys: [],
+      paths: rows.map((x) => x.path),
+    });
+    // Local files are real OS files — straight onto the OS clipboard.
+    if (mode === 'copy' && explorerClipOn()) {
+      api.OsClipboardSetFiles(clipboard.paths).then(() => osClipAdopt(), () => {});
+    }
+    osClipAdopt(); // in-app copy is now the newest clipboard (last copy wins)
+    toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${rows.length} item(s)`);
+    updateCommandState();
+    return;
+  }
   if (localPane.visible) {
     const lrows = localPane.grid.selectedRows();
     if (!lrows.length) return;
@@ -4623,7 +4847,7 @@ function copyAsFromMenu() {
 function canCopyUrlFromMenu() {
   if (grid.selectedRows().length) {
     const k = nav.current?.kind;
-    return k === 'objects' || k === 'remote';
+    return k === 'objects' || k === 'remote' || k === 'local';
   }
   if (!localPane.visible) return false;
   const b = localPane.binding;
@@ -5037,6 +5261,10 @@ async function runSizeBar() {
         : await usageWhole(loc, () => api.RemoteUsage(loc.source, loc.path || '/', []));
       if (seq !== sizeBarSeq) return;
       paintSizeBar(sumUsage(stats), { head });
+    } else if (loc.kind === 'local') {
+      // no recursive local walk API: the level-sum floor, partial by design
+      head = sel ? t('sizeBar.selected', { n: selRows.length }) : '';
+      paintSizeBar(sizeBarFallback(selRows), { head });
     }
   } catch (err) {
     if (seq !== sizeBarSeq) return;
