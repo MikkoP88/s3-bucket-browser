@@ -261,7 +261,7 @@ export function makeSearchGrid(opts = {}) {
     applyTemplate();
   };
 
-  const sortVal = (r) => (sortKey === 'size' ? (isDirOf(r) ? -1 : (r.size || 0))
+  const sortVal = (r) => (sortKey === 'size' ? (isDirOf(r) ? (r.contentSize == null ? -1 : r.contentSize) : (r.size || 0))
     : sortKey === 'lastModified' ? (r.lastModified ? new Date(r.lastModified).getTime() : 0)
       : sortKey === 'created' ? (r.created ? new Date(r.created).getTime() : 0)
         : sortKey === 'source' ? originOf(r)
@@ -279,13 +279,18 @@ export function makeSearchGrid(opts = {}) {
 
   // cell text per column — engine-optional fields render empty (the Entry
   // contract); folder rows carry their own dates, class and ETag where the
-  // source reports them, and only size stays files-only, as in the main
-  // grid's rows
+  // source reports them, and size fills from the window's lazy usage walk
+  // (contentSize), exactly like the main grid's folder rows — an unfilled
+  // folder stays an honest blank
+  const sizeOf = (r) => (isDirOf(r) ? (r.contentSize == null ? null : r.contentSize) : (r.size || 0));
   const cellText = (c, r) => {
     switch (c.id) {
       case 'type': return hitType(r);
       case 'mode': return r.mode || '';
-      case 'size': return isDirOf(r) ? '' : fmtBytes(r.size || 0);
+      case 'size': {
+        const s = sizeOf(r);
+        return s == null ? '' : fmtBytes(s);
+      }
       case 'lastModified': return r.lastModified ? fmtDate(r.lastModified) : '';
       case 'created': return r.created ? fmtDate(r.created) : '';
       case 'storageClass': return r.storageClass || '';
@@ -561,5 +566,25 @@ export function makeSearchGrid(opts = {}) {
     clearHits() { hits.length = 0; selKey = null; renderRows(); },
     count: () => hits.length,
     reset() { hits.length = 0; selKey = null; sortKey = ''; showSource = false; buildHead(); renderRows(); },
+    // sizeDirs lists the folder hits whose recursive size no walk has
+    // answered yet — the window's lazy fill walks those and hands the
+    // answers back through setSizes
+    sizeDirs() { return hits.filter((r) => isDirOf(r) && r.contentSize == null); },
+    // setSizes applies walked folder sizes ({source, bucket, key, size})
+    // and repaints without re-sorting: the list keeps its arrival order or
+    // the user's own sort choice, never jumps under the cursor mid-run
+    setSizes(list) {
+      if (!Array.isArray(list) || !list.length) return;
+      const m = new Map(list.map((s) => [`${s.source || ''}|${s.bucket || ''}|${s.key}`, s.size]));
+      let touched = false;
+      for (const r of hits) {
+        if (!isDirOf(r) || r.contentSize != null) continue;
+        const v = m.get(`${r.source || ''}|${r.bucket || ''}|${r.key}`);
+        if (v == null) continue;
+        r.contentSize = v;
+        touched = true;
+      }
+      if (touched) renderRows();
+    },
   };
 }

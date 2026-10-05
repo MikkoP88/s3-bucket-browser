@@ -1,13 +1,18 @@
 // usage.go: real recursive content sizes for the content viewer's bottom
-// bar (WinSCP-style): the whole listing or the selection, always including
-// everything inside folders, on every source type the viewer hosts. S3
-// walks are version-aware — old versions and delete markers are counted
-// and summed separately, so a versioned bucket shows what its history
-// really costs on top of the live content.
+// bar (WinSCP-style) and for folder Size cells: the whole listing or the
+// selection, always including everything inside folders, on every source
+// type the viewer hosts. S3 walks are version-aware — old versions and
+// delete markers are counted and summed separately, so a versioned bucket
+// shows what its history really costs on top of the live content. The S3
+// pair comes in two flavors — the main view's own source, and a
+// source-pinned variant for panes and search hits browsing elsewhere.
 package api
 
 import (
 	"context"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
@@ -41,13 +46,20 @@ const dirSetCap = 50_000
 
 // S3Usage reports the recursive usage of one folder's children (or the
 // whole prefix when children is empty) in the bucket the main view is
-// browsing. Folder children (trailing "/") aggregate everything beneath
-// them; file children report the key's whole version timeline. The walk
-// is ListObjectVersions-based, so versioned, suspended and never-versioned
-// buckets all take the same one-pass path — on the last, every object is
-// simply its own single current version.
+// browsing — SourceS3Usage pinned to that source.
 func (a *App) S3Usage(bucket, prefix string, children []string) ([]UsageStat, error) {
-	c, err := a.client("")
+	return a.SourceS3Usage("", bucket, prefix, children)
+}
+
+// SourceS3Usage is S3Usage on a named S3 source ("" = the source the main
+// view is browsing), so a secondary pane or a search hit can walk a bucket
+// the main view is not browsing. Folder children (trailing "/") aggregate
+// everything beneath them; file children report the key's whole version
+// timeline. The walk is ListObjectVersions-based, so versioned, suspended
+// and never-versioned buckets all take the same one-pass path — on the
+// last, every object is simply its own single current version.
+func (a *App) SourceS3Usage(idOrName, bucket, prefix string, children []string) ([]UsageStat, error) {
+	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return nil, err
 	}
@@ -73,10 +85,17 @@ func (a *App) S3Usage(bucket, prefix string, children []string) ([]UsageStat, er
 }
 
 // BucketUsage reports the recursive usage of the named buckets on the
-// source the main view is browsing (the buckets view's bar): one
-// whole-bucket walk per name, versions included.
+// source the main view is browsing (the buckets view's bar) —
+// SourceBucketUsage pinned to that source.
 func (a *App) BucketUsage(buckets []string) ([]UsageStat, error) {
-	c, err := a.client("")
+	return a.SourceBucketUsage("", buckets)
+}
+
+// SourceBucketUsage is BucketUsage on a named S3 source ("" = the source
+// the main view is browsing): one whole-bucket walk per name, versions
+// included.
+func (a *App) SourceBucketUsage(idOrName string, buckets []string) ([]UsageStat, error) {
+	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +162,75 @@ func (a *App) RemoteUsage(idOrName, path string, children []string) ([]UsageStat
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+// LocalUsage reports the recursive usage of arbitrary workstation paths —
+// the local view's rows carry absolute filesystem paths, not a source, so
+// this walks the OS directly (the local engine's virtual root never
+// enters). Files are stated, not walked; directories are walked
+// best-effort: a failed descent marks Partial and skips that subtree, and
+// the root's own directory entry is never counted as content — a folder
+// row's size is what is inside it, exactly like every other walk here.
+func (a *App) LocalUsage(paths []string) ([]UsageStat, error) {
+	out := make([]UsageStat, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, localUsageOne(p))
+	}
+	return out, nil
+}
+
+// localUsageOne walks one absolute path. A vanished path reports Partial
+// with zero totals rather than an error, so one stale row never blanks
+// its siblings.
+func localUsageOne(p string) UsageStat {
+	u := UsageStat{Key: p}
+	st, err := os.Stat(p)
+	if err != nil {
+		u.Partial = true
+		u.Error = err.Error()
+		return u
+	}
+	if !st.IsDir() {
+		u.Files = 1
+		u.CurrentBytes = st.Size()
+		return u
+	}
+	werr := filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			u.Partial = true
+			if u.Error == "" {
+				u.Error = err.Error()
+			}
+			// a failed directory descent skips that subtree; a failed
+			// file entry is simply not counted — either way the walk goes on
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if path == p {
+			return nil // the root is the folder itself, not content
+		}
+		if d.IsDir() {
+			u.Dirs++
+			return nil
+		}
+		info, serr := d.Info()
+		if serr != nil {
+			u.Partial = true
+			return nil
+		}
+		u.Files++
+		u.CurrentBytes += info.Size()
+		return nil
+	})
+	if werr != nil {
+		u.Partial = true
+		if u.Error == "" {
+			u.Error = werr.Error()
+		}
+	}
+	return u
 }
 
 // s3Versioned reports whether the bucket has versioning configured

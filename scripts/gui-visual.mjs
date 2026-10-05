@@ -922,6 +922,24 @@ function shim() {
       if (f.usageError) throw new Error(f.usageError);
       return (buckets || []).map((b) => ({ ...s3UsageStat(b, ''), key: b }));
     },
+    // the pane- and search-scoped twins: a named source's buckets and
+    // prefixes walk the same fixtures (the world keys buckets globally,
+    // so the id-or-name is decorative here — the real backend resolves
+    // it before any walk)
+    SourceS3Usage: async (idOrName, bucket, prefix, children) => {
+      const f = world.fault || {};
+      if (f.usageDelayMs) await new Promise((r) => setTimeout(r, f.usageDelayMs));
+      if (f.usageError) throw new Error(f.usageError);
+      if (children && children.length) return children.map((k) => s3UsageStat(bucket, k));
+      const root = prefix && !prefix.endsWith('/') ? prefix + '/' : prefix;
+      return [s3UsageStat(bucket, root)];
+    },
+    SourceBucketUsage: async (idOrName, buckets) => {
+      const f = world.fault || {};
+      if (f.usageDelayMs) await new Promise((r) => setTimeout(r, f.usageDelayMs));
+      if (f.usageError) throw new Error(f.usageError);
+      return (buckets || []).map((b) => ({ ...s3UsageStat(b, ''), key: b }));
+    },
     RemoteUsage: async (source, path, children) => {
       const f = world.fault || {};
       if (f.usageDelayMs) await new Promise((r) => setTimeout(r, f.usageDelayMs));
@@ -963,6 +981,43 @@ function shim() {
     },
     LocalRoots: () => ['C:\\', 'D:\\'],
     LocalHome: () => 'C:\\Users\\demo',
+    // local usage walks (usage.go contract): one stat per path — a file
+    // root is stated from its parent's listing, a folder root walks its
+    // whole subtree through the flat dir fixtures (each dir's rows name
+    // their children's paths), a vanished path reports partial+error so
+    // one stale row never blanks its siblings
+    LocalUsage: async (paths) => {
+      const f = world.fault || {};
+      if (f.usageDelayMs) await new Promise((r) => setTimeout(r, f.usageDelayMs));
+      if (f.usageError) throw new Error(f.usageError);
+      const norm = (x) => String(x || '').replace(/[\\/]+$/, '');
+      const rowsOf = (x) => world.local[norm(x).length > 2 ? norm(x) : x] || [];
+      const stat = (pth) => {
+        const st = { key: pth, files: 0, dirs: 0, currentBytes: 0, versionBytes: 0,
+          versionCount: 0, markerCount: 0, versioned: false, partial: false, error: '' };
+        if (!world.local[norm(pth)] && !world.local[pth]) {
+          for (const rows of Object.values(world.local)) {
+            const e = rows.find((r) => norm(r.path) === norm(pth) && !r.isDir);
+            if (e) { st.files = 1; st.currentBytes = e.size || 0; return st; }
+          }
+          st.partial = true; st.error = 'not found: ' + pth;
+          return st;
+        }
+        const seen = new Set([norm(pth)]);
+        const walk = (dir) => {
+          for (const r of rowsOf(dir)) {
+            if (r.isDir) {
+              const dk = norm(r.path);
+              st.dirs++;
+              if (!seen.has(dk)) { seen.add(dk); walk(dk); }
+            } else { st.files++; st.currentBytes += r.size || 0; }
+          }
+        };
+        walk(pth);
+        return st;
+      };
+      return (paths || []).map(stat);
+    },
     LocalParent: (p) => localParent(p),
     GetBucketGuard: (bucket) => (world.guards[bucket] || { versioning: 'Off', lockEnabled: false, lockMode: '', lockDays: 0 }),
     GetProfileFileState: () => JSON.parse(JSON.stringify(world.pfState)),
@@ -1630,6 +1685,17 @@ await step('boot', async () => {
   await shot('boot-buckets');
 });
 
+await step('buckets-fill', async () => {
+  // bucket rows are folder rows too: the lazy fill rides the boot view
+  // itself — no navigation — walking whole buckets through the same
+  // engine the bar uses (team-files: 10 live files, 217 MB)
+  await ok('bucket rows fill their sizes in place (team-files 217 MB)', waitFor(async () => evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((x) => x.querySelector('.tname')?.textContent.trim() === 'team-files');
+    return !!r && (r.querySelector('.gc.size')?.textContent.trim() || '') === '217 MB';
+  }), 8000, 'bucket size fill'));
+});
+
 await step('buckets-ctxmenu', async () => {
   const n = await openCtx('team-files');
   await ok('bucket menu has items', n >= 5);
@@ -1651,12 +1717,17 @@ await step('objects-view', async () => {
     }
     return cells.docs !== '' && cells.photos === '';
   }));
-  await ok('folder rows keep size blank (a listing cannot know a folder bytes)', evalPage(() => {
+  // folder sizes are lazy now: the cells start blank (a listing cannot
+  // know a folder's bytes) and fill from the same usage walk the size
+  // bar rides — in place, no re-sort, no re-selection — docs/ answering
+  // its interior (52.9 KB) and photos/ its images (3.0 MB)
+  await ok('folder sizes fill in from the lazy usage walk (docs 52.9 KB, photos 3.0 MB)', waitFor(() => evalPage(() => {
     const pick = (nm) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
       .find((r) => r.querySelector('.tname')?.textContent.trim() === nm);
-    return (pick('docs')?.querySelector('.gc.size')?.textContent.trim() || '') === ''
+    return (pick('docs')?.querySelector('.gc.size')?.textContent.trim() || '') === '52.9 KB'
+      && (pick('photos')?.querySelector('.gc.size')?.textContent.trim() || '') === '3.0 MB'
       && (pick('readme.md')?.querySelector('.gc.size')?.textContent.trim() || '') !== '';
-  }));
+  }), 6000, 'lazy folder sizes'));
   // guard state lives as icons after the bucket name in the tree now
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .tguard').length)) > 0, 6000, 'tree guard icons');
   await ok('tree shows versioning icon', (await evalPage(() => Array.from(document.querySelectorAll('#tree .tguard')).map((i) => i.title).join(' '))).toLowerCase().includes('versioning enabled'));
@@ -4350,6 +4421,22 @@ await step('search-window', async () => {
       return icons.length >= 8 && icons.every((i) => i === '\u{1F4C1}');
     }, S);
   })());
+
+  // folder hits ship sizeless and fill in lazily: the first forty ride
+  // grouped walks per origin (an s3 folder through its source-scoped
+  // walk, a remote folder through the remote engine) and paint through
+  // setSizes without a re-sort — the list holds its order under the
+  // cursor while the cells fill
+  await ok('folder hit sizes fill in from grouped origin walks', waitFor(() => evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'));
+    const cell = (r) => (r.querySelector('.gc.size')?.textContent.trim() || '');
+    const sizeOf = (k) => {
+      const r = rows.find((x) => x.querySelector('.tname')?.textContent === k);
+      return r ? cell(r) : '';
+    };
+    return rows.length >= 8 && rows.every((r) => cell(r) !== '')
+      && sizeOf('photos/') === '3.0 MB' && sizeOf('/invoices/') === '65.0 KB';
+  }, S), 6000, 'search folder sizes'));
 
   // the name-shape filters work on every source type: extension and path
   // narrow S3 and remote rows alike (storage class is gone from the
@@ -7049,6 +7136,11 @@ await step('home-buttons', async () => {
     const k = await sideKeys();
     return k.some((x) => x.includes('Documents')) && k.every((x) => !x.startsWith('/'));
   })());
+  await ok('pane folder sizes fill from the pane-side local walk (Documents 130 KB)', waitFor(async () => evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+      .find((x) => x._model?.key === 'C:\\Users\\demo\\Documents');
+    return !!r && (r.querySelector('.gc.size')?.textContent.trim() || '') === '130 KB';
+  }), 6000, 'pane folder size'));
   await clickTree('hetzner');
   await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
   await dblClickRow('team-files');
@@ -8195,6 +8287,11 @@ await step('main-local', async () => {
     return /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(g('C:\\Users\\demo\\notes.txt'))
       && g('C:\\Users\\demo\\report.docx').includes('KB');
   }));
+  await ok('local folder sizes fill in from the lazy walk (Documents 130 KB)', waitFor(async () => evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((x) => x._model?.key === 'C:\\Users\\demo\\Documents');
+    return !!r && (r.querySelector('.gc.size')?.textContent.trim() || '') === '130 KB';
+  }), 6000, 'local folder size'));
   // activating a folder navigates the main view into it
   await dblClickRow('Documents');
   await waitFor(async () => (await rowKeys()).includes('C:\\Users\\demo\\Documents\\tax-2025.pdf'), 6000, 'folder entered');

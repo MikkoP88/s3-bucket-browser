@@ -98,6 +98,11 @@ const entryAncestorOf = (up, cur) => {
   return u !== c && (u === '' || c.startsWith(u + sep));
 };
 
+// pane-side lazy folder sizes: the cache is FIFO-bounded like the main
+// view's, and fills ride the same twenty-row batches.
+const PANE_USAGE_MAX = 200;
+const PANE_FILL_BATCH = 20;
+
 export class SidePane {
   constructor() {
     this.grid = new Grid('local-');
@@ -119,6 +124,9 @@ export class SidePane {
     this.on = {};         // callbacks: dropFolder, dropBody, openFail, activateRemoteFile, activateS3File, contextEmpty
     this.openedLoc = null; // where the pane stood when it was opened — the view picker's "return" target
     this.pendingSelect = null; // search pick waiting for its listing to land (gotoHit)
+    this.usage = new Map(); // pane-side folder-size walks, keyed like the main view's
+    this.fillSeq = 0;       // lazy folder-size fill generation
+    this.scheduleFill = debounce(() => this.fillFolderSizes(), 250);
 
     this.grid.on.activate = (m) => {
       if (this.binding.kind === 's3') {
@@ -271,6 +279,7 @@ export class SidePane {
   // caller's business): null = the workstation filesystem.
   bindTo(src) {
     this.cancelS3Stream();
+    this.usage.clear(); // a new binding starts its walks fresh
     if (!src) {
       this.binding = { kind: 'local', source: '' };
       this.bucket = '';
@@ -310,6 +319,7 @@ export class SidePane {
   // the onboarding empty state back up.
   reset() {
     this.cancelS3Stream();
+    this.usage.clear();
     this.bound = false;
     this.hasListed = false;
     this.hist.length = 0;
@@ -739,6 +749,7 @@ export class SidePane {
     this.updateNav();
     this.landUpbar();
     this.consumePendingSelect();
+    this.scheduleFill(); // folder Size cells fill once the listing settles
   }
 
   // ---------- listings ----------
@@ -746,6 +757,7 @@ export class SidePane {
   async navigate(dir) {
     if (this.binding.kind === 'remote') return this.navigateRemote(dir);
     if (this.binding.kind === 's3') return this.navigateS3({ bucket: this.bucket, prefix: dir || '' });
+    this.dropUsage('local|'); // local has no change events: each visit re-walks
     const seq = ++this.navSeq;
     this.setLoading(true);
     try {
@@ -772,6 +784,7 @@ export class SidePane {
   // navigateRemote lists one directory of the bound remote source; rows
   // carry the same shape as the main grid's remote views.
   async navigateRemote(dir) {
+    this.dropUsage(`${this.binding.source}|`); // remote has no change events either
     const seq = ++this.navSeq;
     this.setLoading(true);
     try {
@@ -807,6 +820,7 @@ export class SidePane {
   // the main view.
   async navigateS3({ bucket, prefix }) {
     this.cancelS3Stream();
+    this.dropUsage(`${this.binding.source}|${bucket}|`); // mutation refreshes land here
     const seq = this.s3Seq;
     this.setLoading(true);
     if (!bucket) {
@@ -838,6 +852,7 @@ export class SidePane {
         this.grid.appendRows((p.entries || []).map((e) => ({ ...e, bucket })));
         if (!this.painted) { this.painted = true; this.hideEmpty(); this.landUpbar(); this.updateNav(); }
         this.updateStatus();
+        this.scheduleFill(); // every page re-arms the lazy folder sizes
         if (p.done) {
           this.cancelS3Stream();
           if (!this.grid.rows.length) this.showEmpty(t('emptyFolder'), t('emptyFolderSub'), []);
@@ -875,6 +890,83 @@ export class SidePane {
       return;
     }
     await this.navigate(this.dir);
+  }
+
+  // ---------- folder sizes (lazy) ----------
+
+  // The pane's twin of the main view's lazy folder sizes: folder rows
+  // ship sizeless and fill in from the same usage walks, debounced
+  // after a listing settles and re-armed by every streamed page. The
+  // pane keeps its own cache (keyed by the same grammar: local|path,
+  // source|dir|key, source|bucket|key); a cached stat never re-walks,
+  // even a partial one — its cell stays honestly blank until the scope
+  // itself is dropped.
+
+  paneCacheKey(key) {
+    if (this.binding.kind === 'local') return `local|${key}`;
+    if (this.binding.kind === 'remote') return `${this.binding.source}|${this.dir || '/'}|${key}`;
+    return `${this.binding.source}|${this.bucket}|${key}`;
+  }
+
+  usagePut(key, stat) {
+    if (this.usage.size >= PANE_USAGE_MAX) this.usage.delete(this.usage.keys().next().value);
+    this.usage.delete(key); // re-insertion refreshes the FIFO position
+    this.usage.set(key, stat);
+  }
+
+  // dropUsage forgets every pane-side walk under one key prefix.
+  dropUsage(prefix) {
+    for (const k of [...this.usage.keys()]) {
+      if (k.startsWith(prefix)) this.usage.delete(k);
+    }
+  }
+
+  // fillFolderStat applies one walked stat to its row; an errored or
+  // partial walk leaves the cell blank but stands in the cache.
+  fillFolderStat(r, s) {
+    if (s && !s.error && !s.partial && typeof s.currentBytes === 'number') r.contentSize = s.currentBytes;
+  }
+
+  async fillFolderSizes() {
+    if (!this.bound) return;
+    if (this.binding.kind === 'local' && !this.dir) return; // roots: no drive walks
+    const seq = ++this.fillSeq;
+    const nav = this.navSeq;
+    const s3gen = this.s3Seq;
+    const rows = this.grid.rows.filter((r) => r.isDir && r.contentSize == null);
+    for (let i = 0; i < rows.length && seq === this.fillSeq
+      && this.navSeq === nav && this.s3Seq === s3gen; i += PANE_FILL_BATCH) {
+      const batch = rows.slice(i, i + PANE_FILL_BATCH);
+      const missing = [];
+      let filled = false;
+      for (const r of batch) {
+        const hit = this.usage.get(this.paneCacheKey(r.key));
+        if (hit) { this.fillFolderStat(r, hit); filled = true; } else missing.push(r);
+      }
+      if (missing.length) {
+        const keys = missing.map((r) => r.key);
+        let got = [];
+        try {
+          if (this.binding.kind === 's3') {
+            got = this.bucket
+              ? await app().SourceS3Usage(this.binding.source, this.bucket, this.dir || '', keys)
+              : await app().SourceBucketUsage(this.binding.source, keys);
+          } else if (this.binding.kind === 'remote') {
+            got = await app().RemoteUsage(this.binding.source, this.dir || '/', keys);
+          } else {
+            got = await app().LocalUsage(keys);
+          }
+        } catch { break; } // a failed batch ends this pass; the next settle retries
+        if (seq !== this.fillSeq || this.navSeq !== nav || this.s3Seq !== s3gen) return; // the view moved on
+        missing.forEach((r, j) => {
+          const s = got[j];
+          this.fillFolderStat(r, s);
+          if (s && !s.error) this.usagePut(this.paneCacheKey(r.key), s);
+        });
+        filled = true;
+      }
+      if (filled) this.grid.render();
+    }
   }
 
   // ---------- search: this pane's own scope ----------

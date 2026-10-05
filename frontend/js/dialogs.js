@@ -3903,6 +3903,43 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false, srcs = []) {
   // window open rebuilds here, and a re-seat against a closed window's
   // detached subtree is inert
 
+  // lazy folder sizes: search hits that are folders ship sizeless; as
+  // pages land (and once more when the run completes) the first forty
+  // ride grouped usage walks — one batch per origin, the same engines
+  // the size bar uses — and setSizes paints them in place, never a
+  // re-sort under the cursor. stop() cancels a pending pass when a new
+  // run clears the list.
+  const SR_FILL_MAX = 40;
+  let srFillTimer = null;
+  function scheduleSrFill() {
+    if (srFillTimer) return;
+    srFillTimer = setTimeout(async () => {
+      srFillTimer = null;
+      const dirs = rg.sizeDirs().slice(0, SR_FILL_MAX);
+      const groups = new Map(); // "source|bucket" -> one batch
+      for (const r of dirs) {
+        const g = `${r.source || ''}|${r.bucket || ''}`;
+        if (!groups.has(g)) groups.set(g, { source: r.source || '', bucket: r.bucket || '', keys: [] });
+        groups.get(g).keys.push(r.key);
+      }
+      const out = [];
+      await Promise.all([...groups.values()].map(async (g) => {
+        try {
+          let got = [];
+          if (g.bucket) got = await api.SourceS3Usage(g.source, g.bucket, '', g.keys);
+          else if (g.source) got = await api.RemoteUsage(g.source, '/', g.keys);
+          else got = await api.LocalUsage(g.keys);
+          (got || []).forEach((st, j) => {
+            if (st && !st.error && !st.partial && typeof st.currentBytes === 'number') {
+              out.push({ source: g.source, bucket: g.bucket, key: g.keys[j], size: st.currentBytes });
+            }
+          });
+        } catch { /* this origin keeps its honest blanks */ }
+      }));
+      rg.setSizes(out);
+    }, 250);
+  }
+
   // setStatus paints the area's own status bar — the content size bar's
   // twin; errors arrive colored, everything else rides its dim default
   function setStatus(text, color, title) {
@@ -3928,6 +3965,7 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false, srcs = []) {
   function stop() {
     if (token) { api.CancelSearch(token); token = null; }
     running = false;
+    if (srFillTimer) { clearTimeout(srFillTimer); srFillTimer = null; }
     offPage?.();
     offDone?.();
     offPage = offDone = null;
@@ -4066,6 +4104,7 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false, srcs = []) {
     const onPage = (p) => {
       if (p.entries?.length) rg.addPage(p.entries);
       setStatus(t('findRunning', { matched: p.matched }));
+      scheduleSrFill(); // folder hits fill in while the run streams
     };
     const onDone = (d) => {
       token = null;
@@ -4076,6 +4115,7 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false, srcs = []) {
         : t('findDone', { matched: d.matched, scanned: d.scanned, sources: d.sources ?? 1 }),
       d.error ? 'var(--danger)' : '', d.sourceErrors || '');
       if (!d.error && !rg.count()) setEmpty('none');
+      scheduleSrFill(); // the completed list takes its last pass
     };
     const early = [];
     let tok = null;

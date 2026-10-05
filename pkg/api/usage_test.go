@@ -42,9 +42,9 @@ type usageBucket struct {
 	entries    []usageVer
 }
 
-// newUsageServer serves GetBucketVersioning and one ListObjectVersions
-// page per bucket (prefix-filtered, like real S3). It returns the
-// endpoint URL.
+// newUsageServer serves GetBucketVersioning, one ListObjectVersions
+// page per bucket and the ListObjectsV2 current-object page
+// (prefix-filtered, like real S3). It returns the endpoint URL.
 func newUsageServer(t testing.TB, buckets ...usageBucket) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +94,26 @@ func newUsageServer(t testing.TB, buckets ...usageBucket) string {
 				sb.WriteString("<StorageClass>STANDARD</StorageClass></Version>")
 			}
 			sb.WriteString("</ListVersionsResult>")
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, sb.String())
+		case q.Has("list-type"):
+			// ListObjectsV2: current objects only — latest, non-marker
+			// entries, prefix-filtered like real S3.
+			prefix := q.Get("prefix")
+			var sb strings.Builder
+			sb.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+			sb.WriteString("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">")
+			sb.WriteString("<Name>" + b.name + "</Name><IsTruncated>false</IsTruncated>")
+			for _, e := range b.entries {
+				if e.marker || !e.latest || !strings.HasPrefix(e.key, prefix) {
+					continue
+				}
+				sb.WriteString("<Contents><Key>" + e.key + "</Key>")
+				sb.WriteString("<LastModified>2026-09-01T00:00:00.000Z</LastModified><ETag>&quot;e&quot;</ETag>")
+				sb.WriteString("<Size>" + strconv.FormatInt(e.size, 10) + "</Size>")
+				sb.WriteString("<StorageClass>STANDARD</StorageClass></Contents>")
+			}
+			sb.WriteString("</ListBucketResult>")
 			w.Header().Set("Content-Type", "application/xml")
 			io.WriteString(w, sb.String())
 		default:
@@ -347,6 +367,127 @@ func TestBucketUsage(t *testing.T) {
 	checkStat(t, "cold", got[1], UsageStat{
 		Key: "cold", Files: 1, CurrentBytes: 1000,
 		VersionBytes: 600, VersionCount: 2, Versioned: true,
+	})
+}
+
+// TestSourceUsagePinned pins the source-pinned S3 pair: the walk rides the
+// NAMED source's client, not the main view's — two fakes serve different
+// buckets, so a walk on the wrong client cannot answer — and a non-S3
+// source is rejected before any connection.
+func TestSourceUsagePinned(t *testing.T) {
+	epA := newUsageServer(t, usageBucket{
+		name:    "alpha",
+		entries: []usageVer{{key: "a.txt", id: "null", latest: true, size: 100}},
+	})
+	epB := newUsageServer(t, usageBucket{
+		name: "beta",
+		entries: []usageVer{
+			{key: "b.txt", id: "null", latest: true, size: 200},
+			{key: "sub/c.txt", id: "null", latest: true, size: 50},
+		},
+	})
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	for _, s := range []profile.Source{
+		{
+			Name: "main", Type: profile.TypeS3,
+			S3: &profile.Profile{Name: "main", Endpoint: epA, Region: "us-east-1",
+				PathStyle: true, AccessKeyID: "k", SecretKey: "s"},
+		},
+		{
+			Name: "other", Type: profile.TypeS3,
+			S3: &profile.Profile{Name: "other", Endpoint: epB, Region: "us-east-1",
+				PathStyle: true, AccessKeyID: "k", SecretKey: "s"},
+		},
+	} {
+		if err := a.SaveSource(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.SetViewSource("main"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := a.SourceS3Usage("other", "beta", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkStat(t, "pinned whole", got[0], UsageStat{
+		Files: 2, Dirs: 1, CurrentBytes: 250, VersionCount: 2,
+	})
+
+	got, err = a.SourceBucketUsage("other", []string{"beta"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkStat(t, "pinned bucket", got[0], UsageStat{
+		Key: "beta", Files: 2, Dirs: 1, CurrentBytes: 250, VersionCount: 2,
+	})
+
+	// The main view's own source keeps working through its wrapper.
+	got, err = a.SourceS3Usage("", "alpha", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkStat(t, "main via pinned", got[0], UsageStat{
+		Files: 1, CurrentBytes: 100, VersionCount: 1,
+	})
+
+	// Non-S3 sources never reach a client.
+	if err := a.SaveSource(profile.Source{
+		Name: "lab", Type: profile.TypeLocal, LocalRoot: t.TempDir(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.SourceS3Usage("lab", "x", "", nil); err == nil {
+		t.Error("SourceS3Usage on a non-S3 source must error")
+	}
+	if _, err := a.SourceBucketUsage("lab", []string{"x"}); err == nil {
+		t.Error("SourceBucketUsage on a non-S3 source must error")
+	}
+}
+
+// TestLocalUsage pins the workstation walk: files stated not walked,
+// directories recursive with the root's own entry never counted as
+// content, and a vanished path Partial with zero totals instead of an
+// error that would blank its siblings.
+func TestLocalUsage(t *testing.T) {
+	root := seedUsageTree(t)
+	a := newTestApp(t)
+	a.Startup(context.Background())
+
+	// Whole tree: 4 files (26 bytes), 3 interior folders (docs/,
+	// docs/legacy/, photos/ — the root itself is not content).
+	got, err := a.LocalUsage([]string{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkStat(t, "whole", got[0], UsageStat{
+		Key: root, Files: 4, Dirs: 3, CurrentBytes: 26,
+	})
+
+	// Folder + file children in one call, answers in order.
+	got, err = a.LocalUsage([]string{
+		filepath.Join(root, "docs"),
+		filepath.Join(root, "readme.md"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkStat(t, "docs", got[0], UsageStat{
+		Key: filepath.Join(root, "docs"), Files: 2, Dirs: 1, CurrentBytes: 8,
+	})
+	checkStat(t, "readme.md", got[1], UsageStat{
+		Key: filepath.Join(root, "readme.md"), Files: 1, CurrentBytes: 11,
+	})
+
+	// A vanished path reports Partial, never an error.
+	got, err = a.LocalUsage([]string{filepath.Join(root, "gone")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkStat(t, "gone", got[0], UsageStat{
+		Key: filepath.Join(root, "gone"), Partial: true, Error: "missing",
 	})
 }
 

@@ -1020,6 +1020,7 @@ async function loadView(loc, { silent = false } = {}) {
       // workstation folder as a primary view: rows shaped like the pane's
       // local listings (key = native path), no tree node to mark and no
       // source behind the bottom bar
+      usageDropPrefix('local|'); // local has no change events: each visit re-walks
       let dir = loc.dir;
       if (!dir || dir === '~') dir = await api.LocalHome();
       const entries = await api.ListLocal(dir);
@@ -5115,6 +5116,7 @@ function updateStatus() {
   $('status-selection').textContent = text;
   updateCommandState();
   scheduleSizeBar(); // same moments as the footer: selection, pages, done
+  scheduleFolderSizes(); // folder Size cells fill once the view settles
 }
 
 // ====================== content size bar ======================
@@ -5135,6 +5137,8 @@ const USAGE_WHOLE = '\u0000'; // whole-listing key suffix — no key can contain
 let sizeBarSeq = 0;
 
 function usageCacheKey(loc, key) {
+  // local rows key by native path: globally unique, no source needed
+  if (loc.kind === 'local') return `local|${key}`;
   if (loc.kind === 'remote') return `${loc.source}|${loc.path || '/'}|${key}`;
   return `${viewSource}|${loc.bucket || ''}|${key}`;
 }
@@ -5266,7 +5270,11 @@ async function usageOf(loc, items, fetchMissing) {
 // the walk ran: the fresh caller would paint the placeholder, the
 // original caller's seq would go stale, and nobody would paint.)
 async function usageWhole(loc, fetch) {
-  const ck = usageCacheKey(loc, (loc.kind === 'objects' ? loc.prefix || '' : '') + USAGE_WHOLE);
+  // the whole-listing key: an s3 prefix, or a local dir (the roots
+  // view never reaches here — runSizeBar answers it with the floor)
+  const wk = loc.kind === 'objects' ? (loc.prefix || '')
+    : loc.kind === 'local' ? (loc.dir || '') : '';
+  const ck = usageCacheKey(loc, wk + USAGE_WHOLE);
   const hit = usageCache.get(ck);
   if (hit) return [hit];
   paintSizeBar(null, { busy: true }); // the walk is starting/joined
@@ -5319,13 +5327,79 @@ async function runSizeBar() {
       if (seq !== sizeBarSeq) return;
       paintSizeBar(sumUsage(stats), { head });
     } else if (loc.kind === 'local') {
-      // no recursive local walk API: the level-sum floor, partial by design
       head = sel ? t('sizeBar.selected', { n: selRows.length }) : '';
-      paintSizeBar(sizeBarFallback(selRows), { head });
+      if (!loc.dir) {
+        // the workstation roots view: no wholesale drive walks — the
+        // level-sum floor, partial by design
+        paintSizeBar(sizeBarFallback(selRows), { head });
+        return;
+      }
+      const items = selRows.map((r) => ({ key: r.key, ck: usageCacheKey(loc, r.key) }));
+      const stats = sel
+        ? await usageOf(loc, items, (keys) => api.LocalUsage(keys))
+        : await usageWhole(loc, () => api.LocalUsage([loc.dir]));
+      if (seq !== sizeBarSeq) return;
+      paintSizeBar(sumUsage(stats), { head });
     }
   } catch (err) {
     if (seq !== sizeBarSeq) return;
     paintSizeBar(sizeBarFallback(selRows), { head, error: err });
+  }
+}
+
+// ====================== folder sizes (lazy) ======================
+// A listing cannot know a folder's content size without walking it, so
+// folder rows ship sizeless and fill in: a debounce after the view
+// settles (and again after every page of a streaming listing), every
+// folder whose contentSize is still unknown rides the very usage walks
+// the size bar uses — cache-first, twenty at a time — and the Size
+// column fills in place. render() repaints without re-sorting or
+// re-selecting, and a view that moved on never paints (viewSeq ages it
+// out; fillSeq supersedes an older pass).
+
+const FOLDER_FILL_BATCH = 20;
+let fillSeq = 0;
+const scheduleFolderSizes = debounce(fillFolderSizes, 250);
+
+// fillFolderStat applies one walked stat to its row; an errored or
+// partial walk leaves the cell honestly blank and uncached, ready for
+// a later pass to retry.
+function fillFolderStat(r, s) {
+  if (s && !s.error && !s.partial && typeof s.currentBytes === 'number') r.contentSize = s.currentBytes;
+}
+
+async function fillFolderSizes() {
+  const loc = nav.current;
+  if (!loc || (loc.kind === 'local' && !loc.dir)) return; // roots: no drive walks
+  const seq = ++fillSeq;
+  const vseq = viewSeq;
+  const rows = grid.rows.filter((r) => r.isDir && r.contentSize == null);
+  for (let i = 0; i < rows.length && seq === fillSeq && viewSeq === vseq; i += FOLDER_FILL_BATCH) {
+    const batch = rows.slice(i, i + FOLDER_FILL_BATCH);
+    const missing = [];
+    let filled = false;
+    for (const r of batch) {
+      const hit = usageCache.get(usageCacheKey(loc, r.key));
+      if (hit) { fillFolderStat(r, hit); filled = true; } else missing.push(r);
+    }
+    if (missing.length) {
+      const keys = missing.map((r) => r.key);
+      let got = [];
+      try {
+        if (loc.kind === 'objects') got = await api.S3Usage(loc.bucket, loc.prefix || '', keys);
+        else if (loc.kind === 'buckets') got = await api.BucketUsage(keys);
+        else if (loc.kind === 'remote') got = await api.RemoteUsage(loc.source, loc.path || '/', keys);
+        else got = await api.LocalUsage(keys);
+      } catch { break; } // a failed batch ends this pass; the next settle retries
+      if (seq !== fillSeq || viewSeq !== vseq) return; // the view moved on
+      missing.forEach((r, j) => {
+        const s = got[j];
+        fillFolderStat(r, s);
+        if (s && !s.error) usageCachePut(usageCacheKey(loc, r.key), s);
+      });
+      filled = true;
+    }
+    if (filled) grid.render();
   }
 }
 

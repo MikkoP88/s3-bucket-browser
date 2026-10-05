@@ -211,9 +211,15 @@ directory compare) with S3 and the secondary pane.
   presence-driven contract: a folder shows its date, class and ETag
   where its source reports them — a bucket's creation date in the
   buckets view, a folder marker's own metadata on S3, a directory's
-  real timestamps and mode on local, SFTP and WebDAV — and only Size
-  stays a file's column, because a listing cannot know a folder's
-  content size without walking it (Properties computes that).
+  real timestamps and mode on local, SFTP and WebDAV — and Size fills
+  in lazily for folders too: a listing cannot know a folder's content
+  size without walking it, so the cell starts empty and fills from a
+  background usage walk a moment after the listing settles (the same
+  walk the content bar and Properties ride), painted in place — no
+  re-sort, no lost selection — on every view: bucket lists, S3
+  folders, remote engines, the workstation, the secondary pane and
+  Search results alike; a folder the engine cannot answer stays an
+  honest blank rather than a wrong number.
   Columns resize by dragging a header
   edge — the edge follows the pointer exactly, and growth beyond
   what the pane has becomes the horizontal scrollbar rather than
@@ -231,7 +237,10 @@ directory compare) with S3 and the secondary pane.
   recursive size of the selection — a folder always counts its whole
   interior, WinSCP-style. It works on every source type the view
   hosts — bucket lists, S3 folders (versioned, suspended or plain)
-  and every remote engine (SFTP, SCP, FTP(S), WebDAV, local) — always
+  and every remote engine (SFTP, SCP, FTP(S), WebDAV), the
+  workstation walking its real folder trees too (only the drive-roots
+  view keeps the listing-level floor — no wholesale drive walks) —
+  always
   for the one source you are browsing, never an aggregate across data
   sources. On buckets with versioning the history is priced in next
   to the live content (noncurrent version bytes and delete markers —

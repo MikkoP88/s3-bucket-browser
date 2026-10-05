@@ -32,9 +32,11 @@ function acceptedMimes(kind) {
 // engines without the attribute render the cell empty. Folder rows
 // follow the same presence-driven contract — a folder's dates, class and
 // ETag render where its engine reports them (a bucket's creation, a
-// marker's metadata, a directory's real timestamps) — and only size
-// stays files-only: a listing cannot know a folder's content size
-// without walking it (the Properties dialog does that).
+// marker's metadata, a directory's real timestamps) — and size renders
+// for folders too, but only once a lazy usage walk fills contentSize: a
+// listing cannot know a folder's content size on its own, so an
+// unfilled folder keeps an honest blank (the Properties dialog walks on
+// demand the same way).
 export const COLUMNS = [
   { id: 'name', labelKey: 'col.name', flex: true, minW: 200 },
   { id: 'type', labelKey: 'col.type', w: 150 },
@@ -104,17 +106,26 @@ function typeOf(r) {
   return t('type.file');
 }
 
+// sizeOf is a row's Size answer: a file's own bytes, or a folder's lazy
+// recursive content size once a usage walk fills it. null while the walk
+// has not answered — an unfilled folder is unknown, never a false zero.
+const sizeOf = (r) => (r.isDir ? (r.contentSize == null ? null : r.contentSize) : (r.size || 0));
+
 // colText returns the text a filter matches against for one column: the
 // rendered value (sizes formatted, dates localized) plus the raw bytes for
 // size, so both "MB" and "1048576" hit. Engine-optional fields match only
 // where the engine supplied a value — folder rows included, so a dated
-// folder answers a date filter; size stays files-only.
+// folder answers a date filter, and a size-filled folder answers a size
+// filter while an unfilled one matches nothing.
 function colText(r, id) {
   switch (id) {
     case 'name': return r.name || '';
     case 'type': return typeOf(r);
     case 'mode': return r.mode || '';
-    case 'size': return r.isDir ? '' : `${fmtBytes(r.size)} ${r.size || 0}`;
+    case 'size': {
+      const s = sizeOf(r);
+      return s == null ? '' : `${fmtBytes(s)} ${s}`;
+    }
     case 'lastModified': return r.lastModified || r.modTime ? fmtDate(r.lastModified || r.modTime) : '';
     case 'created': return r.created ? fmtDate(r.created) : '';
     case 'storageClass': return r.storageClass || '';
@@ -663,7 +674,12 @@ export class Grid {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1; // folders first, always
       let va = a[key], vb = b[key];
       if (key === 'type') { va = typeOf(a); vb = typeOf(b); }
-      else if (key === 'size' || key === 'lastModified' || key === 'created') {
+      else if (key === 'size') {
+        // an unfilled folder sorts below a known-zero one: unknown, not empty
+        va = sizeOf(a) ?? -1; vb = sizeOf(b) ?? -1;
+        return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
+      }
+      else if (key === 'lastModified' || key === 'created') {
         va = va || 0; vb = vb || 0;
         return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
       }
@@ -810,7 +826,8 @@ export class Grid {
           cell.textContent = m.etag || '';
           cell.title = cell.textContent;
         } else if (c.id === 'size') {
-          cell.textContent = m.isDir ? '' : fmtBytes(m.size);
+          const s = sizeOf(m);
+          cell.textContent = s == null ? '' : fmtBytes(s);
         } else if (c.id === 'lastModified') {
           cell.textContent = m.lastModified || m.modTime ? fmtDate(m.lastModified || m.modTime) : '';
         } else if (c.id === 'created') {

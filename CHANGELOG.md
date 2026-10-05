@@ -8,6 +8,29 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Folder sizes fill in — every view, every source.** A listing
+  cannot know a folder's content size without walking it, so folder
+  rows shipped a blank Size cell and kept it (Properties was the only
+  walk). The cells now fill in lazily: a moment after a listing
+  settles (and again after every page of a streaming one), folders
+  with an unknown size ride the same usage walks the content bar
+  uses — cache-first, twenty rows at a time — and the cells paint in
+  place: no re-sort, no lost selection, the order under the cursor
+  never jumps. It holds on every surface — the bucket list (a bucket
+  is a folder row too), S3 object views, every remote engine, the
+  workstation, the secondary pane (its own bounded cache, dropped the
+  moment its listing is replaced) and the Search window, where folder
+  hits fill from one grouped walk per origin while the run streams
+  and once more at completion. Freshness follows each engine's
+  truth: S3 sizes drop on the change event, a replaced pane listing
+  drops its walks, and local and remote re-walk per visit (no change
+  events to trust); a folder the engine cannot answer — a partial or
+  errored walk — stays an honest blank, cached so it is not hammered
+  and retried on the next settle. The local content bar joins the
+  real walks too (the drive-roots view keeps the floor), and the
+  walk engines gain the source-scoped twins the pane and Search
+  need (SourceS3Usage, SourceBucketUsage), pinned in
+  pkg/api/usage_test.go.
 - **Home buttons on both pane toolbars.** Each content toolbar now
   carries a house-glyph Home beside its navigation buttons. On the
   main side it jumps to the open data source's start view — a
@@ -28,8 +51,9 @@ follow [Semantic Versioning](https://semver.org/).
   supports — Copy / Cut land real files on the OS clipboard, Paste
   and OS drops transfer in from any remote or S3 view, Delete walks
   the unified confirm, upload copies files and folders in, and the
-  size bar reports the level-sum floor (no recursive local walk
-  exists). Rename, New folder and New file rest where no API exists
+  size bar walks the folder's real tree (the drive-roots view keeps
+  the listing-level floor). Rename, New folder and New file rest
+  where no API exists
   (their toasts point at Explorer), drags between two local spots
   stay Explorer's job while remote-origin drags drop into the
   folder and its rows, and the menubar's Copy URL admits the local
