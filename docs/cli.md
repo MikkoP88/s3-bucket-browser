@@ -1456,6 +1456,8 @@ Both sides on the same S3 source copy server-side; anything else streams.
 --versions (S3→S3) recreates the source's version timeline at the destination,
 delete markers included; mv --versions then purges the sources (L3, --force gates).
 SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.
+A destination inside the source's own subtree is refused before a byte moves —
+a move beneath itself would delete the fresh copies with the originals.
 
 ```
 s3b cp SRC DST [flags]
@@ -2100,6 +2102,8 @@ Both sides on the same S3 source copy server-side; anything else streams.
 --versions (S3→S3) recreates the source's version timeline at the destination,
 delete markers included; mv --versions then purges the sources (L3, --force gates).
 SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.
+A destination inside the source's own subtree is refused before a byte moves —
+a move beneath itself would delete the fresh copies with the originals.
 
 ```
 s3b mv SRC DST [flags]

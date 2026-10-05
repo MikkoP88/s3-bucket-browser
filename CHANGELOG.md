@@ -578,6 +578,17 @@ build stay multi-instance.
   still wins, Reset columns restores the shared default, and
   Settings' Reset to defaults seats all three views at the same
   four.
+- **Docs and screenshots catch up with the whole 1.1 surface.** The
+  verified screenshot set is republished from the current battery (all
+  thirteen docs images — every one a battery capture whose
+  subject-on-screen was asserted before the shutter, the Search window
+  shot now showing the widened window with Type seated second and the
+  badge-plus-pairing Source column), the README grows the Search
+  window's own feature block plus the engine cycle guard, folder sizes
+  and the late-beta 1.1 headline list, the safety ladder in
+  docs/security.md and the CLI's cp/mv help carry the engine cycle
+  refusal, and the usage guide's transfer bullet states it in the GUI
+  face.
 
 ### Fixed
 

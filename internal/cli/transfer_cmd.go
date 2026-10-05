@@ -62,7 +62,9 @@ func copyLikeCmd(name, short string, move bool) *cobra.Command {
 			"Both sides on the same S3 source copy server-side; anything else streams.\n" +
 			"--versions (S3→S3) recreates the source's version timeline at the destination,\n" +
 			"delete markers included; mv --versions then purges the sources (L3, --force gates).\n" +
-			"SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.",
+			"SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.\n" +
+			"A destination inside the source's own subtree is refused before a byte moves —\n" +
+			"a move beneath itself would delete the fresh copies with the originals.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The S3 client is only needed when one side is s3:// — source-

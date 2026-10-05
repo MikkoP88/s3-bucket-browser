@@ -229,6 +229,12 @@ Additional rules:
 
 - `--dry-run` exists on every bulk operation — preview the exact key list
   and totals with zero effect.
+- **Cycle guards live in the engines, not the UI.** A copy or move whose
+  destination sits inside the source's own subtree — a folder pasted into
+  itself, a bucket into its own prefix, a versioned copy onto its own key
+  — is refused by the engine itself before a byte moves, on every face at
+  once (GUI transfers and pastes, CLI cp/mv, versioned copies): no caller
+  can ask for what the engine refuses.
 - On versioned buckets a plain delete always creates a *delete marker*
   (recoverable via `s3b versions undo`); permanence is never implicit.
   The GUI makes that explicit on every source: one Delete Window

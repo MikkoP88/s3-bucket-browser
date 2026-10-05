@@ -536,9 +536,13 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   copies names, normalized `Name/bucket/key` paths (the form the
   path bars paste straight back; local rows copy their bare native
   path) or URLs to the OS clipboard.
-- **Conflicts & speed** — every transfer states a conflict policy
+- **Conflicts & safety** — every transfer states a conflict policy
   (overwrite / skip / rename) with a live pre-check that lists exactly
-  which files collide, and can be throttled (256 kB/s … 1000 MB/s).
+  which files collide, and can be throttled (256 kB/s … 1000 MB/s). A
+  transfer can never feed itself: a destination that sits inside the
+  source's own subtree (a folder pasted into itself, a bucket into its
+  own prefix) is refused by the engine before a byte moves — a move
+  beneath itself would delete the fresh copies with the originals.
 - **Transfer manager** — View → File transfers (or the status-bar
   counter) shows every job with per-file and byte-level progress, speed
   and cancel — in a floating window, so you can keep browsing while it

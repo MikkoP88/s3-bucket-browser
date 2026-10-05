@@ -89,7 +89,9 @@ gap this project fills.
    anything.
 6. **Performance at scale.** Streaming ListObjectsV2 pagination (the Go
    side holds one page at a time), virtualized rendering, cancelable deep
-   search. Most GUIs choke far below 100k objects.
+   search — one floating Search window spans every configured source at
+   once (S3, remote and local alike), scopeable to a folder, with a click
+   jumping straight to the hit. Most GUIs choke far below 100k objects.
 7. **Source-available + minimal deps + no telemetry.** Every rival is
    GPL, freeware, paid, AGPL or stalled. Zero npm runtime dependencies;
    the dependency budget is audited each release.

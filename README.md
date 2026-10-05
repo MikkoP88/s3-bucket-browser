@@ -4,7 +4,7 @@
 
 **A unified desktop browser and CLI with Windows File Explorer and a WinSCP inspired interface for managing S3‑compatible cloud storages and remote file servers, offering comprehensive supporting S3 buckets/objects, SFTP/SCP, FTP/FTPS, WebDAV, and local folders, with robust versioning, bucket administration, and security, and cross‑storage migration capabilities.**
 
-> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.21).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, and a unified versioned-delete flow — see the [CHANGELOG](CHANGELOG.md).
+> **Status: v1.0 released; 1.1.0 in beta (current pre-release: 1.1.0-beta.21).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 adds a unified data-source hierarchy, OS clipboard/drag interop, credential import, a unified versioned-delete flow, a floating Search window across every source, engine-level transfer cycle guards, folder sizes in every view, and GUI-matched CLI formats — see the [CHANGELOG](CHANGELOG.md).
 
 ## Key Features of S3 Bucket Browser(s3b)
 
@@ -32,12 +32,20 @@
 - All color‑coded in one sidebar  
 - Same UI and same CLI (`NAME://` URIs)
 
+### ✔ Deep search, one window
+- **Ctrl+Shift+F** — floating Search window (or tear it out as a native OS window)  
+- Filters: name/glob, size, modified/created dates, storage class  
+- **All sources at once** or scoped to one folder — each source searched inside its own boundary  
+- Source column with type badges on multi-origin runs; double-click jumps to the hit  
+- Cancelable; results stream in page by page
+
 ### ✔ Migration across storage types
 - Any‑to‑any transfers: drag rows between sources, panes, or the tree  
 - CLI: `s3b cp s3://bucket/ sftp://dst/ -r`  
 - Same‑source S3 copies run **server‑side**  
 - Cross‑source copies stream through one transfer manager  
 - Conflict pre‑checks, throttling, resumable operations
+- **Engine-level cycle guard** — a destination inside the source's own subtree is refused before a byte moves
 
 ### ✔ S3 versioning done right
 - Per‑object timelines with restore‑as‑latest  
@@ -80,6 +88,7 @@
 - Virtualized rendering  
 - Cancelable deep search  
 - Responsive even on **million‑object buckets**
+- Folder sizes fill in lazily in every view (cached usage walks)
 
 *One binary, two faces: run `s3b` with no arguments for the GUI, with arguments for the CLI — same engine, full parity.*
 
@@ -165,6 +174,7 @@ More screenshots:
 | | |
 |---|---|
 | ![Data sources](docs/screenshots/sources-tree.png) | ![Dual pane compare](docs/screenshots/dual-pane-compare.png) |
+| ![Search window](docs/screenshots/search.png) | ![Transfer manager](docs/screenshots/transfers.png) |
 | ![Versions](docs/screenshots/versions.png) | ![Delete window](docs/screenshots/delete-window.png) |
 | ![Admin panel](docs/screenshots/admin-panel.png) | ![Dark theme](docs/screenshots/dark-theme.png) |
 
