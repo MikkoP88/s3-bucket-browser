@@ -3406,7 +3406,9 @@ async function guiBattery() {
     await enterFolder('cmp');
     await ensureDualPane();
     await localDir(ld, 'only-left.txt');
-    await page.locator('#local-compare').click();
+    // Compare moved to the global bar in the 1.2.0 toolbar rework —
+    // #btn-compare, disabled until the pane is open and bound
+    await page.locator('#btn-compare').click();
     await waitFor(async () => /compare —/i.test(await modalText()), 30000, 'compare summary');
     await shot('25-compare');
     const counts = await evalPage(() => {
@@ -6892,9 +6894,10 @@ async function guiBattery() {
     await ensureDualPane();
     const bound = await evalPage((n) => {
       const s = document.getElementById('local-src');
-      // the option's text is "NAME (type)" and its value is the source
-      // ID — match the value or the name prefix, never the full text
-      const o = Array.from(s?.options || []).find((x) => x.value === n || (x.textContent || '').trim().startsWith(`${n} (`));
+      // the option's value is the source ID, never the name, and its
+      // text is the badge's text twin — typedSourceLabel paints
+      // "S3 · NAME" — so match the value or the label's name tail
+      const o = Array.from(s?.options || []).find((x) => x.value === n || (x.textContent || '').trim().endsWith(` · ${n}`));
       if (o && s.value !== o.value) { s.value = o.value; s.dispatchEvent(new Event('change')); }
       return o ? o.value : null;
     }, SRCNAME);

@@ -222,6 +222,31 @@ async function answerPrompt(value) {
   await input.press('Enter');
   await sleep(120);
 }
+// paneGoto drives the pane's inline path editor — the navbar's empty
+// area opens it (a click on a crumb segment is ignored: the open
+// handler excludes .crumb/.crumb-sep/input/button), Enter commits,
+// Esc/blur restores. The editor closes on blur and dies to any crumb
+// re-render, so the open+fill+Enter gesture retries
+async function paneGoto(line) {
+  let lastErr = null;
+  for (let att = 0; att < 3; att++) {
+    await evalPage(() => {
+      if (!document.querySelector('#local-crumb input.path-edit'))
+        document.querySelector('#local-pane .navbar').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      const f = document.querySelector('#local-crumb input.path-edit');
+      if (f) { f.focus(); f.select(); }
+      return !!f;
+    });
+    try {
+      await page.waitForSelector('#local-crumb input.path-edit', { state: 'visible', timeout: 3000 });
+      await page.fill('#local-crumb input.path-edit', line, { timeout: 3000 });
+      await page.keyboard.press('Enter');
+      await sleep(200);
+      return;
+    } catch (e) { lastErr = e; }
+  }
+  throw new Error(`paneGoto(${line}) — the inline editor would not stay put (re-render race x3): ${lastErr}`);
+}
 async function clickFooter(re) {
   const h = await elOrNull((src) => {
     const btns = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn'));
@@ -405,6 +430,28 @@ async function treeOpen(label) {
   }, label);
   await sleep(300);
 }
+// sidePaneOpen seats a source on the secondary pane through the shipped
+// gesture: the sidebar tree node's context menu → "Open on secondary
+// pane" (showTreeMenu → sidePaneOpenFor → localPane.openAt). The pane's
+// onboarding picker (#local-src) is not the surface for a bound pane —
+// it stands for a closed pane and hides once a binding exists.
+async function sidePaneOpen(label) {
+  await waitFor(() => evalPage((l) => Array.from(document.querySelectorAll('#tree .tnode'))
+    .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), label), 10000, `tree node "${label}"`);
+  await evalPage((l) => {
+    Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l)
+      ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+  }, label);
+  const item = await waitFor(() => elOrNull(() => {
+    const menu = document.getElementById('ctxmenu');
+    if (!menu || menu.classList.contains('hidden')) return null;
+    return Array.from(menu.querySelectorAll('.item'))
+      .find((x) => /open on secondary pane/i.test(x.textContent || '')) || null;
+  }), 5000, `"Open on secondary pane" for ${label}`);
+  await item.asElement().click();
+  await sleep(300);
+}
 
 // ---------- server lifecycle ----------
 function startServer() {
@@ -575,6 +622,10 @@ async function walk() {
     await evalPage(() => {
       localStorage.setItem('s3b-lang', 'en');
       localStorage.setItem('s3b-show-markers', '1');
+      // the parent row is opt-in (off by default) and Backspace/Alt+↑
+      // climb only while it shows — the Delete-Window step's Backspace-up
+      // rides this setting
+      localStorage.setItem('s3b-parent-row', '1');
     });
     await page.reload();
     // the setup phase: a fresh rig config walks the first-launch license
@@ -824,8 +875,7 @@ async function walk() {
   await step('dual pane: bind local side to fixtures', async () => {
     await page.keyboard.press('F9');
     await waitFor(() => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 5000, 'local pane');
-    await page.locator('#local-crumb').click();
-    await answerPrompt(FIX);
+    await paneGoto(FIX);
     await waitFor(async () => (await sideKeys()).includes('live-a.txt'), 10000, 'fixture rows');
     await ok('local rows visible', true);
     await shot('15-dualpane');
@@ -938,8 +988,7 @@ async function walk() {
   await step('DnD download (S3 row → local pane, bytes verified)', async () => {
     const dst = path.join(FIX, 'downloads');
     await mkdir(dst, { recursive: true });
-    await page.locator('#local-crumb').click();
-    await answerPrompt(dst);
+    await paneGoto(dst);
     await waitFor(async () => (await sideKeys()).length === 0, 10000, 'empty downloads dir');
     await dnd(await rowAction('live-b.txt', 'grid'), await sideBodyH());
     await startIfAsked(8000);
@@ -950,8 +999,7 @@ async function walk() {
   });
 
   await step('rename (F2)', async () => {
-    await page.locator('#local-crumb').click();
-    await answerPrompt(FIX);
+    await paneGoto(FIX);
     await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'local side reset');
     await clickRow('live-b.txt');
     await page.keyboard.press('F2');
@@ -999,8 +1047,7 @@ async function walk() {
       await dblClickRow(RUNID); // still filtered — the single row is rendered
       await waitFor(async () => (await rowKeys()).length === 0, 10000, `${e.label}: empty run dir`);
       await clearFilter();
-      await page.locator('#local-crumb').click();
-      await answerPrompt(FIX);
+      await paneGoto(FIX);
       await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'fixture tree on the local side');
       await dnd(await sideRow('tree'), await bodyH());
       await startIfAsked(8000);
@@ -1027,8 +1074,7 @@ async function walk() {
       await waitFor(async () => (await names()).includes('tree'), 10000, `${e.label}: run dir`);
       const dst = path.join(FIX, `rt-${e.label}`);
       await mkdir(dst, { recursive: true });
-      await page.locator('#local-crumb').click();
-      await answerPrompt(dst);
+      await paneGoto(dst);
       await waitFor(async () => (await sideKeys()).length === 0, 10000, `${e.label}: empty local dst`);
       await dnd(await rowAction('tree', 'grid'), await sideBodyH());
       await startIfAsked(8000);
@@ -1053,7 +1099,11 @@ async function walk() {
       await dblClickRow(`x-${RUNID}`);
       await waitFor(async () => (await rowKeys()).length === 0, 10000, 'empty cross dir');
       await clearFilter();
-      await page.locator('#local-src').selectOption({ label: `live-${from.label} (${from.type})` });
+      // a bound pane no longer wears the onboarding picker — #local-src
+      // stands for a CLOSED pane and hides once a binding exists. The
+      // shipped gesture for seating a source on the open pane is the
+      // sidebar tree's context "Open on secondary pane"
+      await sidePaneOpen(`live-${from.label}`);
       // virtualized side pane: RUNID sorts last at the fixture root, and the
       // listing may still be in flight — keep scrolling to the bottom inside
       // the wait so the row renders once the real canvas height exists
@@ -1071,9 +1121,12 @@ async function walk() {
       await waitFor(async () => (await names()).includes('docs'), 20000, 'cross-engine docs/');
       await ok(`${from.label} → last engine: cross-engine DnD keeps the tree`, true);
       await shot('r4-cross-engine');
-      await page.locator('#local-src').selectOption('local');
-      await page.locator('#local-crumb').click();
-      await answerPrompt(FIX);
+      // back to the workstation filesystem through the pane toolbar's
+      // Home button — goHome() rebinds local; the onboarding picker is
+      // hidden while any binding exists
+      await page.locator('#local-btn-home').click();
+      await sleep(300);
+      await paneGoto(FIX);
       await waitFor(async () => (await sideKeys()).includes('tree'), 10000, 'local side restored');
     }
   });
@@ -1287,13 +1340,15 @@ async function walk() {
       Array.from(document.querySelectorAll('#empty-actions .btn'))
         .find((b) => b.textContent.includes('Retry'))?.click();
     });
-    // logical item count from the status bar — the grid virtualizes (only
-    // the visible slice + overscan is in the DOM), so a 120-row folder can
-    // never show 115 DOM rows however complete the listing is
-    const totalItems = () => evalPage(() => {
-      const m = (document.getElementById('status-selection')?.textContent || '').match(/^(\d+)/);
-      return m ? Number(m[1]) : 0;
-    });
+    // logical row count straight off the grid's own model — the battery
+    // handle main.js exposes as __s3bGrid. The DOM virtualizes (only the
+    // visible slice + overscan renders), and the size bar below the grid
+    // cannot carry this signal: its whole-listing walk is cached per
+    // source|bucket|key and survives navigation, so a folder visited once
+    // repaints its cached "N file(s)" instantly on re-entry — a 0.3s
+    // "listing" under an 8 KB/s lane. rows.length climbs only as pages
+    // land over the wire
+    const totalItems = () => evalPage(() => (window.__s3bGrid?.rows || []).length);
     // a crashed earlier run can leave a stale proxy owning the ports (still
     // stuck in its last fault mode) — clear them before listening
     const clearFaultPorts = () => {
@@ -1367,8 +1422,11 @@ async function walk() {
         await setMode({ mode: 'reset' });
         await crumbRoot();
         const st = await waitFor(errState, 30000, 'reset error state');
+        // the wire-death class classifies as the disconnected-source
+        // state now ("Source not connected", t.notConnected) — either
+        // honest classification carries the Retry affordance
         await ok(`reset → "${st.title}" + Retry (${st.sub.slice(0, 60)}…)`,
-          /could not load/i.test(st.title) && st.retry);
+          /(could not load|source not connected)/i.test(st.title) && st.retry);
         await shot('40-fault-reset-error');
         await setMode({ mode: 'direct' });
         await clickRetry();
