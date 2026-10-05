@@ -3862,8 +3862,10 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false, srcs = []) {
   // its root ("Find in:") beside the file mask, and so does this window.
   // A solo window (the pane's find button, a local view's own folder)
   // locks its one scope outright: the select renders disabled, so the
-  // input itself cannot be changed — not merely one option deep
-  const scopeSel = el('select', { class: 'input sr-scope', disabled: pane ? true : null },
+  // input itself cannot be changed — not merely one option deep — and
+  // sr-locked drops the native dropdown arrow as well: an arrow on a
+  // select that cannot open reads as a control that does something
+  const scopeSel = el('select', { class: pane ? 'input sr-scope sr-locked' : 'input sr-scope', disabled: pane ? true : null },
     scopes.map((x, i) => el('option', { value: String(i), selected: i === selIdx }, x.label)));
 
   // ---- results: the app's content-area chrome, worn verbatim ----

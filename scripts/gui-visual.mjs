@@ -4815,7 +4815,8 @@ await step('search-window', async () => {
     const pad = getComputedStyle(document.querySelector('#popout-root .popout[data-pop="search"] .modal-body')).padding;
     return document.body.classList.contains('popout-win')
       && !!sel && sel.selectedOptions[0].textContent.trim() === 'S3 · hetzner/team-files/docs/'
-      && pad === '0px';
+      && pad === '0px'
+      && !sel.classList.contains('sr-locked') && getComputedStyle(sel).appearance !== 'none';
   }));
   await sp.waitForFunction(() => Array.from(document.querySelectorAll('.sr-scope option'))
     .some((o) => o.textContent.trim() === 'S3 · hetzner'), null, { timeout: 8000 });
@@ -4857,7 +4858,8 @@ await step('search-window', async () => {
     const sel = document.querySelector('#popout-root .sr-scope');
     return document.body.classList.contains('popout-win')
       && !!sel && sel.disabled === true && sel.options.length === 1
-      && sel.selectedOptions[0].textContent.trim() === 'S3 · website-prod';
+      && sel.selectedOptions[0].textContent.trim() === 'S3 · website-prod'
+      && sel.classList.contains('sr-locked') && getComputedStyle(sel).appearance === 'none';
   }));
   await sp2.evaluate(() => {
     const inp = document.querySelector('.sr-name input.input');
@@ -7464,6 +7466,10 @@ await step('pane-search', async () => {
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
     return sel.disabled === true && sel.options.length === 1 && labels[0] === 'Local · C:\\Users\\demo'
       && !labels.some((l) => /all data sources/i.test(l));
+  }, S));
+  await ok('the locked scope wears no dropdown arrow', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    return sel.classList.contains('sr-locked') && getComputedStyle(sel).appearance === 'none';
   }, S));
   await page.fill(S + ' .sr-name input.input', '*.pdf');
   await page.press(S + ' .sr-name input.input', 'Enter');

@@ -705,6 +705,13 @@ build stay multi-instance.
   refusals are pinned by Go tests against real search runs
   (search_scope_test.go), since the GUI battery's backend mock was
   already honest.
+- **A locked solo scope wears no dropdown arrow.** The secondary
+  pane's Search window locks its one scope outright, and its Sources
+  input rendered disabled — but still carried the native dropdown
+  arrow, which reads as a control that opens. The arrow drops with
+  the lock on every solo face (the DOM popout and the native popout
+  window alike), while the full Search window keeps its changeable
+  list, arrow and all.
 
 ## [1.1.0-beta.21] — 2026-09-27
 

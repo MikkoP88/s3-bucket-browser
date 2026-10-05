@@ -376,7 +376,9 @@ directory compare) with S3 and the secondary pane.
   remote folder, a workstation directory; at the source's own root the
   label is its typed name alone, no dangling slash), no *All data
   sources* and nothing else to pick, the Sources input itself disabled
-  so the scope cannot be changed — and a pick lands on the pane and
+  so the scope cannot be changed — and its dropdown arrow drops with
+  it, so the dimmed input cannot read as a control that opens — and
+  a pick lands on the pane and
   selects the
   row. A source named after its bucket (the credential import's own
   naming) reads once in the Source column and the scope labels — never
