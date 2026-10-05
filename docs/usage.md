@@ -216,7 +216,8 @@ directory compare) with S3 and the secondary pane.
   out-of-box set, order and widths back in one click.
 - **Content bottom bar** — the strip along the bottom of the content
   view answers *how much is really here*, with the active data
-  source's name in bold on the bar's right end: with nothing selected
+  source's type badge and name in bold on the bar's right end (the
+  same identity format every source presentation wears): with nothing selected
   it is the real
   recursive size of everything listed; select rows and it is the
   recursive size of the selection — a folder always counts its whole
@@ -311,7 +312,9 @@ directory compare) with S3 and the secondary pane.
   substring or glob (Enter runs the search from any field),
   Sources is a flat list with no grouping — *All data sources*
   (the default: every bucket of every S3 source plus every remote
-  source from its root) and each configured source by name, an S3
+  source from its root) and each configured source by type and name
+  (`S3 · hetzner` — the type badge's text form; the pane's source
+  picker labels its options the same way), an S3
   source searched across every bucket it holds, a remote source
   (local, SFTP, FTP, WebDAV) from its root. Everything else folds
   out under the *More filters* disclosure chip, whose label counts

@@ -9,7 +9,7 @@
 // folder rows / the body of the local binding).
 import { Grid } from './grid.js';
 import { toast } from './dialogs.js';
-import { el, fmtBytes, debounce, srcIconEl, parentPrefix, slashPath } from './util.js';
+import { el, fmtBytes, debounce, srcIconEl, typedSourceLabel, parentPrefix, slashPath } from './util.js';
 import { api, subscribeStream } from './api.js';
 import { t } from './i18n.js';
 import { updateCommandState } from './commands.js';
@@ -258,7 +258,9 @@ export class SidePane {
     const sel = $('local-src');
     const opts = [el('option', { value: 'local', text: 'Local' })];
     for (const s of this.sources) {
-      opts.push(el('option', { value: s.id || s.name, text: s.name + ' (' + s.type + ')' }));
+      // a native <option> holds text only, so typedSourceLabel carries the
+      // badge's identity in — "S3 · hetzner", never the old "hetzner (s3)"
+      opts.push(el('option', { value: s.id || s.name, text: typedSourceLabel(s.type, s.name) }));
     }
     sel.replaceChildren(...opts);
     const cur = this.binding.kind !== 'local' ? this.binding.source : 'local';
@@ -278,11 +280,11 @@ export class SidePane {
       // name is what the user sees in the crumb and prompts. A
       // bucket-scoped source opens its bucket's contents directly; legacy
       // account-wide sources open the buckets view.
-      this.binding = { kind: 's3', source: src.id || src.name, name: src.name, bucket: src.bucket || '' };
+      this.binding = { kind: 's3', source: src.id || src.name, name: src.name, bucket: src.bucket || '', type: src.type, color: src.color };
       this.bucket = this.binding.bucket;
       this.dir = '';
     } else {
-      this.binding = { kind: 'remote', source: src.id || src.name, name: src.name };
+      this.binding = { kind: 'remote', source: src.id || src.name, name: src.name, type: src.type, color: src.color };
       this.dir = '/';
     }
     localStorage.setItem('s3b-side-src', this.binding.kind === 'local' ? 'local' : this.binding.source);
@@ -1243,7 +1245,11 @@ export class SidePane {
       : (rows.length - files.length) + ' folder(s), ' + files.length + ' file(s), ' + fmtBytes(bytes);
     const tag = $('local-source');
     if (this.bound) {
-      tag.textContent = this.binding.kind === 'local' ? 'This PC' : (this.binding.name || this.binding.source);
+      // the badge rides here too — Local for the workstation, the source's
+      // own type chip otherwise — so both status bars speak the same
+      // identity format the breadcrumbs and the sidebar carry
+      const nm = this.binding.kind === 'local' ? 'This PC' : (this.binding.name || this.binding.source);
+      tag.replaceChildren(srcIconEl(this.binding.type || this.binding.kind, this.binding.color), document.createTextNode(nm));
       tag.classList.remove('hidden');
     } else {
       tag.classList.add('hidden');

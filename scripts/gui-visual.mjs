@@ -4112,7 +4112,7 @@ await step('search-window', async () => {
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
     return sel.querySelectorAll('optgroup').length === 0
       && labels.length === 6 && labels[0] === 'All data sources'
-      && ['hetzner', 'website-prod', 'nightly', 'backup-box', 'dav-claims']
+      && ['S3 · hetzner', 'S3 · website-prod', 'S3 · nightly', 'SFTP · backup-box', 'WebDAV · dav-claims']
         .every((n) => labels.includes(n))
       && labels.every((l) => !l.includes('s3://'));
   }, S));
@@ -4169,8 +4169,14 @@ await step('search-window', async () => {
     const heads = Array.from(document.querySelectorAll(s + ' .grid-head .gh')).map((h) => h.dataset.col);
     const last = document.querySelector(s + ' .sr-list .grid-row').lastElementChild;
     return !!col && col.textContent.includes('Source')
-      && cells.length === 2 && cells.every((b) => b === 'hetzner/team-files')
+      && cells.length === 2 && cells.every((b) => b === 'S3hetzner/team-files')
       && heads[heads.length - 1] === 'source' && last.classList.contains('source');
+  }, S));
+  await ok('Source column cells wear the source type badge, crumb-style', evalPage((s) => {
+    const chips = Array.from(document.querySelectorAll(s + ' .gc.source .src-ic'));
+    const cs = getComputedStyle(chips[0]);
+    return chips.length === 2 && chips.every((c) => c.textContent === 'S3')
+      && cs.borderRadius === '4px' && cs.backgroundColor !== 'rgba(0, 0, 0, 0)';
   }, S));
   await ok('a click selects the row, a second click moves the selection', evalPage((s) => {
     const rows = document.querySelectorAll(s + ' .sr-list .grid-row');
@@ -4194,7 +4200,7 @@ await step('search-window', async () => {
   // remote engines are in "all" too: a remote hit opens the remote view
   await runSearch('*.csv');
   await waitFor(() => evalPage((s) => Array.from(document.querySelectorAll(s + ' .gc.source'))
-    .some((b) => b.textContent === 'backup-box'), S), 4000, 'remote hit');
+    .some((b) => b.textContent === 'SFTPbackup-box'), S), 4000, 'remote hit');
   await ok('remote engines are searched too', evalPage((s) => {
     const rows = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'));
     return rows.length === 1 && rows[0].textContent.includes('/docs/inventory.csv');
@@ -4224,7 +4230,7 @@ await step('search-window', async () => {
   await waitFor(() => popoutVisible('search'), 4000, 'preset popout');
   await ok('folder preset preselects the scoped entry', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
-    return !!sel && sel.selectedOptions[0].textContent.trim() === 'hetzner/team-files/docs/';
+    return !!sel && sel.selectedOptions[0].textContent.trim() === 'S3 · hetzner/team-files/docs/';
   }, S));
   await ok('the preset scope is not counted as a filter on the chip', evalPage((s) =>
     !document.querySelector(s + ' .sr-more').textContent.includes('\u00B7'), S));
@@ -4253,7 +4259,7 @@ await step('search-window', async () => {
   await resetCalls();
   await evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
-    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'hetzner').value;
+    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'S3 · hetzner').value;
   }, S);
   await runSearch('.');
   await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 's3'), 4000, 'source-scoped Search call');
@@ -4265,14 +4271,14 @@ await step('search-window', async () => {
   await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 3, S), 4000, 'source results');
   await ok('source scope stays inside the picked source only', evalPage((s) => {
     const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((b) => b.textContent);
-    const hetzner = new Set(['hetzner/team-files', 'hetzner/logs-2026', 'hetzner/media-assets', 'hetzner/archive-cold']);
+    const hetzner = new Set(['S3hetzner/team-files', 'S3hetzner/logs-2026', 'S3hetzner/media-assets', 'S3hetzner/archive-cold']);
     return cells.length >= 3 && new Set(cells).size >= 2 && cells.every((b) => hetzner.has(b));
   }, S));
 
   await resetCalls();
   await evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
-    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'backup-box').value;
+    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'SFTP · backup-box').value;
   }, S);
   await runSearch('.csv');
   await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 'remote'), 4000, 'remote-source Search call');
@@ -4616,7 +4622,7 @@ await step('search-window', async () => {
   await evalPage((s) => {
     document.querySelector(s + ' .sr-name input.input').value = 'zz';
     const sel = document.querySelector(s + ' .sr-scope');
-    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'nightly').value;
+    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'S3 · nightly').value;
     sel.dispatchEvent(new Event('change'));
   }, S);
   await evalPage((s) => {
@@ -4667,14 +4673,14 @@ await step('search-window', async () => {
     const sel = document.querySelector('#popout-root .sr-scope');
     const pad = getComputedStyle(document.querySelector('#popout-root .popout[data-pop="search"] .modal-body')).padding;
     return document.body.classList.contains('popout-win')
-      && !!sel && sel.selectedOptions[0].textContent.trim() === 'hetzner/team-files/docs/'
+      && !!sel && sel.selectedOptions[0].textContent.trim() === 'S3 · hetzner/team-files/docs/'
       && pad === '0px';
   }));
   await sp.waitForFunction(() => Array.from(document.querySelectorAll('.sr-scope option'))
-    .some((o) => o.textContent.trim() === 'hetzner'), null, { timeout: 8000 });
+    .some((o) => o.textContent.trim() === 'S3 · hetzner'), null, { timeout: 8000 });
   await ok('native window: the dropdown lists every source too', await sp.evaluate(() => {
     const labels = Array.from(document.querySelectorAll('.sr-scope option')).map((o) => o.textContent.trim());
-    return labels.includes('All data sources') && labels.includes('backup-box');
+    return labels.includes('All data sources') && labels.includes('SFTP · backup-box');
   }));
   await sp.evaluate(() => {
     const inp = document.querySelector('.sr-name input.input');
@@ -4710,7 +4716,7 @@ await step('search-window', async () => {
     const sel = document.querySelector('#popout-root .sr-scope');
     return document.body.classList.contains('popout-win')
       && !!sel && sel.disabled === true && sel.options.length === 1
-      && sel.selectedOptions[0].textContent.trim() === 'website-prod/';
+      && sel.selectedOptions[0].textContent.trim() === 'S3 · website-prod/';
   }));
   await sp2.evaluate(() => {
     const inp = document.querySelector('.sr-name input.input');
@@ -6422,6 +6428,12 @@ await step('dual-pane', async () => {
         && !document.querySelector('#local-toolbar #' + id))));
   // the onboarding picker is one way in — the workstation first (a
   // direct rebind, the same act the picker's choice performs)
+  await ok('the pane picker names every source by type, badge-style', evalPage(() => {
+    const labels = Array.from(document.querySelectorAll('#local-src option')).map((o) => o.textContent.trim());
+    return labels.length === 6 && labels[0] === 'Local'
+      && ['S3 · hetzner', 'S3 · website-prod', 'S3 · nightly', 'SFTP · backup-box', 'WebDAV · dav-claims']
+        .every((l) => labels.includes(l));
+  }));
   await page.selectOption('#local-src', 'local');
   await waitFor(async () => !!(await sideRow('Downloads')), 6000, 'local home');
   await ok('local home listed', true);
@@ -7270,7 +7282,7 @@ await step('pane-search', async () => {
   await ok('one locked scope: the pane\'s own directory, no All entry', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    return sel.disabled === true && sel.options.length === 1 && labels[0] === 'C:\\Users\\demo'
+    return sel.disabled === true && sel.options.length === 1 && labels[0] === 'Local · C:\\Users\\demo'
       && !labels.some((l) => /all data sources/i.test(l));
   }, S));
   await page.fill(S + ' .sr-name input.input', '*.pdf');
@@ -7856,7 +7868,7 @@ await step('search-samename-source', async () => {
   await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 1, S), 4000, 'kms hit rows');
   await ok('the Source column reads a same-named source once', evalPage((s) => {
     const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((c) => c.textContent.trim());
-    return cells.length >= 1 && cells.every((c) => c === 'hetzner-kms') && !cells.some((c) => c.includes('/'));
+    return cells.length >= 1 && cells.every((c) => c === 'S3hetzner-kms') && !cells.some((c) => c.includes('/'));
   }, S));
   await shot('search-samename');
   await closePopout('search');
@@ -7870,6 +7882,12 @@ await step('pane-search-names', async () => {
   await resetCalls();
   await evalPage(() => { window.__s3bSidePane.show({ drive: false }); window.__s3bSidePane.rebind('src-hetzner-kms'); });
   await waitFor(async () => !!(await sideRow('kms-seed.txt')), 6000, 'pane bound to hetzner-kms');
+  await ok('the pane bottom bar tags the bound source with its badge', evalPage(() => {
+    const tag = document.getElementById('local-source');
+    const chip = tag.querySelector('.src-ic');
+    return !tag.classList.contains('hidden') && tag.textContent === 'S3hetzner-kms'
+      && !!chip && chip.textContent === 'S3';
+  }));
   await page.click('#local-btn-find');
   await waitFor(() => popoutVisible('search'), 4000, 'pane search window');
   const S = '#popout-root .popout[data-pop="search"]';
@@ -7877,7 +7895,7 @@ await step('pane-search-names', async () => {
   await ok('one locked scope reading the data source name, never the id', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    return sel.disabled === true && sel.options.length === 1 && labels[0] === 'hetzner-kms/'
+    return sel.disabled === true && sel.options.length === 1 && labels[0] === 'S3 · hetzner-kms/'
       && !labels.some((l) => /^src-/.test(l) || /all data sources/i.test(l));
   }, S));
   await page.fill(S + ' .sr-name input.input', 'kms-seed.txt');
@@ -7894,7 +7912,7 @@ await step('pane-search-names', async () => {
   await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 1, S), 4000, 'pane search results');
   await ok('the Source column reads the same-named source once here too', evalPage((s) => {
     const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((c) => c.textContent.trim());
-    return cells.length >= 1 && cells.every((c) => c === 'hetzner-kms');
+    return cells.length >= 1 && cells.every((c) => c === 'S3hetzner-kms');
   }, S));
   await closePopout('search');
   await evalPage(() => {
@@ -8173,9 +8191,11 @@ await step('main-local', async () => {
     document.getElementById('grid-source').classList.contains('hidden')));
   await navObjectsOf('hetzner', 'team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back on the source');
-  await ok('returning to the same source repaints the tag', evalPage(() => {
+  await ok('returning to the same source repaints the tag, badge and all', evalPage(() => {
     const tag = document.getElementById('grid-source');
-    return !tag.classList.contains('hidden') && tag.textContent === 'hetzner';
+    const chip = tag.querySelector('.src-ic');
+    return !tag.classList.contains('hidden') && tag.textContent === 'S3hetzner'
+      && !!chip && chip.textContent === 'S3';
   }));
   await evalPage(() => document.getElementById('toasts').replaceChildren());
 });
@@ -9253,7 +9273,7 @@ await step('size-bar', async () => {
   await ok('versioned whole: files/folders/bytes + version split',
     t1 === '10 file(s), 4 folder(s), 217 MB — old versions: 2.3 KB (17 version(s), 1 marker(s))');
   await ok('the source name parks on the bar right end, WinSCP session-style',
-    (await txt('#grid-source')) === 'hetzner'
+    (await txt('#grid-source')) === 'S3hetzner'
       && (await evalPage(() => {
         const bar = document.getElementById('grid-status');
         const src = document.getElementById('grid-source').getBoundingClientRect();

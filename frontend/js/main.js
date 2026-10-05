@@ -905,7 +905,11 @@ function setGridSource(name) {
   gridSourceName = name || '';
   const sp = $('grid-source');
   if (!sp) return;
-  sp.textContent = gridSourceName;
+  // the tag wears the source's type badge over its name — the same chip
+  // the breadcrumb root and the sidebar row carry, one identity format
+  // everywhere a source is named
+  const src = sources.find((x) => x.name === gridSourceName);
+  sp.replaceChildren(...(src ? [srcIconEl(src.type, src.color)] : []), document.createTextNode(gridSourceName));
   if (gridSourceName) sp.title = `Active data source: ${gridSourceName}`;
   else sp.removeAttribute('title');
   sp.classList.toggle('hidden', !gridSourceName);
@@ -1976,7 +1980,7 @@ function showContextMenu(e, rows) {
     const b = rows[0];
     items.push(['Open', 'Enter', () => nav.to({ kind: 'objects', source: loc.source, bucket: b.key, prefix: '' })]);
     items.push([isFavorite(b.key) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(b.key)]);
-    items.push(['Search in bucket\u2026', '', () => searchWindow({ scopes: searchScopes(), preset: { mode: 's3', source: loc.source || viewSource, bucket: b.key, prefix: '' }, onOpen: gotoSearchHit })]);
+    items.push(['Search in bucket\u2026', '', () => searchWindow({ scopes: searchScopes(), sources, preset: { mode: 's3', source: loc.source || viewSource, bucket: b.key, prefix: '' }, onOpen: gotoSearchHit })]);
     items.push(null);
     items.push(['Copy name', '', () => copyAsText(rows, 'name')]);
     items.push(['Copy path', '', () => copyAsText(rows, 'path')]);
@@ -2076,7 +2080,7 @@ function showContextMenu(e, rows) {
     if (sel && !rows.some((r) => r.isDir) && g?.lockEnabled) items.push(['Object lock\u2026', '', () => lockDialog(loc.bucket, rows, refreshCurrent)]);
     // Search targets a folder: the single selected one (its own subtree), or
     // via the empty-area menu the folder already open. Files never offer it.
-    if (sel === 1 && rows[0].isDir) items.push(['Search in this folder\u2026', 'Ctrl+Shift+F', () => searchWindow({ scopes: searchScopes(), preset: { mode: 's3', source: loc.source || viewSource, bucket: loc.bucket, prefix: rows[0].key }, onOpen: gotoSearchHit })]);
+    if (sel === 1 && rows[0].isDir) items.push(['Search in this folder\u2026', 'Ctrl+Shift+F', () => searchWindow({ scopes: searchScopes(), sources, preset: { mode: 's3', source: loc.source || viewSource, bucket: loc.bucket, prefix: rows[0].key }, onOpen: gotoSearchHit })]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties()]);
   }
   openMenu(e, items);
@@ -2136,7 +2140,7 @@ function showEmptyAreaMenu(e) {
     ['New file\u2026', 'Shift+F4', () => newFile(), !st.canNewFolder],
     null,
     ['Download all\u2026', '', () => downloadSelection(grid.rows), !grid.rows.length],
-    ['Search in this folder\u2026', 'Ctrl+Shift+F', () => searchWindow({ scopes: searchScopes(), preset: { mode: 's3', source: loc.source || viewSource, bucket: loc.bucket, prefix: loc.prefix || '' }, onOpen: gotoSearchHit }), !st.canFind],
+    ['Search in this folder\u2026', 'Ctrl+Shift+F', () => searchWindow({ scopes: searchScopes(), sources, preset: { mode: 's3', source: loc.source || viewSource, bucket: loc.bucket, prefix: loc.prefix || '' }, onOpen: gotoSearchHit }), !st.canFind],
     null,
     ['Refresh', 'F5', () => refreshCurrent()],
     ['Properties', '', () => folderProperties()],
@@ -2258,7 +2262,7 @@ function showTreeMenu(e, node) {
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
       ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && pasteReady())],
       null,
-      ['Search in bucket\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ scopes: searchScopes(), preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: '' }, onOpen: gotoSearchHit })), !st.hasProfile],
+      ['Search in bucket\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ scopes: searchScopes(), sources, preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: '' }, onOpen: gotoSearchHit })), !st.hasProfile],
       ['Admin panel\u2026', '', goThen(() => adminDialog(node.bucket, refreshCurrent)), !st.hasProfile],
       ['Doctor\u2026', '', goThen(() => runDoctor(node.bucket)), !st.hasProfile],
       ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
@@ -2341,7 +2345,7 @@ function showTreeMenu(e, node) {
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
       ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && pasteReady())],
       null,
-      ['Search in bucket\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ scopes: searchScopes(), preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: '' }, onOpen: gotoSearchHit })), !st.hasProfile],
+      ['Search in bucket\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ scopes: searchScopes(), sources, preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: '' }, onOpen: gotoSearchHit })), !st.hasProfile],
       ['Admin panel\u2026', '', goThen(() => adminDialog(node.bucket, refreshCurrent)), !st.hasProfile],
       ['Doctor\u2026', '', goThen(() => runDoctor(node.bucket)), !st.hasProfile],
       ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
@@ -2371,7 +2375,7 @@ function showTreeMenu(e, node) {
     // row behind (and the view inside a deleted prefix).
     ['Delete\u2026', 'Del', async () => { if (await deleteSelection(node.bucket, [node.prefix], node.source)) tree.reloadParentOf(node); }, !st.hasProfile],
     null,
-    ['Search here\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ scopes: searchScopes(), preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: node.prefix }, onOpen: gotoSearchHit })), !st.hasProfile],
+    ['Search here\u2026', 'Ctrl+Shift+F', goThen(() => searchWindow({ scopes: searchScopes(), sources, preset: { mode: 's3', source: node.source, bucket: node.bucket, prefix: node.prefix }, onOpen: gotoSearchHit })), !st.hasProfile],
     ['Properties', '', goThen(() => treeProperties(node)), !st.hasProfile],
   ]);
 }
@@ -4185,10 +4189,10 @@ function searchScopes() {
 function openSearch() {
   if (nav.current?.kind === 'local') {
     // a local view searches itself, exactly as the pane's find does
-    searchWindow({ scopes: [{ mode: 'local', prefix: nav.current.dir || '' }], solo: true, onOpen: gotoSearchHit });
+    searchWindow({ scopes: [{ mode: 'local', prefix: nav.current.dir || '' }], solo: true, sources, onOpen: gotoSearchHit });
     return;
   }
-  searchWindow({ scopes: searchScopes(), onOpen: gotoSearchHit });
+  searchWindow({ scopes: searchScopes(), sources, onOpen: gotoSearchHit });
 }
 
 // paneSearch opens the Search window scoped to the SECONDARY pane alone:
@@ -4213,7 +4217,7 @@ function paneSearch() {
     scope = { mode: 's3', source: nm, bucket, prefix: localPane.dir || '' };
   } else if (b.kind === 'remote') scope = { mode: 'remote', source: nm, prefix: localPane.dir || '/' };
   else scope = { mode: 'local', prefix: localPane.dir || '' };
-  searchWindow({ scopes: [scope], solo: true, onOpen: (r) => localPane.gotoHit(r) });
+  searchWindow({ scopes: [scope], solo: true, sources, onOpen: (r) => localPane.gotoHit(r) });
 }
 
 // ============================ profile file session (M8) ============================

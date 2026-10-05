@@ -9,7 +9,7 @@
 // ceiling clamped), header drag-to-reorder, and the right-click column
 // picker. The rows stay the window's own contract — a plain streaming
 // list, single select, Enter/arrows — untouched.
-import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
+import { el, fmtBytes, fmtDate, fileIcon, srcIconEl } from './util.js';
 import { t, has } from './i18n.js';
 import { COLUMNS, saveColState } from './grid.js';
 
@@ -120,6 +120,10 @@ export function makeSearchGrid(opts = {}) {
   let sortDir = 1;
   let selKey = null;                // the one selected hit (click / arrows)
   const hits = [];                  // streamed results, arrival order
+  // sourceOf resolves a hit's source name to its {type, color} so the
+  // Source column can wear the type badge; the window injects it from the
+  // sources list it opened with (null here = names stay plain text)
+  const sourceOf = opts.sourceOf || null;
 
   const cols = () => [...userCols.map((id) => byId.get(id)), ...(showSource ? [SOURCE_COL] : [])];
   // originOf reads a hit's origin for the Source column and its sort: a
@@ -295,6 +299,16 @@ export function makeSearchGrid(opts = {}) {
   // opens the hit — a stray single click never navigates. Opt-in columns
   // (beyond the window's own default set) wear the same quiet 'extra'
   // hook the main grid's opt-ins carry.
+  // paintSourceCell seats the type badge before the Source column's
+  // origin text — the identity format the breadcrumb roots, the sidebar
+  // rows and the pickers all wear — whenever the name resolves through
+  // the window's sourceOf; an unresolved name keeps its plain text,
+  // honest rather than a wrong badge.
+  function paintSourceCell(cell, r) {
+    const s = r.source && sourceOf ? sourceOf(r.source) : null;
+    if (!s) return;
+    cell.replaceChildren(srcIconEl(s.type, s.color), document.createTextNode(originOf(r)));
+  }
   function rowEl(r) {
     const row = el('div', {
       class: `grid-row${r.key === selKey ? ' sel' : ''}`,
@@ -310,6 +324,7 @@ export function makeSearchGrid(opts = {}) {
       const cell = el('div', { class: `gc${c.num ? ' num' : ''} ${c.id}${extra}` });
       cell.textContent = cellText(c, r);
       if (c.id === 'etag') cell.title = cell.textContent;
+      if (c.id === 'source') paintSourceCell(cell, r);
       row.appendChild(cell);
     }
     row.addEventListener('click', () => {

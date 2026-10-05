@@ -179,3 +179,11 @@ export function srcIconEl(stype, color) {
   if (color) s.style.color = color;
   return s;
 }
+
+// typedSourceLabel is the badge's text twin: a native <option> cannot
+// hold a styled span, so the places that list sources as plain text —
+// the Search window's Sources dropdown, the pane's source picker —
+// speak the same "S3 · name" identity the .src-ic chip paints elsewhere.
+export function typedSourceLabel(stype, label) {
+  return label ? `${srcIcon(stype)} · ${label}` : label;
+}

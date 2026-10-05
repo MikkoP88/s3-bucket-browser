@@ -340,6 +340,18 @@ build stay multi-instance.
 
 ### Changed
 
+- **One source identity everywhere.** Every surface that names a data
+  source wears the same format the breadcrumbs, the sidebar and the
+  pickers already used: the source's type badge beside its name. The
+  Search window's Sources dropdown and the secondary pane's source
+  picker are native option lists, so they carry the badge's text form
+  (`S3 · hetzner`, `SFTP · backup-box` — replacing the old
+  `hetzner (s3)`), typed through each window's own source list so
+  preset and solo scopes speak it too (the native solo popout now
+  loads its source list for exactly that); the Search results' Source
+  column seats the tinted chip before each origin text; and both
+  content bottom bars' source tags carry the badge beside the name. An
+  unresolved name keeps its plain text — never a wrong badge.
 - **Folder rows show their information like files do.** Folders were
   blank in every column but Name, Type and (sometimes) Date created;
   they now follow the same presence-driven contract as files across

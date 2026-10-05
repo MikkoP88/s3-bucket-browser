@@ -226,6 +226,9 @@ svg.flip { transform: scaleX(-1); }
 .ic-arrow, .ic-home { display: inline-flex; line-height: 0; }
 .ic-arrow svg, .ic-home svg { display: block; }
 .crumb .src-ic { margin-right: 5px; }
+/* the bottom bars' source tags and the Search window's Source column seat
+   the badge beside its name too — the same breathing room as the crumb */
+.gs-src .src-ic, .gc.source .src-ic { margin-right: 5px; }
 .filter {
   width: 220px; font: var(--font);
   background: var(--panel-alt); color: var(--text);

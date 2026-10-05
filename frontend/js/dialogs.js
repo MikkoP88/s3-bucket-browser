@@ -1,7 +1,7 @@
 // Modal framework + every dialog: confirmations (L1/L2 ladder), prompts,
 // properties, doctor, profile editor, transfer manager, help sheet.
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename, fileIcon, slashPath } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, parseSizeStr, parseDurStr, basename, fileIcon, slashPath, typedSourceLabel } from './util.js';
 import { t } from './i18n.js';
 import { LICENSE } from './license.js';
 import { makeSearchGrid, applyStoredCols } from './srgrid.js';
@@ -607,16 +607,19 @@ export function renderPopoutView(kind, qs) {
     // the dropdown's source entries load straight from the backend and a
     // failed load still opens the window with All plus the preset. A solo
     // window (the secondary pane's search locked on the opened source, a
-    // local view's own-folder search) skips the source list entirely: its
-    // one scope rides in the query preset, and its picks route to the pane
+    // local view's own-folder search) keeps its one scope from the query
+    // preset, and its picks route to the pane
     const solo = qs.get('solo') === '1';
+    // solo keeps the preset scope, but the source list rides along anyway:
+    // the locked label and the results' Source badges both speak the
+    // source's type, and that lookup needs the list
     const open = (list) => searchWindow({
       scopes: solo ? [] : searchSourceScopes(list),
       preset: searchPresetFromQS(qs),
       solo,
+      sources: list,
     });
-    if (solo) open([]);
-    else api.ListSources().then(open, () => open([]));
+    api.ListSources().then(open, () => open([]));
   }
   else document.body.textContent = `Unknown popout: ${kind}`;
 }
@@ -3740,10 +3743,14 @@ export function editingDialog(onChanged) {
 // handler.
 export function searchWindow(opts = {}) {
   const all = { label: t('search.scopeAll'), scope: { mode: 'all' } };
-  const given = (opts.scopes || []).map((x) => (x.scope ? x : { label: searchScopeLabel(x), scope: x }));
+  // the caller's source list types every label this window builds (main
+  // passes its live sources; a native popout loads its own) — a label
+  // without a lookup stays plain, never guessing a type
+  const srcs = opts.sources || [];
+  const given = (opts.scopes || []).map((x) => (x.scope ? x : { label: searchScopeLabel(x, srcs), scope: x }));
   const scopes = opts.solo ? given : [all, ...given];
   if (opts.preset && !scopes.some((x) => sameScope(x.scope, opts.preset))) {
-    scopes.push({ label: searchScopeLabel(opts.preset), scope: opts.preset });
+    scopes.push({ label: searchScopeLabel(opts.preset, srcs), scope: opts.preset });
   }
   const sel = Math.max(0, scopes.findIndex((x) => sameScope(x.scope, opts.preset)));
   const p = scopes[sel].scope;
@@ -3769,11 +3776,11 @@ export function searchWindow(opts = {}) {
   if (maybeNativePopout({
     id: 'search', query: q, title: t('findTitle'),
     w: 760, h: 600, minW: 520, minH: 460,
-    domOpen: () => searchWindowDom(scopes, sel, opts.onOpen, !!opts.solo),
+    domOpen: () => searchWindowDom(scopes, sel, opts.onOpen, !!opts.solo, srcs),
   })) {
     return { close: () => api.ClosePopout('search') };
   }
-  return searchWindowDom(scopes, sel, opts.onOpen, !!opts.solo);
+  return searchWindowDom(scopes, sel, opts.onOpen, !!opts.solo, srcs);
 }
 
 function sameScope(a, b) {
@@ -3781,27 +3788,38 @@ function sameScope(a, b) {
     && (a.bucket || '') === (b.bucket || '') && (a.prefix || '') === (b.prefix || '');
 }
 
-function searchScopeLabel(s) {
+// every label speaks its source's type — the dropdown is a native
+// <option> list, so typedSourceLabel carries the .src-ic badge's identity
+// into it ("S3 · name/contents") exactly as the chip paints it elsewhere.
+// The type comes from a lookup by name (the s3 family needs no lookup);
+// an unresolved remote — an empty list, a failed load — keeps its plain
+// label rather than wearing a wrong type.
+function searchScopeLabel(s, srcs = []) {
+  const typeOf = (name) => (name ? (srcs.find((x) => x.name === name)?.type || '') : '');
   if (s?.mode === 's3') {
     // same-name collapse as the Source column: a source named after its
     // bucket reads once, so the label never doubles the name
     const bkt = s.bucket && s.bucket !== s.source ? s.bucket : '';
     const c = `${bkt}/${s.prefix || ''}`.replace(/^\/+/, '');
-    return s.source ? slashPath(s.source, c) : c;
+    return typedSourceLabel('s3', s.source ? slashPath(s.source, c) : c);
   }
-  if (s?.mode === 'remote') return slashPath(s.source || '', s.prefix || '/');
-  if (s?.mode === 'local') return s.prefix || 'local';
+  if (s?.mode === 'remote') {
+    const label = slashPath(s.source || '', s.prefix || '/');
+    const ty = typeOf(s.source);
+    return ty ? typedSourceLabel(ty, label) : label;
+  }
+  if (s?.mode === 'local') return typedSourceLabel('local', s.prefix || 'local');
   return t('search.scopeAll');
 }
 
 // searchSourceScopes turns a source list into one pickable scope each: an
 // S3 source searches every bucket it holds, a remote engine walks from
 // its root. The Search window pairs these with the All default — a flat
-// list of names, no group headers, every source one pick away.
+// list of typed names, no group headers, every source one pick away.
 export function searchSourceScopes(list = []) {
   return list.map((s) => (s.type === 's3'
-    ? { label: s.name, scope: { mode: 's3', source: s.name, bucket: '', prefix: '' } }
-    : { label: s.name, scope: { mode: 'remote', source: s.name, prefix: '/' } }));
+    ? { label: typedSourceLabel(s.type, s.name), scope: { mode: 's3', source: s.name, bucket: '', prefix: '' } }
+    : { label: typedSourceLabel(s.type, s.name), scope: { mode: 'remote', source: s.name, prefix: '/' } }));
 }
 
 // applySearchCols lands a Settings column choice for the Search window:
@@ -3816,7 +3834,7 @@ export function applySearchCols(ids) {
 }
 // pane: a secondary-pane-scoped window — its relayed picks carry the
 // pane flag so the main window routes them to the pane, not the main view
-function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
+function searchWindowDom(scopes, selIdx, onOpen, pane = false, srcs = []) {
   // inside a native popout window the main app never booted: picks relay
   // through the backend event bus instead of navigating
   const inWin = document.body.classList.contains('popout-win');
@@ -3864,7 +3882,16 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
   // the results grid — head band, clipping band, list — with every
   // column mechanic the main view has (openHit is a hoisted function
   // declaration, so the factory may take it before its declaration)
-  const rg = makeSearchGrid({ onActivate: (r) => openHit(r) });
+  // the results' Source column wears the source's type badge; sourceOf
+  // resolves each hit's origin through the source list the window opened
+  // with (an empty list keeps the plain names, honest as before)
+  const rg = makeSearchGrid({
+    onActivate: (r) => openHit(r),
+    sourceOf: (name) => {
+      const s = srcs.find((x) => x.name === name || x.id === name);
+      return s ? { type: s.type, color: s.color } : null;
+    },
+  });
   // the latest build is the live one behind applySearchCols: every
   // window open rebuilds here, and a re-seat against a closed window's
   // detached subtree is inert
