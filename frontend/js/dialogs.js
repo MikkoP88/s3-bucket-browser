@@ -3834,8 +3834,11 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false) {
     limit: el('input', { class: 'input', type: 'number', min: '0', value: '0' }),
   };
   // Sources stays a primary control, never folded — WinSCP's Find keeps
-  // its root ("Find in:") beside the file mask, and so does this window
-  const scopeSel = el('select', { class: 'input sr-scope' },
+  // its root ("Find in:") beside the file mask, and so does this window.
+  // A solo window (the pane's find button, a local view's own folder)
+  // locks its one scope outright: the select renders disabled, so the
+  // input itself cannot be changed — not merely one option deep
+  const scopeSel = el('select', { class: 'input sr-scope', disabled: pane ? true : null },
     scopes.map((x, i) => el('option', { value: String(i), selected: i === selIdx }, x.label)));
 
   // ---- results: the app's content-area chrome, worn verbatim ----

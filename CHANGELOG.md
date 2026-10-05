@@ -471,6 +471,13 @@ build stay multi-instance.
 
 ### Fixed
 
+- **The pane Search window kept its Sources dropdown changeable.** A
+  solo window carries exactly one scope, yet the dropdown stayed an
+  enabled, openable input — it reads as if the source could be changed.
+  The Sources select now renders disabled in every solo window (the
+  pane's find button, a local view's own-folder search, native popout
+  and DOM window alike), dimmed with the shared disabled-input style,
+  while the full Search window keeps its changeable list.
 - **The secondary pane Search window opened empty in the OS-native
   popout.** The pane's locked scope rode into the native window's query
   only when it named a bucket — a bucket-less s3 scope (a scoped source

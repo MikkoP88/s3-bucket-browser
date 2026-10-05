@@ -4669,7 +4669,7 @@ await step('search-window', async () => {
   await ok('native solo window: the pane scope survives the query', await sp2.evaluate(() => {
     const sel = document.querySelector('#popout-root .sr-scope');
     return document.body.classList.contains('popout-win')
-      && !!sel && sel.options.length === 1
+      && !!sel && sel.disabled === true && sel.options.length === 1
       && sel.selectedOptions[0].textContent.trim() === 'website-prod/';
   }));
   await sp2.evaluate(() => {
@@ -7143,7 +7143,7 @@ await step('pane-search', async () => {
   await ok('one locked scope: the pane\'s own directory, no All entry', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    return sel.options.length === 1 && labels[0] === 'C:\\Users\\demo'
+    return sel.disabled === true && sel.options.length === 1 && labels[0] === 'C:\\Users\\demo'
       && !labels.some((l) => /all data sources/i.test(l));
   }, S));
   await page.fill(S + ' .sr-name input.input', '*.pdf');
@@ -7750,7 +7750,7 @@ await step('pane-search-names', async () => {
   await ok('one locked scope reading the data source name, never the id', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    return sel.options.length === 1 && labels[0] === 'hetzner-kms/'
+    return sel.disabled === true && sel.options.length === 1 && labels[0] === 'hetzner-kms/'
       && !labels.some((l) => /^src-/.test(l) || /all data sources/i.test(l));
   }, S));
   await page.fill(S + ' .sr-name input.input', 'kms-seed.txt');

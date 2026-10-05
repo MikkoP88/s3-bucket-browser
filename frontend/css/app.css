@@ -658,6 +658,7 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
   border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px;
 }
 .input:focus, .select:focus { outline: 1px solid var(--accent); }
+.input:disabled, .select:disabled { opacity: .6; cursor: default; }
 label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-size: 12px; }
 .mono { font-family: var(--mono); }
 
