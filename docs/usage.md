@@ -324,7 +324,9 @@ directory compare) with S3 and the secondary pane.
   area wearing the app's own content-area chrome: the same column
   header, hairline rows and bottom bar as the main view, framed as a
   content panel by the app's standard hairline border, seated at the
-  form's side inset. **Name**
+  form's side inset. The window rides wider than the app's shared
+  wide tier so the four-column table breathes, and the Source column
+  carries the type badge plus a source/bucket pairing whole. **Name**
   and **Sources** sit side by side, always in view: Name is a
   substring or glob (Enter runs the search from any field),
   Sources is a flat list with no grouping — *All data sources*

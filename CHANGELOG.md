@@ -558,6 +558,16 @@ build stay multi-instance.
   walks every control and default end to end, and Import S3 Credential
   is verified against a real Vault.
 
+- **The Search window reads its columns at a glance.** Both faces of
+  the Search window widened: the floating window rides its own 940px
+  tier (from 860) and the native window opens at a 900×640 default
+  (from 760×600), so the four-column results table breathes; the
+  Source column's default width grew to 180px — wide enough that the
+  type badge plus a source/bucket pairing (toinentesti/testijotain)
+  reads whole instead of clipping mid-word. The shared column widths
+  (Name, Size, Date modified) stay exactly the main view's, so the
+  two surfaces never disagree about a column's shape.
+
 ### Fixed
 
 - **The solo Search window no longer dangles a slash at whole-source

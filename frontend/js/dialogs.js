@@ -3775,7 +3775,7 @@ export function searchWindow(opts = {}) {
   }
   if (maybeNativePopout({
     id: 'search', query: q, title: t('findTitle'),
-    w: 760, h: 600, minW: 520, minH: 460,
+    w: 900, h: 640, minW: 520, minH: 460,
     domOpen: () => searchWindowDom(scopes, sel, opts.onOpen, !!opts.solo, srcs),
   })) {
     return { close: () => api.ClosePopout('search') };

@@ -810,9 +810,10 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
 .popout.wide { width: 720px; }
 /* the Search window rides wider than the shared wide tier — its
    four-column results table breathes (WinSCP's Find dialog is the
-   roomiest of the set); the native window path opens at a matching
-   default */
-.popout[data-pop="search"] { width: 860px; }
+   roomiest of the set), wide enough that the Source column reads a
+   source/bucket pairing whole; the native window path opens at a
+   matching default */
+.popout[data-pop="search"] { width: 940px; }
 /* Auto-height monitoring windows (File transfers, Running tasks): the
    Windows file-transfer footprint — a 490px default width that is also
    the floor (the user may never shrink below it; neither tier ever

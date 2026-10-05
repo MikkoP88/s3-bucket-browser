@@ -4177,8 +4177,8 @@ await step('search-window', async () => {
     && !!document.querySelector('#popout-root .popout[data-pop="search"]')));
   const S = '#popout-root .popout[data-pop="search"]';
   await sleep(250); // let the entrance animation settle before measuring
-  await ok('search rides its own wider 860 tier', evalPage((s) =>
-    Math.abs(document.querySelector(s).getBoundingClientRect().width - 860) <= 1, S));
+  await ok('search rides its own wider 940 tier', evalPage((s) =>
+    Math.abs(document.querySelector(s).getBoundingClientRect().width - 940) <= 1, S));
   await ok('results framed as a content panel at the form\'s side inset', evalPage((s) => {
     const pop = document.querySelector(s);
     const row = pop.querySelector('.sr-row').getBoundingClientRect();
@@ -4275,6 +4275,10 @@ await step('search-window', async () => {
     const cs = getComputedStyle(chips[0]);
     return chips.length === 2 && chips.every((c) => c.textContent === 'S3')
       && cs.borderRadius === '4px' && cs.backgroundColor !== 'rgba(0, 0, 0, 0)';
+  }, S));
+  await ok('the Source column rides wide enough for a source/bucket pairing', evalPage((s) => {
+    const col = document.querySelector(s + ' .gh[data-col="source"]');
+    return !!col && Math.abs(col.getBoundingClientRect().width - 180) <= 1;
   }, S));
   await ok('a click selects the row, a second click moves the selection', evalPage((s) => {
     const rows = document.querySelectorAll(s + ' .sr-list .grid-row');

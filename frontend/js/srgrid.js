@@ -21,8 +21,10 @@ const STORE_KEY = 's3b-cols-sr'; // beside 's3b-cols' / 's3b-cols-local'
 // The search catalog: the app's global column set plus one search-only
 // column. Source is the auto column — it rides runs that span origins and
 // parks last (the far edge of the row); it resizes like any column but
-// never reorders and never lists in the picker.
-const SOURCE_COL = { id: 'source', labelKey: 'col.source', w: 150 };
+// never reorders and never lists in the picker. Its default width fits
+// the type badge plus a source/bucket pairing whole — a clipped origin
+// is unreadable metadata.
+const SOURCE_COL = { id: 'source', labelKey: 'col.source', w: 180 };
 const CATALOG = [...COLUMNS, SOURCE_COL];
 const byId = new Map(CATALOG.map((c) => [c.id, c]));
 
