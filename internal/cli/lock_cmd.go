@@ -66,7 +66,7 @@ func lockRetentionCmd() *cobra.Command {
 				}
 				fmt.Printf("mode:         %s\n", lock.Mode)
 				if lock.RetainUntil != nil {
-					fmt.Printf("retain until: %s\n", lock.RetainUntil.Local().Format(time.RFC3339))
+					fmt.Printf("retain until: %s\n", lock.RetainUntil.Local().Format("2006-01-02 15:04"))
 				}
 				return nil
 			}
@@ -84,7 +84,7 @@ func lockRetentionCmd() *cobra.Command {
 				return printJSON(map[string]any{"retention": mode, "until": when.Format(time.RFC3339)})
 			}
 			col.ok.Printf("retention %s until %s set on s3://%s/%s\n",
-				mode, when.Local().Format(time.RFC3339), bucket, key)
+				mode, when.Local().Format("2006-01-02 15:04"), bucket, key)
 			return nil
 		},
 	}

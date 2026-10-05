@@ -432,7 +432,7 @@ func statObject(cmd *cobra.Command, c *s3client.Client, bucket, key string) erro
 	}
 	mod := ""
 	if st.LastModified != nil {
-		mod = st.LastModified.Local().Format("2006-01-02 15:04:05")
+		mod = st.LastModified.Local().Format("2006-01-02 15:04")
 	}
 	fmt.Printf("key:      %s\n", key)
 	fmt.Printf("bucket:   %s\n", bucket)

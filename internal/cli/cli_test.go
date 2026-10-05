@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
 // Cobra's own invocation failures (unknown command, wrong arg count) are
@@ -125,12 +127,36 @@ func TestHumanSize(t *testing.T) {
 	cases := map[int64]string{
 		512:        "512 B",
 		1024:       "1.0 KB",
+		54158:      "52.9 KB",
+		66560:      "65.0 KB",
 		1048576:    "1.0 MB",
+		227861215:  "217 MB",
 		4718592000: "4.4 GB",
 	}
 	for n, want := range cases {
 		if got := humanSize(n); got != want {
 			t.Errorf("humanSize(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// The typed label is the GUI badge's text twin: whatever the GUI chips
+// spell, the CLI list and connect test must spell the same.
+func TestSourceTypeLabel(t *testing.T) {
+	cases := map[string]string{
+		profile.TypeS3:      "S3",
+		profile.TypeSFTP:    "SFTP",
+		profile.TypeSCP:     "SCP",
+		profile.TypeFTP:     "FTP",
+		profile.TypeFTPS:    "FTPS",
+		profile.TypeWebDAV:  "WebDAV",
+		profile.TypeWebDAVS: "WebDAVS",
+		profile.TypeLocal:   "Local",
+		"mystery":           "Other",
+	}
+	for typ, want := range cases {
+		if got := sourceTypeLabel(typ); got != want {
+			t.Errorf("sourceTypeLabel(%q) = %q, want %q", typ, got, want)
 		}
 	}
 }

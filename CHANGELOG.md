@@ -364,6 +364,18 @@ build stay multi-instance.
 
 ### Changed
 
+- **The CLI speaks the GUI's unified formats.** The terminal read
+  sizes, dates and source identities its own way: byte counts always
+  carried a decimal (217.2 MB where every GUI surface reads 217 MB,
+  rounding whole at a hundred), the stat views, version timelines and
+  retention echoes printed seconds or a raw RFC3339 zone where the GUI
+  reads its unified minute-precision local form, and `source list`
+  spelled a bare name over a raw type where every GUI surface wears
+  the typed identity. All of it now flows through the one scheme —
+  sizes share the GUI's rounding rule, object and retention dates read
+  the GUI's local form (machine JSON keeps its RFC3339 contract), and
+  `source list` and the connect test speak the `S3 · name` typed
+  label.
 - **One source identity everywhere.** Every surface that names a data
   source wears the same format the breadcrumbs, the sidebar and the
   pickers already used: the source's type badge beside its name. The

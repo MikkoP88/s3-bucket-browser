@@ -316,6 +316,29 @@ func sourceAddCmd() *cobra.Command {
 	return cmd
 }
 
+// sourceTypeLabels is the GUI badge's text twin (util.js SRC_TYPE_LABEL):
+// the typed form of a source type, so plain-text surfaces speak the same
+// "S3 · name" identity the tinted chip paints everywhere.
+var sourceTypeLabels = map[string]string{
+	profile.TypeS3:      "S3",
+	profile.TypeSFTP:    "SFTP",
+	profile.TypeSCP:     "SCP",
+	profile.TypeFTP:     "FTP",
+	profile.TypeFTPS:    "FTPS",
+	profile.TypeWebDAV:  "WebDAV",
+	profile.TypeWebDAVS: "WebDAVS",
+	profile.TypeLocal:   "Local",
+}
+
+// sourceTypeLabel returns the typed form of a source type, "Other" for
+// anything the GUI would not badge either.
+func sourceTypeLabel(t string) string {
+	if l, ok := sourceTypeLabels[t]; ok {
+		return l
+	}
+	return "Other"
+}
+
 // sourceDetail is the one-line human summary per source type.
 func sourceDetail(s profile.Source) string {
 	switch s.Type {
@@ -369,7 +392,7 @@ func sourceListCmd() *cobra.Command {
 				return nil
 			}
 			for _, src := range s.SortedSources() {
-				fmt.Printf("  %-20s %-6s %s\n", src.Name, src.Type, sourceDetail(src))
+				fmt.Printf("  %-26s %s\n", sourceTypeLabel(src.Type)+" · "+src.Name, sourceDetail(src))
 			}
 			return nil
 		},
@@ -451,7 +474,7 @@ func sourceTestCmd() *cobra.Command {
 				if flagJSON {
 					return printJSON(map[string]any{"source": src.Name, "ok": true})
 				}
-				col.ok.Printf("OK %s — connected over %s\n", src.Name, src.Type)
+				col.ok.Printf("OK %s — connected over %s\n", src.Name, sourceTypeLabel(src.Type))
 				return nil
 			}
 			p := *src.S3

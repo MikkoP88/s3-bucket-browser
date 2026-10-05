@@ -6,7 +6,6 @@ package cli
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 	"github.com/spf13/cobra"
@@ -75,7 +74,7 @@ func versionsLsCmd() *cobra.Command {
 				}
 				when := ""
 				if v.LastModified != nil {
-					when = v.LastModified.Local().Format(time.DateTime)
+					when = v.LastModified.Local().Format("2006-01-02 15:04")
 				}
 				if v.IsDeleteMarker {
 					col.warn.Printf("%s delete-marker  %s  %s\n", mark, when, v.VersionID)

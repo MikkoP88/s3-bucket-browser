@@ -312,7 +312,9 @@ func printJSON(v any) error {
 	return enc.Encode(v)
 }
 
-// humanSize formats byte counts.
+// humanSize formats byte counts under the GUI's unified rule (util.js
+// fmtBytes): a value under a hundred carries one decimal, at or above
+// a hundred it reads whole units.
 func humanSize(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -323,7 +325,11 @@ func humanSize(n int64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+	v := float64(n) / float64(div)
+	if v >= 100 {
+		return fmt.Sprintf("%.0f %cB", v, "KMGTPE"[exp])
+	}
+	return fmt.Sprintf("%.1f %cB", v, "KMGTPE"[exp])
 }
 
 // parseIntDuration parses "90s", "12h", "7d" style durations.

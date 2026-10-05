@@ -294,7 +294,7 @@ func remoteStat(ctx context.Context, r *remoteRef) error {
 		rprintf("size:     %s (%d bytes)\n", humanSize(e.Size), e.Size)
 	}
 	if e.LastModified != nil {
-		rprintf("modified: %s\n", e.LastModified.Local().Format("2006-01-02 15:04:05"))
+		rprintf("modified: %s\n", e.LastModified.Local().Format("2006-01-02 15:04"))
 	}
 	return nil
 }
