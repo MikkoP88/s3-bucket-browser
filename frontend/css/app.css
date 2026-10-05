@@ -1246,10 +1246,12 @@ kbd {
 /* Bucket guard icons in the tree + vs-current delta (M10.4) */
 .tguard {
   margin-left: 5px; font-size: 11px; cursor: pointer;
-  color: var(--accent); user-select: none;
+  color: var(--accent); user-select: none; padding: 0 2px;
 }
 .tguard.dim { color: var(--text-dim); opacity: .7; }
-.tguard:hover { text-decoration: underline; }
+/* hover is a chip tint, never an underline: the guard is an emoji glyph and
+   an underline strikes through its feet, reading as a rendering artifact */
+.tguard:hover { background: var(--accent-soft); border-radius: 4px; }
 .ver-delta { font-family: var(--mono); font-size: 11px; color: var(--text-dim); white-space: nowrap; }
 
 .verd-meta { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border-soft); border-radius: 6px; overflow: hidden; }

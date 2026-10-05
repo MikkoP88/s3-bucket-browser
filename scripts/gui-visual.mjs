@@ -1660,6 +1660,17 @@ await step('objects-view', async () => {
   // guard state lives as icons after the bucket name in the tree now
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .tguard').length)) > 0, 6000, 'tree guard icons');
   await ok('tree shows versioning icon', (await evalPage(() => Array.from(document.querySelectorAll('#tree .tguard')).map((i) => i.title).join(' '))).toLowerCase().includes('versioning enabled'));
+  // the guards hover as a tinted chip, never an underline — an emoji
+  // glyph with an underline strikes through its own feet and reads as an
+  // artifact rather than an affordance
+  await page.hover('#tree .tguard');
+  await sleep(60);
+  await ok('guard hover tints the chip with no underline', evalPage(() => {
+    const s = getComputedStyle(document.querySelector('#tree .tguard'));
+    return s.textDecorationLine === 'none'
+      && s.backgroundColor !== 'rgba(0, 0, 0, 0)'
+      && s.borderRadius === '4px';
+  }));
   await ok('toolbar upload enabled', evalPage(() => !document.getElementById('btn-upload').disabled));
   await ok('toolbar download disabled without selection', evalPage(() => document.getElementById('btn-download').disabled));
   await shotOf('objects', '#grid-wrap');

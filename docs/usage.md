@@ -139,7 +139,10 @@ directory compare) with S3 and the secondary pane.
   source pickers. Click to navigate; right-click a node for
   Properties, the Admin panel, transfers and more. Folders expand
   lazily; buckets with versioning carry a 🔄 icon,
-  object-lock buckets a 🔒 icon. Drag the sidebar's right edge to
+  object-lock buckets a 🔒 icon — hover one and its meaning surfaces
+  as a soft tinted chip in the row's own color, never an underlined
+  glyph (an underline strikes through an icon's feet and reads as an
+  artifact). Drag the sidebar's right edge to
   resize it (double-click resets).
 - **Data sources filter** — the funnel left of the **+** in the sidebar
   header narrows every data source at once. A plain word matches

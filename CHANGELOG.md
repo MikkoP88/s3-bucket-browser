@@ -513,6 +513,11 @@ build stay multi-instance.
   over the content bar's counts and the secondary pane's info bar; it
   now sits raised clear of both, and a close button dismisses a toast
   on the spot instead of waiting out its timer.
+- **Tree guard icons hover as a tinted chip, never an underline.**
+  The versioning and lock glyphs in the sidebar carried a link
+  underline on hover — an underline strikes through an icon's feet
+  and reads as an artifact; the hover now tints a soft chip in the
+  row's own color instead.
 - **Pane toolbar controls no longer vanish at ordinary window widths
   under the dual-pane split.** The fold tiers for word labels and
   button hiding were calibrated for full-width toolbars, but under
