@@ -111,21 +111,39 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
    menu-covered buttons fold like any toolbar's */
 .gbar { padding: 3px 8px; }
 /* narrow columns trade word labels for glyphs — tooltips carry the full
-   names and every shortcut keeps working */
+   names and every shortcut keeps working. Every toolbar folds on its own
+   measured width, and the tiers are per bar: the global bar spans the
+   whole window, while a content pane's toolbar measures its own column
+   — half the window or less under the dual-pane split — so the pane
+   tiers sit far below the global bar's and pane buttons stay visible at
+   ordinary window widths */
 @container (max-width: 839px) {
-  .tb-word { display: none; }
+  .gbar .tb-word { display: none; }
+}
+@container (max-width: 619px) {
+  #toolbar .tb-word, #local-toolbar .tb-word { display: none; }
 }
 /* next tier: the buttons the menu bar and shortcuts already cover fold
    away (View menu, F1, Ctrl+Shift+F, Shift+F4 all still reach them).
-   #btn-theme/#btn-help now live in the global bar — full width, so they
-   fold only when the window itself is this narrow */
+   #btn-theme/#btn-help live in the global bar — full width, so they
+   fold when the window itself is this narrow; a pane's find and
+   new-file fold only at a truly cramped column, not at the half-window
+   widths the old shared 579px tier ate them at */
 @container (max-width: 579px) {
-  #btn-theme, #btn-help, #btn-find, #btn-newfile,
+  #btn-theme, #btn-help { display: none; }
+}
+@container (max-width: 379px) {
+  #btn-find, #btn-newfile,
   #local-btn-find, #local-btn-newfile { display: none; }
 }
-/* deepest tier: new folder and compare fold — context menus cover both */
+/* deepest tier: new folder and compare fold — context menus cover both.
+   Compare sits in the global bar (window width); a pane's new-folder
+   folds at its column's floor */
 @container (max-width: 419px) {
-  #btn-compare, #btn-newfolder, #local-btn-newfolder { display: none; }
+  #btn-compare { display: none; }
+}
+@container (max-width: 319px) {
+  #btn-newfolder, #local-btn-newfolder { display: none; }
 }
 .tb-btn {
   font: var(--font); color: var(--text);

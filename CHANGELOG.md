@@ -8,6 +8,14 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Home buttons on both pane toolbars.** Each content toolbar now
+  carries a house-glyph Home beside its navigation buttons. On the
+  main side it jumps to the open data source's start view — a
+  bucket-scoped source's contents root, an account-wide source's
+  bucket list, a remote's root — and to the workstation home folder
+  when a local folder owns the main view. On the secondary pane it
+  performs the Dual-pane picker's Home view action: a fresh start on
+  the workstation home folder, from any binding.
 - **Local addresses open the primary pane: the workstation is a
   first-class main view.** Pasting a bare path (`C:\Projects`,
   `\servershare`, `~`) or a `file:///` URL into the main path bar
@@ -483,6 +491,17 @@ build stay multi-instance.
 
 ### Fixed
 
+- **Pane toolbar controls no longer vanish at ordinary window widths
+  under the dual-pane split.** The fold tiers for word labels and
+  button hiding were calibrated for full-width toolbars, but under
+  the split each pane toolbar measures its own column — half the
+  window or less — so a pane's Search, New file and New folder
+  buttons folded away while the window was still comfortably wide.
+  The tiers are per bar now: the global bar (Dual-pane, Compare,
+  theme, help — full window width) keeps its thresholds, while a
+  content pane's words fold at a narrower column and its buttons
+  fold only when the column itself is truly cramped. Every shortcut
+  and menu path keeps working in every tier.
 - **The pane Search window kept its Sources dropdown changeable.** A
   solo window carries exactly one scope, yet the dropdown stayed an
   enabled, openable input — it reads as if the source could be changed.

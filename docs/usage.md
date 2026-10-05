@@ -235,10 +235,15 @@ directory compare) with S3 and the secondary pane.
   **Dual-pane** (F9), **Compare** (it needs both panes by
   definition), the light/dark theme toggle and **?** (the keyboard
   map, F1). Each pane's own toolbar keeps only what acts on that
-  pane — back, forward, refresh, upload, download, new folder, new
-  file, Search — the same set in the same order on both sides, so
-  the main view and the secondary pane stay button-for-button
-  twins of each other below the global bar. The seam between them
+  pane — back, forward, refresh, Home, upload, download, new
+  folder, new file, Search — the same set in the same order on both
+  sides, so the main view and the secondary pane stay
+  button-for-button twins of each other below the global bar.
+  **Home** on the main side returns to the open data source's start
+  view — its bucket list or contents root, a remote's root — and to
+  the workstation home folder when a local folder owns the main
+  view; Home on the secondary pane is the Dual-pane picker's
+  **Home view** — the workstation home folder. The seam between them
   drags to rebalance the pair — a session-only share, so resizing the
   window scales both panes together, every fresh launch opens them
   equally wide, and a double-click on the seam restores the even split.
@@ -363,7 +368,7 @@ directory compare) with S3 and the secondary pane.
 - **Dual pane** — F9 or the **Dual-pane** button on the global bar
   opens an optional secondary pane beside the main view: a full
   twin of the content area — its own toolbar (back, forward,
-  refresh, upload, download, new folder, new file, search),
+  refresh, Home, upload, download, new folder, new file, search),
   interactive breadcrumb, quick filter,
   back/forward history, parent row and status line. Each app run
   opens it on the workstation's home folder (like the old Panes
@@ -400,8 +405,11 @@ directory compare) with S3 and the secondary pane.
   undoes the jump). Escape or a click outside dismisses the picker
   and the pane stays hidden — F9 plain-toggles the pane either way,
   and the pane's × stays a closer. When the columns run narrow each
-  toolbar folds its
-  word labels down to icons on its own, so neither side overflows.
+  toolbar folds on its own measured width — word labels go first
+  (tooltips carry the full names), and the buttons themselves fold
+  away only when that toolbar's own column is truly cramped, so an
+  ordinary window with the split open keeps every button in glyph
+  form on both sides.
 
 ![Dual pane with directory compare](screenshots/dual-pane-compare.png)
 

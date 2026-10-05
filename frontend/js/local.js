@@ -198,6 +198,9 @@ export class SidePane {
     $('local-btn-back').onclick = () => this.back();
     $('local-btn-forward').onclick = () => this.forward();
     $('local-btn-refresh').onclick = () => this.refresh();
+    // Home is the Dual-pane picker's Home view as a toolbar button: the
+    // same fresh start on the workstation home
+    $('local-btn-home').onclick = () => this.goHome();
     // onboarding picker: choosing a source binds the pane and leaves the
     // empty state behind
     $('local-src').onchange = () => this.rebind($('local-src').value);

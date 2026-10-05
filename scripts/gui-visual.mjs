@@ -6656,6 +6656,28 @@ await step('dual-pane', async () => {
     document.getElementById('local-pane').style.flex === ''
     && Math.abs(document.getElementById('main-pane').getBoundingClientRect().width
       - document.getElementById('local-pane').getBoundingClientRect().width) < 4));
+  // the fold tiers measure each toolbar's own column: at a 1120px
+  // window the pane toolbar measures ~420px — the pane keeps every
+  // button in glyph mode (the old shared 579px tier ate find and
+  // new-file here) while its words fold and the full-width global bar
+  // keeps its own
+  await page.setViewportSize({ width: 1120, height: vp0.height });
+  await sleep(200);
+  await ok('a 1120px window keeps every pane button visible (glyph mode)', evalPage(() => {
+    const vis = (id) => {
+      const b = document.getElementById(id);
+      return !!b && b.offsetParent !== null;
+    };
+    return vis('local-btn-find') && vis('local-btn-newfile') && vis('local-btn-newfolder')
+      && vis('local-btn-home') && vis('btn-home') && vis('btn-find');
+  }));
+  await ok('words fold per column: the pane trades words for glyphs, the global bar keeps its own', evalPage(() => {
+    const paneWord = document.querySelector('#local-toolbar .tb-word');
+    const gbarWord = document.querySelector('#gbar .tb-word');
+    return !!paneWord && paneWord.offsetParent === null && !!gbarWord && gbarWord.offsetParent !== null;
+  }));
+  await page.setViewportSize({ width: vp0.width, height: vp0.height });
+  await sleep(200);
   // a fresh run boots the twins even: stage a legacy stored pixel width and
   // the pane-open layout, keep the keys through the shim wipe, and watch the
   // app's own boot drain the width and reopen the pair equal
@@ -6932,6 +6954,66 @@ await step('side-pane-destpop', async () => {
     !document.getElementById('local-pane').classList.contains('hidden')
     && document.getElementById('pane-dest').classList.contains('hidden')
     && document.getElementById('local-empty-picker').classList.contains('hidden')));
+});
+
+await step('home-buttons', async () => {
+  // both pane toolbars carry a Home: the pane's is the Dual-pane
+  // picker's Home view (the workstation home), the main one is the open
+  // source's landing view — and a local main view homes to the
+  // workstation folder
+  if (await evalPage(() => document.getElementById('local-pane').classList.contains('hidden'))) {
+    await evalPage(() => {
+      localStorage.removeItem('s3b-side-src');
+      localStorage.removeItem('s3b-side-loc');
+      document.getElementById('btn-panes').click();
+    });
+    await waitFor(() => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane open');
+  }
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
+  await evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+      .find((r) => r.querySelector('.tname')?.textContent.trim() === 'docs');
+    row?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  });
+  await waitFor(async () => (await sideKeys()).includes('/docs/inventory.csv'), 6000, 'pane inside /docs');
+  await page.click('#local-btn-home');
+  await waitFor(async () => !!(await sideRow('Documents')), 6000, 'pane home relanded');
+  await ok('pane Home lands on the workstation home (the picker Home view), leaving the remote bind', (async () => {
+    // pane-local rows key by full path, remote rows by /-anchored keys —
+    // the shape itself proves the remote bind was left behind
+    const k = await sideKeys();
+    return k.some((x) => x.includes('Documents')) && k.every((x) => !x.startsWith('/'));
+  })());
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+  await dblClickRow('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects view');
+  await dblClickRow('docs');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'inside docs');
+  await page.click('#btn-home');
+  await waitFor(async () => {
+    const k = await rowKeys();
+    return k.includes('team-files') && !k.includes('readme.md');
+  }, 6000, 'main home relanded');
+  await ok('main Home returns to the open source home (account-wide: the bucket list)', evalPage(() =>
+    (document.getElementById('breadcrumb').textContent || '').includes('hetzner')));
+  await evalPage(() => document.querySelector('.navbar').dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit')), 4000, 'path editor');
+  await page.fill('#breadcrumb input.path-edit', 'C:\\Users\\demo\\Documents');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).some((x) => x.endsWith('tax-2025.pdf')), 6000, 'local main view');
+  await page.click('#btn-home');
+  await waitFor(async () => {
+    const k = await rowKeys();
+    return k.some((x) => x.endsWith('Documents')) && k.some((x) => x.endsWith('notes.txt'));
+  }, 6000, 'local home relanded');
+  // the local breadcrumb wears folder-name crumbs — the workstation
+  // home's current crumb is the user folder itself
+  await ok('a local main view homes to the workstation home folder', evalPage(() =>
+    document.querySelector('#breadcrumb .crumb.current')?.textContent === 'demo'));
+  // leave the main view back on a source for successors
+  await clickTree('hetzner');
 });
 
 await step('side-pane-delete-window', async () => {

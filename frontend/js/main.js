@@ -1021,6 +1021,10 @@ async function loadView(loc, { silent = false } = {}) {
       const entries = await api.ListLocal(dir);
       if (seq !== viewSeq) return; // superseded — drop the stale rows
       loc.dir = dir; // home lands as its absolute self in history
+      // ...and in the path bar: the first render above saw the unresolved
+      // '' or '~', so paint the resolved walk now — unless the path editor
+      // owns the bar mid-edit (its own close restores the crumbs)
+      if (!$('breadcrumb').querySelector('input.path-edit')) renderBreadcrumb();
       landed = true;
       setGridSource('');
       currentEntries = entries.map((e) => ({
@@ -4134,6 +4138,15 @@ function wireToolbar() {
   // loading state and bury errors as stale-row toasts. Manual refresh is
   // explicit: show the in-flight state, show errors.
   $('btn-refresh').onclick = () => refreshCurrent();
+  // Home jumps to the current view's home: the open source's landing
+  // view (a scoped source's contents, an account-wide one's bucket
+  // list, a remote's root) — the workstation home when a local folder
+  // owns the main view
+  $('btn-home').onclick = () => {
+    const cur = nav.current;
+    if (cur?.kind === 'local') { nav.to({ kind: 'local', dir: '' }); return; }
+    nav.to(sourceHomeLoc(sources.find((x) => x.name === viewSource)));
+  };
   $('btn-upload').onclick = () => openMenu($('btn-upload'), uploadChoices(uploadFiles, uploadFolder));
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = () => paneDestPop($('btn-panes'));
