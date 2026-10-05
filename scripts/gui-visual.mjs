@@ -4655,6 +4655,42 @@ await step('search-window', async () => {
   await sp.screenshot({ path: 'testartifacts/gui/popout-win-search.png' });
   await sp.close();
 
+  // the pane's locked solo window is its own webview too — and a
+  // bucket-less s3 scope (a scoped source folded to its own name) must
+  // survive the query: the legacy grammar keyed on a non-empty bucket
+  // and dropped it, so the solo window opened with an empty Sources
+  // list and nothing to run
+  const sp2 = await context.newPage();
+  sp2.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await sp2.addInitScript(shim);
+  await sp2.addInitScript(seedSearchWin);
+  await sp2.goto(BASE + '?popout=search&solo=1&mode=s3&source=website-prod');
+  await sp2.waitForSelector('.sr-body', { timeout: 8000 });
+  await ok('native solo window: the pane scope survives the query', await sp2.evaluate(() => {
+    const sel = document.querySelector('#popout-root .sr-scope');
+    return document.body.classList.contains('popout-win')
+      && !!sel && sel.options.length === 1
+      && sel.selectedOptions[0].textContent.trim() === 'website-prod/';
+  }));
+  await sp2.evaluate(() => {
+    const inp = document.querySelector('.sr-name input.input');
+    inp.focus();
+    inp.value = 'index';
+  });
+  await sp2.keyboard.press('Enter');
+  await sp2.waitForFunction(() => Array.from(document.querySelectorAll('.sr-list .grid-row'))
+    .some((r) => r.textContent.includes('index.html')), null, { timeout: 8000 });
+  await ok('native solo window: the locked scope runs its source alone', true);
+  await sp2.evaluate(() => {
+    Array.from(document.querySelectorAll('.sr-list .grid-row'))
+      .find((r) => r.textContent.includes('index.html'))
+      .dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  });
+  await ok('a solo pick relays through SearchGoto with the pane flag', await sp2.evaluate(() =>
+    window.__shim.calls.some((c) => c.m === 'SearchGoto' && c.args[0]
+      && c.args[0].pane === true && String(c.args[0].key).includes('index.html'))));
+  await sp2.close();
+
   // the relay lands in the main window: search:open navigates and selects
   await evalPage(() => window.__shim.emit('search:open', {
     key: 'docs/notes.md', bucket: 'team-files', source: 'hetzner', isDir: false, size: 900,

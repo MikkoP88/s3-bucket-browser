@@ -471,6 +471,17 @@ build stay multi-instance.
 
 ### Fixed
 
+- **The secondary pane Search window opened empty in the OS-native
+  popout.** The pane's locked scope rode into the native window's query
+  only when it named a bucket — a bucket-less s3 scope (a scoped source
+  folded to its own name, an account-wide source at its bucket list)
+  vanished from the query, and a solo window carries no All-sources
+  fallback to catch it: it booted with an empty Sources dropdown and
+  nothing to run. s3 scopes now always mark their family (mode=s3 rides
+  source/bucket/prefix), the popout bootstrap reads it ahead of the
+  legacy bucket-keyed form (old links still parse), and the battery
+  walks a native solo window end to end — one locked option, a run on
+  that source alone, and picks relaying with the pane flag.
 - Search's Source column doubled a source named after its bucket
   (testijotain/testijotain — the credential-import flow's own naming):
   the column and the Search window's scope labels now collapse the

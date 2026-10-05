@@ -566,8 +566,10 @@ function installAutoHeight(id, box, p) {
 // window keeps its geometry remembered — moves fire no DOM event, so a
 // cheap poll supplements beforeunload (which a native destroy may skip).
 // searchPresetFromQS rebuilds the scope a ?popout=search window opened
-// with (searchWindow wrote it into the query).
+// with (searchWindow wrote it into the query). mode=s3 names the
+// bucket-less s3 scopes the legacy bucket-keyed form cannot — both read.
 const searchPresetFromQS = (qs) => {
+  if (qs.get('mode') === 's3') return { mode: 's3', source: qs.get('source') || '', bucket: qs.get('bucket') || '', prefix: qs.get('prefix') || '' };
   if (qs.get('bucket')) return { mode: 's3', source: qs.get('source') || '', bucket: qs.get('bucket'), prefix: qs.get('prefix') || '' };
   if (qs.get('source')) return { mode: 'remote', source: qs.get('source'), prefix: qs.get('prefix') || '/' };
   if (qs.get('mode') === 'local') return { mode: 'local', prefix: qs.get('prefix') || '' };
@@ -3747,9 +3749,15 @@ export function searchWindow(opts = {}) {
   const p = scopes[sel].scope;
   let q = 'popout=search';
   if (opts.solo) q += '&solo=1';
-  if (p.mode === 's3' && p.bucket) {
+  // an s3 scope always marks its family: mode=s3 keeps the scope in the
+  // query even when the bucket is empty (a scoped source folded to its
+  // own name, an account-wide source at its bucket list) — the legacy
+  // grammar keyed on a non-empty bucket and dropped those scopes
+  // entirely, so a solo native window opened with nothing to run
+  if (p.mode === 's3') {
+    q += '&mode=s3';
     if (p.source) q += `&source=${encodeURIComponent(p.source)}`;
-    q += `&bucket=${encodeURIComponent(p.bucket)}`;
+    if (p.bucket) q += `&bucket=${encodeURIComponent(p.bucket)}`;
     if (p.prefix) q += `&prefix=${encodeURIComponent(p.prefix)}`;
   } else if (p.mode === 'remote' && p.source) {
     q += `&source=${encodeURIComponent(p.source)}`;
