@@ -347,9 +347,11 @@ directory compare) with S3 and the secondary pane.
   The secondary pane's own **Search** button opens the same window
   auto-selected on the pane's current location: one locked scope in the
   dropdown — the opened data source by NAME plus its path (a bucket, a
-  remote folder, a workstation directory), no *All data sources* and
-  nothing else to pick, the Sources input itself disabled so the scope
-  cannot be changed — and a pick lands on the pane and selects the
+  remote folder, a workstation directory; at the source's own root the
+  label is its typed name alone, no dangling slash), no *All data
+  sources* and nothing else to pick, the Sources input itself disabled
+  so the scope cannot be changed — and a pick lands on the pane and
+  selects the
   row. A source named after its bucket (the credential import's own
   naming) reads once in the Source column and the scope labels — never
   doubled.

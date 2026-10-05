@@ -226,10 +226,17 @@ async function step(name, fn) {
           .filter((r) => r._model).map((r) => r._model.key).slice(0, 10),
         sel: document.querySelectorAll('#grid-body .grid-row.sel').length,
         mq: document.getElementById('marquee')?.className || '',
+        pane: document.getElementById('local-pane')?.classList.contains('hidden')
+          ? 'hidden'
+          : Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+            .filter((r) => r._model).slice(0, 10)
+            .map((r) => r._model.key + (r.style.display === 'none' ? ' [hidden]' : '')
+              + (r.classList.contains('sel') ? ' [sel]' : '')),
       }));
       console.log(`  ui: crumb="${ui.crumb}" head="${ui.head}" sel=${ui.sel} marquee=[${ui.mq}]`);
       console.log(`  tree: ${ui.tree.join(' | ')}`);
       console.log(`  rows: ${ui.rows.join(' | ')}`);
+      console.log(`  pane: ${Array.isArray(ui.pane) ? ui.pane.join(' | ') : ui.pane}`);
     } catch { /* page may be gone */ }
     try { await shot(`ERROR-${name.replace(/[^a-z0-9-]+/gi, '-')}`); } catch { /* page may be gone */ }
   }
@@ -4716,7 +4723,7 @@ await step('search-window', async () => {
     const sel = document.querySelector('#popout-root .sr-scope');
     return document.body.classList.contains('popout-win')
       && !!sel && sel.disabled === true && sel.options.length === 1
-      && sel.selectedOptions[0].textContent.trim() === 'S3 · website-prod/';
+      && sel.selectedOptions[0].textContent.trim() === 'S3 · website-prod';
   }));
   await sp2.evaluate(() => {
     const inp = document.querySelector('.sr-name input.input');
@@ -7895,7 +7902,7 @@ await step('pane-search-names', async () => {
   await ok('one locked scope reading the data source name, never the id', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    return sel.disabled === true && sel.options.length === 1 && labels[0] === 'S3 · hetzner-kms/'
+    return sel.disabled === true && sel.options.length === 1 && labels[0] === 'S3 · hetzner-kms'
       && !labels.some((l) => /^src-/.test(l) || /all data sources/i.test(l));
   }, S));
   await page.fill(S + ' .sr-name input.input', 'kms-seed.txt');
@@ -7913,6 +7920,19 @@ await step('pane-search-names', async () => {
   await ok('the Source column reads the same-named source once here too', evalPage((s) => {
     const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((c) => c.textContent.trim());
     return cells.length >= 1 && cells.every((c) => c === 'S3hetzner-kms');
+  }, S));
+  await closePopout('search');
+  // a remote-root scope reads the same clean label: the source alone,
+  // the typed badge form, and no dangling slash where contents would sit
+  await evalPage(() => { window.__s3bSidePane.rebind('src-box'); });
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane bound to backup-box');
+  await page.click('#local-btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'pane search window again');
+  await sleep(250);
+  await ok('a remote root scope reads the typed name with no trailing slash', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    return sel.disabled === true && sel.options.length === 1
+      && sel.selectedOptions[0].textContent.trim() === 'SFTP · backup-box';
   }, S));
   await closePopout('search');
   await evalPage(() => {

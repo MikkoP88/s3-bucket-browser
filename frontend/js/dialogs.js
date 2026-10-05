@@ -3801,10 +3801,17 @@ function searchScopeLabel(s, srcs = []) {
     // bucket reads once, so the label never doubles the name
     const bkt = s.bucket && s.bucket !== s.source ? s.bucket : '';
     const c = `${bkt}/${s.prefix || ''}`.replace(/^\/+/, '');
-    return typedSourceLabel('s3', s.source ? slashPath(s.source, c) : c);
+    // the whole source is the bare name: with no contents beneath it the
+    // label ends where the name does, never a dangling slash after the
+    // source ("S3 · website-prod", not "S3 · website-prod/") — a
+    // scope with real contents keeps its path ("S3 · hetzner/team-files/docs/")
+    return typedSourceLabel('s3', s.source ? (c ? slashPath(s.source, c) : s.source) : c);
   }
   if (s?.mode === 'remote') {
-    const label = slashPath(s.source || '', s.prefix || '/');
+    // the same no-dangling-slash rule: a remote at its root is the source
+    // alone, a deeper one carries its path after the name
+    const p = s.prefix && s.prefix !== '/' ? s.prefix : '';
+    const label = s.source ? (p ? slashPath(s.source, p) : s.source) : slashPath(s.source || '', p);
     const ty = typeOf(s.source);
     return ty ? typedSourceLabel(ty, label) : label;
   }
