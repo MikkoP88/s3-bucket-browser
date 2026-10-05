@@ -3622,6 +3622,27 @@ await step('sources-in-tree', async () => {
       return !!c && !!l && l.left - c.right >= 4 && l.left - c.right <= 8;
     });
   }));
+  // the stop itself is measured, not a fixed constant: the widest chip
+  // present plus its 2px cushion is the whole column — a fixed
+  // WebDAVS-sized 62px would park ~30px of dead air left of every
+  // S3/SFTP chip — and every source name keeps the one shared stop
+  await ok('type column measured to its widest chip, names share one stop', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
+    if (rows.length < 3) return false;
+    let widest = 0;
+    for (const r of rows) {
+      const chip = r.querySelector('.ticon .src-ic');
+      if (!chip) return false;
+      widest = Math.max(widest, chip.getBoundingClientRect().width);
+    }
+    const stops = new Set();
+    for (const r of rows) {
+      const col = r.querySelector('.ticon').getBoundingClientRect().width;
+      if (col < widest - 1 || col > widest + 4.5) return false;
+      stops.add(Math.round(r.querySelector('.tlabel').getBoundingClientRect().left));
+    }
+    return stops.size === 1;
+  }));
   await shotOf('sources-tree', '#tree');
 });
 

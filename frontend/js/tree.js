@@ -524,7 +524,24 @@ export class Tree {
       for (const r of roots) this.container.appendChild(this.renderNode(r));
       this.visibleCount = this.container.querySelectorAll('.tnode').length;
     }
+    this.fitTypeColumn();
     this.onRender?.();
+  }
+
+  // fitTypeColumn seats the shared type column on the widest chip the
+  // rendered sources actually wear: a fixed stop sized for the longest
+  // label (WebDAVS) parks a hole left of every S3/SFTP chip. Measured
+  // instead, each list hugs its own widest badge — names keep one stop,
+  // chips keep their 6px air to the name (the +2 is the column's
+  // padding-right, so the widest chip exactly fills its box) and the
+  // folder/bucket emojis keep centering in the same width.
+  fitTypeColumn() {
+    let w = 0;
+    for (const c of this.container.querySelectorAll('.ticon .src-ic')) {
+      const cw = c.getBoundingClientRect().width;
+      if (cw > w) w = cw;
+    }
+    this.container.style.setProperty('--ticon-w', w ? `${Math.ceil(w) + 2}px` : '');
   }
 
   // guardIcons builds the versioning / object-lock indicators shown after a

@@ -436,6 +436,18 @@ build stay multi-instance.
 
 ### Fixed
 
+- The Data sources list carried a WebDAVS-sized hole at its left: the
+  source-type chips sat right-aligned in a fixed 62px type column, so a
+  list of S3 / SFTP sources parked ~30px of dead air left of every
+  chip. The column is now measured — the tree seats it on the widest
+  chip the list actually carries (plus the chip's 2px cushion) — so
+  chips keep hugging the source name at the column's right edge,
+  folder and bucket glyphs keep centering, and every name keeps the
+  one shared stop; the sidebar's whole stack (header, filter strip,
+  favorites head, no-match note, footer) now sits on the same 8px left
+  rail as the rows (battery-asserted: the column equals its widest
+  chip, names share one stop).
+
 - The tree's source-type chips hugged the type column's left edge,
   leaving a band of dead air between the type (S3, SFTP, WebDAVS, ...)
   and the source name beside it. Chips now right-align inside the fixed

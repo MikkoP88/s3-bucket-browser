@@ -229,7 +229,7 @@ svg.flip { transform: scaleX(-1); }
   display: flex; flex-direction: column;
 }
 .sidebar-head {
-  padding: 6px 10px; font-weight: 600; font-size: 12px;
+  padding: 6px 8px; font-weight: 600; font-size: 12px;
   color: var(--text-dim); letter-spacing: .02em;
   display: flex; align-items: center; justify-content: space-between;
 }
@@ -249,7 +249,7 @@ svg.flip { transform: scaleX(-1); }
 .side-filter.on { color: var(--accent); border-color: var(--accent); }
 
 /* Tree filter: the funnel's pattern strip under the sidebar head */
-.tree-filter { padding: 7px 10px 8px; border-bottom: 1px solid var(--border); }
+.tree-filter { padding: 7px 8px 8px; border-bottom: 1px solid var(--border); }
 .tree-filter .input { font-size: 12px; padding: 4px 8px; }
 
 /* Side footer: the Data Sources area's own status line — the grid-status
@@ -258,7 +258,7 @@ svg.flip { transform: scaleX(-1); }
    walk's scanning line with its Stop control. */
 .side-foot {
   display: flex; gap: 8px; align-items: center; justify-content: space-between;
-  padding: 3px 10px; border-top: 1px solid var(--border); min-height: 22px;
+  padding: 3px 8px; border-top: 1px solid var(--border); min-height: 22px;
   font-size: 12px; color: var(--text-dim);
 }
 .sf-count { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -271,7 +271,7 @@ svg.flip { transform: scaleX(-1); }
 /* Dimmed pass-through rows and the filter's no-match note (whose action
    opts into the deep walk — the only place that search is offered) */
 .tnode.dim .tlabel { opacity: .55; }
-.tree-empty-note { padding: 10px 12px; color: var(--text-dim); font-style: italic; }
+.tree-empty-note { padding: 10px 8px; color: var(--text-dim); font-style: italic; }
 .tree-note-act {
   display: block; margin-top: 6px; font-style: normal; font-size: 11px;
   border: 1px solid var(--border); background: transparent; color: var(--text-dim);
@@ -283,7 +283,7 @@ svg.flip { transform: scaleX(-1); }
 /* Favorites section (M5): pinned buckets above the tree */
 .fav-section { border-bottom: 1px solid var(--border); padding-bottom: 4px; }
 .fav-head {
-  padding: 6px 10px 2px; font-weight: 600; font-size: 12px;
+  padding: 6px 8px 2px; font-weight: 600; font-size: 12px;
   color: var(--text-dim); letter-spacing: .02em;
 }
 .fav-row {
@@ -304,11 +304,14 @@ svg.flip { transform: scaleX(-1); }
 .tnode.drop-target { background: var(--accent-soft); outline: 1px dashed var(--accent); }
 .tnode .twist { width: 14px; text-align: center; color: var(--text-dim); flex: none; font-size: 9px; }
 /* the type column: the source chip (S3, SFTP, WebDAVS, …) needs more
-   room than a glyph, and one fixed width keeps every row's badge on
-   the same stop — chips hug the label at the column's right edge, so
-   no dead air opens between the type and the name, while folder and
-   bucket emojis keep centering in it */
-.tnode .ticon { flex: none; width: 62px; display: flex; align-items: center; justify-content: center; }
+   room than a glyph, and one stop keeps every row's badge on the same
+   edge — but the stop is measured, not fixed: tree.js seats --ticon-w
+   on the widest chip the list actually carries (the 2px cushion is the
+   source rows' padding-right), so an S3-only sidebar wears no
+   WebDAVS-sized hole at the left while names still share one stop;
+   chips hug the label at the column's right edge, folder and bucket
+   emojis keep centering in the same measured width */
+.tnode .ticon { flex: none; width: var(--ticon-w, 26px); display: flex; align-items: center; justify-content: center; }
 .tnode[data-tkind="source"] .ticon { justify-content: flex-end; padding-right: 2px; white-space: nowrap; }
 .tnode .tlabel { overflow: hidden; text-overflow: ellipsis; }
 
