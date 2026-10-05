@@ -60,6 +60,29 @@ func (a *App) CopySelectionVersions(srcSource, srcBucket string, keys []string, 
 	}
 	dstPrefix = dirPrefix(dstPrefix)
 
+	// The cycle guard's versioned twin: within one bucket, an exact key
+	// landing on itself would write its copied timeline onto its own key
+	// and a move then purge every version of it — copies included — and a
+	// folder beneath itself only nests its own copy inside itself. Both
+	// refused before a single version moves (sameS3Store sees through two
+	// names over one endpoint).
+	if sSrc, ok1 := a.s3StoreOf(srcSource); ok1 {
+		if sDst, ok2 := a.s3StoreOf(dstSource); ok2 && sameS3Store(sSrc, sDst) && srcBucket == dstBucket {
+			for _, k := range keys {
+				landing := joinKeyNoSlash(dstPrefix, path.Base(strings.TrimSuffix(k, "/")))
+				if !strings.HasSuffix(k, "/") {
+					if landing == k {
+						return "", fmt.Errorf("source and destination are the same: %s", k)
+					}
+					continue
+				}
+				if trimmed := strings.TrimSuffix(k, "/"); landing == trimmed || strings.HasPrefix(landing+"/", k) {
+					return "", fmt.Errorf("%s: a folder cannot be moved or copied into itself", trimmed)
+				}
+			}
+		}
+	}
+
 	items := make([]vcopyItem, 0, len(keys))
 	total, markers := 0, 0
 	var totalBytes int64

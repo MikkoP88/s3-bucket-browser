@@ -10,7 +10,10 @@
 // move = copy then delete, and a source item is only deleted when every
 // one of its files verifiably transferred: a skipped file (conflict
 // policy "skip") is NOT a success — the source keeps it, so no data is
-// ever destroyed by a policy that declined to overwrite.
+// ever destroyed by a policy that declined to overwrite. And before any
+// of that runs, the cycle guard refuses a destination that lives inside
+// the item's own source — a move beneath itself would delete the fresh
+// copies with the originals, so the whole family never starts.
 package api
 
 import (
@@ -142,6 +145,9 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 	}
 	if len(items) == 0 && len(localPaths) == 0 {
 		return "", fmt.Errorf("nothing to transfer")
+	}
+	if err := a.xferCycleRefusal(items, localPaths, dest, dst); err != nil {
+		return "", err
 	}
 	pctx, cancel := a.quickCtx()
 	plan, err := a.planXfer(pctx, items, localPaths, dst)
@@ -317,6 +323,108 @@ func leafName(p string) string {
 		return trimmed[i+1:]
 	}
 	return trimmed
+}
+
+// xferCycleRefusal is the transfer engine's last line of defense against
+// a destination inside the item's own source. Copying a folder beneath
+// itself and then (on a move) deleting the sources takes the fresh copies
+// with them — nothing would survive — and a file dropped onto its own
+// folder lands on its own key, which a move then deletes. The frontend
+// refuses both shapes, but the engine re-verifies for every caller (pane
+// drops, paste, the battery, anything yet unwritten): the whole family is
+// rejected before a single byte transfers. Cross-store pairings can never
+// nest and pass untouched.
+func (a *App) xferCycleRefusal(items []XferItem, localPaths []string, dest XferDest, dst xferDestSide) error {
+	switch dst.kind {
+	case "s3":
+		dstStore, haveDst := a.s3StoreOf(dest.Source)
+		if !haveDst {
+			return nil // resolveXferDest already refused unmapped destinations
+		}
+		for _, it := range items {
+			if it.Bucket == "" || it.Bucket != dst.bucket {
+				continue
+			}
+			itStore, ok := a.s3StoreOf(it.Source) // "" = view source, as the planner resolves it
+			if !ok || !sameS3Store(itStore, dstStore) {
+				continue // different store: the copy can never land inside its source
+			}
+			landing := joinKeyNoSlash(dst.dir, leafName(it.Key))
+			if !it.IsDir && !strings.HasSuffix(it.Key, "/") {
+				if landing == it.Key {
+					return fmt.Errorf("source and destination are the same: %s", it.Key)
+				}
+				continue
+			}
+			if root := dirPrefix(it.Key); landing == strings.TrimSuffix(root, "/") || strings.HasPrefix(landing+"/", root) {
+				return fmt.Errorf("%s: a folder cannot be moved or copied into itself", strings.TrimSuffix(it.Key, "/"))
+			}
+		}
+	case "remote":
+		for _, it := range items {
+			if it.Source == "" {
+				continue // the S3 view source, never a remote engine item
+			}
+			src, err := a.sourceByIDOrName(it.Source)
+			if err != nil || src.Type == profile.TypeS3 || src.ID != dst.lockID {
+				continue
+			}
+			landing := "/" + path.Join(strings.TrimPrefix(dst.dir, "/"), leafName(it.Key))
+			root := remotefs.CleanPath(it.Key)
+			if !it.IsDir && !strings.HasSuffix(it.Key, "/") {
+				if landing == root {
+					return fmt.Errorf("source and destination are the same: %s", root)
+				}
+				continue
+			}
+			if landing == root || strings.HasPrefix(landing+"/", root+"/") {
+				return fmt.Errorf("%s: a folder cannot be moved or copied into itself", root)
+			}
+		}
+	default: // local destination: only local-pane sources can nest inside it
+		for _, lp := range localPaths {
+			landing := filepath.Join(dst.dir, filepath.Base(lp))
+			st, serr := os.Stat(lp)
+			isDir := serr == nil && st.IsDir()
+			if !isDir {
+				if strings.EqualFold(landing, lp) {
+					return fmt.Errorf("source and destination are the same: %s", lp)
+				}
+				continue
+			}
+			if p, c := filepath.Clean(lp), filepath.Clean(landing); strings.EqualFold(p, c) ||
+				strings.HasPrefix(strings.ToLower(c), strings.ToLower(p)+string(filepath.Separator)) {
+				return fmt.Errorf("%s: a folder cannot be moved or copied into itself", lp)
+			}
+		}
+	}
+	return nil
+}
+
+// s3StoreOf resolves the source record an S3 client dial would use for
+// name ("" = the view source, as client() resolves it). sameS3Store over
+// two resolutions is the same-store test — however the caller spelled it
+// (name, ID, or the view-source default).
+func (a *App) s3StoreOf(name string) (profile.Source, bool) {
+	if name == "" {
+		name = a.currentViewSource()
+	}
+	if cSrc, ok := a.containerS3Source(name); ok {
+		return cSrc, true
+	}
+	sSrc, ok := a.sessionS3Source(name)
+	return sSrc, ok
+}
+
+// sameS3Store reports whether two resolved S3 source records address one
+// logical store: the same record, or two names over the same endpoint
+// (the bucket is compared by the caller — an alias of the account still
+// hosts the same data, so a cycle through it is refused like any other).
+func sameS3Store(a, b profile.Source) bool {
+	if a.ID != "" && a.ID == b.ID {
+		return true
+	}
+	return a.S3 != nil && b.S3 != nil && a.S3.Endpoint != "" && a.S3.Endpoint == b.S3.Endpoint
 }
 
 // planXfer expands every item into file copies (plus empty dirs and move

@@ -398,6 +398,19 @@ func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, k
 			name = renameName // F2 folder rename: land at the NEW name
 		}
 		newPrefix := transfer.JoinKey(dstPrefix, name)
+		// The cycle guard's server-side twin: within one bucket, a folder
+		// landing on its own spot or beneath itself would be copied and
+		// then — on a move — deleted together with its sources, copies
+		// included. Refused as a per-item error like the same-key file
+		// case above; a rename never trips it (it lands at its parent).
+		if bucket == dstBucket && strings.HasPrefix(newPrefix, src) {
+			if newPrefix == src {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: source and destination are the same", strings.TrimSuffix(src, "/")))
+			} else {
+				res.Errors = append(res.Errors, fmt.Sprintf("%s: a folder cannot be moved or copied into itself", strings.TrimSuffix(src, "/")))
+			}
+			continue
+		}
 		g := copyGroup{src: src, marker: newPrefix}
 		err := listing.Walk(ctx, c.S3, bucket, src, func(o s3types.Object) error {
 			key := aws.ToString(o.Key)

@@ -198,6 +198,24 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **L2 execution: Empty bucket destroys EVERY version, keeps the bucket** | **S3 (MinIO)** | scratch bucket seeded with nested objects, extra old versions and delete markers: typing the bucket's own name arms the Empty-bucket window and executes — nothing lists anywhere afterwards (recursive listing empty, version statistics zero, sampled timelines empty) yet the bucket survives and still takes writes | — | ✅ GUI-33 | Win 11 x64 |
 | **Delete Window keepcurrent mode: history destroyed, current version survives** | **S3 (MinIO)** | three CLI-seeded versions behind a Delete Window switched to "keep current": the typed-word gate arms, execution leaves exactly ONE version (the current bytes, no delete marker) — the timeline is gone, the file is not | — | ✅ GUI-37 | Win 11 x64 |
 
+### Engine guards — refused before a byte moves (Go test layer)
+
+The full sweep of every data-affecting action — deletes, edits, task
+cancellation, migration, Dual-pane transfers and actions, settings
+honors, security, across every source type and both faces — closed
+one structural gap at the engine level and verified the rest
+already-gated. These guards are pinned by `go test` against the real
+transfer and copy engines: the GUI battery's backend is a JS mock, so
+a shim-side refusal would test the shim, not the engine (the
+batteries still walk the GUI faces; this layer proves the engine
+beneath them refuses).
+
+| Guard | Engines covered | Tested refusal | Pinned by |
+|---|---|---|---|
+| **Copy/move into its own subtree refused** | every face: the cross-source transfer engine (S3, remote and local legs), the GUI selection paste, versioned copies, and the CLI's s3-to-s3, remote and --versions copy paths | a transfer whose destination sits inside the source's own subtree fails with a cycle error before any byte moves — object-into-its-own-prefix, folder-into-itself and prefix-overlap shapes on every source family | ✅ Go test: pkg/api/xfer_cycle_test.go, internal/cli/copy_cycle_test.go |
+| **`rb --dry-run` answers the removal inventory** | CLI bucket removal | `--dry-run` reports the exact removal plan as JSON and the plain gate line saying removal needs `--force`, while deleting nothing — live objects and bytes on a plain bucket, the whole history (versions, delete markers, their bytes) on a configured one; the force path itself stays behind the L2 empty-bucket gate (GUI-33) | ✅ Go test: internal/cli/rb_dryrun_test.go |
+| Verified sound — no change needed | deletes (rm force ladder, the Delete Window family, Empty bucket, marker windows), edits, task cancellation, versioned migration, Dual-pane transfers and actions, settings honors, secrets at rest and never printed | each surface walked in the sweep and found already gated or already verified by the live rows in these tables — this inventory stands as the sweep's record | the rows above |
+
 ### Versions — the safety ladder
 
 | Action | Data source | Tested scenario | CLI | GUI | OS |

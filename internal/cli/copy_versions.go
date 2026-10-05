@@ -52,8 +52,13 @@ func copyS3Versions(ctx context.Context, srcC, dstC *s3client.Client, su, du s3U
 	if exact && su.Bucket == du.Bucket && dstKey(su.Key) == su.Key {
 		return 0, usageErr("source and destination are the same object")
 	}
-	if !exact && su.Bucket == du.Bucket && srcPrefix == dirPrefix(du) {
-		return 0, usageErr("source and destination are the same prefix")
+	// Cycle guard, folder shape: a destination inside the source prefixes
+	// the copy beneath itself — pointless nested output at best — and the
+	// same-bucket equal case above reads as "the same prefix". Refused
+	// like every other copy engine refuses it.
+	if !exact && su.Bucket == du.Bucket && (dirPrefix(du) == srcPrefix || strings.HasPrefix(dirPrefix(du), srcPrefix)) {
+		return 0, usageErr("destination s3://%s/%s is inside the source — a folder cannot be copied or moved into itself",
+			du.Bucket, du.Key)
 	}
 
 	plan, err := versioning.PlanVersionedCopy(ctx, srcC.S3, su.Bucket, srcPrefix, exact)

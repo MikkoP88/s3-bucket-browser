@@ -614,11 +614,38 @@ func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string
 	}
 
 	if dstRef != nil {
+		sameEngine := srcRef != nil && srcRef.src.ID == dstRef.src.ID
+		// Cycle guard: on one engine, a destination inside the source (or
+		// the source itself, or a file's own folder) copies the tree
+		// beneath itself and a move then removes the sources — fresh
+		// copies included. Refused before anything moves.
+		if sameEngine {
+			dirForm := func(p string) string {
+				if p == "/" {
+					return "/" // the source root contains everything
+				}
+				return strings.TrimSuffix(p, "/") + "/"
+			}
+			srcDir, dstDir := dirForm(srcRef.path), dirForm(dstRef.path)
+			if srcIsDir {
+				if strings.HasPrefix(dstDir, srcDir) {
+					return 0, usageErr("%s: destination is inside the source — a folder cannot be copied or moved into itself",
+						uri(dstRef.src.Name, dstRef.path))
+				}
+			} else {
+				// a single file: the landing path (destination + its own
+				// name) is the only loss shape — onto its own folder or
+				// the exact same path
+				landing := "/" + path.Join(strings.Trim(dstRef.path, "/"), path.Base(srcRef.path))
+				if landing == strings.TrimSuffix(srcRef.path, "/") {
+					return 0, usageErr("source and destination are the same: %s", srcRef.path)
+				}
+			}
+		}
 		target, folderMode, err := remoteDstTarget(ctx, dstRef, dst, files, srcIsDir)
 		if err != nil {
 			return 0, err
 		}
-		sameEngine := srcRef != nil && srcRef.src.ID == dstRef.src.ID
 		n := 0
 		for _, f := range files {
 			dstPath := target

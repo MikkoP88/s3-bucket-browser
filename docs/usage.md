@@ -736,6 +736,7 @@ s3b doctor s3://my-bucket
 s3b versions ls s3://b/docs/report.pdf      # timeline, newest first
 s3b versions undo s3://b/docs/report.pdf --version-id MARKER
 s3b versions purge s3://b --mode noncurrent --dry-run
+s3b rb s3://old-bucket --dry-run            # the removal plan, nothing deleted
 s3b rb s3://old-bucket --force              # empties versioned buckets too
 ```
 

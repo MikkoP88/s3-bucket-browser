@@ -382,6 +382,14 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 
 	if su.IsPrefix || opts.Recursive {
 		prefix := dirPrefix(su)
+		// Cycle guard: within one bucket, a destination inside the source
+		// (or the source itself) copies the tree beneath itself and a move
+		// then deletes the sources — fresh copies included. Refused before
+		// anything transfers.
+		if su.Bucket == du.Bucket && (dirPrefix(du) == prefix || strings.HasPrefix(dirPrefix(du), prefix)) {
+			return 0, usageErr("destination s3://%s/%s is inside the source — a folder cannot be copied or moved into itself",
+				du.Bucket, du.Key)
+		}
 		count := 0
 		var keys []string
 		err = listing.Walk(ctx, c.S3, su.Bucket, prefix, func(o s3types.Object) error {
@@ -414,12 +422,15 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 		return count, nil
 	}
 
-	if su.Bucket == du.Bucket && su.Key == du.Key {
-		return 0, usageErr("source and destination are the same object")
-	}
 	dstKey := du.Key
 	if du.IsPrefix || !du.HasPrefix {
 		dstKey = joinKeyNoSlash(du.Key, path.Base(su.Key))
+	}
+	// The same-key refusal on the COMPUTED destination: the file onto its
+	// own folder (s3://b/docs/f.txt → s3://b/docs/) joins back to the same
+	// key — a move would copy it onto itself and then delete it.
+	if su.Bucket == du.Bucket && su.Key == dstKey {
+		return 0, usageErr("source and destination are the same object")
 	}
 	copied, err := copyOne(su.Key, dstKey)
 	if err != nil {

@@ -31,6 +31,27 @@ follow [Semantic Versioning](https://semver.org/).
   walk engines gain the source-scoped twins the pane and Search
   need (SourceS3Usage, SourceBucketUsage), pinned in
   pkg/api/usage_test.go.
+- **Engine guards: no transfer may feed itself, and bucket removal
+  answers a dry run.** A full sweep of every action that can affect
+  data — deletes, edits, task cancellation, migration, Dual-pane
+  transfers, settings honors, security — across every source type and
+  both faces found one structural gap and closed it at the engine
+  level: a copy or move whose destination sits inside its own source
+  subtree (a folder pasted into itself, a bucket copied into its own
+  prefix) is refused with a cycle error before a byte moves, on every
+  face and every family — the cross-source transfer engine (S3,
+  remote and local legs), the GUI selection paste, versioned copies,
+  and the CLI's s3-to-s3, remote and --versions copy paths. The
+  destructive rb gains --dry-run: the removal preview mirrors the
+  removal path itself — live objects and bytes on a plain bucket, the
+  whole history (versions, delete markers, their bytes) once versioning
+  is configured — plus the gate line that says removal needs --force,
+  and nothing is deleted. Everything else
+  the sweep walked was verified already-gated (the rm force ladder,
+  the Delete Window family, cancellations, the migration paths) and
+  is recorded in VERIFICATION.md; the new guards are pinned by Go
+  tests against the real engines — the GUI battery's backend is a JS
+  mock, so a shim-side refusal would test the shim, not the engine.
 - **Home buttons on both pane toolbars.** Each content toolbar now
   carries a house-glyph Home beside its navigation buttons. On the
   main side it jumps to the open data source's start view — a

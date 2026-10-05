@@ -5,9 +5,12 @@ import (
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/bucketops"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +52,7 @@ func mbCmd() *cobra.Command {
 }
 
 func rbCmd() *cobra.Command {
-	var force bool
+	var force, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "rb s3://bucket",
 		Short: "Remove a bucket (must be empty, or pass --force)",
@@ -65,6 +68,63 @@ func rbCmd() *cobra.Command {
 			}
 			if u.HasPrefix {
 				return usageErr("rb takes a bucket, not a key: s3://%s", u.Bucket)
+			}
+			// --dry-run is the count-then-act preview every other
+			// destructive command has: what a forced removal would delete,
+			// walked and totaled, before anything happens. The preview
+			// mirrors the removal path itself (DeleteBucket's own branch):
+			// a bucket with configured versioning and any history loses
+			// the whole history — versions and delete markers both, their
+			// bytes summed — while a plain one loses only the live objects.
+			if dryRun {
+				if vs, verr := versioning.Status(cmd.Context(), c.S3, u.Bucket); verr == nil && vs != "" {
+					var versions, markers, vbytes int64
+					werr := versioning.WalkVersions(cmd.Context(), c.S3, u.Bucket, "", func(v versioning.Version) error {
+						if v.IsDeleteMarker {
+							markers++
+						} else {
+							versions++
+							vbytes += v.Size
+						}
+						return nil
+					})
+					if werr != nil {
+						return opErr(werr)
+					}
+					if versions+markers > 0 {
+						if flagJSON {
+							return printJSON(map[string]any{"dryRun": true, "bucket": u.Bucket,
+								"versions": versions, "markers": markers, "bytes": vbytes})
+						}
+						col.warn.Printf("would delete %d object version(s) (%d delete marker(s), %s) and remove bucket s3://%s\n",
+							versions, markers, humanSize(vbytes), u.Bucket)
+						if !force {
+							rprintf("bucket is not empty — removal would need --force\n")
+						}
+						return nil
+					}
+					// configured but empty history: deletes like a plain one
+				}
+				var objects, bytes int64
+				err := listing.Walk(cmd.Context(), c.S3, u.Bucket, "", func(o s3types.Object) error {
+					if strings.HasSuffix(aws.ToString(o.Key), "/") {
+						return nil // folder markers are not content
+					}
+					objects++
+					bytes += aws.ToInt64(o.Size)
+					return nil
+				})
+				if err != nil {
+					return opErr(err)
+				}
+				if flagJSON {
+					return printJSON(map[string]any{"dryRun": true, "bucket": u.Bucket, "objects": objects, "bytes": bytes})
+				}
+				col.warn.Printf("would delete %d object(s) (%s) and remove bucket s3://%s\n", objects, humanSize(bytes), u.Bucket)
+				if objects > 0 && !force {
+					rprintf("bucket is not empty — removal would need --force\n")
+				}
+				return nil
 			}
 			res, err := bucketops.DeleteBucket(cmd.Context(), c.S3, u.Bucket, force)
 			if err != nil {
@@ -83,6 +143,7 @@ func rbCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "empty the bucket before removing it (L2 destructive)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what a forced removal would delete, do nothing")
 	return cmd
 }
 
