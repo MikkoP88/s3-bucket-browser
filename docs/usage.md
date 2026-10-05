@@ -175,6 +175,11 @@ directory compare) with S3 and the secondary pane.
   instead of a generic error; and when the connection comes back on
   its own, the strip clears, the view refreshes itself and a toast
   says so. The strip's × hides it until recovery.
+- **Toasts** — confirmations, completions and errors land as brief
+  toasts stacked in the window's bottom corner, raised clear of the
+  content bar and the secondary pane's info bar so they never smother
+  the counts under them, and each carries a ✕ to dismiss it on the
+  spot instead of waiting out its timer.
 - **Grid** — Windows-Explorer selection: click, Ctrl+click, Shift+click,
   Ctrl+A (all), Ctrl+I (invert), marquee drag-select, type-to-jump. The
   funnel row under the header filters per column; right-click the header

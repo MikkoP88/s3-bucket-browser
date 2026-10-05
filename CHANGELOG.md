@@ -508,6 +508,11 @@ build stay multi-instance.
   when that scope was the source's own root the label read
   SFTP · backup-box/ — a trailing slash with nothing behind it. The
   root scope now reads the typed name alone.
+- **Toasts ride above the bars they used to smother, and each carries
+  its own ✕.** The toast stack parked at the window's bottom edge,
+  over the content bar's counts and the secondary pane's info bar; it
+  now sits raised clear of both, and a close button dismisses a toast
+  on the spot instead of waiting out its timer.
 - **Pane toolbar controls no longer vanish at ordinary window widths
   under the dual-pane split.** The fold tiers for word labels and
   button hiding were calibrated for full-width toolbars, but under

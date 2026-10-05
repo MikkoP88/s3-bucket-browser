@@ -6716,6 +6716,40 @@ await step('dual-pane', async () => {
       - document.getElementById('local-pane').getBoundingClientRect().width) < 4));
 });
 
+await step('toast-popup', async () => {
+  // a toast parks in the corner the pane's info bar occupies: the stack
+  // rides clear above that band, and the toast carries its own close X so
+  // it can be dismissed on the spot — never only by its timer
+  await evalPage(() => { window.__s3bSidePane.show({ drive: false }); window.__s3bSidePane.rebind('src-box'); });
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane bound for toasts');
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'pane path editor for toast');
+  await page.fill('#local-crumb input.path-edit', 'nope://void');
+  await page.keyboard.press('Enter');
+  await waitFor(() => evalPage(() => !!document.querySelector('#toasts .toast.error')), 4000, 'error toast shows');
+  await ok('the toast carries a close button beside its message', evalPage(() => {
+    const t = document.querySelector('#toasts .toast.error');
+    const x = t?.querySelector('button.toast-x');
+    return !!x && x.getAttribute('aria-label') === 'Close'
+      && (t.querySelector('.toast-msg')?.textContent || '').includes('nope://void');
+  }));
+  await shot('toast-popup');
+  await ok('the toast stack rides clear of the pane info bar', evalPage(() => {
+    const ts = document.getElementById('toasts').getBoundingClientRect();
+    const bar = document.getElementById('local-grid-status').getBoundingClientRect();
+    return bar.height > 0 && ts.bottom <= bar.top + 0.5;
+  }));
+  // the X dismisses instantly, long before the 7s error timer
+  await evalPage(() => document.querySelector('#toasts .toast-x').click());
+  await sleep(60);
+  await ok('the close X dismisses the toast at once', evalPage(() =>
+    document.getElementById('toasts').children.length === 0));
+  await page.keyboard.press('Escape');
+  await waitFor(async () => evalPage(() => !document.querySelector('#local-crumb input.path-edit')), 4000, 'editor closed after toast');
+});
+
 await step('side-pane-editpath', async () => {
   // the pane's path bar is the main pane's twin: clicking the navbar's
   // empty area swaps the crumb for the inline path editor holding the

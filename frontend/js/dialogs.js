@@ -4313,9 +4313,18 @@ function lockDialogOne(bucket, row, onChanged) {
 // ---------- toasts ----------
 export function toast(message, type = '') {
   const box = document.getElementById('toasts');
-  const t = el('div', { class: `toast ${type}`, text: message });
+  // the message rides its own span so a close X can sit beside it: the
+  // toast corner floats over the pane's bottom info bar, and a toast
+  // must be dismissible on the spot — never only by its timer
+  const kill = () => { clearTimeout(timer); t.remove(); };
+  const t = el('div', { class: `toast ${type}` },
+    el('span', { class: 'toast-msg', text: message }),
+    el('button', {
+      class: 'toast-x', type: 'button', 'aria-label': 'Close', title: 'Close', text: '✕',
+      onclick: (e) => { e.stopPropagation(); kill(); },
+    }));
+  const timer = setTimeout(kill, type === 'error' ? 7000 : 3500);
   box.appendChild(t);
-  setTimeout(() => t.remove(), type === 'error' ? 7000 : 3500);
 }
 
 // ---------- browse-style directory picker (any source) ----------
