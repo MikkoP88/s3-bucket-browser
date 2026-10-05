@@ -231,7 +231,10 @@ directory compare) with S3 and the secondary pane.
   pane — back, forward, refresh, upload, download, new folder, new
   file, Search — the same set in the same order on both sides, so
   the main view and the secondary pane stay button-for-button
-  twins of each other below the global bar.
+  twins of each other below the global bar. The seam between them
+  drags to rebalance the pair — a session-only share, so resizing the
+  window scales both panes together, every fresh launch opens them
+  equally wide, and a double-click on the seam restores the even split.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and it becomes an editable line holding the view's
   normalized path, `Name/bucket/folder/` — the same `Name/contents`

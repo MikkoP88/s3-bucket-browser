@@ -1016,9 +1016,10 @@ kbd {
 }
 
 /* ================= Secondary pane (dual-pane, F9) ================= */
-/* The twin column: an even 50/50 flex partner of the main pane (no saved
-   drag width = the twin default); the splitter's drag (main.js) swaps the
-   basis for a fixed pixel width, persisted as s3b-pane-w. */
+/* The twin column: an even 50/50 flex partner of the main pane — the boot
+   default and the double-click reset; the splitter's drag (main.js) swaps
+   the basis for a session-only percentage share of the row, so window
+   resizes scale both panes together (no width is ever persisted). */
 .local-pane {
   flex: 1 1 50%; min-width: 300px;
   display: flex; flex-direction: column;

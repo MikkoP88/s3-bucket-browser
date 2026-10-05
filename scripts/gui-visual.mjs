@@ -6503,8 +6503,14 @@ await step('dual-pane', async () => {
   const after = (await sideKeys()).join('|');
   await ok('home rows after the reopen, not the pre-close folder', after.includes('Documents')
     && !after.includes('invoice.pdf') && !after.includes('spec.docx'));
-  // the seam: drag resizes the pane and persists; a double-click resets
-  const w0 = await evalPage(() => document.getElementById('local-pane').getBoundingClientRect().width);
+  // the seam: drag seats a session-only share of the row — window resizes
+  // scale both panes together with the ratio kept, nothing persists, a
+  // fresh run always boots the even twins, and a double-click resets them
+  const paneW = () => evalPage(() => ({
+    m: document.getElementById('main-pane').getBoundingClientRect().width,
+    p: document.getElementById('local-pane').getBoundingClientRect().width,
+  }));
+  const w0 = await paneW();
   const sp = await elOrNull(() => document.getElementById('pane-split'));
   const sb = await sp.asElement().boundingBox();
   await page.mouse.move(sb.x + sb.width / 2, sb.y + 300);
@@ -6512,15 +6518,51 @@ await step('dual-pane', async () => {
   await page.mouse.move(sb.x - 150, sb.y + 300, { steps: 8 });
   await page.mouse.up();
   await sleep(150);
-  const w1 = await evalPage(() => document.getElementById('local-pane').getBoundingClientRect().width);
+  const w1 = await paneW();
   // the seam tracks the pointer: traveling left hands the pane the space
   // (the pane is the right column)
-  await ok('dragging the seam resizes the pane', w1 > w0 + 80);
-  await ok('the pane width persists', evalPage(() => parseInt(localStorage.getItem('s3b-pane-w') || '0', 10) > 300));
+  await ok('dragging the seam resizes the pane', w1.p > w0.p + 80);
+  await ok('the drag seats a share, not a stored width', evalPage(() =>
+    localStorage.getItem('s3b-pane-w') === null
+    && /%$/.test(document.getElementById('local-pane').style.flex)));
+  // a window resize scales both panes together: the share is seated against
+  // the row's width, so the pane's width tracks the viewport's ratio — the
+  // seam keeps its proportion instead of pinning one pane's pixels
+  const vp0 = page.viewportSize();
+  await page.setViewportSize({ width: vp0.width + 320, height: vp0.height });
+  await sleep(200);
+  const w2 = await paneW();
+  await ok('widening the window grows both panes, ratio kept', w2.p > w1.p + 100
+    && w2.m > w1.m + 100
+    && Math.abs((w2.p / w1.p) - ((vp0.width + 320) / vp0.width)) < 0.02);
+  await page.setViewportSize({ width: vp0.width - 200, height: vp0.height });
+  await sleep(200);
+  const w3 = await paneW();
+  await ok('narrowing the window shrinks the pane on the same ratio', w3.p < w1.p - 80
+    && Math.abs((w3.p / w1.p) - ((vp0.width - 200) / vp0.width)) < 0.02);
+  await page.setViewportSize({ width: vp0.width, height: vp0.height });
+  await sleep(200);
   await sp.asElement().dblclick();
   await sleep(150);
   await ok('double-click resets the pane to even halves', evalPage(() =>
-    localStorage.getItem('s3b-pane-w') === null
+    document.getElementById('local-pane').style.flex === ''
+    && Math.abs(document.getElementById('main-pane').getBoundingClientRect().width
+      - document.getElementById('local-pane').getBoundingClientRect().width) < 4));
+  // a fresh run boots the twins even: stage a legacy stored pixel width and
+  // the pane-open layout, keep the keys through the shim wipe, and watch the
+  // app's own boot drain the width and reopen the pair equal
+  await evalPage(() => {
+    localStorage.setItem('s3b-pane-w', '900');
+    localStorage.setItem('s3b-panes', '1');
+    localStorage.setItem('s3b-shim-keep', '1');
+  });
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction(() => window.__shim !== undefined
+    && document.querySelectorAll('#menubar .mb-title').length > 0, null, { timeout: 10000 });
+  await sleep(300);
+  await ok('a fresh run with panes open boots the twins equal, legacy width drained', evalPage(() =>
+    !document.getElementById('local-pane').classList.contains('hidden')
+    && localStorage.getItem('s3b-pane-w') === null
     && Math.abs(document.getElementById('main-pane').getBoundingClientRect().width
       - document.getElementById('local-pane').getBoundingClientRect().width) < 4));
 });

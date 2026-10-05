@@ -332,6 +332,15 @@ build stay multi-instance.
 
 ### Changed
 
+- **Dual-pane resizing keeps its balance: the seam seats a share, not
+  pixels.** Dragging the splitter still rebalances the pair (the 300px
+  floor and the 60% ceiling stay), but the seat is now a percentage
+  share of the pane row that lives for the session only — resizing the
+  app window scales both panes together with the seam keeping its
+  proportion, instead of handing every added pixel to one side. Nothing
+  is persisted anymore: every fresh launch opens the panes equally wide
+  (a legacy stored width is drained once at boot), and a double-click
+  on the seam still restores the even 50/50 twins.
 - **Settings COLUMNS orders by drag: grab a row, drop it in place.**
   The column manager's list rows are now draggable — the live insertion
   slot marks as an inset accent bar on the target row's top or bottom

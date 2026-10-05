@@ -607,18 +607,25 @@ function initSidebarResize() {
 }
 
 // initPaneResize wires the splitter between the two content panes: drag to
-// resize (300px..60% of the window), persisted in localStorage — the same
-// pointer-capture drag as the sidebar's, so the feel is identical. No saved
-// width = the even 50/50 twin split (flex-basis auto); double-click clears
-// the saved width and returns to it.
+// rebalance the pair, the same pointer-capture drag as the sidebar's, so the
+// feel is identical. The seat is a percentage share of the pane row, not a
+// pixel width: any window resize scales both panes together with the seam
+// keeping its proportion (the CSS min-widths still guard the floor). The
+// share lives for the session only — nothing is persisted, so every fresh
+// launch boots the even 50/50 twins, panes open or not, and any legacy
+// stored pixel width is drained once here. Double-click returns the even
+// split.
 function initPaneResize() {
   const split = $('pane-split');
   const pane = $('local-pane');
   if (!split || !pane) return;
+  localStorage.removeItem('s3b-pane-w'); // legacy pixel seat: gone for good
   const clamp = (w) => Math.min(Math.max(300, w), Math.ceil(window.innerWidth * 0.6));
-  const apply = (w) => { pane.style.flex = '0 0 ' + w + 'px'; };
-  const saved = parseInt(localStorage.getItem('s3b-pane-w') || '', 10);
-  if (saved >= 300) apply(clamp(saved));
+  const apply = (w) => {
+    const row = pane.parentElement.clientWidth || 1;
+    const share = Math.min(Math.max(w / row, 0.1), 0.9);
+    pane.style.flex = '0 0 ' + (share * 100).toFixed(3) + '%';
+  };
   split.addEventListener('pointerdown', (e) => {
     if (!localPane.visible || e.button !== 0) return;
     e.preventDefault();
@@ -633,7 +640,6 @@ function initPaneResize() {
     const onMove = (ev) => {
       const w = clamp(rect.right - (ev.clientX - grabOff));
       apply(w);
-      localStorage.setItem('s3b-pane-w', String(w));
     };
     const stop = () => {
       document.body.classList.remove('col-resizing');
@@ -650,10 +656,7 @@ function initPaneResize() {
   split.addEventListener('lostpointercapture', () => {
     document.body.classList.remove('col-resizing');
   });
-  split.addEventListener('dblclick', () => {
-    localStorage.removeItem('s3b-pane-w');
-    pane.style.flex = '';
-  });
+  split.addEventListener('dblclick', () => { pane.style.flex = ''; });
 }
 
 // renderSidebarHead: the sidebar header is a static "Data sources" label
