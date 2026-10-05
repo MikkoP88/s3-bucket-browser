@@ -801,17 +801,24 @@ async function cliS3() {
     await writeFile(path.join(deep, 'leaf.txt'), 'deep leaf\n');
     let r = await cli(['cp', '-r', ND, `${B}/verify-names/`], { timeout: 120000 });
     need(r.code === 0, `cp -r hostile names: ${r.out}${r.err}`);
-    // remote-only keys Windows cannot host locally — the URI path must carry
-    // them verbatim (execFile passes args without a shell, so no quoting loss)
+    // remote-only keys Windows cannot host locally — the URI path must
+    // carry them verbatim (execFile passes args without a shell, so no
+    // quoting loss). Provider gap, recorded honestly (the SSE/CORS
+    // refusal class): the native MinIO binary (scripts/start-minio.sh)
+    // refuses the double-quote key outright — 400 XMinioInvalidObjectName
+    // "Object name contains unsupported characters" — while the
+    // apostrophe (the other quote shape) still round-trips
     const nasty = ['say "hi".txt', "it's an apostrophe.txt"];
+    const refused = [];
     for (const n of nasty) {
       r = await cli(['cp', path.join(FIX, 'data', 'root-1.txt'), `${B}/verify-names/${n}`]);
+      if (r.code !== 0 && /XMinioInvalidObjectName|unsupported characters/i.test(`${r.out}${r.err}`)) { refused.push(n); continue; }
       need(r.code === 0, `cp nasty ${n}: ${r.out}${r.err}`);
       r = await cli(['stat', `${B}/verify-names/${n}`]);
       need(/size:/.test(r.out), `stat nasty ${n}: ${r.out}${r.err}`);
     }
     const l = await cli(['ls', `${B}/verify-names/`, '--recursive']);
-    for (const n of [...Object.keys(legal), ...nasty]) need(l.out.includes(n), `ls lost exact name: ${n}`);
+    for (const n of [...Object.keys(legal), ...nasty.filter((x) => !refused.includes(x))]) need(l.out.includes(n), `ls lost exact name: ${n}`);
     need(l.out.includes('leaf.txt'), 'deep leaf not listed');
     // byte round-trip of the Windows-legal set
     for (const [n, c] of Object.entries(legal)) {
@@ -839,7 +846,7 @@ async function cliS3() {
     need(res.ok, `presign fetch of %2F name: HTTP ${res.status}: ${body.replace(/\s+/g, ' ').slice(0, 240)}`);
     need(body === 'percent hazard\n', 'presigned %2F name delivered wrong bytes');
     await cli(['rm', '-r', `${B}/verify-names/`, '--force']);
-    return `${Object.keys(legal).length + nasty.length + 1} hostile keys exact-listed; legal set byte-identical; %2F presigned clean`;
+    return `${Object.keys(legal).length + (nasty.length - refused.length) + 1} hostile keys exact-listed; legal set byte-identical; %2F presigned clean${refused.length ? `; provider refused [${refused.join(', ')}] — recorded gap` : ''}`;
   });
 
   await verify({ id: 'CLI-S3-32', area: 'transfers', action: 'Concurrency: parallel workload + same-key race', ds: 'S3 (MinIO)', scenario: '5 CLI processes at once (3 uploads, 1 download, 1 listing) all succeed byte-exact; two simultaneous writes to ONE key serialize into clean versions — never a torn object', face: 'CLI' }, async () => {
@@ -1973,10 +1980,24 @@ async function cliResilience() {
     await cli(['cp', keep, `s3://${BUCKET}/${KEEP}`, '--profile', 'verifys3']);
     const count = async () => (await cli(['ls', `s3://${BUCKET}/${PFX}`, '--recursive', '--profile', 'verifys3'], { timeout: 120000 })).out.split('\n').filter((x) => /f-\d{4}\.txt/.test(x)).length; // ls prints keys relative to the listed prefix
     need((await count()) === N, 'the seed did not land whole');
-    await fmode({ mode: 'latency', delayMs: 600 });
+    // 1200ms/chunk (not 600): under full-battery load the 600ms spacing
+    // squeezed the mid-loop window to a knife edge the poller could
+    // step over (solo repros passed on both the beta.21 and gate
+    // binaries — the mechanics are sound, the window was too thin)
+    await fmode({ mode: 'latency', delayMs: 1200 });
     const child = spawn(CLI_EXE, ['rm', '-r', `s3://${BUCKET}/${PFX}`, '--force', '--profile', 'verifyfault'], { cwd: ROOT, windowsHide: true, stdio: 'ignore', env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' } });
+    // the mid-loop sighting rides CHEAP single-key stats, never the full
+    // recursive count: a full count is slow enough that rm finished
+    // inside one poll and the partial sighting arrived after the exit.
+    // Listing pages are lexicographic, so f-0000 dies in the first
+    // 1000-key batch and f-2199 survives until the last — head gone +
+    // tail alive + child running is the honest mid-loop probe
+    const gone = async (k) => (await cli(['stat', `s3://${BUCKET}/${PFX}${k}`, '--profile', 'verifys3'], { timeout: 60000 })).code !== 0;
     let seen = 0;
-    for (let i = 0; i < 400 && !seen; i++) { const c = await count(); if (c > 0 && c < N) seen = c; else await sleep(250); }
+    for (let i = 0; i < 400 && !seen; i++) {
+      if (await gone('f-0000.txt') && !(await gone('f-2199.txt')) && child.exitCode === null) seen = 1;
+      else await sleep(200);
+    }
     need(seen > 0, 'the first delete batch never landed — nothing to kill the wire against');
     need(child.exitCode === null, 'rm finished before the wire died — not a mid-loop probe');
     // the wire dies NOW: every live connection resets and every new one dies
@@ -2920,9 +2941,38 @@ async function guiBattery() {
       await waitFor(dualOpen, 5000, 'dual pane');
     }
   };
+  // the pane's path bar swapped its modal prompt for the INLINE editor
+  // (the c1e4b62 rework): clicking the navbar's empty area opens
+  // input.path-edit in place of the crumb — the same gesture a user
+  // makes — and the address lands through the same parsePaneAddress
+  // ladder the old prompt used. answerPrompt waits for a modal that no
+  // longer exists, so the drive is fill + Enter on the inline field
+  // itself (the gui-visual gesture)
+  const paneGoto = async (line) => {
+    // the editor closes on blur and dies to any crumb re-render
+    // (folder-size backfill fires at random) — one fill attempt can
+    // race a vanished node, so the open+fill+Enter gesture retries
+    let lastErr = null;
+    for (let att = 0; att < 3; att++) {
+      await evalPage(() => {
+        if (!document.querySelector('#local-crumb input.path-edit'))
+          document.querySelector('#local-pane .navbar').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        const f = document.querySelector('#local-crumb input.path-edit');
+        if (f) { f.focus(); f.select(); }
+        return !!f;
+      });
+      try {
+        await page.waitForSelector('#local-crumb input.path-edit', { state: 'visible', timeout: 3000 });
+        await page.fill('#local-crumb input.path-edit', line, { timeout: 3000 });
+        await page.keyboard.press('Enter');
+        await sleep(200);
+        return;
+      } catch (e) { lastErr = e; }
+    }
+    need(false, `paneGoto(${line}) — the inline editor would not stay put (re-render race x3): ${lastErr}`);
+  };
   const localDir = async (dir, expect) => {
-    await page.locator('#local-crumb').click();
-    await answerPrompt(dir);
+    await paneGoto(dir);
     await waitFor(async () => (await sideKeys()).includes(expect), 10000, `local side shows ${expect}`);
   };
   const cliVerCount = async (key) => {
@@ -2954,8 +3004,7 @@ async function guiBattery() {
       return (await rowKeys()).some((k) => k.includes('verify-renamed.txt'));
     }, 15000, 'download source row');
     await ensureDualPane();
-    await page.locator('#local-crumb').click();
-    await answerPrompt(dst);
+    await paneGoto(dst);
     await waitFor(async () => (await sideKeys()).length === 0, 8000, 'empty local dst');
     await dnd(await rowAction('verify-renamed.txt'), await sideBodyH());
     await startIfAsked(8000);
@@ -3086,8 +3135,14 @@ async function guiBattery() {
     need(await dualOpen(), 'dual pane not open');
     await navCertGui();
     await filterTo('gui-cancel');
-    let keys = await visKeys();
-    need(keys.length >= 1 && keys.every((k) => k.toLowerCase().includes('gui-cancel')), `filter narrow: ${JSON.stringify(keys)}`);
+    // folder-size backfill re-renders rows after entry (sizes fill in
+    // across every view now), so the narrow is a POLL, never a one-shot
+    // read — runs 2/3 read the grid mid-re-render and saw []
+    let keys = [];
+    await waitFor(async () => {
+      keys = await visKeys();
+      return keys.length >= 1 && keys.every((k) => k.toLowerCase().includes('gui-cancel'));
+    }, 8000, 'filter narrow');
     await clearFilter();
     await waitFor(async () => (await visKeys()).some((k) => !k.toLowerCase().includes('gui-cancel')), 5000, 'filter cleared');
     keys = await visKeys();
@@ -4265,7 +4320,7 @@ async function guiBattery() {
     await ctxItem(re);
     await sleep(300);
   };
-  await verify({ id: 'GUI-42', area: 'objects', action: 'Copy As: exact text shapes for name / path / S3 URI (single + multi)', ds: 'S3 (MinIO)', scenario: 'a clipboard spy on the bridge binding captures exactly what the app sends: single row → the bare name, bucket/key, s3://bucket/key; Ctrl+A multi-select → newline-joined names — the exact strings an editor, a ticket and a terminal receive', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-42', area: 'objects', action: 'Copy As: exact text shapes for name / path / URL (single + multi)', ds: 'S3 (MinIO)', scenario: 'a clipboard spy on the bridge binding captures exactly what the app sends: single row → the bare name, the scoped Name/contents path, the presigned URL; Ctrl+A multi-select → newline-joined names — the exact strings an editor, a ticket and a terminal receive', face: 'GUI' }, async () => {
     const P = `s3://${BUCKET}/verify-gui/gui-copy`;
     await s3(['mkdir', `${P}/`]);
     for (const n of ['a.txt', 'b.txt', 'c.txt']) await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `${P}/${n}`]);
@@ -4335,6 +4390,22 @@ async function guiBattery() {
       await ctxItem(re);
       await sleep(300);
     };
+    // the URL branch is backend-built (api.SourceObjectUrls presigns,
+    // so the query is unguessable) — anchor on the shape the terminal
+    // receives instead of exact args: one http URL carrying the bucket
+    // and key in its path
+    const clipArgsWhere = async (pred, what) => {
+      for (let i = 0; i < 10; i++) {
+        const seen = await evalPage(() => window.__wireSpy
+          .map((r) => { try { return JSON.parse(r.body); } catch { return null; } })
+          .filter((c) => c && c.args && String(c.args.methodName || '').includes('ClipboardSetText'))
+          .map((c) => (Array.isArray(c.args) ? c.args : c.args.args)));
+        if (seen.some((a) => pred(a))) return;
+        await sleep(300);
+      }
+      const dump = await evalPage(() => window.__wireSpy.slice(-15));
+      need(false, `${what}: no ClipboardSetText call matched — recent wire: ${JSON.stringify(dump.map((r) => ({ u: r.url.slice(0, 70), b: r.body.slice(0, 160) })))}`);
+    };
     try {
       await clickRow('a.txt');
       await rightClickRow('a.txt');
@@ -4342,10 +4413,15 @@ async function guiBattery() {
       await clipArgs('a.txt', 'copy name');
       await rightClickRow('a.txt');
       await copyViaMenu(/copy path/i);
-      await clipArgs(`${BUCKET}/verify-gui/gui-copy/a.txt`, 'copy path');
+      // the scoped source folds its bucket into the name: Name/contents —
+      // never Name/bucket/contents (the source IS one bucket)
+      await clipArgs(`${SRCNAME}/verify-gui/gui-copy/a.txt`, 'copy path');
       await rightClickRow('a.txt');
-      await copyViaMenu(/copy s3 uri/i);
-      await clipArgs(`s3://${BUCKET}/verify-gui/gui-copy/a.txt`, 'copy s3 uri');
+      // the separate 'Copy S3 URI' item is gone — Copy URL is the one
+      // backend-built address left, presigned through SourceObjectUrls
+      await copyViaMenu(/copy url/i);
+      await clipArgsWhere((a) => Array.isArray(a) && a.length === 1 && typeof a[0] === 'string'
+        && a[0].startsWith('http') && a[0].includes(`/${BUCKET}/verify-gui/gui-copy/a.txt`), 'copy url');
       await page.keyboard.press('Control+a');
       await sleep(250);
       await rightClickRow('c.txt');
@@ -4357,7 +4433,7 @@ async function guiBattery() {
       const toasts = await evalPage(() => Array.from(document.querySelectorAll('#toasts .toast')).map((t) => String(t.textContent)));
       need(toasts.some((t) => /^Copied 3 names/.test(t) || /^Copy failed: (no desktop shell attached|.*clipboard: write failed)/.test(t)),
         `the backend never answered the copy: toasts ${JSON.stringify(toasts)}`);
-      return 'name / bucket-key / s3-uri exact at the binding boundary; multi copy newline-joined; backend answered';
+      return 'name / scoped-path / presigned-url exact at the binding boundary; multi copy newline-joined; backend answered';
     } finally {
       await evalPage(() => { (window.__wireUndo || []).forEach((u) => u()); return true; });
     }
@@ -5511,7 +5587,11 @@ async function guiBattery() {
     await waitFor(async () => (await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--json'])).out.includes('mk67.txt'), 30000, 'the marker-buried object visible again');
     r = await s3(['cp', KM, path.join(ART, 'mk-after.txt')]);
     need(r.code === 0 && (await readFile(path.join(ART, 'mk-after.txt'), 'utf8')) === 'mk67 lives\n', 'the markers purge disturbed the current version');
-    // noncurrent mode under the >50 escalation word
+    // noncurrent mode under the >50 escalation word — the Versions tab
+    // reloads its statistics asynchronously once the markers purge
+    // window closes (runs 2/3 clicked through the reload and found no
+    // button); wait for the stats render to settle first
+    await waitFor(async () => !/loading version statistics/i.test(await modalText()), 30000, 'the Versions tab stats after the markers purge');
     need(await bodyBtn(/purge noncurrent versions/i), 'no Purge noncurrent versions button');
     // Run 5 raced this read twice over: /noncurrent version/i matches
     // the admin PANEL's own button label, and the panel phrases its
@@ -6772,30 +6852,35 @@ async function guiBattery() {
     return `editor race: v3 won current honestly, ${now.length} versions retained, clobbered v2 restored byte-exact by id`;
   });
 
-  await verify({ id: 'GUI-85', area: 'sources', action: 'Bucket-scoped paths: NAME://content — the bucket never repeats after ://', ds: 'S3 (MinIO)', scenario: 'one data source = one bucket: the breadcrumb carries NO bucket segment and its root crumb stays inside the source (never the account bucket list); the path bar copies back as NAME://prefix/; a pasted canonical path navigates, and the legacy doubled paste folds away to the same place; the dual-pane crumb matches', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-85', area: 'sources', action: 'Bucket-scoped paths: Name/contents — the bucket never repeats after the source name', ds: 'S3 (MinIO)', scenario: 'one data source = one bucket: the breadcrumb carries NO bucket segment and its root crumb stays inside the source (never the account bucket list); the editable path bar reads scheme://Name/prefix/; the normalized Name/prefix/, typed scheme:// and legacy doubled pastes all navigate to the same place; the dual-pane crumb matches', face: 'GUI' }, async () => {
     await treeOpen(SRCNAME);
     await waitFor(async () => (await rowKeys()).some((k) => k.includes('docs')), 10000, 'source contents');
     // breadcrumb: the root crumb is the source; the bucket never appears
     const crumbs = await evalPage(() => Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => c.textContent.trim()));
-    need(crumbs[0] === SRCNAME, `root crumb: ${JSON.stringify(crumbs)}`);
+    // the root crumb carries the type-badge chip ('S3') beside the
+    // name — textContent reads 'S3verify-minio', so anchor on the tail
+    need(crumbs[0].endsWith(SRCNAME), `root crumb: ${JSON.stringify(crumbs)}`);
     need(!crumbs.includes(BUCKET), `bucket leaked as a crumb segment: ${JSON.stringify(crumbs)}`);
     // root-crumb click stays INSIDE the source — contents, not a bucket list
     await evalPage(() => { document.querySelector('#breadcrumb .crumb')?.click(); });
     await sleep(400);
     const after = await evalPage(() => Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => c.textContent.trim()));
-    need(after[0] === SRCNAME && !after.includes(BUCKET), `root click escaped the source: ${JSON.stringify(after)}`);
-    // path bar at the source root: NAME:// — the bucket never follows
+    need(after[0].endsWith(SRCNAME) && !after.includes(BUCKET), `root click escaped the source: ${JSON.stringify(after)}`);
+    // path bar at the source root: the typed scheme://Name/ form — the
+    // bucket never follows the name
     await evalPage(() => { document.querySelector('.navbar')?.click(); });
     let bar = await evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value ?? null);
-    need(bar === `${SRCNAME}://`, `path bar at root: ${JSON.stringify(bar)}`);
+    need(bar === `s3://${SRCNAME}/`, `path bar at root: ${JSON.stringify(bar)}`);
     // inside docs/: content only after ://
     await evalPage(() => document.activeElement?.blur());
     await enterFolder('docs');
     await evalPage(() => { document.querySelector('.navbar')?.click(); });
     bar = await evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value ?? null);
-    need(bar === `${SRCNAME}://docs/`, `path bar in docs: ${JSON.stringify(bar)}`);
-    // paste-back round trip: canonical AND legacy-doubled forms land in docs
-    for (const p of [`${SRCNAME}://docs/`, `${SRCNAME}://${BUCKET}/docs/`]) {
+    need(bar === `s3://${SRCNAME}/docs/`, `path bar in docs: ${JSON.stringify(bar)}`);
+    // paste-back round trip: the normalized Name/contents form, the
+    // typed scheme://Name/contents form, and the legacy doubled bucket
+    // form all land in docs
+    for (const p of [`${SRCNAME}/docs/`, `${SRCNAME}://docs/`, `${SRCNAME}://${BUCKET}/docs/`]) {
       await evalPage(() => { document.querySelector('.navbar')?.click(); });
       await evalPage((v) => {
         const i = document.querySelector('#breadcrumb input.path-edit');
@@ -6814,20 +6899,22 @@ async function guiBattery() {
       return o ? o.value : null;
     }, SRCNAME);
     need(bound, 'no side-pane option for the scoped source');
-    await waitFor(async () => (await txt('#local-crumb')) === `${SRCNAME}://`, 10000, 'side crumb');
+    // the pane's crumb shows the badge chip + name at the scoped root —
+    // never a bucket segment, never a scheme
+    await waitFor(async () => { const c = await txt('#local-crumb'); return c.endsWith(SRCNAME) && !c.includes(BUCKET) && !c.includes('://'); }, 10000, 'side crumb');
     // leave the pane on the local binding, as earlier rows found it
     await evalPage(() => { const s = document.getElementById('local-src'); if (s && s.value !== 'local') { s.value = 'local'; s.dispatchEvent(new Event('change')); } return true; });
     await shot('85-scoped-format');
     return 'name://content everywhere: path bar, breadcrumb, paste-back, side pane';
   });
 
-  await verify({ id: 'GUI-86', area: 'sources', action: 'Remote source paths: the same NAME://content hierarchy as every other type', ds: 'FTP', scenario: 'the uniform <source>://<content> format on a remote source: the tree opens at the source root and the path bar shows the source name as the scheme with only directory content after it — never a host, never a port, never an engine address', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-86', area: 'sources', action: 'Remote source paths: the same scheme://Name/contents address as every other type', ds: 'FTP', scenario: 'the uniform <type>://<name>/<content> format on a remote source: the tree opens at the source root and the path bar speaks the source\'s type as the scheme with only directory content after it — never a host, never a port, never an engine address', face: 'GUI' }, async () => {
     if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
     await treeOpen(FTPNAME);
     await waitFor(async () => (await rowKeys()).length > 0, 10000, 'ftp root rows');
     await evalPage(() => { document.querySelector('.navbar')?.click(); });
     let bar = await evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value ?? null);
-    need(bar === `${FTPNAME}://` || bar === `${FTPNAME}:///`, `path bar at ftp root: ${JSON.stringify(bar)}`);
+    need(bar === `ftp://${FTPNAME}/`, `path bar at ftp root: ${JSON.stringify(bar)}`);
     need(!(bar || '').includes('127.0.0.1') && !(bar || '').includes(`:${FTP_PORT}`), `path bar leaked the host/port: ${bar}`);
     await evalPage(() => document.activeElement?.blur());
     const first = await evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row')).map((r) => r._model?.key).find(Boolean));
@@ -6837,7 +6924,7 @@ async function guiBattery() {
       await enterFolder(dir);
       await evalPage(() => { document.querySelector('.navbar')?.click(); });
       const barIn = await evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value ?? null);
-      need(barIn && barIn.startsWith(`${FTPNAME}://`) && barIn.includes(`${dir}/`), `path bar inside ${dir}: ${JSON.stringify(barIn)}`);
+      need(barIn && barIn.startsWith(`ftp://${FTPNAME}/`) && barIn.includes(`${dir}/`), `path bar inside ${dir}: ${JSON.stringify(barIn)}`);
       need(!barIn.includes('127.0.0.1'), `path bar leaked the host inside: ${barIn}`);
       await evalPage(() => document.activeElement?.blur());
     }

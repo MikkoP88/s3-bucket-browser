@@ -460,6 +460,39 @@ async function launch() {
 
 import fs from 'node:fs';
 
+// ---------- CLI-side bucket hygiene (native MinIO engine) ----------
+// The engine is the pinned NATIVE MinIO binary (scripts/start-minio.sh)
+// — the old `docker exec s3b-e2e-minio` + bundled `mc` are gone. Debris
+// purge and fault-lab seeding ride the product's own CLI face instead,
+// against a scratch S3B_CONFIG (never the walk's CFG — the onboarding
+// step needs a store with zero sources — and S3B_NO_KEYRING keeps the
+// real keyring out of it entirely). The exe is verify.mjs's gate build
+// when present; the canonical s3b.exe backs standalone runs. Every
+// hygiene call rides the profile mirror source add leaves behind, so
+// bare s3://bucket/key paths resolve exactly like verify.mjs's own
+// --profile verifys3 calls.
+const CLEAN_CFG = path.join(ART, 'clean-config');
+let cleanReadyDone = false;
+const cleanExe = () => fs.existsSync(path.join(ROOT, 'testartifacts', 's3b-verify-cli.exe'))
+  ? path.join(ROOT, 'testartifacts', 's3b-verify-cli.exe')
+  : path.join(ROOT, 's3b.exe');
+const cleanEnv = () => ({ ...process.env, S3B_CONFIG: CLEAN_CFG, S3B_NO_KEYRING: '1', NO_COLOR: '1', TERM: 'dumb' });
+async function cleanReady() {
+  if (cleanReadyDone) return;
+  await rm(CLEAN_CFG, { recursive: true, force: true });
+  await mkdir(CLEAN_CFG, { recursive: true });
+  execFileSync(cleanExe(), ['source', 'add', 'cleanup', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET], { stdio: 'pipe', windowsHide: true, env: cleanEnv() });
+  cleanReadyDone = true;
+}
+function shq(args, { tolerate = false } = {}) {
+  try {
+    return execFileSync(cleanExe(), ['--profile', 'cleanup', ...args], { stdio: 'pipe', windowsHide: true, env: cleanEnv() }).toString();
+  } catch (e) {
+    if (tolerate) return '';
+    throw e;
+  }
+}
+
 async function main() {
   await rm(ART, { recursive: true, force: true });
   await mkdir(SHOTS, { recursive: true });
@@ -484,12 +517,35 @@ async function main() {
   // the row helpers can no longer see them, and every later step cascades.
   // Purge everything except the seed/ baseline (all versions, no markers).
   {
-    const shq = (c) => execFileSync('docker', ['exec', 's3b-e2e-minio', 'sh', '-c', c], { stdio: 'pipe' }).toString();
-    shq('mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 || true');
-    for (const line of shq(`mc ls local/${BUCKET}/`).split('\n')) {
-      const name = line.trim().split(/\s+/).pop(); // last token (root debris has no spaces)
-      if (!name || name === `${SEED}/`) continue;
-      shq(`mc rm --recursive --force --versions "local/${BUCKET}/${name}" >/dev/null 2>&1 || true`);
+    await cleanReady();
+    // the walk expects its bucket + the seed/ baseline standing — an
+    // engine reset can lose both. Stand them back up first: a versioned
+    // bucket (the versioning steps need it) and one baseline file under
+    // seed/ (later steps anchor their row asserts on that prefix).
+    // ls --json is pretty-printed (one field per line), so names come
+    // off a "name" field match — JSON.parse per line sees no object
+    if (!shq(['ls', '--json'], { tolerate: true }).split('\n').some((l) => l.includes(`"name": "${BUCKET}"`))) {
+      shq(['mb', `s3://${BUCKET}`]);
+      shq(['bucket', 'versioning', `s3://${BUCKET}`, 'on']);
+    }
+    if (!new RegExp(`"name": "${SEED}"`).test(shq(['ls', `s3://${BUCKET}/`, '--json'], { tolerate: true }))) {
+      const baseDir = path.join(ART, 'seed-baseline');
+      await rm(path.join(baseDir, SEED), { recursive: true, force: true });
+      await mkdir(path.join(baseDir, SEED), { recursive: true });
+      await writeFile(path.join(baseDir, SEED, 'readme.txt'), 'gui-v3live seed baseline\n');
+      shq(['cp', '-r', path.join(baseDir, SEED), `s3://${BUCKET}/${SEED}/`]);
+    }
+    for (const line of shq(['ls', `s3://${BUCKET}/`, '--json'], { tolerate: true }).split('\n')) {
+      const m = line.match(/"name": "([^"]*)"/);
+      if (!m) continue;
+      const n = m[1].replace(/\/+$/, '');
+      if (!n || n === SEED) continue;
+      // key-form + prefix-form, each a no-op where inapplicable: a file
+      // dies by the key purge, a folder by the prefix purge + rm -r
+      shq(['versions', 'purge', `s3://${BUCKET}/${n}`, '--mode', 'all', '--force'], { tolerate: true });
+      shq(['versions', 'purge', `s3://${BUCKET}/${n}/`, '--mode', 'all', '--force'], { tolerate: true });
+      shq(['rm', `s3://${BUCKET}/${n}`, '--versions', '--force'], { tolerate: true });
+      shq(['rm', '-r', `s3://${BUCKET}/${n}/`, '--force'], { tolerate: true });
     }
   }
 
@@ -1201,7 +1257,6 @@ async function walk() {
   {
     const FPORT = 19000, FCTL = 19001;
     const FSRC = 'minio-fault', SLOW = 'zz-slowwalk', SLOWN = 120;
-    const sh = (c) => execFileSync('docker', ['exec', 's3b-e2e-minio', 'sh', '-c', c], { stdio: 'pipe' }).toString();
     const ctl = (p, opts) => fetch(`http://127.0.0.1:${FCTL}${p}`, { signal: AbortSignal.timeout(3000), ...opts })
       .then((r) => r.json());
     const setMode = (patch) => ctl('/mode', {
@@ -1255,11 +1310,15 @@ async function walk() {
       await waitFor(async () => (await ctl('/state')).mode === 'direct', 10000, 'faultproxy control plane');
 
       await step('fault lab: 120-object prefix + source behind the proxy (direct control)', async () => {
-        sh('mc alias set local http://localhost:9000 minioadmin minioadmin >/dev/null 2>&1 || true');
-        sh(`rm -rf /tmp/slowseed; mkdir -p /tmp/slowseed; i=0; while [ "$i" -lt ${SLOWN} ]; do echo "slowwalk payload $i" > /tmp/slowseed/f-$(printf '%03d' "$i").txt; i=$((i+1)); done`);
-        sh(`mc rm --recursive --force local/${BUCKET}/${SLOW}/ >/dev/null 2>&1 || true`);
-        sh(`mc cp --recursive /tmp/slowseed/ local/${BUCKET}/${SLOW}/ >/dev/null`);
-        const seeded = sh(`mc ls --recursive local/${BUCKET}/${SLOW}/ | wc -l`).trim();
+        const seedDir = path.join(FIX, 'slowseed');
+        await rm(seedDir, { recursive: true, force: true });
+        await mkdir(seedDir, { recursive: true });
+        for (let i = 0; i < SLOWN; i++) await writeFile(path.join(seedDir, `f-${String(i).padStart(3, '0')}.txt`), `slowwalk payload ${i}\n`);
+        await cleanReady();
+        shq(['versions', 'purge', `s3://${BUCKET}/${SLOW}/`, '--mode', 'all', '--force'], { tolerate: true });
+        shq(['rm', '-r', `s3://${BUCKET}/${SLOW}/`, '--force'], { tolerate: true });
+        shq(['cp', '-r', seedDir, `s3://${BUCKET}/${SLOW}/`, '--json']);
+        const seeded = String(shq(['ls', `s3://${BUCKET}/${SLOW}/`, '--recursive', '--json'], { tolerate: true }).split('\n').filter((l) => l.includes('"name"')).length);
         await ok(`seeded ${BUCKET}/${SLOW}/ with ${seeded} objects`, Number(seeded) === SLOWN);
         await call('SaveSource', {
           name: FSRC, type: 's3', bucket: BUCKET,
@@ -1347,8 +1406,8 @@ async function walk() {
         const nodes = await evalPage(() => Array.from(document.querySelectorAll('#tree .tnode'))
           .map((n) => (n.querySelector('.tlabel')?.textContent || '').trim()));
         await ok(`fault source gone from the sidebar [${nodes.join(', ')}]`, !nodes.includes(FSRC));
-        sh(`mc rm --recursive --force local/${BUCKET}/${SLOW}/ >/dev/null 2>&1 || true`);
-        const left = sh(`mc ls --recursive local/${BUCKET}/${SLOW}/ 2>&1 | wc -l`).trim();
+        shq(['rm', '-r', `s3://${BUCKET}/${SLOW}/`, '--force'], { tolerate: true });
+        const left = String(shq(['ls', `s3://${BUCKET}/${SLOW}/`, '--recursive', '--json'], { tolerate: true }).split('\n').filter((l) => l.includes('"name"')).length);
         await ok(`seeded prefix purged (${left} objects left)`, Number(left) === 0);
         await shot('42-fault-teardown');
       });
