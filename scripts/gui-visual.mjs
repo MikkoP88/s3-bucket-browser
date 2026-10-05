@@ -6597,7 +6597,7 @@ await step('dual-pane', async () => {
 await step('side-pane-editpath', async () => {
   // the pane's path bar is the main pane's twin: clicking the navbar's
   // empty area swaps the crumb for the inline path editor holding the
-  // pane's canonical path — the step shows the pane itself (without
+  // pane's typed source address — the step shows the pane itself (without
   // the default open, so the rebind is the only listing that runs)
   await evalPage(() => { window.__s3bSidePane.show({ drive: false }); window.__s3bSidePane.rebind('src-box'); });
   await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane remote bound');
@@ -6607,14 +6607,19 @@ await step('side-pane-editpath', async () => {
   await evalPage(() => document.querySelector('#local-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'pane path editor');
-  await ok('pane path field holds the canonical path', evalPage(() =>
-    document.querySelector('#local-crumb input.path-edit')?.value === 'backup-box/'));
+  await ok('pane path field holds the typed source address', evalPage(() =>
+    document.querySelector('#local-crumb input.path-edit')?.value === 'sftp://backup-box/'));
   await shot('pane-path-edit');
-  // Escape restores the breadcrumb; a second click reopens the editor
-  await page.keyboard.press('Escape');
-  await ok('Escape restores the pane breadcrumb', evalPage(() =>
-    !document.querySelector('#local-crumb input.path-edit')
-    && document.querySelectorAll('#local-crumb .crumb').length > 0));
+  // the seeded typed address pastes straight back: Enter on the
+  // untouched line navigates the same listing and restores the crumb
+  await page.keyboard.press('Enter');
+  await waitFor(async () => evalPage(() => !document.querySelector('#local-crumb input.path-edit')), 6000, 'pane seed closes the editor');
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane seed round-trip');
+  await ok('the pane seed round-trips to the same listing, crumb restored',
+    (await sideKeys()).includes('/backup.sh') && (await evalPage(() =>
+      !document.querySelector('#local-crumb input.path-edit')
+      && document.querySelectorAll('#local-crumb .crumb').length > 0)));
+  // a second click reopens the editor
   await evalPage(() => document.querySelector('#local-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor again');
@@ -7762,10 +7767,10 @@ await step('status-balls', async () => {
 await step('breadcrumb-path-nav', async () => {
   await navObjectsOf('hetzner', 'team-files');
   // clicking the navbar's empty area opens the inline path editor holding
-  // the canonical Name/bucket/prefix path
+  // the typed scheme://Name/bucket/prefix address
   await evalPage(() => document.querySelector('.navbar').dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit')), 4000, 'path editor');
-  await ok('path field holds the canonical path', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 'hetzner/team-files/'));
+  await ok('path field holds the typed source address', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 's3://hetzner/team-files/'));
   await shot('path-edit');
   // type another location and press Enter — parsePath navigates
   await page.fill('#breadcrumb input.path-edit', 'hetzner/logs-2026/');
@@ -7816,12 +7821,12 @@ await step('path-address', async () => {
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'main navigated via s3://');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical s3');
-  await ok('an s3:// URI lands on the owning source', (await editorValue()) === 'hetzner/team-files/docs/');
+  await ok('an s3:// URI lands on the owning source', (await editorValue()) === 's3://hetzner/team-files/docs/');
   await page.keyboard.press('Escape');
   // the typed form scheme://Name/contents — the scheme is the source's
   // TYPE and the first segment its NAME: the canonical address every
-  // app-added data source carries (the editors themselves still seed
-  // and speak the Name/contents form)
+  // app-added data source carries (the editors themselves seed and
+  // speak this typed form — the scheme is visible only while editing)
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor open typed-s3');
   await page.fill('#breadcrumb input.path-edit', 's3://hetzner/team-files/');
@@ -7829,8 +7834,13 @@ await step('path-address', async () => {
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'main navigated via typed s3://');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical typed-s3');
-  await ok('a typed s3:// address names its source outright', (await editorValue()) === 'hetzner/team-files/');
-  await page.keyboard.press('Escape');
+  await ok('a typed s3:// address names its source outright', (await editorValue()) === 's3://hetzner/team-files/');
+  // the seeded line pastes straight back: Enter on the untouched value
+  // navigates the same listing and closes the editor
+  await page.keyboard.press('Enter');
+  await waitFor(async () => evalPage(() => !document.querySelector('#breadcrumb input.path-edit')), 6000, 'seeded typed address closes the editor');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'seeded typed address round-trip');
+  await ok('the seeded typed address round-trips', (await rowKeys()).includes('readme.md'));
   await resetCalls();
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor open typed-sftp');
@@ -7839,7 +7849,7 @@ await step('path-address', async () => {
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'main navigated via typed sftp://');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical typed-sftp');
-  await ok('a typed sftp:// address opens the configured source — no stand-up', (await editorValue()) === 'backup-box/'
+  await ok('a typed sftp:// address opens the configured source — no stand-up', (await editorValue()) === 'sftp://backup-box/'
     && (await findCall('SaveSource')) === null);
   await page.keyboard.press('Escape');
   // a bare source name opens that source's home — the account-wide
@@ -7851,7 +7861,7 @@ await step('path-address', async () => {
   await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'source home via bare name');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical bare');
-  await ok('a bare source name opens its buckets view', (await editorValue()) === 'hetzner');
+  await ok('a bare source name opens its buckets view', (await editorValue()) === 's3://hetzner');
   await page.keyboard.press('Escape');
   // the scoped source has no buckets view — its bare name opens its
   // root instead (canonical carries the trailing slash)
@@ -7862,7 +7872,7 @@ await step('path-address', async () => {
   await waitFor(async () => (await rowKeys()).includes('index.html'), 6000, 'scoped root via bare name');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical scoped');
-  await ok('a scoped source opens its root under its bare name', (await editorValue()) === 'website-prod/');
+  await ok('a scoped source opens its root under its bare name', (await editorValue()) === 's3://website-prod/');
   await page.keyboard.press('Escape');
   // an unconfigured connection URI stands its source up, saves it and
   // opens its root
@@ -7880,7 +7890,7 @@ await step('path-address', async () => {
   await waitFor(async () => (await txt('#breadcrumb')).includes('newhost.example.test'), 6000, 'view opens the new source');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical ftp');
-  await ok('the new source opens at the URI root', (await editorValue()) === 'newhost.example.test - incoming/incoming/');
+  await ok('the new source opens at the URI root', (await editorValue()) === 'ftp://newhost.example.test - incoming/incoming/');
   await page.keyboard.press('Escape');
   // an unrecognized address toasts and keeps the editor
   await evalPage(() => document.getElementById('toasts').replaceChildren());

@@ -236,15 +236,17 @@ directory compare) with S3 and the secondary pane.
   window scales both panes together, every fresh launch opens them
   equally wide, and a double-click on the seam restores the even split.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
-  edit icon) and it becomes an editable line holding the view's
-  normalized path, `Name/bucket/folder/` — the same `Name/contents`
-  form the Copy path action puts on the clipboard, and a bare source
-  name means that source's home view (the bucket list, or a scoped
-  source's root). The line is a
-  universal address bar: the `Name/contents` form pastes straight
-  back; a typed form (`s3://hetzner/team-files/`, `sftp://backup-box/`
-  — the scheme is the source's type, the first segment its name)
-  opens that source outright; a bare local path (`C:\Projects`,
+  edit icon) and it becomes an editable line holding the view's typed
+  source address, `scheme://Name/bucket/folder/` —
+  `s3://hetzner/team-files/`, the scheme speaking the source's type
+  (visible only while editing; the workstation side stays a bare
+  native path). The same line minus its scheme is the
+  `Name/contents` form the Copy path action puts on the clipboard,
+  and a bare source name means that source's home view (the bucket
+  list, or a scoped source's root). The line is a
+  universal address bar: the seeded typed form and the plain
+  `Name/contents` form paste straight back — the scheme names the
+  source's type, the first segment its name — and a bare local path (`C:\Projects`,
   `\\server\share`, `~`, a `file:///C:/Users/...` or
   `file:///home/...` URL), an `s3://bucket/key` URI or a connection
   URI (`ftp://user:pass@host:21/root`, `sftp://`, `webdav://`) opens
@@ -363,8 +365,8 @@ directory compare) with S3 and the secondary pane.
   pane's source picker stands up to choose another.
   The pane's path bar carries the main one's every function: click its
   empty area and the breadcrumb becomes an editable line holding the
-  pane's canonical path (`Name/contents`, or the bare native path
-  `C:\Users\...` when the workstation side is bound) — copy it out,
+  pane's typed source address (`scheme://Name/contents`, or the bare
+  native path `C:\Users\...` when the workstation side is bound) — copy it out,
   paste any address the main bar takes
   and the pane goes there: another source's `Name/contents` path
   points the

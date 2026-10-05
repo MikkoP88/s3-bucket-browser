@@ -332,6 +332,16 @@ build stay multi-instance.
 
 ### Changed
 
+- **Editable path lines speak the typed address.** Opening either path
+  editor (main view or secondary pane) now seeds the line with
+  `scheme://Name/contents` — `s3://testijotain/`, the scheme naming
+  the source's type — instead of the bare `Name/contents` form, and
+  the untouched seed pastes straight back through the ladder's typed
+  door (Enter re-lists the same place). The scheme is visible only
+  while editing: the resting breadcrumb keeps its type-icon
+  presentation, local paths stay bare (`C:\Users\...` — the native
+  path is its address), and the plain `Name/contents` form still
+  pastes back everywhere.
 - **Typed source addresses: scheme://Name/contents pastes into any
   path bar.** Every app-added data source now carries its canonical
   address form — the scheme is the source's type, the first segment

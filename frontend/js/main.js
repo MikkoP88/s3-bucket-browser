@@ -41,6 +41,13 @@ localPane.onSourcesChanged = refreshSources;
 localPane.isKnownSource = (seg) => !!seg && sources.some((x) =>
   (x.name || '').toLowerCase() === seg.toLowerCase()
   || (x.id || '').toLowerCase() === seg.toLowerCase());
+// the pane's editable path line speaks its source's type scheme
+// (scheme://Name/contents); main owns the live source list, so the
+// name-to-type lookup rides here
+localPane.sourceTypeOf = (name) => {
+  const x = sources.find((s) => s.name === name || s.id === name);
+  return x ? x.type : '';
+};
 window.__s3bSidePane = localPane; // battery handle: gui-visual drives the pane directly
 const tree = new Tree({
   onNavigate: (loc) => nav.to(loc),
@@ -1484,8 +1491,23 @@ function canonicalPath(loc) {
   return '';
 }
 
+// editorPath is what the editable line holds: the canonical path with
+// its scheme spoken — scheme://Name/contents, s3://testijotain/ — the
+// typed address form that names the source's type outright and pastes
+// straight back through the ladder's own typed door. The workstation
+// stays bare: no scheme names a local folder, and its native path is
+// its address.
+function editorPath(loc) {
+  const cur = canonicalPath(loc);
+  if (!cur || !loc || loc.kind === 'local') return cur;
+  const src = sources.find((x) => x.name === (loc.source || viewSource));
+  const type = (src && src.type) || (loc.kind === 'objects' || loc.kind === 'buckets' ? 's3' : '');
+  return type ? `${type}://${cur}` : cur;
+}
+
 // editPath swaps the breadcrumb for a one-line editable field holding the
-// canonical path: copy out, paste in, Enter navigates, Esc cancels. The
+// typed source address (scheme://Name/contents; the workstation bare):
+// copy out, paste in, Enter navigates, Esc cancels. The
 // line goes through resolveAddress — the backend's universal ladder — so
 // any address works: app paths (Name/contents, NAME:// or the typed
 // scheme://Name form), s3:// URIs, connection URIs (an unconfigured
@@ -1494,7 +1516,7 @@ function canonicalPath(loc) {
 // workstation folder right here in the primary pane.
 function editPath() {
   const bc = $('breadcrumb');
-  const cur = canonicalPath(nav.current);
+  const cur = editorPath(nav.current);
   if (!cur || bc.querySelector('input.path-edit')) return;
   const restore = () => renderBreadcrumb();
   const inp = el('input', { type: 'text', class: 'filter path-edit', spellcheck: 'false' });

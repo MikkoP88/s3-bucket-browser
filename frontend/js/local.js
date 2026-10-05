@@ -958,10 +958,11 @@ export class SidePane {
   }
 
   // paneCanonical is the pane's twin of main's canonicalPath: the
-  // one-line path the path editor holds. Source bindings speak
+  // normalized Name/contents form. Source bindings speak
   // Name/contents ('' while unbound); the local binding wears its bare
   // native path ('' at the filesystem-roots view) — one universal form,
-  // pastable straight into either editor.
+  // pastable straight into either editor, and the form the editable
+  // line's typed address sits on top of.
   paneCanonical() {
     if (!this.bound) return '';
     const name = this.binding.name || this.binding.source || '';
@@ -973,8 +974,22 @@ export class SidePane {
     return this.dir || '';
   }
 
+  // paneEditor is the pane's twin of main's editorPath: the editable
+  // line holds paneCanonical with its scheme spoken —
+  // scheme://Name/contents — the typed form that pastes straight back
+  // through the same ladder. The local binding stays bare (its native
+  // path is its address); an unbound pane opens empty.
+  paneEditor() {
+    const cur = this.paneCanonical();
+    if (!cur || this.binding.kind === 'local') return cur;
+    if (this.binding.kind === 's3') return `s3://${cur}`;
+    const name = this.binding.name || this.binding.source || '';
+    const type = this.sourceTypeOf?.(name) || '';
+    return type ? `${type}://${cur}` : cur;
+  }
+
   // editPath swaps the breadcrumb for a one-line editable field holding
-  // the canonical path — the twin of the main pane's editor: copy out,
+  // the typed source address — the twin of the main pane's editor: copy out,
   // paste in, Enter navigates through the same universal address ladder
   // (any address works — another source's path rebinds the pane,
   // a local or external path lands on the workstation or its source),
@@ -985,7 +1000,7 @@ export class SidePane {
     if (bc.querySelector('input.path-edit')) return;
     const restore = () => this.updateCrumb();
     const inp = el('input', { type: 'text', class: 'filter path-edit', spellcheck: 'false' });
-    inp.value = this.paneCanonical();
+    inp.value = this.paneEditor();
     bc.replaceChildren(inp);
     inp.focus();
     inp.select();
