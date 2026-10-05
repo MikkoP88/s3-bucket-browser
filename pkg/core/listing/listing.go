@@ -18,8 +18,12 @@ import (
 // creationdate; local files on platforms that expose a birth time, i.e.
 // Windows) and Mode (local and SFTP permission bits, unix-style
 // "drwxr-xr-x"). Engines without the attribute leave the field zero, and
-// the GUI renders those cells empty — the same contract folders already
-// follow for size and dates.
+// the GUI renders those cells empty. Folder rows follow the same
+// contract: an S3 common prefix carries nothing (a folder marker lends
+// its own metadata — DirEntryFromObject), local and remote engines
+// report a directory's real dates and mode, and folder size stays the
+// Properties dialog's aggregate story — a listing cannot know a
+// folder's content size without walking it.
 type Entry struct {
 	Key          string     `json:"key"`
 	Name         string     `json:"name"`
@@ -81,9 +85,11 @@ func WalkDir(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, pref
 		}
 		for _, obj := range page.Contents {
 			key := aws.ToString(obj.Key)
-			// Zero-byte "dir/" markers appear as objects; show as folders.
+			// Zero-byte "dir/" markers appear as objects; show as folders,
+			// lending the marker's own metadata to the row (List merges it
+			// into the same key's common-prefix entry).
 			if strings.HasSuffix(key, "/") && key != prefix {
-				if err := fn(DirEntry(key, prefix)); err != nil {
+				if err := fn(DirEntryFromObject(obj, prefix)); err != nil {
 					return err
 				}
 				continue
@@ -118,13 +124,14 @@ func List(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, prefix 
 		return entries, err
 	}
 	var entries []Entry
-	seenDirs := map[string]bool{}
+	seenDirs := map[string]int{} // dir key -> index in entries (the merge point)
 	err := WalkDir(ctx, client, bucket, prefix, opts, func(e Entry) error {
 		if e.IsDir {
-			if seenDirs[e.Key] {
+			if i, ok := seenDirs[e.Key]; ok {
+				mergeDirMeta(&entries[i], e) // marker met its common prefix: lend
 				return nil
 			}
-			seenDirs[e.Key] = true
+			seenDirs[e.Key] = len(entries)
 		}
 		entries = append(entries, e)
 		return nil
@@ -180,6 +187,42 @@ func DirEntry(key, parentPrefix string) Entry {
 	name := strings.TrimPrefix(key, parentPrefix)
 	name = strings.TrimSuffix(name, "/")
 	return Entry{Key: key, Name: name, IsDir: true}
+}
+
+// DirEntryFromObject builds a folder Entry for a zero-byte "dir/" marker
+// object, lending the marker's own metadata to the folder row: an S3
+// common prefix carries none, so the marker is the folder's only honest
+// date, class and ETag.
+func DirEntryFromObject(o s3types.Object, parentPrefix string) Entry {
+	e := DirEntry(aws.ToString(o.Key), parentPrefix)
+	e.StorageClass = string(o.StorageClass)
+	e.ETag = strings.Trim(aws.ToString(o.ETag), `"`)
+	if o.LastModified != nil {
+		t := *o.LastModified
+		e.LastModified = &t
+	}
+	return e
+}
+
+// mergeDirMeta lends a folder marker's metadata to its already-emitted
+// prefix row: dates, class and ETag fill only where the earlier entry
+// lacks them, so a plain common prefix keeps its honest blanks.
+func mergeDirMeta(dst *Entry, src Entry) {
+	if dst.LastModified == nil {
+		dst.LastModified = src.LastModified
+	}
+	if dst.Created == nil {
+		dst.Created = src.Created
+	}
+	if dst.StorageClass == "" {
+		dst.StorageClass = src.StorageClass
+	}
+	if dst.ETag == "" {
+		dst.ETag = src.ETag
+	}
+	if dst.Mode == "" {
+		dst.Mode = src.Mode
+	}
 }
 
 // FromObject builds an object Entry, trimming the parent prefix from Name.

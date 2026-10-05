@@ -307,7 +307,7 @@ function shim() {
     },
     objects: {
       'team-files': [
-        { key: 'docs/', isDir: true },
+        { key: 'docs/', isDir: true, lastModified: daysAgo(5), storageClass: 'STANDARD', etag: '"m-docs"' },
         { key: 'photos/', isDir: true },
         { key: 'reports/', isDir: true },
         { key: 'readme.md', size: 1234, lastModified: daysAgo(1), storageClass: 'STANDARD', etag: '"v3"' },
@@ -354,23 +354,23 @@ function shim() {
     },
     remote: {
       'backup-box': [
-        { key: '/docs/', isDir: true },
+        { key: '/docs/', isDir: true, lastModified: daysAgo(10), mode: 'drwxr-xr-x' },
         { key: '/upload/', isDir: true },
         { key: '/backup.sh', size: 4096, lastModified: daysAgo(3) },
         { key: '/db.dump', size: 52428800, lastModified: daysAgo(3) },
         { key: '/docs/inventory.csv', size: 2048, lastModified: daysAgo(10) },
       ],
       'dav-claims': [
-        { key: '/invoices/', isDir: true },
+        { key: '/invoices/', isDir: true, lastModified: daysAgo(30), created: daysAgo(200) },
         { key: '/claim-2026-08.pdf', size: 91136, lastModified: daysAgo(20) },
         { key: '/invoices/inv-042.pdf', size: 66560, lastModified: daysAgo(25) },
       ],
     },
     local: {
       'C:\\Users\\demo': [
-        { name: 'Documents', path: 'C:\\Users\\demo\\Documents', isDir: true },
-        { name: 'Downloads', path: 'C:\\Users\\demo\\Downloads', isDir: true },
-        { name: 'Pictures', path: 'C:\\Users\\demo\\Pictures', isDir: true },
+        { name: 'Documents', path: 'C:\\Users\\demo\\Documents', isDir: true, modTime: daysAgo(7), created: daysAgo(500), mode: 'drwxr-xr-x' },
+        { name: 'Downloads', path: 'C:\\Users\\demo\\Downloads', isDir: true, modTime: daysAgo(3), mode: 'drwxr-xr-x' },
+        { name: 'Pictures', path: 'C:\\Users\\demo\\Pictures', isDir: true, modTime: daysAgo(14), mode: 'drwxr-xr-x' },
         { name: 'notes.txt', path: 'C:\\Users\\demo\\notes.txt', size: 120, modTime: daysAgo(2) },
         { name: 'report.docx', path: 'C:\\Users\\demo\\report.docx', size: 24576, modTime: daysAgo(9) },
       ],
@@ -512,6 +512,10 @@ function shim() {
   function children(all, prefix, anchored) {
     const out = [];
     const seen = new Set();
+    // folder markers ("dir/" fixtures carrying metadata) lend their own
+    // dates, class, mode and ETag to the folder row, mirroring the
+    // backend: a marker's metadata lands where the prefix row has none
+    const markers = new Map(all.filter((x) => x.key.endsWith('/')).map((x) => [x.key, x]));
     for (const e of all) {
       if (!e.key.startsWith(prefix)) continue;
       const rest = e.key.slice(prefix.length);
@@ -523,7 +527,12 @@ function shim() {
           const d = rest.slice(0, cut + 1);
           if (!seen.has(d)) {
             seen.add(d);
-            out.push({ key: prefix + d, name: d.slice(0, -1), isDir: true });
+            const row = { key: prefix + d, name: d.slice(0, -1), isDir: true };
+            const mk = markers.get(prefix + d) || {};
+            for (const f of ['lastModified', 'created', 'storageClass', 'etag', 'mode']) {
+              if (mk[f] !== undefined) row[f] = mk[f];
+            }
+            out.push(row);
           }
           continue;
         }
@@ -1625,6 +1634,22 @@ await step('objects-view', async () => {
   await dblClickRow('team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects of team-files');
   await ok('breadcrumb shows bucket', (await txt('#breadcrumb')).includes('team-files'));
+  await ok('marker folder lends its date (docs/ dated, photos/ honestly blank)', evalPage(() => {
+    const cells = {};
+    for (const r of document.querySelectorAll('#grid-body .grid-row')) {
+      const nm = r.querySelector('.tname')?.textContent.trim();
+      if (nm === 'docs' || nm === 'photos') {
+        cells[nm] = r.querySelector('.gc.lastModified')?.textContent.trim() || '';
+      }
+    }
+    return cells.docs !== '' && cells.photos === '';
+  }));
+  await ok('folder rows keep size blank (a listing cannot know a folder bytes)', evalPage(() => {
+    const pick = (nm) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r.querySelector('.tname')?.textContent.trim() === nm);
+    return (pick('docs')?.querySelector('.gc.size')?.textContent.trim() || '') === ''
+      && (pick('readme.md')?.querySelector('.gc.size')?.textContent.trim() || '') !== '';
+  }));
   // guard state lives as icons after the bucket name in the tree now
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('#tree .tguard').length)) > 0, 6000, 'tree guard icons');
   await ok('tree shows versioning icon', (await evalPage(() => Array.from(document.querySelectorAll('#tree .tguard')).map((i) => i.title).join(' '))).toLowerCase().includes('versioning enabled'));
@@ -2683,6 +2708,11 @@ await step('remote-view', async () => {
   await clickTree('backup-box');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box listing');
   await ok('remote rows anchored', (await rowKeys()).every((k) => k.startsWith('/')));
+  await ok('remote folder rows carry their own dates (/docs dated by the server)', evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((x) => x.querySelector('.tname')?.textContent.trim() === 'docs');
+    return !!r && (r.querySelector('.gc.lastModified')?.textContent.trim() || '') !== '';
+  }));
   await ok('upload enabled in remote view (no profile needed)', evalPage(() => !document.getElementById('btn-upload').disabled));
   const n = await openCtx('backup.sh');
   await ok('remote file menu items', n >= 3);
@@ -3971,6 +4001,9 @@ await step('admin-panel', async () => {
   // deterministic: the default S3 source's tree node lands on its buckets view
   await clickTree('hetzner');
   await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+  await ok('bucket rows are dated (a bucket knows its creation date)', evalPage(() =>
+    Array.from(document.querySelectorAll('#grid-body .grid-row')).every((r) =>
+      (r.querySelector('.gc.lastModified')?.textContent.trim() || '') !== '')));
   const n = await openCtx('team-files');
   await ok('bucket menu has items', n >= 5);
   await ctxItem(/admin panel/i);
@@ -4330,6 +4363,13 @@ await step('search-window', async () => {
       const key = r.querySelector('.gc.name .tname').textContent;
       return key.slice(0, key.lastIndexOf('/')).includes('docs');
     }) && rows.some((r) => r.textContent.includes('inventory.csv'));
+  }, S));
+  await ok('folder hits are dated too (marker and remote folders alike)', evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'));
+    return rows.some((r) => {
+      const nm = r.querySelector('.tname')?.textContent || '';
+      return nm.endsWith('/') && (r.querySelector('.gc.lastModified')?.textContent.trim() || '') !== '';
+    });
   }, S));
 
   // icons type every row: no generic magnifier, no calendar fallback,
@@ -6566,6 +6606,11 @@ await step('dual-pane', async () => {
   const after = (await sideKeys()).join('|');
   await ok('home rows after the reopen, not the pre-close folder', after.includes('Documents')
     && !after.includes('invoice.pdf') && !after.includes('spec.docx'));
+  await ok('pane folder rows are dated (local directories carry real timestamps)', evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+      .find((x) => x.querySelector('.tname')?.textContent.trim() === 'Documents');
+    return !!r && (r.querySelector('.gc.lastModified')?.textContent.trim() || '') !== '';
+  }));
   // the seam: drag seats a session-only share of the row — window resizes
   // scale both panes together with the ratio kept, nothing persists, a
   // fresh run always boots the even twins, and a double-click resets them

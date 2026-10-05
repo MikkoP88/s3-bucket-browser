@@ -1,10 +1,12 @@
 package listing
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
@@ -64,5 +66,66 @@ func TestUsageAccumulation(t *testing.T) {
 	add(s3types.Object{Size: aws.Int64(32)})
 	if u.ObjectCount != 2 || u.TotalBytes != 42 {
 		t.Errorf("usage accumulation broken: %+v", u)
+	}
+}
+
+// pageLister serves one ListObjectsV2 page, the paginator's only call
+// when IsTruncated stays false.
+type pageLister struct {
+	out s3.ListObjectsV2Output
+}
+
+func (p *pageLister) ListObjectsV2(ctx context.Context, params *s3.ListObjectsV2Input, optFns ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	return &p.out, nil
+}
+
+func TestDirEntryFromObject(t *testing.T) {
+	mod := time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC)
+	e := DirEntryFromObject(s3types.Object{
+		Key:          aws.String("photos/2026/"),
+		LastModified: &mod,
+		StorageClass: s3types.ObjectStorageClassStandard,
+		ETag:         aws.String(`"m1"`),
+	}, "photos/")
+	if !e.IsDir || e.Name != "2026" || e.Key != "photos/2026/" {
+		t.Errorf("folder shape mismatch: %+v", e)
+	}
+	if e.LastModified == nil || !e.LastModified.Equal(mod) {
+		t.Errorf("marker date not lent: %+v", e)
+	}
+	if e.StorageClass != "STANDARD" || e.ETag != "m1" {
+		t.Errorf("marker class/ETag not lent (quotes trimmed): %+v", e)
+	}
+}
+
+func TestListMergesMarkerMetadata(t *testing.T) {
+	markerMod := time.Date(2026, 9, 1, 8, 0, 0, 0, time.UTC)
+	objMod := time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
+	c := &pageLister{out: s3.ListObjectsV2Output{
+		CommonPrefixes: []s3types.CommonPrefix{{Prefix: aws.String("docs/")}},
+		Contents: []s3types.Object{
+			{Key: aws.String("docs/"), LastModified: &markerMod, ETag: aws.String(`"mk"`), StorageClass: s3types.ObjectStorageClassStandard},
+			{Key: aws.String("docs/a.txt"), Size: aws.Int64(5), LastModified: &objMod},
+		},
+	}}
+	entries, err := List(context.Background(), c, "b", "", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("want 2 rows (folder merged, not doubled), got %d: %+v", len(entries), entries)
+	}
+	docs := entries[0]
+	if !docs.IsDir || docs.Name != "docs" || docs.Key != "docs/" {
+		t.Errorf("folder shape mismatch: %+v", docs)
+	}
+	if docs.LastModified == nil || !docs.LastModified.Equal(markerMod) {
+		t.Errorf("marker date not merged into the prefix row: %+v", docs)
+	}
+	if docs.StorageClass != "STANDARD" || docs.ETag != "mk" {
+		t.Errorf("marker class/ETag not merged into the prefix row: %+v", docs)
+	}
+	if entries[1].Name != "docs/a.txt" || entries[1].IsDir {
+		t.Errorf("object row disturbed: %+v", entries[1])
 	}
 }

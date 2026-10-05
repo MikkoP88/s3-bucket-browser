@@ -332,6 +332,18 @@ build stay multi-instance.
 
 ### Changed
 
+- **Folder rows show their information like files do.** Folders were
+  blank in every column but Name, Type and (sometimes) Date created;
+  they now follow the same presence-driven contract as files across
+  every content view — main view, secondary pane and the Search
+  window. A bucket row shows its creation date in the buckets view;
+  an S3 folder shows the date, storage class and ETag of its own
+  folder marker (a common prefix alone stays honestly blank — S3
+  reports nothing for it); local, SFTP and WebDAV folders show the
+  directory's real modified/created dates and permission mode; folder
+  hits in Search results carry their dates the same way. Size stays
+  the one file-only column: a listing cannot know a folder's content
+  size without walking it, which is the Properties dialog's job.
 - **Editable path lines speak the typed address.** Opening either path
   editor (main view or secondary pane) now seeds the line with
   `scheme://Name/contents` — `s3://testijotain/`, the scheme naming

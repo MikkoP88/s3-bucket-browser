@@ -29,7 +29,12 @@ function acceptedMimes(kind) {
 // created and mode are engine-optional: created fills where the source
 // carries a birth time (bucket views, WebDAV creationdate, Windows local
 // files), mode where permission bits exist (local, SFTP); rows from
-// engines without the attribute render the cell empty.
+// engines without the attribute render the cell empty. Folder rows
+// follow the same presence-driven contract — a folder's dates, class and
+// ETag render where its engine reports them (a bucket's creation, a
+// marker's metadata, a directory's real timestamps) — and only size
+// stays files-only: a listing cannot know a folder's content size
+// without walking it (the Properties dialog does that).
 export const COLUMNS = [
   { id: 'name', labelKey: 'col.name', flex: true, minW: 200 },
   { id: 'type', labelKey: 'col.type', w: 150 },
@@ -101,18 +106,19 @@ function typeOf(r) {
 
 // colText returns the text a filter matches against for one column: the
 // rendered value (sizes formatted, dates localized) plus the raw bytes for
-// size, so both "MB" and "1048576" hit. Folders carry no size/date/class;
-// created and mode match only where the engine supplied a value.
+// size, so both "MB" and "1048576" hit. Engine-optional fields match only
+// where the engine supplied a value — folder rows included, so a dated
+// folder answers a date filter; size stays files-only.
 function colText(r, id) {
   switch (id) {
     case 'name': return r.name || '';
     case 'type': return typeOf(r);
     case 'mode': return r.mode || '';
     case 'size': return r.isDir ? '' : `${fmtBytes(r.size)} ${r.size || 0}`;
-    case 'lastModified': return r.isDir ? '' : fmtDate(r.lastModified || r.modTime);
+    case 'lastModified': return r.lastModified || r.modTime ? fmtDate(r.lastModified || r.modTime) : '';
     case 'created': return r.created ? fmtDate(r.created) : '';
-    case 'storageClass': return r.isDir ? '' : (r.storageClass || '');
-    case 'etag': return r.isDir ? '' : (r.etag || '');
+    case 'storageClass': return r.storageClass || '';
+    case 'etag': return r.etag || '';
     default: return '';
   }
 }
@@ -801,16 +807,16 @@ export class Grid {
         } else if (c.id === 'mode') {
           cell.textContent = m.mode || '';
         } else if (c.id === 'etag') {
-          cell.textContent = m.isDir ? '' : (m.etag || '');
+          cell.textContent = m.etag || '';
           cell.title = cell.textContent;
         } else if (c.id === 'size') {
           cell.textContent = m.isDir ? '' : fmtBytes(m.size);
         } else if (c.id === 'lastModified') {
-          cell.textContent = m.isDir ? '' : fmtDate(m.lastModified || m.modTime);
+          cell.textContent = m.lastModified || m.modTime ? fmtDate(m.lastModified || m.modTime) : '';
         } else if (c.id === 'created') {
           cell.textContent = m.created ? fmtDate(m.created) : '';
         } else if (c.id === 'storageClass') {
-          cell.textContent = m.isDir ? '' : (m.storageClass || '');
+          cell.textContent = m.storageClass || '';
         }
       }
     }

@@ -274,17 +274,18 @@ export function makeSearchGrid(opts = {}) {
     : hits);
 
   // cell text per column — engine-optional fields render empty (the Entry
-  // contract); dirs blank size, dates, class and ETag, as the main grid's
-  // rows do
+  // contract); folder rows carry their own dates, class and ETag where the
+  // source reports them, and only size stays files-only, as in the main
+  // grid's rows
   const cellText = (c, r) => {
     switch (c.id) {
       case 'type': return hitType(r);
       case 'mode': return r.mode || '';
       case 'size': return isDirOf(r) ? '' : fmtBytes(r.size || 0);
-      case 'lastModified': return isDirOf(r) ? '' : (r.lastModified ? fmtDate(r.lastModified) : '');
+      case 'lastModified': return r.lastModified ? fmtDate(r.lastModified) : '';
       case 'created': return r.created ? fmtDate(r.created) : '';
-      case 'storageClass': return isDirOf(r) ? '' : (r.storageClass || '');
-      case 'etag': return isDirOf(r) ? '' : (r.etag || '');
+      case 'storageClass': return r.storageClass || '';
+      case 'etag': return r.etag || '';
       case 'source': return originOf(r);
       default: return '';
     }

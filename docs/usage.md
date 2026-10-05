@@ -199,7 +199,14 @@ directory compare) with S3 and the secondary pane.
   partition, and a column whose data an engine does not carry
   (Storage class outside S3, Mode outside local and SFTP, Date
   created where no birth time exists) shows empty cells — the
-  column never hides itself. Columns resize by dragging a header
+  column never hides itself. Folder rows follow the same
+  presence-driven contract: a folder shows its date, class and ETag
+  where its source reports them — a bucket's creation date in the
+  buckets view, a folder marker's own metadata on S3, a directory's
+  real timestamps and mode on local, SFTP and WebDAV — and only Size
+  stays a file's column, because a listing cannot know a folder's
+  content size without walking it (Properties computes that).
+  Columns resize by dragging a header
   edge — the edge follows the pointer exactly, and growth beyond
   what the pane has becomes the horizontal scrollbar rather than
   squeezing the other columns (double-click resets; Arrow keys
