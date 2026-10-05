@@ -122,7 +122,10 @@ export function makeSearchGrid(opts = {}) {
   const hits = [];                  // streamed results, arrival order
 
   const cols = () => [...userCols.map((id) => byId.get(id)), ...(showSource ? [SOURCE_COL] : [])];
-  const originOf = (r) => (r.bucket ? `${r.source || ''}/${r.bucket}` : (r.source || ''));
+  // originOf reads a hit's origin for the Source column and its sort: a
+  // source named after its bucket (the credential-import flow's own
+  // naming) reads once — the bucket drops out instead of doubling the name
+  const originOf = (r) => (r.bucket && r.bucket !== r.source ? `${r.source || ''}/${r.bucket}` : (r.source || ''));
   const isDirOf = (r) => !!(r.isDir || String(r.key).endsWith('/'));
   const hitType = (r) => {
     const k = String(r.key || '');

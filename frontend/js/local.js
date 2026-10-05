@@ -874,34 +874,39 @@ export class SidePane {
 
   // ---------- search: this pane's own scope ----------
 
-  // gotoHit lands a Search-window pick on THIS pane (its find button opens
-  // the window scoped to the pane's binding): folders open themselves,
-  // files open their parent with the row selected — the twin of main's
-  // gotoSearchHit, driving the pane's own bindings and history.
+  // gotoHit lands a Search-window pick on THIS pane (its find button
+  // opens the window with the pane's location preselected): the dispatch
+  // rides the HIT's origin, not the pane's binding — the Sources dropdown
+  // offers every source, so a pick can rebind the pane across sources.
+  // Folders open themselves, files open their parent with the row
+  // selected — the twin of main's gotoSearchHit, seated through navEntry
+  // (rebinding, no history push — the pick is a jump, not a step).
   async gotoHit(r) {
     if (!r?.key || !this.bound) return;
     const key = String(r.key);
     const isDir = r.isDir || key.endsWith('/');
-    const b = this.binding;
-    if (b.kind === 'local') {
-      // local hits carry absolute paths — the pane's own row keys — so the
+    if (!r.source && !r.bucket) {
+      // a workstation hit: local search hits carry no source — the key is
+      // the absolute native path (the pane's own row keys), so the
       // backend's canonical parent calc seats the file's folder
-      if (isDir) { this.navigate(key); return; }
+      if (isDir) { this.navEntry({ kind: 'local', dir: key }); return; }
       const parent = await app().LocalParent(key);
       this.pendingSelect = { key };
-      this.navigate(parent || key);
+      this.navEntry({ kind: 'local', dir: parent || key });
       return;
     }
-    if (b.kind === 'remote') {
-      if (isDir) { this.navigateRemote(key); return; }
+    if (r.source && !r.bucket) {
+      // a remote hit: the key is the engine path
+      if (isDir) { this.navEntry({ kind: 'remote', source: r.source, dir: key }); return; }
       const s = key.replace(/\/+$/, '');
       const i = s.lastIndexOf('/');
       this.pendingSelect = { key };
-      this.navigateRemote(i <= 0 ? '/' : s.slice(0, i + 1));
+      this.navEntry({ kind: 'remote', source: r.source, dir: i <= 0 ? '/' : s.slice(0, i + 1) });
       return;
     }
+    // an S3 hit: the key is the object's prefix
     this.pendingSelect = isDir ? null : { key };
-    this.navigateS3({ bucket: r.bucket || b.bucket, prefix: isDir ? key : parentPrefix(key) });
+    this.navEntry({ kind: 's3', source: r.source, bucket: r.bucket || '', dir: isDir ? key : parentPrefix(key) });
   }
 
   // consumePendingSelect focuses a row requested by gotoHit once its

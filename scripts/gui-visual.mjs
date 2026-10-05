@@ -7042,10 +7042,11 @@ await step('compare', async () => {
 });
 
 await step('pane-search', async () => {
-  // the pane's Search scopes to the pane alone: the scope dropdown offers
-  // exactly the pane's binding — labeled by its directory, no All sources
-  // — the call reaches the backend as a local-mode scope with that
-  // prefix, and a pick navigates the pane and selects the row
+  // the pane's find carries the full Sources dropdown — All data sources
+  // plus every configured source by NAME (never a raw src-* id) — with
+  // the pane's own location preselected: the run reaches the backend as
+  // a local-mode scope with that prefix, and a pick navigates the pane
+  // and selects the row
   await evalPage(() => {
     localStorage.removeItem('s3b-side-src');
     localStorage.removeItem('s3b-side-loc');
@@ -7060,11 +7061,13 @@ await step('pane-search', async () => {
   await waitFor(() => popoutVisible('search'), 4000, 'pane search window');
   const S = '#popout-root .popout[data-pop="search"]';
   await sleep(250);
-  await ok('one scope: the pane\'s own directory, no All entry', evalPage((s) => {
+  await ok('every source by name, the pane\'s own preselected', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    return sel.options.length === 1 && labels[0] === 'C:\\Users\\demo'
-      && !labels.some((l) => /all data sources/i.test(l));
+    return sel.options.length === 7 && /^all data sources$/i.test(labels[0])
+      && labels.includes('hetzner') && labels.includes('backup-box') && labels.includes('dav-claims')
+      && !labels.some((l) => /^src-/.test(l))
+      && labels[sel.selectedIndex] === 'C:\\Users\\demo';
   }, S));
   await page.fill(S + ' .sr-name input.input', '*.pdf');
   await page.press(S + ' .sr-name input.input', 'Enter');
@@ -7632,6 +7635,73 @@ await step('import-creds-kms', async () => {
   await ok('KMS-imported source appears in the tree', true);
 });
 
+await step('search-samename-source', async () => {
+  // a source named after its bucket (the credential import's own naming)
+  // reads once: the Search window's Source column shows the name alone,
+  // never the doubled name/bucket
+  await resetCalls();
+  await clickTree('hetzner');
+  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'main back on hetzner');
+  await page.click('#btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'search window');
+  const S = '#popout-root .popout[data-pop="search"]';
+  await sleep(150);
+  await page.fill(S + ' .sr-name input.input', 'kms-seed.txt');
+  await page.press(S + ' .sr-name input.input', 'Enter');
+  await sleep(150);
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 1, S), 4000, 'kms hit rows');
+  await ok('the Source column reads a same-named source once', evalPage((s) => {
+    const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((c) => c.textContent.trim());
+    return cells.length >= 1 && cells.every((c) => c === 'hetzner-kms') && !cells.some((c) => c.includes('/'));
+  }, S));
+  await shot('search-samename');
+  await closePopout('search');
+});
+
+await step('pane-search-names', async () => {
+  // the pane's find speaks names: bound to a source whose id is src-*,
+  // the Sources dropdown preselects the source by NAME (never the id),
+  // the run reaches the backend under that name, and the Source column
+  // reads the same-named bucket once
+  await resetCalls();
+  await evalPage(() => { window.__s3bSidePane.show({ drive: false }); window.__s3bSidePane.rebind('src-hetzner-kms'); });
+  await waitFor(async () => !!(await sideRow('kms-seed.txt')), 6000, 'pane bound to hetzner-kms');
+  await page.click('#local-btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'pane search window');
+  const S = '#popout-root .popout[data-pop="search"]';
+  await sleep(250);
+  await ok('every source by name, the pane\'s own preselected', evalPage((s) => {
+    const sel = document.querySelector(s + ' .sr-scope');
+    const labels = Array.from(sel.options).map((o) => o.textContent.trim());
+    return sel.options.length === 9 && /^all data sources$/i.test(labels[0])
+      && labels.includes('hetzner-kms') && labels.includes('from-file-photos')
+      && !labels.some((l) => /^src-/.test(l))
+      && labels[sel.selectedIndex] === 'hetzner-kms';
+  }, S));
+  await page.fill(S + ' .sr-name input.input', 'kms-seed.txt');
+  await page.press(S + ' .sr-name input.input', 'Enter');
+  await sleep(150);
+  await waitFor(async () => {
+    const c = await findCall('Search');
+    return !!c && c.args[0].mode === 's3' && c.args[0].source === 'hetzner-kms';
+  }, 4000, 'name-mode Search call');
+  const sc = await findCall('Search');
+  await ok('the pane scope reaches the backend by name, bucket folded', !!sc
+    && sc.args[0].mode === 's3' && sc.args[0].source === 'hetzner-kms'
+    && sc.args[0].bucket === '' && sc.args[1].pattern === 'kms-seed.txt');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 1, S), 4000, 'pane search results');
+  await ok('the Source column reads the same-named source once here too', evalPage((s) => {
+    const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((c) => c.textContent.trim());
+    return cells.length >= 1 && cells.every((c) => c === 'hetzner-kms');
+  }, S));
+  await closePopout('search');
+  await evalPage(() => {
+    window.__s3bSidePane.hide();
+    localStorage.removeItem('s3b-side-src');
+    localStorage.removeItem('s3b-side-loc');
+  });
+});
+
 await step('view-source-switch', async () => {
   // 'from-file-photos' is a bucket-scoped imported source: opening it pins
   // the engine to it (SetViewSource), mirrors it in the content bottom
@@ -7865,6 +7935,17 @@ await step('main-local', async () => {
   await ok('the parent-row climb rises out of the folder', evalPage(() =>
     document.querySelector('#breadcrumb .crumb.current')?.textContent === 'demo'));
   await evalPage(() => localStorage.removeItem('s3b-parent-row'));
+  // the bottom bar's source tag survives the local detour: the local view
+  // clears it (no source behind the rows) and returning to the very source
+  // that stood before the detour repaints it
+  await ok('a local view clears the bottom-bar source tag', evalPage(() =>
+    document.getElementById('grid-source').classList.contains('hidden')));
+  await navObjectsOf('hetzner', 'team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back on the source');
+  await ok('returning to the same source repaints the tag', evalPage(() => {
+    const tag = document.getElementById('grid-source');
+    return !tag.classList.contains('hidden') && tag.textContent === 'hetzner';
+  }));
   await evalPage(() => document.getElementById('toasts').replaceChildren());
 });
 

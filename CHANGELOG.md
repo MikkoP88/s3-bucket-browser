@@ -449,6 +449,20 @@ build stay multi-instance.
 
 ### Fixed
 
+- Search's Source column doubled a source named after its bucket
+  (testijotain/testijotain — the credential-import flow's own naming):
+  the column and the Search window's scope labels now collapse the
+  bucket when it matches the source's name, so the origin reads once.
+- The secondary pane's find button opened a one-option Search window
+  speaking raw source ids (src-*): the Sources dropdown now carries the
+  full list — All data sources plus every configured source by NAME —
+  with the pane's current location preselected, and a pick rebinds the
+  pane to the hit's own origin (any source, not just the pane's
+  binding).
+- The content bottom bar lost its data-source name after a local detour
+  (a workstation path pasted into the main path bar cleared the tag) and
+  it stayed lost on returning to the very source that stood before: the
+  repaint no longer skips when the source did not change.
 - The Data sources list carried a WebDAVS-sized hole at its left: the
   source-type chips sat right-aligned in a fixed 62px type column, so a
   list of S3 / SFTP sources parked ~30px of dead air left of every

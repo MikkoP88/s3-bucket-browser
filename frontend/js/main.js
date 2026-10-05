@@ -467,7 +467,8 @@ async function refreshSources() {
     toast(`Sources: ${err}`, 'error');
     sources = [];
   }
-  setGridSource(viewSource);
+  // a refresh on a local view keeps the tag clear (no source behind rows)
+  setGridSource(nav.current?.kind === 'local' ? '' : viewSource);
   renderSidebarHead();
   tree.setSources(sources, nav.current); // sources are the tree's top level
   // The side pane's source dropdown follows the source set
@@ -881,8 +882,11 @@ async function setViewSourceFor(loc) {
       toast(`View source: ${err}`, 'error');
     }
     viewSource = name;
-    setGridSource(name);
   }
+  // the bottom bar mirrors every source view's landing, changed or not:
+  // a local detour clears the tag without touching viewSource, so coming
+  // back to the SAME source must still repaint it
+  setGridSource(name);
   return name;
 }
 
@@ -4150,20 +4154,28 @@ function openSearch() {
   searchWindow({ scopes: searchScopes(), onOpen: gotoSearchHit });
 }
 
-// paneSearch opens the Search window scoped to the SECONDARY pane alone:
-// exactly one scope — the pane's current binding, from its current
-// location — and no All-sources entry, so the pane's find button searches
-// the pane's content only. Picks land on the pane through gotoHit (the
-// DOM window calls it directly; a native one rides the search:open relay
-// with the pane flag).
+// paneSearch opens the Search window from the SECONDARY pane's find
+// button: the full Sources list — All data sources plus every configured
+// source by NAME — with the pane's current location preselected, so the
+// run starts scoped to the pane and any other origin is one pick away.
+// The binding's source id resolves to its name here (the dropdown and
+// the backend both speak names, never raw src-* ids); a bucket-scoped
+// source named after its bucket rides its own dropdown entry (bucket
+// '') instead of doubling the name. Picks land on the pane through
+// gotoHit whatever the hit's origin (the DOM window calls it directly; a
+// native one rides the search:open relay with the pane flag).
 function paneSearch() {
   if (!localPane.bound) return;
   const b = localPane.binding;
-  let scope;
-  if (b.kind === 's3') scope = { mode: 's3', source: b.source, bucket: localPane.bucket || '', prefix: localPane.dir || '' };
-  else if (b.kind === 'remote') scope = { mode: 'remote', source: b.source, prefix: localPane.dir || '/' };
-  else scope = { mode: 'local', prefix: localPane.dir || '' };
-  searchWindow({ scopes: [scope], solo: true, onOpen: (r) => localPane.gotoHit(r) });
+  const src = sources.find((x) => x.id === b.source || x.name === b.source);
+  const nm = (src && src.name) || b.source;
+  let preset;
+  if (b.kind === 's3') {
+    const bucket = src && src.bucket ? '' : (localPane.bucket || '');
+    preset = { mode: 's3', source: nm, bucket, prefix: localPane.dir || '' };
+  } else if (b.kind === 'remote') preset = { mode: 'remote', source: nm, prefix: localPane.dir || '/' };
+  else preset = { mode: 'local', prefix: localPane.dir || '' };
+  searchWindow({ scopes: searchScopes(), preset, pane: true, onOpen: (r) => localPane.gotoHit(r) });
 }
 
 // ============================ profile file session (M8) ============================
