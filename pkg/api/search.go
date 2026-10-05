@@ -99,8 +99,8 @@ type SearchDone struct {
 type searchJob struct {
 	name   string // source name (routing + per-source errors)
 	s3     bool
-	local  bool // local mode: prefix is an absolute directory, not a source
-	bucket string // s3 scoped mode: one bucket; "": every bucket
+	local  bool   // local mode: prefix is an absolute directory, not a source
+	bucket string // s3: one bucket (a bucket-scoped source's own); "": every bucket
 	prefix string // s3 prefix | remote root path | local absolute directory
 }
 
@@ -117,7 +117,14 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 	case "", "all":
 		for _, src := range a.workspaceSources() {
 			if src.Type == profile.TypeS3 && src.S3 != nil {
-				jobs = append(jobs, searchJob{name: src.Name, s3: true})
+				// the source's own boundary rides with the job: a
+				// bucket-scoped source searches exactly its bucket — the
+				// endpoint's bucket list sees buckets that belong to other
+				// sources over the same endpoint, and a leaked walk would
+				// stamp their hits with this source's name on the Source
+				// column — while an account-wide source (Bucket "") keeps
+				// its every-bucket walk.
+				jobs = append(jobs, searchJob{name: src.Name, s3: true, bucket: src.Bucket})
 				continue
 			}
 			// Remote trees carry no storage class — a class filter can
@@ -135,10 +142,27 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 		name := scope.Source
 		if name == "" {
 			name = a.currentViewSource()
-		} else if src, err := a.sourceByIDOrName(name); err == nil {
-			name = src.Name // canonical name for routing
 		}
-		jobs = append(jobs, searchJob{name: name, s3: true, bucket: scope.Bucket, prefix: scope.Prefix})
+		bucket := scope.Bucket
+		if src, err := a.sourceByIDOrName(name); err == nil {
+			name = src.Name // canonical name for routing
+			// a bucket-scoped source IS one bucket: its search never
+			// walks past it, whatever the scope carried. The endpoint's
+			// bucket list sees buckets that belong to other sources over
+			// the same endpoint, and a leaked walk would stamp their hits
+			// with this source's name on the Source column.
+			if src.Bucket != "" {
+				bucket = src.Bucket
+			}
+		}
+		// the walk prefix wears its trailing slash — folder keys arrive
+		// as "docs/" from every caller, but a bare "docs" must not also
+		// sweep "docs-old/"; the same shape dirPrefix gives the CLI.
+		prefix := ""
+		if p := strings.Trim(scope.Prefix, "/"); p != "" {
+			prefix = p + "/"
+		}
+		jobs = append(jobs, searchJob{name: name, s3: true, bucket: bucket, prefix: prefix})
 	case "remote":
 		src, _, err := a.remoteSource(scope.Source) // validates sync
 		if err != nil {
@@ -251,7 +275,10 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 						break
 					}
 					searched[j.name] = true
-					st, err := search.Run(ctx, c.S3, b, "", filt, onHit(j.name))
+					// the job's prefix scopes the walk itself — without
+					// it a folder-scoped search would sweep the whole
+					// bucket and filter nothing
+					st, err := search.Run(ctx, c.S3, b, j.prefix, filt, onHit(j.name))
 					scanned += st.Scanned
 					if err != nil && ctx.Err() == nil {
 						srcErrs = append(srcErrs, fmt.Sprintf("%s: %v", j.name, err))

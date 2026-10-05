@@ -811,7 +811,10 @@ function shim() {
     // point wireDrop() looks for.
     OnFileDrop: (cb) => window.runtime.EventsOn('wails:file-drop',
       (x, y, paths) => cb(x, y, paths)),
-    EventsEmit: () => {},
+    // mirrors the real Wails runtime: an emit from the page reaches every
+    // subscriber of the name — the battery speaks it to interleave a
+    // foreign run's pages while a window is still waiting for its token
+    EventsEmit: (name, ...payload) => { emit(name, ...payload); },
     WindowSetTitle: () => {},
     WindowCenter: () => {},
     WindowMaximise: () => {},
@@ -1180,7 +1183,8 @@ function shim() {
     // kind, strict size bounds, age, class; scope modes all/s3/remote;
     // done stats count unique sources
     // searched and the remote sources a class filter skipped. A
-    // world.fault.searchDelayMs parks the run so Stop is testable.
+    // world.fault.searchDelayMs parks the run so Stop is testable, and
+    // searchPendingMs parks the CALL so early-buffered pages replay.
     Search: (scope = {}, opts = {}) => {
       const t = token();
       const run = () => {
@@ -1301,6 +1305,11 @@ function shim() {
       const delay = ((world.fault || {}).searchDelayMs) | 0;
       if (delay > 0) setTimeout(run, delay);
       else run();
+      // searchPendingMs parks the CALL, not the run: the run's own pages
+      // stream while the frontend is still waiting for its token — the
+      // early-buffer window every concurrent-run leg rides
+      const pend = ((world.fault || {}).searchPendingMs) | 0;
+      if (pend > 0) return new Promise((res) => setTimeout(() => res(t), pend));
       return t;
     },
     // a pick in a floating search window has no nav to run there — it
@@ -4759,6 +4768,29 @@ await step('search-window', async () => {
   await ok('button returns to Search after the stop', evalPage((s) =>
     document.querySelector(s + ' .modal-foot button.primary').textContent.trim() === 'Search', S));
   await evalPage(() => { window.__shim.world.fault = {}; });
+
+  // a foreign run streaming while this window still waits for its own
+  // token must never paint here: pages that arrive between subscribe and
+  // token buffer early, and their replay filters by token exactly like
+  // the live path — an unfiltered replay painted a sibling window's
+  // pages, sources and all, into this window's results
+  await evalPage(() => { window.__shim.world.fault = { searchPendingMs: 400 }; });
+  await runSearch('readme');
+  await sleep(120); // the call is still in flight — the early buffer is live
+  await evalPage(() => {
+    window.runtime.EventsEmit('search:page', { token: 'sforeign', matched: 1, entries: [{
+      key: 'leak/foreign.txt', name: 'foreign.txt', isDir: false, size: 10,
+      source: 'toinentesti', bucket: 'testijotain',
+    }] });
+  });
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 1, S),
+    4000, 'own rows after the pending window');
+  await evalPage(() => { window.__shim.world.fault = {}; });
+  await ok('a foreign token in the early buffer never paints this window', evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'));
+    return rows.some((r) => r.textContent.includes('readme.md'))
+      && !rows.some((r) => r.textContent.includes('foreign.txt'));
+  }, S));
   await closePopout('search');
 
   // a native search window is its own webview at ?popout=search: renders

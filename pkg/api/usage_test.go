@@ -49,6 +49,23 @@ func newUsageServer(t testing.TB, buckets ...usageBucket) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := strings.Trim(r.URL.Path, "/")
+		// GET / is ListBuckets — every bucket the endpoint serves. The
+		// search engine asks it only for an account-wide source's walk;
+		// a bucket-scoped source never does (its boundary is configured,
+		// not discovered).
+		if name == "" {
+			var sb strings.Builder
+			sb.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+			sb.WriteString("<ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">")
+			sb.WriteString("<Owner><ID>fake</ID><DisplayName>fake</DisplayName></Owner><Buckets>")
+			for _, b := range buckets {
+				sb.WriteString("<Bucket><Name>" + b.name + "</Name></Bucket>")
+			}
+			sb.WriteString("</Buckets></ListAllMyBucketsResult>")
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, sb.String())
+			return
+		}
 		var b *usageBucket
 		for i := range buckets {
 			if buckets[i].name == name {

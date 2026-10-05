@@ -4140,8 +4140,14 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false, srcs = []) {
     }
     token = tok;
     if (!running) { api.CancelSearch(tok); return; } // closed meanwhile
+    // the replay honors the token exactly like the live filter above:
+    // while the call was in flight a concurrent window's run (the native
+    // Search popout, the pane's solo window) streams through the same bus,
+    // and an unfiltered replay would paint its pages — sources and all —
+    // into this window's results
     for (const e of early.splice(0)) {
-      if (e.page) onPage(e.page); else onDone(e.done);
+      if (e.page) { if (e.page.token === tok) onPage(e.page); }
+      else if (e.done.token === tok) onDone(e.done);
     }
   }
 }

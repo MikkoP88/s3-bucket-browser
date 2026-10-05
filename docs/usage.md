@@ -333,7 +333,14 @@ directory compare) with S3 and the secondary pane.
   (`S3 · hetzner` — the type badge's text form; the pane's source
   picker labels its options the same way), an S3
   source searched across every bucket it holds, a remote source
-  (local, SFTP, FTP, WebDAV) from its root. Everything else folds
+  (local, SFTP, FTP, WebDAV) from its root. Every search honors
+  each source's own boundary — a bucket-scoped S3 source is
+  searched in its one bucket alone (buckets that belong to other
+  sources over the same endpoint never leak in under its name), an
+  account-wide source keeps its every-bucket walk, and a folder
+  preset scopes the walk itself to that folder — and two Search
+  windows running at once never cross-paint: every page a window
+  paints belongs to its own run's token. Everything else folds
   out under the *More filters* disclosure chip, whose label counts
   the filters you have set: **Kind** (any/files/folders),
   **Limit**, **Extension** (comma list, dot optional), **Path

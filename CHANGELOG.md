@@ -676,6 +676,25 @@ build stay multi-instance.
 - The macOS Help menu no longer carries Wails' default "Learn More"
   item, which navigated the app window itself to wails.io (thanks
   @Tapiolavi — PR #2).
+- **Search honors each source's own boundary — no more cross-source
+  leaks.** Two S3 sources over one endpoint made the Search window a
+  sharing ground: the engine walked the ENDPOINT's bucket list for
+  every source, so a bucket-scoped source returned hits from buckets
+  belonging to other sources, stamped with the searching source's
+  name (the Source column read pairings like toinentesti/testijotain
+  the workspace never configured) — and a folder-scoped search swept
+  its whole bucket, because the scope's prefix was dropped on the
+  floor. Each source's own boundary now rides with the search job:
+  a bucket-scoped source searches exactly its one bucket (by name or
+  by the pane's raw src-* id alike), an account-wide source keeps
+  its every-bucket walk, and the walk itself starts inside the
+  scope's folder prefix; the Search window's early-page replay
+  filters by token like the live path, so a run streaming while
+  another window's search is in flight can no longer paint its
+  pages — sources and all — into that window's results. The engine
+  refusals are pinned by Go tests against real search runs
+  (search_scope_test.go), since the GUI battery's backend mock was
+  already honest.
 
 ## [1.1.0-beta.21] — 2026-09-27
 
