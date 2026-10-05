@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -75,22 +76,31 @@ func TestLocalRemoveForceGate(t *testing.T) {
 // A filesystem-root operand is a per-item refusal on BOTH rungs — and the
 // counting pass never walks it to decide (pinning the GUI-57 regression:
 // a root had to fail fast, not after a full-drive walk that ends in the
-// same refusal).
+// same refusal). Drive roots are refused BY SHAPE on every platform: a
+// pasted C:\ meets the same gate on a mac or linux runner, where the OS
+// would otherwise only answer "no such file" after the gate stayed quiet.
 func TestLocalRemoveRootRefusedFast(t *testing.T) {
 	a := newTestApp(t)
 	a.Startup(context.Background())
 
 	for _, force := range []bool{false, true} {
-		res, err := a.LocalRemove([]string{`C:\`}, force)
-		if err != nil {
-			t.Fatalf("root operand (force=%v) must be a per-item refusal, not a call error: %v", force, err)
-		}
-		if len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "root") || res.Deleted != 0 {
-			t.Fatalf("root refusal (force=%v) = %+v", force, res)
+		for _, root := range []string{`C:\`, "/"} {
+			res, err := a.LocalRemove([]string{root}, force)
+			if err != nil {
+				t.Fatalf("root operand %q (force=%v) must be a per-item refusal, not a call error: %v", root, force, err)
+			}
+			if len(res.Errors) != 1 || !strings.Contains(res.Errors[0], "root") || res.Deleted != 0 {
+				t.Fatalf("root refusal (%q, force=%v) = %+v", root, force, res)
+			}
 		}
 	}
-	if _, err := os.Stat(`C:\`); err != nil {
-		t.Fatalf("C:\\ became unreadable after the refused delete: %v", err)
+	if _, err := os.Stat("/"); err != nil {
+		t.Fatalf("/ became unreadable after the refused delete: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(`C:\`); err != nil {
+			t.Fatalf("C:\\ became unreadable after the refused delete: %v", err)
+		}
 	}
 }
 

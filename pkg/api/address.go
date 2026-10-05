@@ -82,9 +82,12 @@ func (a *App) ParseAddress(raw, hint string) (*AddressResult, error) {
 		// 3. local:// — the local surface's own canonical form (the
 		// secondary pane's path editor): the workstation directory, or
 		// the filesystem roots when empty. A configured source named
-		// "local" already won above.
+		// "local" already won above. Backslash forms stay native on
+		// every platform (FromSlash folds only the slash forms; folding
+		// backslashes first would rewrite a Windows-shaped directory
+		// pasted on a mac or linux workstation).
 		if strings.EqualFold(scheme, "local") {
-			return &AddressResult{Kind: "local", Prefix: filepath.FromSlash(strings.ReplaceAll(rest, "\\", "/"))}, nil
+			return &AddressResult{Kind: "local", Prefix: filepath.FromSlash(rest)}, nil
 		}
 		// 4. connection URIs: match a configured source, else stand one up.
 		if u, ok, err := profile.ParseConnURI(raw); ok {
@@ -294,7 +297,11 @@ func bareLocalDir(raw string) (string, bool) {
 		if err != nil {
 			return "", false
 		}
-		return filepath.Join(home, strings.TrimPrefix(raw, "~")), true
+		// the separator after ~ belongs to the grammar, not the tail —
+		// either spelling is accepted, and the tail rejoins the home dir
+		// with the platform's own separators (a literal \ would otherwise
+		// survive the join on unix)
+		return filepath.Join(home, strings.TrimLeft(strings.TrimPrefix(raw, "~"), `/\`)), true
 	}
 	if len(raw) >= 3 && isDriveLetter(raw[0]) && raw[1] == ':' && (raw[2] == '\\' || raw[2] == '/') {
 		return filepath.FromSlash(raw), true

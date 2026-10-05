@@ -296,10 +296,10 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 
 // CopyResult reports a copy/move outcome.
 type CopyResult struct {
-	Copied int      `json:"copied"`
-	Moved  int      `json:"moved"`
-	Skipped int     `json:"skipped,omitempty"` // existing destinations kept under the skip policy
-	Errors []string `json:"errors,omitempty"`
+	Copied  int      `json:"copied"`
+	Moved   int      `json:"moved"`
+	Skipped int      `json:"skipped,omitempty"` // existing destinations kept under the skip policy
+	Errors  []string `json:"errors,omitempty"`
 }
 
 // CopySelection server-side copies (or moves) a selection into dstBucket/

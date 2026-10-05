@@ -327,10 +327,18 @@ func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, er
 }
 
 // isFsRoot reports whether p is a filesystem root (drive root or "/"),
-// which local deletes must never touch.
+// which local deletes must never touch. Drive roots are recognized BY
+// SHAPE on every platform: filepath.VolumeName knows volumes only on
+// Windows, but a pasted C:\ must meet the same fast policy refusal on a
+// mac or linux workstation as it does at home — the gate decides before
+// the OS is ever asked.
 func isFsRoot(p string) bool {
 	if p == "" || p == "/" || p == "\\" {
 		return true
+	}
+	if len(p) >= 2 && isDriveLetter(p[0]) && p[1] == ':' &&
+		(len(p) == 2 || (len(p) == 3 && (p[2] == '\\' || p[2] == '/'))) {
+		return true // a drive root (or a bare drive's current dir) — refused everywhere
 	}
 	vol := filepath.VolumeName(filepath.Clean(p))
 	rest := strings.TrimPrefix(filepath.Clean(p), vol)
