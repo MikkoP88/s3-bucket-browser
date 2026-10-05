@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0-beta.1] — 2026-10-05
+
 ### Added
 
 - **Folder sizes fill in — every view, every source.** A listing
