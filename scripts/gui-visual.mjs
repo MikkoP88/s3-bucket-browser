@@ -1502,20 +1502,34 @@ async function rowClickPoint(h) {
     return { x: Math.round(r.width / 2), y: Math.round(r.height / 2) };
   });
 }
+// an async repaint — the folder-size backfill filling sizes in after a
+// listing lands, a tree expanding after a navigation — can swap the
+// row or tree node between resolving the handle and clicking it; the
+// re-resolve retries when the node detached mid-gesture
+async function clickRetry(what, resolve, act, tries = 3) {
+  for (let i = 0; ; i++) {
+    try {
+      const h = await resolve();
+      if (!h) throw new Error(what);
+      await act(h);
+      return;
+    } catch (e) {
+      if (i >= tries - 1 || !/not attached/i.test(String(e?.message || ''))) throw e;
+      await sleep(60);
+    }
+  }
+}
 async function clickRow(label) {
-  const h = await gridRow(label);
-  if (!h) throw new Error(`no grid row "${label}"`);
-  await h.asElement().click({ position: await rowClickPoint(h) });
+  await clickRetry(`no grid row "${label}"`, () => gridRow(label),
+    async (h) => h.asElement().click({ position: await rowClickPoint(h) }));
 }
 async function dblClickRow(label) {
-  const h = await gridRow(label);
-  if (!h) throw new Error(`no grid row "${label}"`);
-  await h.asElement().dblclick({ position: await rowClickPoint(h) });
+  await clickRetry(`no grid row "${label}"`, () => gridRow(label),
+    async (h) => h.asElement().dblclick({ position: await rowClickPoint(h) }));
 }
 async function clickTree(label) {
-  const h = await treeRow(label);
-  if (!h) throw new Error(`no tree node "${label}"`);
-  await h.asElement().click();
+  await clickRetry(`no tree node "${label}"`, () => treeRow(label),
+    (h) => h.asElement().click());
 }
 async function rightClick(h) { await h.asElement().click({ button: 'right' }); }
 const closeCtx = async () => {
@@ -1523,17 +1537,15 @@ const closeCtx = async () => {
   await sleep(60);
 };
 async function openCtx(label) {
-  const h = await gridRow(label);
-  if (!h) throw new Error(`no grid row "${label}"`);
-  await rightClick(h);
+  await clickRetry(`no grid row "${label}"`, () => gridRow(label), rightClick);
   await sleep(60);
   return evalPage(() => document.querySelectorAll('#ctxmenu:not(.hidden) .item').length);
 }
 async function ctxItem(re) {
-  const h = await elOrNull((src) => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
-    .find((i) => new RegExp(src, 'i').test(i.textContent)) || null, re.source);
-  if (!h) throw new Error(`no ctxmenu item /${re.source}/`);
-  await h.asElement().click();
+  await clickRetry(`no ctxmenu item /${re.source}/`,
+    () => elOrNull((src) => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => new RegExp(src, 'i').test(i.textContent)) || null, re.source),
+    (h) => h.asElement().click());
   await sleep(80);
 }
 async function closeModal() {
@@ -1967,8 +1979,8 @@ await step('connection-states', async () => {
 
 await step('selection-status', async () => {
   await clickRow('readme.md');
-  const second = await gridRow('budget-2026.xlsx');
-  await second.asElement().click({ modifiers: ['Control'] });
+  await clickRetry('no grid row "budget-2026.xlsx"', () => gridRow('budget-2026.xlsx'),
+    (h) => h.asElement().click({ modifiers: ['Control'] }));
   await ok('status bar counts 2', (await txt('#status-selection')).includes('2'));
   await ok('header checkbox indeterminate', evalPage(() => {
     const rows = document.querySelectorAll('#grid-head input[type=checkbox]');
@@ -2070,8 +2082,8 @@ await step('copy-as-ctxmenu', async () => {
     && c.args[0] === 'https://hetzner.s3.example.test/team-files/readme.md'
     && !!sc && sc.args[0] === 'hetzner' && sc.args[1] === 'team-files'
     && sc.args[2][0] === 'readme.md');
-  const second = await gridRow('scan.png');
-  await second.asElement().click({ modifiers: ['Control'] });
+  await clickRetry('no grid row "scan.png"', () => gridRow('scan.png'),
+    (h) => h.asElement().click({ modifiers: ['Control'] }));
   await openCtx('scan.png');
   await ctxItem(/^copy url$/i);
   c = await findCall('ClipboardSetText');

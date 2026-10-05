@@ -1566,8 +1566,9 @@ Search objects by name, size, age, kind or storage class
 
 Streams every object under the prefix and prints the ones matching all filters.
 --name is a substring, or a glob when it contains * or ? (matched against the full key,
-so 'backup*' also matches nested paths). Sizes accept 10MB / 1.5GB forms; ages 30d / 24h;
---kind file|dir keeps only files or folders.
+so 'backup*' also matches nested paths). --ext filters by name extension and --path by a
+substring of the parent directory (both case-insensitive). Sizes accept 10MB / 1.5GB forms;
+ages 30d / 24h; --kind file|dir keeps only files or folders.
 
 ```
 s3b find s3://bucket[/prefix] [flags]
@@ -1577,12 +1578,14 @@ s3b find s3://bucket[/prefix] [flags]
 
 ```
       --class string     exact storage class (e.g. GLACIER)
+      --ext string       comma-separated name extensions (e.g. pdf,jpg; dot optional)
       --kind string      match only files or only folders (file|dir; folders are keys ending in /)
       --larger string    match objects larger than this (e.g. 10MB)
       --limit int        stop after N matches (0 = unlimited)
   -n, --name string      substring or glob to match against the key
       --newer string     last modified within this (e.g. 24h)
       --older string     last modified longer ago than this (e.g. 30d)
+      --path string      substring the parent directory must contain (e.g. docs)
       --smaller string   match objects smaller than this (e.g. 500KB)
 
 ```
@@ -2280,7 +2283,8 @@ s3b rb s3://bucket [flags]
 ### Options
 
 ```
-      --force   empty the bucket before removing it (L2 destructive)
+      --dry-run   show what a forced removal would delete, do nothing
+      --force     empty the bucket before removing it (L2 destructive)
 
 ```
 
