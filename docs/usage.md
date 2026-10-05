@@ -242,7 +242,9 @@ directory compare) with S3 and the secondary pane.
   name means that source's home view (the bucket list, or a scoped
   source's root). The line is a
   universal address bar: the `Name/contents` form pastes straight
-  back; a bare local path (`C:\Projects`,
+  back; a typed form (`s3://hetzner/team-files/`, `sftp://backup-box/`
+  — the scheme is the source's type, the first segment its name)
+  opens that source outright; a bare local path (`C:\Projects`,
   `\\server\share`, `~`, a `file:///C:/Users/...` or
   `file:///home/...` URL), an `s3://bucket/key` URI or a connection
   URI (`ftp://user:pass@host:21/root`, `sftp://`, `webdav://`) opens
@@ -255,8 +257,9 @@ directory compare) with S3 and the secondary pane.
   and upload work as anywhere else, while rename, New folder and New
   file rest (no local API — Explorer's job, the toasts say so) and
   drags between two local spots stay Explorer's too. An `s3://` URI
-  resolves the source that owns the bucket; a connection URI no source
-  matches stands its source up on the fly and opens its root. Back /
+  names a source outright when its first segment is one (else it
+  resolves the source that owns the bucket); a connection URI no
+  source matches stands its source up on the fly and opens its root. Back /
   forward
   history works like Explorer — including its finer rule: any climb
   to an ancestor (a breadcrumb segment, the data-source tree, the

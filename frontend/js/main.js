@@ -1487,8 +1487,9 @@ function canonicalPath(loc) {
 // editPath swaps the breadcrumb for a one-line editable field holding the
 // canonical path: copy out, paste in, Enter navigates, Esc cancels. The
 // line goes through resolveAddress — the backend's universal ladder — so
-// any address works: app paths (Name/contents or NAME://...), s3://
-// URIs, connection URIs (an unconfigured one stands its source up),
+// any address works: app paths (Name/contents, NAME:// or the typed
+// scheme://Name form), s3:// URIs, connection URIs (an unconfigured
+// one stands its source up),
 // file:/// URLs and bare local paths — a local address opens the
 // workstation folder right here in the primary pane.
 function editPath() {
@@ -1517,7 +1518,8 @@ function editPath() {
 }
 
 // resolveAddress runs one edited line through the backend's ParseAddress
-// ladder: any app path (Name/contents or NAME://...), s3:// URI,
+// ladder: any app path (Name/contents, NAME:// or the typed
+// scheme://Name), s3:// URI,
 // connection URI (a configured source opens at the URI's root; an
 // unconfigured one stands up through SaveSource and lands in the tree),
 // file URL

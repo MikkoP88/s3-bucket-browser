@@ -332,6 +332,18 @@ build stay multi-instance.
 
 ### Changed
 
+- **Typed source addresses: scheme://Name/contents pastes into any
+  path bar.** Every app-added data source now carries its canonical
+  address form — the scheme is the source's type, the first segment
+  its name (`s3://hetzner/team-files/`, `sftp://backup-box/`) — and
+  the universal address ladder takes it: the named source opens
+  outright, no stand-up, in the main view or the secondary pane. Real
+  connection URIs are untouched (an authority segment — user@, :port,
+  ?query, #fragment — still rides the connection family, and a first
+  segment naming no source of that type falls through to it). The
+  editors' own form is unchanged: the editable line still seeds and
+  accepts the bare Name/contents display form, and the resting
+  breadcrumb keeps its type-icon presentation.
 - **The Dual-pane picker's Home view wears a house.** The destination
   picker's restart option drops the 'Local' type chip for a house
   glyph in the picker's own icon idiom — a chip speaks a source

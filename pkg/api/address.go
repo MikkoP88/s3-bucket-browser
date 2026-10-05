@@ -1,7 +1,8 @@
 // address.go resolves one pasted address — the single ladder both path
 // editors (the main pane's and the secondary pane's) submit their lines
-// to. App paths (NAME://contents, or the editors' normalized display
-// form Name/contents) name a configured data source directly; s3:// and
+// to. App paths name a configured data source directly: NAME://contents,
+// TYPE://Name/contents (the scheme is the source's type) or the editors'
+// normalized display form Name/contents; s3:// and
 // connection URIs (sftp://user:pass@host:port/root)
 // resolve against the workspace's configured sources, standing one up on
 // the fly when nothing matches (NewSource — the caller saves it through
@@ -51,7 +52,30 @@ func (a *App) ParseAddress(raw, hint string) (*AddressResult, error) {
 				return sourceLoc(s, rest), nil
 			}
 		}
-		// 2. s3://bucket/key — resolve which account owns it.
+		// 1b. TYPE://Name/contents — the scheme is the data source's
+		// TYPE (s3, sftp, ftp, ...) and the first segment after it
+		// names a configured source OF THAT TYPE: the canonical address
+		// form every app-added data source carries. Real connection
+		// URIs never match — their authority segment carries one of
+		// @, :, ?, # — and fall through to step 4, as does a first
+		// segment naming no source of the type.
+		if typ, typed := profile.SchemeType(scheme); typed {
+			seg, content := rest, ""
+			if j := strings.IndexAny(rest, `/\`); j >= 0 {
+				seg, content = rest[:j], rest[j+1:]
+			}
+			if seg != "" && !strings.ContainsAny(seg, "@:?#") {
+				for idx := range srcs {
+					s := &srcs[idx]
+					if s.Type == typ &&
+						(strings.EqualFold(s.Name, seg) || (s.ID != "" && strings.EqualFold(s.ID, seg))) {
+						return sourceLoc(s, content), nil
+					}
+				}
+			}
+		}
+		// 2. s3://bucket/key — resolve which account owns it (a first
+		// segment naming an S3 source already won at 1b).
 		if strings.EqualFold(scheme, "s3") {
 			return s3Loc(srcs, rest, hint)
 		}

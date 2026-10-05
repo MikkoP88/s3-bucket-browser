@@ -604,6 +604,15 @@ function shim() {
   // (the world's fixtures are backslashed) and ~ expands to the LocalHome
   // fixture, standing in for os.UserHomeDir.
   const CONN_TYPES = ['sftp', 'scp', 'ftp', 'ftps', 'webdav', 'webdavs'];
+  // schemeType mirrors profile.SchemeType: the URL schemes that ARE
+  // data source types — the six remote connection families plus s3
+  // (s3:// rides here even though parseConnURI leaves it out; file and
+  // local are not types)
+  const schemeType = (sch) => {
+    const sl = String(sch || '').toLowerCase();
+    if (sl === 's3') return 's3';
+    return CONN_TYPES.includes(sl) ? sl : null;
+  };
   const toWin = (p) => String(p || '').replace(/\//g, '\\');
   const dec = (v) => { try { return decodeURIComponent(v); } catch (e) { return v; } };
   const bareLocalDir = (r) => {
@@ -722,6 +731,24 @@ function shim() {
       const src = srcs.find((x) => x.name.toLowerCase() === scheme.toLowerCase()
         || String(x.id || '').toLowerCase() === scheme.toLowerCase());
       if (src) return sourceLoc(src, rest);
+      // 1b. TYPE://Name/contents — the scheme is the data source's
+      // TYPE and the first segment after it names a configured source
+      // OF THAT TYPE (the canonical scheme://Name/Content address).
+      // A real connection URI's authority carries @ : ? # — those,
+      // and first segments naming no source of the type, fall through
+      // to the connection step below.
+      const tscheme = schemeType(scheme);
+      if (tscheme) {
+        const j = rest.search(/[\\/]/);
+        const tseg = j >= 0 ? rest.slice(0, j) : rest;
+        const trest = j >= 0 ? rest.slice(j + 1) : '';
+        if (tseg && !/[@:?#]/.test(tseg)) {
+          const tsrc = srcs.find((x) => x.type === tscheme
+            && (x.name.toLowerCase() === tseg.toLowerCase()
+              || String(x.id || '').toLowerCase() === tseg.toLowerCase()));
+          if (tsrc) return sourceLoc(tsrc, trest);
+        }
+      }
       if (scheme.toLowerCase() === 's3') return s3Loc(srcs, rest, hint);
       if (scheme.toLowerCase() === 'local') return { kind: 'local', prefix: toWin(rest) };
       const u = parseConnURI(r);
@@ -6645,6 +6672,18 @@ await step('side-pane-editpath', async () => {
   await ok('a Name/contents path rebinds a locally-bound pane', evalPage(() =>
     !document.querySelector('#local-crumb input.path-edit')
     && window.__s3bSidePane.binding.kind === 's3'));
+  // the typed form scheme://Name/contents rides the same ladder — the
+  // scheme is the source's type, the first segment its name
+  await evalPage(() => document.querySelector('#local-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor typed');
+  await page.fill('#local-crumb input.path-edit', 'sftp://backup-box/');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane rebound via typed scheme');
+  await ok('a typed scheme:// address rebinds the pane to the named source', evalPage(() =>
+    !document.querySelector('#local-crumb input.path-edit')
+    && window.__s3bSidePane.binding.kind === 'remote'
+    && (window.__s3bSidePane.binding.name || window.__s3bSidePane.binding.source) === 'backup-box'));
   // an unbound pane opens the editor empty — a pasted path binds it
   await evalPage(() => { window.__s3bSidePane.reset(); });
   await evalPage(() => document.querySelector('#local-pane .navbar')
@@ -7778,6 +7817,30 @@ await step('path-address', async () => {
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical s3');
   await ok('an s3:// URI lands on the owning source', (await editorValue()) === 'hetzner/team-files/docs/');
+  await page.keyboard.press('Escape');
+  // the typed form scheme://Name/contents — the scheme is the source's
+  // TYPE and the first segment its NAME: the canonical address every
+  // app-added data source carries (the editors themselves still seed
+  // and speak the Name/contents form)
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open typed-s3');
+  await page.fill('#breadcrumb input.path-edit', 's3://hetzner/team-files/');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'main navigated via typed s3://');
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor canonical typed-s3');
+  await ok('a typed s3:// address names its source outright', (await editorValue()) === 'hetzner/team-files/');
+  await page.keyboard.press('Escape');
+  await resetCalls();
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor open typed-sftp');
+  await page.fill('#breadcrumb input.path-edit', 'sftp://backup-box/');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'main navigated via typed sftp://');
+  await openEditor();
+  await waitFor(editorOpen, 4000, 'editor canonical typed-sftp');
+  await ok('a typed sftp:// address opens the configured source — no stand-up', (await editorValue()) === 'backup-box/'
+    && (await findCall('SaveSource')) === null);
   await page.keyboard.press('Escape');
   // a bare source name opens that source's home — the account-wide
   // source lands on its buckets view

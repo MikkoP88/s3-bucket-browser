@@ -34,6 +34,34 @@ func ParseS3BucketURI(raw string) (bucket string, ok bool) {
 	return b, true
 }
 
+// connSchemes maps URL scheme to source type for the six remote
+// connection families. s3 is absent on purpose: an s3:// URL names a
+// bucket, not a host, so it never carries the user@host:port authority
+// a connection URL is.
+var connSchemes = map[string]string{
+	"sftp":    TypeSFTP,
+	"scp":     TypeSCP,
+	"ftp":     TypeFTP,
+	"ftps":    TypeFTPS,
+	"webdav":  TypeWebDAV,
+	"webdavs": TypeWebDAVS,
+}
+
+// SchemeType maps a URL scheme to the data source TYPE whose canonical
+// address speaks it: the six remote connection schemes plus s3 — s3://
+// rides here even though connSchemes leaves it out, because the typed
+// address form TYPE://Name/contents starts with the source's own type.
+// ok=false for everything else (file, local, unknown): those are not
+// data source types.
+func SchemeType(scheme string) (typ string, ok bool) {
+	s := strings.ToLower(scheme)
+	if s == TypeS3 {
+		return TypeS3, true
+	}
+	typ, ok = connSchemes[s]
+	return typ, ok
+}
+
 // ParseConnURI parses a scheme://user:pass@host:port/root connection
 // URL. ok=false for anything that is not one of the six remote schemes
 // (plain names, s3:// URIs); err carries malformed-URL detail when ok=true.
@@ -42,14 +70,7 @@ func ParseConnURI(raw string) (u ConnURI, ok bool, err error) {
 	if i <= 0 {
 		return ConnURI{}, false, nil
 	}
-	typ, known := map[string]string{
-		"sftp":    TypeSFTP,
-		"scp":     TypeSCP,
-		"ftp":     TypeFTP,
-		"ftps":    TypeFTPS,
-		"webdav":  TypeWebDAV,
-		"webdavs": TypeWebDAVS,
-	}[strings.ToLower(raw[:i])]
+	typ, known := connSchemes[strings.ToLower(raw[:i])]
 	if !known {
 		return ConnURI{}, false, nil
 	}

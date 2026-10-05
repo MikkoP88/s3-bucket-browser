@@ -1009,8 +1009,9 @@ export class SidePane {
   }
 
   // parsePaneAddress maps an edited line to a pane history entry through
-  // the backend's ParseAddress ladder: any app path (Name/contents or
-  // NAME:// — rebinding the pane when it names a different source),
+  // the backend's ParseAddress ladder: any app path (Name/contents,
+  // NAME:// or the typed scheme://Name — rebinding the pane when it
+  // names a different source),
   // s3:// URI, connection URI (an unconfigured one stands its source up
   // and saves it through SaveSource), file URL or bare local path. A
   // bare path while locally bound navigates without the round-trip —

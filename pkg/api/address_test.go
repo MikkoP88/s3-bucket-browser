@@ -223,6 +223,78 @@ func TestParseAddressS3Scheme(t *testing.T) {
 	}
 }
 
+func TestParseAddressTypedScheme(t *testing.T) {
+	a := addressTestApp(t)
+
+	// TYPE://Name/contents — the scheme is the source's TYPE and the
+	// first segment names a configured source OF THAT TYPE: the
+	// canonical address form every app-added data source carries. No
+	// NewSource ever stands up — the named source opens outright.
+	cases := []struct {
+		raw  string
+		kind string
+		src  string
+		bkt  string
+		pfx  string
+	}{
+		{"sftp://backup-box/srv/data", "remote", "backup-box", "", "/srv/data/"},
+		{"sftp://backup-box", "remote", "backup-box", "", "/"},
+		{"SFTP://BACKUP-BOX/srv/data", "remote", "backup-box", "", "/srv/data/"},
+		{"s3://hetzner/team-files/docs/notes.md", "objects", "hetzner", "team-files", "docs/notes.md/"},
+		{"s3://hetzner", "buckets", "hetzner", "", ""},
+		{"s3://website-prod/index.html", "objects", "website-prod", "www-assets", "index.html/"},
+	}
+	for _, c := range cases {
+		got, err := a.ParseAddress(c.raw, "")
+		if err != nil {
+			t.Fatalf("ParseAddress(%q): %v", c.raw, err)
+		}
+		if got.Kind != c.kind || got.Source != c.src || got.Bucket != c.bkt || got.Prefix != c.pfx || got.NewSource != nil {
+			t.Errorf("ParseAddress(%q) = %+v, want %s %s %q %q", c.raw, got, c.kind, c.src, c.bkt, c.pfx)
+		}
+	}
+
+	// by id: the id names the source, the scheme its type
+	srcs, _ := a.ListSources()
+	var id string
+	for _, s := range srcs {
+		if s.Name == "backup-box" {
+			id = s.ID
+		}
+	}
+	if id == "" {
+		t.Fatal("backup-box has no id")
+	}
+	got, err := a.ParseAddress("sftp://"+id+"/srv/data", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != "remote" || got.Source != "backup-box" || got.Prefix != "/srv/data/" {
+		t.Errorf("by-id typed remote = %+v", got)
+	}
+
+	// an authority segment (user@, :port) means a connection URL, not a
+	// name: it falls through to the conn step even when a source is
+	// named like the bare host
+	got, err = a.ParseAddress("sftp://demo@backup-box:2022/srv/backup", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NewSource == nil || got.NewSource.Type != "sftp" || got.NewSource.Host != "backup-box" {
+		t.Errorf("authority guard = %+v, want the conn family (stand-up)", got)
+	}
+
+	// the name must be a source of THAT type: backup-box is sftp, so an
+	// ftp-schemed form addressing it is a plain connection URL
+	got, err = a.ParseAddress("ftp://backup-box/pub", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NewSource == nil || got.NewSource.Type != "ftp" {
+		t.Errorf("type guard = %+v, want the conn family (stand-up)", got)
+	}
+}
+
 func TestParseAddressS3Ambiguous(t *testing.T) {
 	// two account-wide S3 sources and no hint: an error naming the
 	// candidates — NAME:// says which account outright
