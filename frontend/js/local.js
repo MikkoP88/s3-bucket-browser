@@ -875,10 +875,9 @@ export class SidePane {
   // ---------- search: this pane's own scope ----------
 
   // gotoHit lands a Search-window pick on THIS pane (its find button
-  // opens the window with the pane's location preselected): the dispatch
-  // rides the HIT's origin, not the pane's binding — the Sources dropdown
-  // offers every source, so a pick can rebind the pane across sources.
-  // Folders open themselves, files open their parent with the row
+  // opens the window scoped to the pane's location, the source locked):
+  // the dispatch rides the HIT's origin, not the pane's binding —
+  // folders open themselves, files open their parent with the row
   // selected — the twin of main's gotoSearchHit, seated through navEntry
   // (rebinding, no history push — the pick is a jump, not a step).
   async gotoHit(r) {

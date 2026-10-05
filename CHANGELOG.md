@@ -453,12 +453,11 @@ build stay multi-instance.
   (testijotain/testijotain — the credential-import flow's own naming):
   the column and the Search window's scope labels now collapse the
   bucket when it matches the source's name, so the origin reads once.
-- The secondary pane's find button opened a one-option Search window
-  speaking raw source ids (src-*): the Sources dropdown now carries the
-  full list — All data sources plus every configured source by NAME —
-  with the pane's current location preselected, and a pick rebinds the
-  pane to the hit's own origin (any source, not just the pane's
-  binding).
+- The secondary pane's find button showed its scope as a raw source
+  id (src-*) in an immovable dropdown: the Search window now opens
+  auto-selected on the pane's current data-source location — one locked
+  scope reading the data source's NAME (a source named after its bucket
+  reads once) — and every pick lands on the pane.
 - The content bottom bar lost its data-source name after a local detour
   (a workstation path pasted into the main path bar cleared the tag) and
   it stayed lost on returning to the very source that stood before: the

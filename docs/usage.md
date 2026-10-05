@@ -324,14 +324,14 @@ directory compare) with S3 and the secondary pane.
   jumps to the object and selects it. Only the results scroll —
   the form stays put — and a running search can be stopped from
   the window.
-  The secondary pane's own **Search** button opens the same window with
-  the pane's location preselected: the Sources dropdown carries the
-  full list — *All data sources* and every configured source by name,
-  never a raw source id — so the run starts scoped to the pane and any
-  other origin is one pick away; a pick lands on the pane whatever the
-  hit's origin (rebinding it across sources) and selects the row. A
-  source named after its bucket (the credential import's own naming)
-  reads once in the Source column and the scope labels — never doubled.
+  The secondary pane's own **Search** button opens the same window
+  auto-selected on the pane's current location: one locked scope in the
+  dropdown — the opened data source by NAME plus its path (a bucket, a
+  remote folder, a workstation directory), no *All data sources* and
+  nothing else to pick — and a pick lands on the pane and selects the
+  row. A source named after its bucket (the credential import's own
+  naming) reads once in the Source column and the scope labels — never
+  doubled.
 
 ![Search](screenshots/search.png)
 

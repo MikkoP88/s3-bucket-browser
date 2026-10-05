@@ -7042,11 +7042,10 @@ await step('compare', async () => {
 });
 
 await step('pane-search', async () => {
-  // the pane's find carries the full Sources dropdown — All data sources
-  // plus every configured source by NAME (never a raw src-* id) — with
-  // the pane's own location preselected: the run reaches the backend as
-  // a local-mode scope with that prefix, and a pick navigates the pane
-  // and selects the row
+  // the pane's Search scopes to the opened source: the dropdown offers
+  // exactly one entry — the pane's current location, auto-selected and
+  // LOCKED — the call reaches the backend as a local-mode scope with
+  // that prefix, and a pick navigates the pane and selects the row
   await evalPage(() => {
     localStorage.removeItem('s3b-side-src');
     localStorage.removeItem('s3b-side-loc');
@@ -7061,13 +7060,11 @@ await step('pane-search', async () => {
   await waitFor(() => popoutVisible('search'), 4000, 'pane search window');
   const S = '#popout-root .popout[data-pop="search"]';
   await sleep(250);
-  await ok('every source by name, the pane\'s own preselected', evalPage((s) => {
+  await ok('one locked scope: the pane\'s own directory, no All entry', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    return sel.options.length === 7 && /^all data sources$/i.test(labels[0])
-      && labels.includes('hetzner') && labels.includes('backup-box') && labels.includes('dav-claims')
-      && !labels.some((l) => /^src-/.test(l))
-      && labels[sel.selectedIndex] === 'C:\\Users\\demo';
+    return sel.options.length === 1 && labels[0] === 'C:\\Users\\demo'
+      && !labels.some((l) => /all data sources/i.test(l));
   }, S));
   await page.fill(S + ' .sr-name input.input', '*.pdf');
   await page.press(S + ' .sr-name input.input', 'Enter');
@@ -7660,9 +7657,9 @@ await step('search-samename-source', async () => {
 
 await step('pane-search-names', async () => {
   // the pane's find speaks names: bound to a source whose id is src-*,
-  // the Sources dropdown preselects the source by NAME (never the id),
-  // the run reaches the backend under that name, and the Source column
-  // reads the same-named bucket once
+  // the one locked scope reads the source by NAME (never the id, never
+  // doubled), the run reaches the backend under that name, and the
+  // Source column reads the same-named bucket once
   await resetCalls();
   await evalPage(() => { window.__s3bSidePane.show({ drive: false }); window.__s3bSidePane.rebind('src-hetzner-kms'); });
   await waitFor(async () => !!(await sideRow('kms-seed.txt')), 6000, 'pane bound to hetzner-kms');
@@ -7670,13 +7667,11 @@ await step('pane-search-names', async () => {
   await waitFor(() => popoutVisible('search'), 4000, 'pane search window');
   const S = '#popout-root .popout[data-pop="search"]';
   await sleep(250);
-  await ok('every source by name, the pane\'s own preselected', evalPage((s) => {
+  await ok('one locked scope reading the data source name, never the id', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
-    return sel.options.length === 9 && /^all data sources$/i.test(labels[0])
-      && labels.includes('hetzner-kms') && labels.includes('from-file-photos')
-      && !labels.some((l) => /^src-/.test(l))
-      && labels[sel.selectedIndex] === 'hetzner-kms';
+    return sel.options.length === 1 && labels[0] === 'hetzner-kms/'
+      && !labels.some((l) => /^src-/.test(l) || /all data sources/i.test(l));
   }, S));
   await page.fill(S + ' .sr-name input.input', 'kms-seed.txt');
   await page.press(S + ' .sr-name input.input', 'Enter');
