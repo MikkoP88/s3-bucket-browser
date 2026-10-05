@@ -205,8 +205,8 @@ svg.flip { transform: scaleX(-1); }
   line-height: 1.25; white-space: nowrap;
 }
 /* the view picker's arrow rider is NOT a badge — a bare glyph */
-.ic-arrow { display: inline-flex; line-height: 0; }
-.ic-arrow svg { display: block; }
+.ic-arrow, .ic-home { display: inline-flex; line-height: 0; }
+.ic-arrow svg, .ic-home svg { display: block; }
 .crumb .src-ic { margin-right: 5px; }
 .filter {
   width: 220px; font: var(--font);

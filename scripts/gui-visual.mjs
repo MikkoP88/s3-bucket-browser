@@ -6715,6 +6715,12 @@ await step('side-pane-destpop', async () => {
     const p = document.getElementById('pane-dest').getBoundingClientRect();
     return p.top >= a.btm - 2 && p.left >= a.l - 2 && p.right <= innerWidth - 4 && p.bottom <= innerHeight - 4;
   }, anchor));
+  // the Home view row wears the house — the restart is a place, not a
+  // source type, so the old 'Local' chip is gone from the picker
+  await ok('the Home view option wears the house glyph', evalPage(() => {
+    const ic = document.getElementById('pane-dest').querySelectorAll('.dest-opt')[0]?.querySelector('.dest-ic');
+    return !!ic && !!ic.querySelector('svg path') && !ic.querySelector('.src-ic');
+  }));
   // the "last view" names the remembered spot — here: the remote root
   await ok('last-view option carries the remembered location', evalPage(() => {
     const o = document.getElementById('pane-dest').querySelectorAll('.dest-opt')[1];

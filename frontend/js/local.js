@@ -31,6 +31,17 @@ const arrowIconEl = () => {
   return s;
 };
 
+// HOME_SVG / homeIconEl: the picker's "Home view" glyph — a house, the
+// universal restart metaphor, in the arrow's own 16-grid currentColor
+// idiom; the row once borrowed the 'Local' type chip, but a chip speaks
+// a source type while the restart speaks a place.
+const HOME_SVG = '<svg viewBox="0 0 16 16" width="15" height="15" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8.707 1.5a1 1 0 0 0-1.414 0L.646 8.146a.5.5 0 0 0 .708.708L2 8.207V13.5A1.5 1.5 0 0 0 3.5 15h9a1.5 1.5 0 0 0 1.5-1.5V8.207l.646.647a.5.5 0 0 0 .708-.708L13 5.793V2.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1.293L8.707 1.5ZM13 7.207V13.5a.5.5 0 0 1-.5.5h-9a.5.5 0 0 1-.5-.5V7.207l5-5 5 5Z"/></svg>';
+const homeIconEl = () => {
+  const s = el('span', { class: 'ic-home' });
+  s.innerHTML = HOME_SVG;
+  return s;
+};
+
 // aggregateCompare folds recursive CompareDir rows into per-child statuses
 // (used by both panes): direct rows keep their status, folders get
 // 'diff-below' when anything beneath them differs, 'same-sub' when all
@@ -609,7 +620,7 @@ export class SidePane {
     const pop = $('pane-dest');
     pop.setAttribute('aria-label', t('pane.emptyTitle'));
     pop.replaceChildren(
-      this.destOpt(srcIconEl('local'), t('pane.popHome'), t('pane.popHomeSub'), () => this.goHome()),
+      this.destOpt(homeIconEl(), t('pane.popHome'), t('pane.popHomeSub'), () => this.goHome()),
       this.destOpt(arrowIconEl(), t('pane.popLast'),
         last ? t('pane.popLastSub', { p: this.locCanonical(last) }) : t('pane.popLastNone'),
         () => this.goLast(), !last),

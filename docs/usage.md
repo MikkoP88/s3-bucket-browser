@@ -379,7 +379,8 @@ directory compare) with S3 and the secondary pane.
   closed it opens — unless the pane was left on a view that is not
   the default home, in which case a small picker appears under the
   button (the pane stays hidden) offering where the reopened pane
-  should point — **Home view** starts over at the workstation's home
+  should point — **Home view** (a house glyph) starts over at the
+  workstation's home
   folder with the history cut clean, and **Return to last view**
   reopens straight on the remembered spot (through history, so Back
   undoes the jump). Escape or a click outside dismisses the picker

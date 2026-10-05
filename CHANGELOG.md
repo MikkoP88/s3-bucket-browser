@@ -332,6 +332,10 @@ build stay multi-instance.
 
 ### Changed
 
+- **The Dual-pane picker's Home view wears a house.** The destination
+  picker's restart option drops the 'Local' type chip for a house
+  glyph in the picker's own icon idiom — a chip speaks a source
+  type, the restart speaks a place.
 - **Dual-pane resizing keeps its balance: the seam seats a share, not
   pixels.** Dragging the splitter still rebalances the pair (the 300px
   floor and the 60% ceiling stay), but the seat is now a percentage
