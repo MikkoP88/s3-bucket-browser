@@ -567,6 +567,17 @@ build stay multi-instance.
   reads whole instead of clipping mid-word. The shared column widths
   (Name, Size, Date modified) stay exactly the main view's, so the
   two surfaces never disagree about a column's shape.
+- **Type joins the Search window's out-of-box columns.** Every grid
+  the app seats now opens with one layout: the Search window's
+  results table starts at Name, Type, Size and Date modified — the
+  same set, in the same order, the panes do. The default is the
+  panes' own list itself (a spread of it, not a sibling that could
+  drift), so Type — on by default in the main view since the
+  beginning — needs no opt-in in search results and sheds the
+  extra-column background tint it wore there. A saved column choice
+  still wins, Reset columns restores the shared default, and
+  Settings' Reset to defaults seats all three views at the same
+  four.
 
 ### Fixed
 

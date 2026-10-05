@@ -3185,7 +3185,8 @@ await step('settings-dialog', async () => {
     const rows = Array.from(document.querySelectorAll('#modal-root .set-colrow'));
     const vis = rows.filter((r) => r.querySelector('input[type=checkbox]').checked)
       .map((r) => (r.querySelector('.set-colname')?.textContent || '').trim());
-    return vis.length === 3 && vis[0] === 'Name' && vis.includes('Size') && vis.includes('Date modified');
+    return vis.length === 4 && vis[0] === 'Name' && vis.includes('Type')
+      && vis.includes('Size') && vis.includes('Date modified');
   }));
   await evalPage(() => {
     const sel = Array.from(document.querySelectorAll('#modal-root .set-row select'))
@@ -4235,7 +4236,8 @@ await step('search-window', async () => {
     const cols = head ? Array.from(head.querySelectorAll('.gh')).map((h) => h.dataset.col) : [];
     return !!area && !!clip && !!head && !!area.querySelector('.grid-body.sr-list')
       && !!area.querySelector('.grid-status.sr-status')
-      && cols.length === 3 && cols.includes('name') && cols.includes('size') && cols.includes('lastModified');
+      && cols.length === 4 && cols.includes('name') && cols.includes('type')
+      && cols.includes('size') && cols.includes('lastModified');
   }, S));
   await ok('idle: the empty state shows before any search', evalPage((s) => {
     const e = document.querySelector(s + ' .sr-empty');
@@ -4626,8 +4628,8 @@ await step('search-window', async () => {
   // the persisted set is catalog-only (Source never persists)
   const srD = await evalPage((s) => {
     const cells = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]'));
-    const from = cells[2].getBoundingClientRect(); // Modified
-    const to = cells[1].getBoundingClientRect(); // drop just inside Size
+    const from = cells[3].getBoundingClientRect(); // Modified
+    const to = cells[2].getBoundingClientRect(); // drop just inside Size
     return { x: from.x + 12, y: from.y + from.height / 2, tx: to.x + 4, ty: to.y + to.height / 2 };
   }, S);
   await page.mouse.move(srD.x, srD.y);
@@ -4637,15 +4639,16 @@ await step('search-window', async () => {
   await sleep(120);
   await ok('search: dragging a header reorders the columns', evalPage((s) =>
     JSON.stringify(Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col))
-      === JSON.stringify(['name', 'lastModified', 'size', 'source']), S));
+      === JSON.stringify(['name', 'type', 'lastModified', 'size', 'source']), S));
   await ok('search: rows follow the reordered layout', evalPage((s) => {
     const row = document.querySelector(s + ' .sr-list .grid-row');
-    return row.children[0].classList.contains('name') && row.children[1].classList.contains('lastModified')
-      && row.children[2].classList.contains('size') && row.children[3].classList.contains('source');
+    return row.children[0].classList.contains('name') && row.children[1].classList.contains('type')
+      && row.children[2].classList.contains('lastModified') && row.children[3].classList.contains('size')
+      && row.children[4].classList.contains('source');
   }, S));
   await ok('search: the reordered set persists without the auto Source column', evalPage(() => {
     try { return JSON.stringify(JSON.parse(localStorage.getItem('s3b-cols-sr') || '{}').cols)
-      === JSON.stringify(['name', 'lastModified', 'size']); }
+      === JSON.stringify(['name', 'type', 'lastModified', 'size']); }
     catch { return false; }
   }));
 
@@ -4653,7 +4656,7 @@ await step('search-window', async () => {
   // trailing click may sort by it, but the column never moves)
   const srSD = await evalPage((s) => {
     const cells = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]'));
-    const from = cells[3].getBoundingClientRect(); // Source
+    const from = cells[4].getBoundingClientRect(); // Source
     const to = cells[1].getBoundingClientRect();
     return { x: from.x + 12, y: from.y + from.height / 2, tx: to.x + 4, ty: to.y + to.height / 2 };
   }, S);
@@ -4664,7 +4667,7 @@ await step('search-window', async () => {
   await sleep(120);
   await ok('search: the Source column never reorders — it keeps the far edge', evalPage((s) => {
     const heads = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col);
-    return heads.length === 4 && heads[heads.length - 1] === 'source';
+    return heads.length === 5 && heads[heads.length - 1] === 'source';
   }, S));
 
   // the picker: right-click a header — the whole catalog, Source absent,
@@ -4723,7 +4726,7 @@ await step('search-window', async () => {
   await waitFor(() => popoutVisible('search'), 4000, 'search popout reopen');
   await ok('search: the column layout survives close and reopen', evalPage((s) =>
     JSON.stringify(Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col))
-      === JSON.stringify(['name', 'lastModified', 'size']), S));
+      === JSON.stringify(['name', 'type', 'lastModified', 'size']), S));
 
   // Reset columns: one click restores the out-of-box set and clears the
   // widths — then the key goes away entirely so later steps boot clean
@@ -4733,7 +4736,7 @@ await step('search-window', async () => {
   await sleep(120);
   await ok('search: Reset columns restores the out-of-box set', evalPage((s) =>
     Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]')).map((c) => c.dataset.col).join(',')
-      === 'name,size,lastModified', S));
+      === 'name,type,size,lastModified', S));
   await evalPage(() => localStorage.removeItem('s3b-cols-sr')); // back to boot defaults
 
   // Clear returns the whole window to its open state
@@ -10160,7 +10163,7 @@ await step('settings-honor', async () => {
     const colsSr = JSON.parse(localStorage.getItem('s3b-cols-sr') || 'null') || {};
     return Array.isArray(cols.cols) && cols.cols.join(',') === 'name,lastModified,size'
       && Array.isArray(colsLocal.cols) && colsLocal.cols.join(',') === 'name,type,lastModified'
-      && Array.isArray(colsSr.cols) && colsSr.cols.join(',') === 'name,size';
+      && Array.isArray(colsSr.cols) && colsSr.cols.join(',') === 'name,type,size';
   }));
   // the row's re-seat rides the re-list this save triggers (showHidden
   // refreshes the view; the loading pass parks the row until rows land) —
@@ -10219,7 +10222,7 @@ await step('settings-honor', async () => {
     };
     return walk('Main view') === 'Name|Type|Size|Date modified'
       && walk('Secondary pane') === 'Name|Type|Size|Date modified'
-      && walk('Search window') === 'Name|Size|Date modified';
+      && walk('Search window') === 'Name|Type|Size|Date modified';
   }));
   await ok('reset stages the editing + deleting + transfers defaults',
     (await cbState('Ask which app opens files for editing')) === true
@@ -10253,7 +10256,7 @@ await step('settings-honor', async () => {
     };
     for (const k of Object.keys(kv)) if (localStorage.getItem(k) !== kv[k]) return false;
     const def = ['name', 'type', 'size', 'lastModified'];
-    const srDef = ['name', 'size', 'lastModified'];
+    const srDef = ['name', 'type', 'size', 'lastModified'];
     const cols = JSON.parse(localStorage.getItem('s3b-cols') || 'null') || {};
     const colsLocal = JSON.parse(localStorage.getItem('s3b-cols-local') || 'null') || {};
     const colsSr = JSON.parse(localStorage.getItem('s3b-cols-sr') || 'null') || {};

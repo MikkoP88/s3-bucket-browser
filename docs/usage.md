@@ -196,8 +196,9 @@ directory compare) with S3 and the secondary pane.
   column order (drag a row — or press Alt+Up / Alt+Down on a focused
   row — to move a column), each row names
   its data type (Text, Number, Date & time) and Name stays locked
-  on; the out-of-box set is Name, Type, Size and Date modified
-  (the Search window starts at Name, Size, Date modified).
+  on; the out-of-box set is Name, Type, Size and Date modified —
+  the same set, in the same order, that the Search window starts
+  at.
   Opt-in columns: Date created (bucket views, WebDAV
   creationdate, Windows local birth times), Mode (local and SFTP
   permission bits), Storage class and ETag — via the header menu or

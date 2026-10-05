@@ -11,7 +11,7 @@
 // list, single select, Enter/arrows — untouched.
 import { el, fmtBytes, fmtDate, fileIcon, srcIconEl } from './util.js';
 import { t, has } from './i18n.js';
-import { COLUMNS, saveColState } from './grid.js';
+import { COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
 
 const MIN_COL_W = 48;           // resize floor for fixed columns (grid.js's)
 const RZ_HIT_W = 10;            // handle hit width — keep in step with .gh-resize
@@ -28,9 +28,11 @@ const SOURCE_COL = { id: 'source', labelKey: 'col.source', w: 180 };
 const CATALOG = [...COLUMNS, SOURCE_COL];
 const byId = new Map(CATALOG.map((c) => [c.id, c]));
 
-// The out-of-box visible set — exactly the columns the window always
-// showed. A saved choice (s3b-cols-sr) always wins.
-export const SR_DEFAULT_COLS = ['name', 'size', 'lastModified'];
+// The out-of-box visible set IS the panes' own — one default order for
+// every grid the app seats (Type on by default), so the Search window
+// can never drift from the main view's layout. A saved choice
+// (s3b-cols-sr) always wins.
+export const SR_DEFAULT_COLS = [...DEFAULT_COLS];
 
 // loadColState mirrors grid.js's loader for the search store: same shape,
 // same tolerance (a corrupt or unknown read is simply "no preference"),
