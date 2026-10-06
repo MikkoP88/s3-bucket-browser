@@ -286,7 +286,9 @@ Additional rules:
   Signing](https://learn.microsoft.com/azure/trusted-signing/) starts with
   reputation. A self-signed certificate never clears the warning — it only
   proves tamper-proofing inside your own fleet. Swapping in a CA
-  certificate is a matter of replacing the two secrets.
+  certificate is a matter of replacing the two secrets. The
+  provider-by-provider acquisition tutorial — costs, workflow
+  recipes and rotation — is the [signing guide](signing.md).
 - **Code signing and notarization (macOS).** Local builds use an ad-hoc
   signature. For distribution, apply a Developer ID Application signature,
   submit the archive to Apple, and staple the accepted notarization ticket

@@ -137,5 +137,7 @@ syso breaks the next build of the other architecture).
   gates, release cutting
 - [macos-build.md](macos-build.md) — the Mac deep-dive: toolchain,
   verification, signing and notarization
+- [signing.md](signing.md) — signing every build face: which identity
+  to acquire per platform, the cost, and where it plugs into the pipeline
 - [security.md](security.md) — supply chain: dependencies, SBOM,
   reproducible artifacts

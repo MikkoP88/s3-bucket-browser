@@ -73,6 +73,9 @@ It uses interactive credential entry and a local Keychain profile; never
 commit Apple account credentials or private signing keys. This workflow
 does not enable automatic macOS release uploads.
 
+What signing every build face needs — certificates, accounts, costs
+and where each plugs in — is the [signing guide](docs/signing.md).
+
 The action-verification gate (the full matrix in
 [docs/VERIFICATION.md](docs/VERIFICATION.md)) needs the live engine
 containers and a browser, so it runs on the release machine as a **pre-tag

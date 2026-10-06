@@ -6,6 +6,18 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Signing guide (`docs/signing.md`)** — the one page answering "what
+  do I need to sign every build": the Windows identity decision tree
+  (self-signed fleet cert today; CA OV/EV under the post-2023
+  hardware-key rule, or Azure Trusted Signing) with the exact secrets
+  and workflow steps each provider plugs into, the macOS Developer ID +
+  notarization stack for manual distribution, Linux checksums with the
+  optional GPG layer, and rotation + verification recipes for
+  maintainers and end users; README's documentation index, build.md,
+  security.md and CONTRIBUTING.md gain the pointer.
+
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed
