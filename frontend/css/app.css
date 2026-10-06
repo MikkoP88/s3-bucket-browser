@@ -326,14 +326,21 @@ svg.flip { transform: scaleX(-1); }
 .tnode .twist { width: 14px; text-align: center; color: var(--text-dim); flex: none; font-size: 9px; }
 /* the type column: the source chip (S3, SFTP, WebDAVS, …) needs more
    room than a glyph, and one stop keeps every row's badge on the same
-   edge — but the stop is measured, not fixed: tree.js seats --ticon-w
+   edges — but the stop is measured, not fixed: tree.js seats --ticon-w
    on the widest chip the list actually carries (the 2px cushion is the
-   source rows' padding-right), so an S3-only sidebar wears no
-   WebDAVS-sized hole at the left while names still share one stop;
-   chips hug the label at the column's right edge, folder and bucket
-   emojis keep centering in the same measured width */
-.tnode .ticon { flex: none; width: var(--ticon-w, 26px); display: flex; align-items: center; justify-content: center; }
-.tnode[data-tkind="source"] .ticon { justify-content: flex-end; padding-right: 2px; white-space: nowrap; }
+   column's padding-right), so an S3-only sidebar wears no
+   WebDAV-sized hole while names still share one stop. The stop's right
+   edge is the one runway every row parks against: chips FILL the
+   measured column with their text centered — a mixed list seats the
+   stop on its widest chip (WebDAV) and no shorter badge (S3, SFTP)
+   parks dead air at the column's left edge, the badge's own tinted
+   body owns the width — and bucket and folder glyphs hug the same
+   right edge with the same cushion, so a glyph never floats mid-column
+   in a WebDAV-wide dead space: the air left of a glyph reads as
+   indentation, the runway to its name stays the chip's 6px */
+.tnode .ticon { flex: none; width: var(--ticon-w, 26px); display: flex; align-items: center; justify-content: flex-end; padding-right: 2px; }
+.tnode[data-tkind="source"] .ticon { white-space: nowrap; }
+.tnode[data-tkind="source"] .ticon .src-ic { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; }
 .tnode .tlabel { overflow: hidden; text-overflow: ellipsis; }
 
 /* ================= Grid ================= */
@@ -1248,9 +1255,12 @@ kbd {
 .ver-pick { padding: 2px 8px; font-size: 11px; }
 .ver-pick.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 
-/* Bucket guard icons in the tree + vs-current delta (M10.4) */
+/* Bucket guard icons in the tree + vs-current delta (M10.4) — the
+   badges ride the row's own 4px gap (a margin-left here would stack
+   on it and park the versioning/lock pair 13px of visual air apart);
+   the 2px horizontal padding is the hover chip's cushion */
 .tguard {
-  margin-left: 5px; font-size: 11px; cursor: pointer;
+  font-size: 11px; cursor: pointer;
   color: var(--accent); user-select: none; padding: 0 2px;
 }
 .tguard.dim { color: var(--text-dim); opacity: .7; }
@@ -1518,7 +1528,7 @@ kbd {
 /* Source status balls in the tree (ok / error / busy) */
 .sball {
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  margin-left: 6px; flex: none; vertical-align: middle;
+  margin-left: 2px; flex: none; vertical-align: middle;
   background: var(--text-dim); opacity: .45;
 }
 .sball.ok { background: var(--ok); opacity: 1; }

@@ -531,10 +531,13 @@ export class Tree {
   // fitTypeColumn seats the shared type column on the widest chip the
   // rendered sources actually wear: a fixed stop sized for the longest
   // label (WebDAVS) parks a hole left of every S3/SFTP chip. Measured
-  // instead, each list hugs its own widest badge — names keep one stop,
-  // chips keep their 6px air to the name (the +2 is the column's
-  // padding-right, so the widest chip exactly fills its box) and the
-  // folder/bucket emojis keep centering in the same width.
+  // instead, each list seats its own widest badge — and the CSS parks
+  // every row against the stop's right edge: chips fill the column
+  // with their text centered (no shorter badge parks dead air at the
+  // left edge) and the folder/bucket glyphs hug the same edge instead
+  // of floating mid-column in a WebDAV-wide dead space; names keep one
+  // stop and every glyph keeps the chip's 6px air to the name (the +2
+  // is the column's padding-right cushion).
   fitTypeColumn() {
     let w = 0;
     for (const c of this.container.querySelectorAll('.ticon .src-ic')) {
