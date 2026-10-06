@@ -34,25 +34,26 @@ const (
 
 // TaskInfo is the Running-tasks view model (event payload and list row).
 type TaskInfo struct {
-	ID         string  `json:"id"`
-	Kind       string  `json:"kind"` // transfer|move|copy|search|list|delete|purge|empty|convert|mkdir|mkfile|compare|doctor
-	Label      string  `json:"label"`
-	Status     string  `json:"status"`
-	DoneUnits  int     `json:"doneUnits"`
-	TotalUnits int     `json:"totalUnits"`          // 0 = unknown
-	Phase      string  `json:"phase"`               // "" (act) | count | cleanup
-	Current    string  `json:"current,omitempty"`   // item in flight
-	Speed      float64 `json:"speed"`               // units/sec, EMA over emits
-	EtaMs      int64   `json:"etaMs,omitempty"`     // while running, from Speed
-	ElapsedMs  int64   `json:"elapsedMs,omitempty"` // stamped at finish
-	StartedAt  int64   `json:"startedAt"`           // unix millis
-	EndedAt    int64   `json:"endedAt,omitempty"`
-	Error      string  `json:"error,omitempty"`
-	ErrorKind  string  `json:"errorKind,omitempty"` // "timeout" | ""
-	Stalled    bool    `json:"stalled"`             // merged transfer rows only
-	Move       bool    `json:"move,omitempty"`      // merged transfer rows: copy-then-delete
-	Name       string  `json:"name,omitempty"`      // merged transfer rows: primary item name
-	Items      int     `json:"items,omitempty"`     // merged transfer rows: top-level item count
+	ID         string         `json:"id"`
+	Kind       string         `json:"kind"` // transfer|move|copy|search|list|delete|purge|empty|convert|mkdir|mkfile|compare|doctor
+	Label      string         `json:"label"`
+	Status     string         `json:"status"`
+	DoneUnits  int            `json:"doneUnits"`
+	TotalUnits int            `json:"totalUnits"`          // 0 = unknown
+	Phase      string         `json:"phase"`               // "" (act) | count | cleanup
+	Current    string         `json:"current,omitempty"`   // item in flight
+	Speed      float64        `json:"speed"`               // units/sec, EMA over emits
+	EtaMs      int64          `json:"etaMs,omitempty"`     // while running, from Speed
+	ElapsedMs  int64          `json:"elapsedMs,omitempty"` // stamped at finish
+	StartedAt  int64          `json:"startedAt"`           // unix millis
+	EndedAt    int64          `json:"endedAt,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	ErrorKind  string         `json:"errorKind,omitempty"` // "timeout" | ""
+	Stalled    bool           `json:"stalled"`             // merged transfer rows only
+	Move       bool           `json:"move,omitempty"`      // merged transfer rows: copy-then-delete
+	Name       string         `json:"name,omitempty"`      // merged transfer rows: primary item name
+	Items      int            `json:"items,omitempty"`     // merged transfer rows: top-level item count
+	ItemRows   []TransferItem `json:"itemRows,omitempty"`  // merged transfer rows: per-item live states (≤ itemRowCap)
 }
 
 // taskHandle is one registered task.
@@ -405,6 +406,10 @@ func (a *App) RunningTasks() []TaskInfo {
 			// window (Label keeps its baked " +N" for older consumers;
 			// the view strips it when Items says it's there)
 			Name: j.Name, Items: j.Items, EndedAt: j.EndedAt,
+			// the per-item rows ride along so the tasks window's
+			// disclosure lists the same live per-file states as the
+			// transfer window
+			ItemRows: j.ItemRows,
 		})
 	}
 	out = append(out, a.tasks.snapshot()...)

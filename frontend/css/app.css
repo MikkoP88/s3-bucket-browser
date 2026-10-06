@@ -925,6 +925,21 @@ body.popout-win .pop-grip { display: none; }
   border: 1px solid var(--border-soft); border-radius: 4px; background: rgba(127, 127, 127, 0.06); }
 .tr-items-l li { padding: 2px 8px; font-size: 12px; white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; cursor: default; }
+/* live item rows (jobs within the item-row cap): glyph · name · counter ·
+   state — one line per top-level item, its outcome readable at a glance.
+   The glyph and state label carry the outcome color; the name stays
+   neutral unless the item failed. */
+.tr-items-l.ti-live li.ti-row { display: flex; align-items: center; gap: 8px; }
+.ti-row .ti-g { flex: none; width: 14px; text-align: center; font-size: 11px; line-height: 1; }
+.ti-row .ti-nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ti-row .ti-ct { flex: none; font-size: 11px; color: var(--text-dim); }
+.ti-row .ti-st { flex: none; font-size: 11px; }
+.ti-pending .ti-g, .ti-pending .ti-st, .ti-pending .ti-nm { color: var(--text-dim); }
+.ti-active .ti-g, .ti-active .ti-st { color: var(--accent); }
+.ti-done .ti-g, .ti-done .ti-st { color: var(--ok); }
+.ti-failed .ti-g, .ti-failed .ti-st, .ti-failed .ti-nm { color: var(--danger); }
+.ti-skipped .ti-g, .ti-skipped .ti-st { color: var(--warn); }
+.ti-skipped .ti-nm { color: var(--text-dim); }
 .tr-items-load { font-size: 12px; color: var(--text-dim); }
 
 .tr-job .btn { padding: 2px 10px; font-size: 12px; }

@@ -18,7 +18,26 @@ follow [Semantic Versioning](https://semver.org/).
   maintainers and end users; README's documentation index, build.md,
   security.md and CONTRIBUTING.md gain the pointer.
 
-## [1.2.0-beta.2] — 2026-10-06
+### Fixed
+
+- **Per-item detail in File transfers** — a multi-item job’s "+N
+  more" disclosure now lists every top-level item with its live
+  state (waiting → transferring → done / failed / skipped), a
+  per-item counter — the size for single files, the file count for
+  folders, with failed/skipped counts spelled out when a folder
+  mixes outcomes — riding the existing transfer updates instead of
+  a one-shot name fetch, so the detail survives to completion
+  instead of vanishing with the in-flight line. Jobs over fifty
+  items fall back to the plain name list, with the job's own
+  failed/skipped totals riding the panel header so a big sweep
+  still answers "did anything fail" at a glance. Same-source S3
+  (server-side) copies no longer read "0 B (0%)": the row says
+  *Server-side copy* while it runs. A finished job reads 100% even
+  when skips settled no bytes, and done/failed/skipped file
+  counters are disjoint now — a skipped file no longer
+  double-counts as done. The Running tasks window’s merged
+  transfer rows carry the same live per-item disclosure.
+## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed
 

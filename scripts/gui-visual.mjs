@@ -436,7 +436,11 @@ function shim() {
       : { open: true, name: 'work.s3bprofile', path: 'C:\\Users\\demo\\Documents\\work.s3bprofile', dirty: false, sourceCount: 5 },
     transfers: [
       { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
-        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200 },
+        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200,
+        itemRows: [
+          { name: 'intro.mp4', state: 'done', files: 1, done: 1, sent: 47185920, total: 47185920 },
+          { name: 'video-final.mp4', state: 'active', files: 1, done: 0, sent: 0, total: 78643200 },
+          { name: 'bts/', state: 'pending', files: 2, done: 0, sent: 0, total: 98784271 }] },
       // failed/skipped ride the same record: the manager counts them aloud
       { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
         name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
@@ -1083,7 +1087,7 @@ function shim() {
         phase: j.phase || '', current: j.currentFile || '', speed: j.speedBps || 0,
         etaMs: j.etaMs || 0, elapsedMs: j.elapsedMs || 0, errorKind: j.errorKind || '',
         stalled: !!j.stalled,
-        name: j.name || '', items: j.items || 0, endedAt: j.endedAt || 0, move: !!j.move,
+        name: j.name || '', items: j.items || 0, endedAt: j.endedAt || 0, move: !!j.move,        itemRows: j.itemRows,
       })),
       ...(world.tasks || []),
     ])),
@@ -6024,7 +6028,39 @@ await step('transfers', async () => {
     return !!c && /File 2 \/ 3/.test(c.textContent) && /video-final\.mp4/.test(c.textContent)
       && /22\.0 MB \/ 75\.0 MB \(29%\)/.test(c.textContent);
   }, trSel));
-  await ok('status chip rendered', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .tr-chip.st-running`), trSel));
+  await ok('status chip rendered', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .tr-chip.st-running`), trSel));  // per-item disclosure: live state rows for every top-level item — the
+  // settled one reads its green check, the in-flight one is accent with
+  // its size, the waiting folder counts its planned files
+  await evalPage((s) => { document.querySelector(`${s} .tr-job.running .tr-morelink`)?.click(); }, trSel);
+  await ok('item rows render live per-item states', waitFor(async () => evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(`${s} .tr-job.running .tr-items-l.ti-live .ti-row`));
+    if (rows.length !== 3) return false;
+    const st = (i) => rows[i].querySelector('.ti-st')?.textContent;
+    const g = (i) => rows[i].querySelector('.ti-g')?.textContent;
+    return rows[0].className.includes('ti-done') && st(0) === 'Done' && g(0) === '\u2713'
+      && rows[1].className.includes('ti-active') && st(1) === 'Transferring' && g(1) === '\u25D0'
+      && rows[2].className.includes('ti-pending') && st(2) === 'Waiting' && g(2) === '\u25CB';
+  }, trSel), 4000, 'item rows live'));
+  await ok('item counters: file size for single files, file count for folders', evalPage((s) => {
+    const cts = Array.from(document.querySelectorAll(`${s} .tr-job.running .ti-row .ti-ct`)).map((c) => c.textContent);
+    return cts.length === 3 && cts[0] === '45.0 MB' && cts[1] === '75.0 MB' && cts[2] === '0 / 2 files';
+  }, trSel));
+  // settle: the in-flight file lands done, the folder mixes one failure
+  // and one skip — the row settles failed (failed outranks skipped) and
+  // says both counts aloud
+  await evalPage(() => {
+    const t1 = window.__shim.world.transfers.find((x) => x.id === 't1');
+    t1.itemRows[1] = { ...t1.itemRows[1], state: 'done', done: 1, sent: 78643200 };
+    t1.itemRows[2] = { ...t1.itemRows[2], state: 'failed', done: 2, failed: 1, skipped: 1 };
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('settled item rows carry their outcomes', waitFor(async () => evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(`${s} .tr-job.running .tr-items-l.ti-live .ti-row`));
+    return rows.length === 3 && rows[1].className.includes('ti-done')
+      && rows[2].className.includes('ti-failed')
+      && rows[2].querySelector('.ti-st')?.textContent === 'Failed'
+      && rows[2].querySelector('.ti-ct')?.textContent === '2 / 2 files \u00B7 1 failed \u00B7 1 skipped';
+  }, trSel), 4000, 'item settle'));
   await shotOf('transfers', trSel);
   // Show history reveals the pre-open rows again
   await evalPage((s) => { document.querySelector(`${s} .modal-foot .left .btn`)?.click(); }, trSel);
@@ -6032,7 +6068,20 @@ await step('transfers', async () => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
     const head = document.querySelector(`${s} .modal-foot .left`);
     return rows.length === 2 && /hide history/i.test(head?.textContent || '');
-  }, trSel), 4000, 'history shown'));
+  }, trSel), 4000, 'history shown'));  // jobs without live rows (over the item cap, or older worlds) fall
+  // back to the one-shot name fetch — the panel still names every item
+  await evalPage(() => {
+    window.__shim.world.transferItems = { t2: ['full-backup.tar', 'week.tar', 'docs.zip', 'media/'] };
+    document.querySelector('#popout-root .popout[data-pop="transfers"] .tr-job[data-id="t2"] .tr-morelink')?.click();
+  });
+  await ok('name-only fallback lists every item', waitFor(async () => evalPage((s) => {
+    const list = document.querySelector(`${s} .tr-job[data-id="t2"] .tr-items-l`);
+    if (!list || list.classList.contains('ti-live')) return false;
+    const li = Array.from(list.querySelectorAll('li')).map((x) => x.textContent);
+    const head = document.querySelector(`${s} .tr-job[data-id="t2"] .tr-items-h`)?.textContent;
+    return li.length === 4 && li[0] === 'full-backup.tar'
+      && head === '4 items · 1 failed · 2 skipped';
+  }, trSel), 4000, 'names fallback'));
   await ok('percent badge on every job', evalPage((s) => {
     const ps = Array.from(document.querySelectorAll(`${s} .tr-pct`));
     return ps.length === 2 && ps.every((p) => /\d+%/.test(p.textContent));
@@ -6045,14 +6094,19 @@ await step('transfers', async () => {
   await evalPage(() => {
     window.__shim.world.transfers = [
       ...window.__shim.world.transfers,
-      { id: 't3', op: 'transfer', status: 'done', currentFile: '', totalFiles: 4, doneFiles: 4, totalBytes: 0, sentBytes: 0, speedBps: 0 },
+      { id: 't3', op: 'transfer', status: 'done', currentFile: '', totalFiles: 4, doneFiles: 4, totalBytes: 0, sentBytes: 0, speedBps: 0 },      // done with skipped bytes: skips settle no bytes, so 50 MB of
+      // 55 MB sent still reads 100% — the job finished its sweep
+      { id: 't3s', op: 'transfer', status: 'done', currentFile: '', totalFiles: 4, doneFiles: 3, skippedFiles: 1, totalBytes: 57671680, sentBytes: 52428800, speedBps: 0 },
     ];
     window.__shim.emit('transfer:update', {});
   });
   await ok('zero-byte done job shows 100%', waitFor(async () => evalPage((s) => {
     const row = document.querySelector(`${s} .tr-job[data-id="t3"]`);
     return !!row && /^100%$/.test(row.querySelector('.tr-pct').textContent.trim());
-  }, trSel), 4000, 'pct fallback'));
+  }, trSel), 4000, 'pct fallback'));  await ok('done-with-skips job reads 100% too', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="t3s"]`);
+    return !!row && /^100%$/.test(row.querySelector('.tr-pct').textContent.trim()) && /1 skipped/.test(row.textContent);
+  }, trSel), 4000, 'skip pct'));
   // Hide history now collapses EVERY finished row on demand — the
   // always-present toggle is the missing-button fix: rows that finished
   // inside the open view hide too, not just the pre-open past
@@ -6060,7 +6114,7 @@ await step('transfers', async () => {
   await ok('Hide collapses every finished row, counted', waitFor(async () => evalPage((s) => {
     const rows = document.querySelectorAll(`${s} .tr-job`);
     const head = document.querySelector(`${s} .modal-foot .left`);
-    return rows.length === 1 && /show history/i.test(head?.textContent || '') && /2 hidden/.test(head?.textContent || '');
+    return rows.length === 1 && /show history/i.test(head?.textContent || '') && /3 hidden/.test(head?.textContent || '');
   }, trSel), 4000, 'hidden again'));
   // a job finishing while history is hidden stays visible — Clear passes
   // exactly the visible finished ids; the hidden past survives it (Go
@@ -6180,7 +6234,11 @@ await step('transfers', async () => {
   await evalPage(() => {
     window.__shim.world.transfers = [
       { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
-        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200 },
+        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200,
+        itemRows: [
+          { name: 'intro.mp4', state: 'done', files: 1, done: 1, sent: 47185920, total: 47185920 },
+          { name: 'video-final.mp4', state: 'active', files: 1, done: 0, sent: 0, total: 78643200 },
+          { name: 'bts/', state: 'pending', files: 2, done: 0, sent: 0, total: 98784271 }] },
       { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
         name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
     ];
@@ -6304,7 +6362,14 @@ await step('running-tasks', async () => {
     return !!row && /@ 4\.2\/s/.test(row.textContent);
   }, popSel));
   await ok('merged transfer row keeps its byte speed', evalPage((s) =>
-    /@ 8\.0 MB\/s/.test(document.querySelector(`${s} .tr-job[data-id="t1"]`)?.textContent || ''), popSel));
+    /@ 8\.0 MB\/s/.test(document.querySelector(`${s} .tr-job[data-id="t1"]`)?.textContent || ''), popSel));  // the merged transfer rows carry their per-item states too: the
+  // tasks window's disclosure matches the transfer window's, live
+  await evalPage((s) => { document.querySelector(`${s} .tr-job[data-id="t1"] .tr-morelink`)?.click(); }, popSel);
+  await ok('merged rows disclose live item states', waitFor(async () => evalPage((s) => {
+    const rows = Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t1"] .tr-items-l.ti-live .ti-row`));
+    return rows.length === 3 && rows[1].className.includes('ti-active')
+      && rows[1].querySelector('.ti-st')?.textContent === 'Transferring';
+  }, popSel), 4000, 'tasks item rows'));
   // cancel dispatches with the row's id — target the search task (the
   // upload job is also running and sorts first)
   await evalPage((s) => {
@@ -6339,7 +6404,11 @@ await step('running-tasks', async () => {
   await evalPage(() => {
     window.__shim.world.transfers = [
       { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
-        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200 },
+        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200,
+        itemRows: [
+          { name: 'intro.mp4', state: 'done', files: 1, done: 1, sent: 47185920, total: 47185920 },
+          { name: 'video-final.mp4', state: 'active', files: 1, done: 0, sent: 0, total: 78643200 },
+          { name: 'bts/', state: 'pending', files: 2, done: 0, sent: 0, total: 98784271 }] },
       { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
         name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
     ];
@@ -6706,7 +6775,11 @@ await step('popout-window-views', async () => {
     window.__shim.world.desktop = true;
     window.__shim.world.transfers = [
       { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
-        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200 },
+        name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200,
+        itemRows: [
+          { name: 'intro.mp4', state: 'done', files: 1, done: 1, sent: 47185920, total: 47185920 },
+          { name: 'video-final.mp4', state: 'active', files: 1, done: 0, sent: 0, total: 78643200 },
+          { name: 'bts/', state: 'pending', files: 2, done: 0, sent: 0, total: 98784271 }] },
       { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
         name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
     ];

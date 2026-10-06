@@ -1566,26 +1566,62 @@ const moreLink = (id, items, isOpen, onToggle) => el('button', {
   onclick: () => onToggle(id, 'morelink'),
 }, t('transfer.more', { n: items - 1 }));
 
-// itemsBlock: the contained-items list for multi-item rows — "+2 more"
-// finally answers WHO the other two are. Names arrive through a
-// one-shot per-window fetch (id -> names cache), never on the 100ms
-// redraw path: the first render shows a placeholder, the fetch's
-// redraw paints the list.
+// itemsBlock: the contained-items panel for multi-item rows — "+2 more"
+// finally answers WHO the other two are, per item and live. Jobs within
+// the item-row cap carry each item's state on every transfer:update
+// (pending → transferring → done/failed/skipped, with a file counter for
+// folder-shaped items); larger jobs fall back to a one-shot per-window
+// name fetch (id -> names cache), never on the 100ms redraw path.
+const ITEM_STATE = {
+  pending: { cls: 'ti-pending', glyph: '\u25CB', key: 'transfer.itemPending' },
+  active: { cls: 'ti-active', glyph: '\u25D0', key: 'transfer.itemActive' },
+  done: { cls: 'ti-done', glyph: '\u2713', key: 'transfer.stDone' },
+  failed: { cls: 'ti-failed', glyph: '\u2715', key: 'transfer.itemFailed' },
+  skipped: { cls: 'ti-skipped', glyph: '\u2298', key: 'transfer.itemSkipped' },
+};
+const itemRow = (r) => {
+  const st = ITEM_STATE[r.state] || ITEM_STATE.pending;
+  let ct = '';
+  if (r.files > 1) {
+    ct = t('transfer.itemFiles', { d: r.done, t: r.files });
+    if (r.failed) ct += ` · ${t('transfer.failedCount', { n: r.failed })}`;
+    if (r.skipped) ct += ` · ${t('transfer.skippedCount', { n: r.skipped })}`;
+  } else if (r.total > 0) {
+    ct = fmtBytes(r.total);
+  }
+  return el('li', { class: `ti-row ${st.cls}` },
+    el('span', { class: 'ti-g', text: st.glyph, 'aria-hidden': 'true' }),
+    el('span', { class: 'ti-nm', text: r.name, title: r.name }),
+    ct ? el('span', { class: 'ti-ct mono', text: ct }) : null,
+    el('span', { class: 'ti-st', text: t(st.key) }));
+};
 const itemsBlock = (j, cache, redraw) => {
   if (!(j.items > 1)) return null;
-  let names = cache.get(j.id);
-  if (names === undefined) {
-    cache.set(j.id, Promise.resolve(api.TransferItems(j.id)).then((v) => {
-      cache.set(j.id, v || []);
-      redraw();
-    }, () => { cache.set(j.id, []); }));
-    names = null;
+  let body;
+  let head = t('transfer.itemsN', { n: j.items });
+  if (Array.isArray(j.itemRows) && j.itemRows.length) {
+    body = el('ul', { class: 'tr-items-l ti-live' }, j.itemRows.map(itemRow));
+  } else {
+    // over the live-row cap (or an older world): names only, so the
+    // job's own outcome totals ride the header — a 60-item sweep
+    // still answers "did anything fail" at a glance
+    if (j.failedFiles) head += ` · ${t('transfer.failedCount', { n: j.failedFiles })}`;
+    if (j.skippedFiles) head += ` · ${t('transfer.skippedCount', { n: j.skippedFiles })}`;
+    let names = cache.get(j.id);
+    if (names === undefined) {
+      cache.set(j.id, Promise.resolve(api.TransferItems(j.id)).then((v) => {
+        cache.set(j.id, v || []);
+        redraw();
+      }, () => { cache.set(j.id, []); }));
+      names = null;
+    }
+    body = Array.isArray(names)
+      ? el('ul', { class: 'tr-items-l' }, names.map((nm) => el('li', { text: nm, title: nm })))
+      : el('div', { class: 'tr-items-load', text: '\u2026' });
   }
   return el('div', { class: 'tr-items' },
-    el('div', { class: 'tr-items-h', text: t('transfer.itemsN', { n: j.items }) }),
-    Array.isArray(names)
-      ? el('ul', { class: 'tr-items-l' }, names.map((nm) => el('li', { text: nm, title: nm })))
-      : el('div', { class: 'tr-items-load', text: '\u2026' }));
+    el('div', { class: 'tr-items-h', text: head }),
+    body);
 };
 
 
@@ -1684,12 +1720,12 @@ function openTransferManagerDom(onClose) {
   }
 
   // jobPct: byte totals can be zero (server-side copies settle their
-  // bytes at the end, some jobs never count them) — a finished job is
-  // always 100%, a running one without bytes derives its bar from the
-  // file counts.
+  // bytes at the end, some jobs never count them) and skips settle no
+  // bytes at all — a finished job reads 100% before any byte math, and
+  // a running one without bytes derives its bar from the file counts.
   function jobPct(j) {
-    if (j.totalBytes > 0) return Math.min(100, (j.sentBytes / j.totalBytes) * 100);
     if (j.status === 'done') return 100;
+    if (j.totalBytes > 0) return Math.min(100, (j.sentBytes / j.totalBytes) * 100);
     if (j.totalFiles > 0) {
       return Math.min(100, ((j.doneFiles + j.failedFiles + j.skippedFiles) / j.totalFiles) * 100);
     }

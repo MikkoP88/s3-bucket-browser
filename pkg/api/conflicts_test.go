@@ -62,10 +62,11 @@ func TestCheckConflictsAndDecisions(t *testing.T) {
 		t.Fatalf("sizes = src %d / dst %d, want 1 / %d", r.SrcSize, r.DstSize, len("old-contents"))
 	}
 
-	// Job-wide skip policy (no decisions): the file is skipped, the job
-	// still finishes done, and the destination keeps its content.
+	// Job-wide skip policy (no decisions): the file is skipped (its only
+	// counter — done/failed/skipped are disjoint now), the job still
+	// finishes done, and the destination keeps its content.
 	ji := mustXfer(t, a, items, nil, vault, PolicySkip, false)
-	if ji.SkippedFiles != 1 || ji.DoneFiles != 1 || ji.FailedFiles != 0 || ji.Status != JobDone {
+	if ji.SkippedFiles != 1 || ji.DoneFiles != 0 || ji.FailedFiles != 0 || ji.Status != JobDone {
 		t.Fatalf("skip-policy job = %+v", ji)
 	}
 	if got := read(t, filepath.Join(vaultRoot, "readme.md")); got != "old-contents" {
@@ -77,7 +78,7 @@ func TestCheckConflictsAndDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	ji = waitXferJob(t, a, id)
-	if ji.SkippedFiles != 1 || ji.DoneFiles != 1 || ji.FailedFiles != 0 || ji.Status != JobDone {
+	if ji.SkippedFiles != 1 || ji.DoneFiles != 0 || ji.FailedFiles != 0 || ji.Status != JobDone {
 		t.Fatalf("skip-decision job = %+v", ji)
 	}
 	if got := read(t, filepath.Join(vaultRoot, "readme.md")); got != "old-contents" {

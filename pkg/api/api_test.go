@@ -144,7 +144,7 @@ func TestJobManagerLifecycle(t *testing.T) {
 	if j.info.SentBytes != 40 {
 		t.Errorf("sent = %d, want 40", j.info.SentBytes)
 	}
-	j.fileDone(100, false)
+	j.fileDone(0, 100, ItemDone)
 	if j.info.SentBytes != 100 || j.info.DoneFiles != 1 {
 		t.Errorf("after fileDone: %+v", j.info)
 	}

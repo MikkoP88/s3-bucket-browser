@@ -100,7 +100,7 @@ func TestRunningTasksMergesJobsAndTasks(t *testing.T) {
 	a := newTestApp(t)
 	a.jobs.setContext(context.Background())
 	j := a.jobs.add("upload", 3, 100)
-	j.fileDone(30, false)
+	j.fileDone(0, 30, ItemDone)
 	h := a.tasks.add("search", `"x" — s3://b/`)
 
 	got := a.RunningTasks()

@@ -562,7 +562,11 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
 - **Transfer manager** — View → File transfers (or the status-bar
   counter) shows every job with per-file and byte-level progress, speed
   and cancel — in a floating window, so you can keep browsing while it
-  runs. The window also opens **itself** the moment a transfer starts
+  runs. Multi-item jobs expand (the "+N more" link) into a per-item
+  list that updates live — every top-level item’s state (waiting,
+  transferring, done, failed, skipped) with its size, or its file
+  count for a folder — held through to completion, so a finished
+  batch still tells you which item was which. The window also opens **itself** the moment a transfer starts
   and closes itself when the batch ends cleanly (Settings → File
   transfers → *Transfer window auto open/close*, on by default). The
   automatic close is careful: a failed or canceled transfer keeps the
@@ -584,7 +588,9 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   jobs, searches, bulk deletes, version purges, bucket emptying,
   storage-class conversions, folder and file creation, bucket deletes,
   pane compares, doctor runs — every action
-  the app is taking, each with progress and a **Cancel** button. Kill a
+  the app is taking, each with progress and a **Cancel** button;
+  merged transfer rows expand into the same live per-item list as
+  File transfers. Kill a
   task that hangs or runs too long; destructive tasks count before they act, so canceling
   during the counting phase destroys nothing. Bulk operations run as
   tracked tasks with no fixed time limit — they finish, or you stop

@@ -117,13 +117,13 @@ func TestRunningTasksMergesJobFullPicture(t *testing.T) {
 
 	// finished job: the timeout flag and elapsed ride the merged row
 	j1 := a.jobs.add("download", 1, 10)
-	j1.startFile(1, "a.txt", 10)
+	j1.startFile(0, 1, "a.txt", 10)
 	a.finishJob(j1, JobError, "a.txt: read tcp: i/o timeout")
 
 	// running job: phase, current item, speed and ETA flow through
 	j2 := a.jobs.add("download", 2, 100)
 	j2.setMeta("docs", "s3://a", "s3://b", 2, true)
-	j2.startFile(1, "docs/a.txt", 100)
+	j2.startFile(0, 1, "docs/a.txt", 100)
 	j2.progress(50, 100)
 	j2.mu.Lock()
 	j2.info.SpeedBps = 2048

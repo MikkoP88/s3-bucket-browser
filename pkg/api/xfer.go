@@ -161,12 +161,18 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 	j := a.jobs.add("transfer", len(plan.files), plan.total)
 	j.src = xferDestSource(dest)
 	j.setMeta(xferTitle(items, localPaths), xferFromLabel(items, localPaths), xferDestLabel(dest), len(items)+len(localPaths), move)
-	names := make([]string, 0, len(items)+len(localPaths))
+	its := make([]TransferItem, 0, len(items)+len(localPaths))
 	for _, it := range items {
-		names = append(names, it.Key)
+		its = append(its, TransferItem{Name: it.Key})
 	}
-	names = append(names, localPaths...)
-	j.setNames(names)
+	for _, lp := range localPaths {
+		its = append(its, TransferItem{Name: lp})
+	}
+	for i := range plan.files {
+		its[plan.files[i].item].Files++
+		its[plan.files[i].item].Total += plan.files[i].size
+	}
+	j.setItems(its)
 	if hidden {
 		j.mu.Lock()
 		j.info.Hidden = true
@@ -268,7 +274,7 @@ func (a *App) resolveXferDest(dest XferDest) (xferDestSide, error) {
 }
 
 // xferSrcSideFor resolves (and caches per source) one read side.
-func (a *App) xferSrcSideFor(ctx context.Context, cache map[string]*xferSrcSide, idOrName string) (*xferSrcSide, error) {
+func (a *App) xferSrcSideFor(cache map[string]*xferSrcSide, idOrName string) (*xferSrcSide, error) {
 	if s, ok := cache[idOrName]; ok {
 		return s, nil
 	}
@@ -446,7 +452,7 @@ func (a *App) planXfer(ctx context.Context, items []XferItem, localPaths []strin
 	}
 
 	for idx, it := range items {
-		side, err := a.xferSrcSideFor(ctx, srcCache, it.Source)
+		side, err := a.xferSrcSideFor(srcCache, it.Source)
 		if err != nil {
 			return nil, err
 		}
@@ -720,7 +726,15 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
-		j.startFile(i+1, f.srcPath, f.size)
+		// A same-profile S3→S3 hop is a server-side CopyObject: no byte
+		// stream ever crosses the wire, so the per-file line gets no size
+		// to grind against — announcing it without one lights the row's
+		// server-side chip instead of a frozen "0%".
+		sz := f.size
+		if f.srcKind == "s3" && dst.kind == "s3" && f.client == dst.client {
+			sz = 0
+		}
+		j.startFile(f.item, i+1, f.srcPath, sz)
 		j.emit(true)
 
 		unlock := a.lockSrcs(f.srcLock, dst.lockID)
@@ -739,15 +753,12 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 			j.info.ErrorKind = timeoutKind(err.Error())
 			j.mu.Unlock()
 			failed[f.item] = true
-			j.fileDone(f.size, true)
+			j.fileDone(f.item, f.size, ItemFailed)
 		case status == "skipped":
 			skipped[f.item] = true
-			j.mu.Lock()
-			j.info.SkippedFiles++
-			j.mu.Unlock()
-			j.fileDone(0, false)
+			j.fileDone(f.item, 0, ItemSkipped)
 		default:
-			j.fileDone(f.size, false)
+			j.fileDone(f.item, f.size, ItemDone)
 			if f.srcKind == "s3" {
 				touched[f.bucket] = true
 			}

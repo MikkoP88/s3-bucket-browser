@@ -44,6 +44,37 @@ const (
 	PolicyRename    = "rename"
 )
 
+// Item-row states (TransferItem.State): the per-item lifecycle inside one
+// job — pending until its first file starts, active while any of its files
+// moves, then the settled outcome once every planned file landed.
+const (
+	ItemPending = "pending"
+	ItemActive  = "active"
+	ItemDone    = "done"
+	ItemFailed  = "failed"
+	ItemSkipped = "skipped"
+)
+
+// itemRowCap bounds the per-item rows riding the progress events: a job
+// of dozens shows live per-file states in its expanded panel, a huge one
+// falls back to the aggregate counters and TransferItems' plain names
+// instead of copying hundreds of rows into every snapshot.
+const itemRowCap = 50
+
+// TransferItem is one top-level item of a job with its own live outcome.
+// A flat multi-file drop is one row per FILE; a folder item aggregates
+// the files beneath it (Files/Total count the planner's expansion).
+type TransferItem struct {
+	Name    string `json:"name"`
+	State   string `json:"state"` // ItemPending | ItemActive | ItemDone | ItemFailed | ItemSkipped
+	Files   int    `json:"files"` // planned files under this item
+	Done    int    `json:"done"`  // settled files (done + failed + skipped)
+	Failed  int    `json:"failed,omitempty"`
+	Skipped int    `json:"skipped,omitempty"`
+	Sent    int64  `json:"sent"`  // bytes settled under this item
+	Total   int64  `json:"total"` // planned bytes under this item
+}
+
 // emitInterval throttles progress events to the frontend.
 const emitInterval = 100 * time.Millisecond
 
@@ -67,21 +98,22 @@ type JobInfo struct {
 	// and where the bytes are right now. Name/Items feed the localized
 	// "Copying photos +2" title; From/To the route line; the current-*
 	// triple the "File 2/3 — pic.jpg · 18/41 MB" line.
-	Move         bool   `json:"move"`                // transfer jobs: copy-then-delete
-	Name         string `json:"name,omitempty"`      // primary source item
-	Items        int    `json:"items"`               // top-level items dropped
-	From         string `json:"from,omitempty"`      // human source label
-	To           string `json:"to,omitempty"`        // human destination label
-	Phase        string `json:"phase"`               // "transfer" | "cleanup"
-	FileIndex    int    `json:"fileIndex"`           // 1-based in-flight file ordinal
-	CurrentSent  int64  `json:"currentSent"`         // bytes of the in-flight file
-	CurrentTotal int64  `json:"currentTotal"`        // its size (0 = unknown/server-side)
-	EtaMs        int64  `json:"etaMs,omitempty"`     // computed on emit while running
-	ElapsedMs    int64  `json:"elapsedMs,omitempty"` // stamped at finish
-	EndedAt      int64  `json:"endedAt,omitempty"`   // unix millis, stamped at finish
-	Stalled      bool   `json:"stalled"`             // no byte movement within the stall threshold
-	ErrorKind    string `json:"errorKind,omitempty"` // "timeout" | ""
-	Hidden       bool   `json:"hidden,omitempty"`    // internal staging (drag-out scratch download) — never shown in any list or badge
+	Move         bool           `json:"move"`                // transfer jobs: copy-then-delete
+	Name         string         `json:"name,omitempty"`      // primary source item
+	Items        int            `json:"items"`               // top-level items dropped
+	ItemRows     []TransferItem `json:"itemRows,omitempty"`  // live per-item states (≤ itemRowCap) — the expanded panel's rows
+	From         string         `json:"from,omitempty"`      // human source label
+	To           string         `json:"to,omitempty"`        // human destination label
+	Phase        string         `json:"phase"`               // "transfer" | "cleanup"
+	FileIndex    int            `json:"fileIndex"`           // 1-based in-flight file ordinal
+	CurrentSent  int64          `json:"currentSent"`         // bytes of the in-flight file
+	CurrentTotal int64          `json:"currentTotal"`        // its size (0 = unknown/server-side)
+	EtaMs        int64          `json:"etaMs,omitempty"`     // computed on emit while running
+	ElapsedMs    int64          `json:"elapsedMs,omitempty"` // stamped at finish
+	EndedAt      int64          `json:"endedAt,omitempty"`   // unix millis, stamped at finish
+	Stalled      bool           `json:"stalled"`             // no byte movement within the stall threshold
+	ErrorKind    string         `json:"errorKind,omitempty"` // "timeout" | ""
+	Hidden       bool           `json:"hidden,omitempty"`    // internal staging (drag-out scratch download) — never shown in any list or badge
 }
 
 // DownloadItem pairs an object key with its size (sizes come from the grid,
@@ -109,7 +141,7 @@ type jobHandle struct {
 	lastEmSent int64     // SentBytes at the previous emit (EMA speed input)
 	lastEmAt   time.Time // when that was
 	stallAfter time.Duration
-	itemNames  []string // display names of the top-level items (TransferItems)
+	itemNames  []string // item display names (TransferItems — the >itemRowCap fallback)
 }
 
 // jobManager owns all jobs in insertion order.
@@ -346,9 +378,10 @@ func (j *jobHandle) progress(sent, total int64) {
 	j.emit(false)
 }
 
-// startFile announces the next in-flight file: its 1-based ordinal, its
-// display path and its expected size (0 = unknown / server-side copy).
-func (j *jobHandle) startFile(idx int, name string, size int64) {
+// startFile announces the next in-flight file: its owning item (index
+// into the per-item rows), 1-based ordinal, display path and expected
+// size (0 = unknown / server-side copy).
+func (j *jobHandle) startFile(item, idx int, name string, size int64) {
 	j.mu.Lock()
 	j.info.FileIndex = idx
 	j.info.CurrentFile = name
@@ -356,6 +389,11 @@ func (j *jobHandle) startFile(idx int, name string, size int64) {
 	j.info.CurrentTotal = size
 	j.info.Stalled = false
 	j.lastByteAt = time.Now()
+	j.touchItemLocked(item, func(r *TransferItem) {
+		if r.State == ItemPending {
+			r.State = ItemActive
+		}
+	})
 	j.mu.Unlock()
 }
 
@@ -368,13 +406,45 @@ func (j *jobHandle) setMeta(name, from, to string, items int, move bool) {
 	j.mu.Unlock()
 }
 
-// setNames records the top-level items' display names — the expanded
-// panel's contents list, fetched on demand via TransferItems so the
-// 100ms progress events stay lean.
-func (j *jobHandle) setNames(names []string) {
+// setItems records the top-level items: the names always feed
+// TransferItems (the >itemRowCap fallback list), and jobs within the cap
+// also carry live per-item state rows on every event so the expanded
+// panel shows each file's outcome without extra bridge chatter.
+func (j *jobHandle) setItems(items []TransferItem) {
+	names := make([]string, len(items))
+	for i, it := range items {
+		names[i] = it.Name
+	}
 	j.mu.Lock()
 	j.itemNames = names
+	if len(items) <= itemRowCap {
+		rows := make([]TransferItem, len(items))
+		copy(rows, items)
+		for i := range rows {
+			switch {
+			case rows[i].Files == 0:
+				rows[i].State = ItemDone // nothing planned under it — never pending
+			case rows[i].State == "":
+				rows[i].State = ItemPending
+			}
+		}
+		j.info.ItemRows = rows
+	}
 	j.mu.Unlock()
+}
+
+// touchItemLocked mutates one item row copy-on-write: emitted snapshots
+// share the backing array with a marshal riding outside the lock, so the
+// worker never edits a slice a consumer may still be reading — it swaps
+// in a fresh copy instead. Caller holds j.mu.
+func (j *jobHandle) touchItemLocked(item int, fn func(*TransferItem)) {
+	if item < 0 || item >= len(j.info.ItemRows) {
+		return
+	}
+	rows := make([]TransferItem, len(j.info.ItemRows))
+	copy(rows, j.info.ItemRows)
+	fn(&rows[item])
+	j.info.ItemRows = rows
 }
 
 // setPhase labels what the worker is doing between "running" snapshots.
@@ -384,19 +454,49 @@ func (j *jobHandle) setPhase(p string) {
 	j.mu.Unlock()
 }
 
-// fileDone advances the completed-file counters.
-func (j *jobHandle) fileDone(size int64, failed bool) {
+// fileDone settles the in-flight file: the job counters, the byte base
+// and the owning item's row all advance together. outcome is ItemDone,
+// ItemFailed or ItemSkipped — a skip settles nothing byte-wise (the
+// destination kept its own file, the source keeps this one).
+func (j *jobHandle) fileDone(item int, size int64, outcome string) {
 	j.mu.Lock()
-	j.doneBase += size
+	switch outcome {
+	case ItemSkipped:
+		j.info.SkippedFiles++
+	case ItemFailed:
+		j.doneBase += size
+		j.info.FailedFiles++
+	default:
+		j.doneBase += size
+		j.info.DoneFiles++
+	}
 	j.fileSent = 0
 	j.info.SentBytes = j.doneBase
 	j.info.CurrentSent = 0
 	j.info.CurrentTotal = 0
-	j.info.DoneFiles++
 	j.lastByteAt = time.Now()
-	if failed {
-		j.info.FailedFiles++
-	}
+	j.touchItemLocked(item, func(r *TransferItem) {
+		r.Done++
+		switch outcome {
+		case ItemFailed:
+			r.Failed++
+			r.Sent += size
+		case ItemSkipped:
+			r.Skipped++
+		default:
+			r.Sent += size
+		}
+		if r.Done >= r.Files { // every planned file settled — the outcome
+			switch {
+			case r.Failed > 0:
+				r.State = ItemFailed
+			case r.Skipped > 0:
+				r.State = ItemSkipped
+			default:
+				r.State = ItemDone
+			}
+		}
+	})
 	j.mu.Unlock()
 }
 
@@ -417,6 +517,7 @@ func (a *App) TransferItems(id string) []string { return a.jobs.itemsOf(id) }
 
 // uploadPair is one planned file upload.
 type uploadPair struct {
+	item  int // index of the originating dropped path (per-item rows)
 	local string
 	key   string
 	size  int64
@@ -446,7 +547,15 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 	j := a.jobs.add("upload", len(pairs), total)
 	j.src = bucket
 	j.setMeta(uploadTitle(paths), filepath.Dir(paths[0]), s3Label(bucket, dirPrefix(prefix)), len(paths), false)
-	j.setNames(paths)
+	its := make([]TransferItem, len(paths))
+	for i, p := range paths {
+		its[i] = TransferItem{Name: p}
+	}
+	for _, pr := range pairs {
+		its[pr.item].Files++
+		its[pr.item].Total += pr.size
+	}
+	j.setItems(its)
 	id := j.info.ID
 	a.emitLogSrc(LogInfo, "upload", bucket, fmt.Sprintf("job %s: uploading %d file(s) (%d bytes) to %s/%s", id, len(pairs), total, bucket, dirPrefix(prefix)))
 	logDecisions(a, "upload", decisions)
@@ -502,7 +611,7 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
-		j.startFile(i+1, p.local, p.size)
+		j.startFile(p.item, i+1, p.local, p.size)
 		j.emit(true)
 
 		pol := filePolicy(decisions, p.key, policy)
@@ -510,10 +619,7 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 			// "skip" keeps an EXISTING destination file — with nothing at
 			// the key there is no conflict to resolve, and silently
 			// dropping a file the caller asked to transfer is data loss
-			j.mu.Lock()
-			j.info.SkippedFiles++
-			j.mu.Unlock()
-			j.fileDone(0, false)
+			j.fileDone(p.item, 0, ItemSkipped)
 			j.emit(true)
 			continue
 		}
@@ -539,7 +645,11 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 			j.info.ErrorKind = timeoutKind(err.Error())
 			j.mu.Unlock()
 		}
-		j.fileDone(p.size, err != nil)
+		outcome := ItemDone
+		if err != nil {
+			outcome = ItemFailed
+		}
+		j.fileDone(p.item, p.size, outcome)
 		j.emit(true)
 	}
 
@@ -630,16 +740,17 @@ func (a *App) logTransfer(entry any) {
 	f.Write(append(b, '\n'))
 }
 
-// expandUploadPaths resolves files and directories into (local, key, size).
+// expandUploadPaths resolves files and directories into (item, local,
+// key, size); item is the dropped path each file descends from.
 func expandUploadPaths(paths []string, prefix string) ([]uploadPair, error) {
 	var out []uploadPair
-	for _, p := range paths {
+	for item, p := range paths {
 		st, err := os.Stat(p)
 		if err != nil {
 			return nil, err
 		}
 		if !st.IsDir() {
-			out = append(out, uploadPair{local: p, key: joinKeyNoSlash(prefix, filepath.Base(p)), size: st.Size()})
+			out = append(out, uploadPair{item: item, local: p, key: joinKeyNoSlash(prefix, filepath.Base(p)), size: st.Size()})
 			continue
 		}
 		root := p
@@ -660,6 +771,7 @@ func expandUploadPaths(paths []string, prefix string) ([]uploadPair, error) {
 				return err
 			}
 			out = append(out, uploadPair{
+				item:  item,
 				local: fp,
 				key:   joinKeyNoSlash(prefix, base, filepath.ToSlash(rel)),
 				size:  info.Size(),
@@ -735,15 +847,15 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	j := a.jobs.add("download", len(items), total)
 	j.src = bucket
 	j.setMeta(downloadTitle(items), s3Label(bucket, ""), destDir, len(items), false)
-	names := make([]string, len(items))
+	its := make([]TransferItem, len(items))
 	for i, it := range items {
+		nm := it.Key
 		if it.Local != "" {
-			names[i] = it.Local
-		} else {
-			names[i] = it.Key
+			nm = it.Local
 		}
+		its[i] = TransferItem{Name: nm, Files: 1, Total: it.Size}
 	}
-	j.setNames(names)
+	j.setItems(its)
 	id := j.info.ID
 	a.emitLogSrc(LogInfo, "download", bucket, fmt.Sprintf("job %s: downloading %d object(s) (%d bytes) from %s to %s", id, len(items), total, bucket, destDir))
 	logDecisions(a, "download", decisions)
@@ -767,7 +879,7 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
-		j.startFile(i+1, it.Key, it.Size)
+		j.startFile(i, i+1, it.Key, it.Size)
 		j.emit(true)
 
 		rel := it.Local
@@ -779,10 +891,8 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 		switch pol {
 		case PolicySkip:
 			if _, err := os.Stat(local); err == nil {
-				j.mu.Lock()
-				j.info.SkippedFiles++
-				j.mu.Unlock()
-				j.fileDone(0, false)
+				j.fileDone(i, 0, ItemSkipped)
+				j.emit(true)
 				continue
 			}
 		case PolicyRename:
@@ -808,7 +918,11 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 			j.info.ErrorKind = timeoutKind(err.Error())
 			j.mu.Unlock()
 		}
-		j.fileDone(it.Size, err != nil)
+		outcome := ItemDone
+		if err != nil {
+			outcome = ItemFailed
+		}
+		j.fileDone(i, it.Size, outcome)
 		j.emit(true)
 	}
 

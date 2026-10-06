@@ -110,7 +110,21 @@ func (a *App) CopySelectionVersions(srcSource, srcBucket string, keys []string, 
 	j := a.jobs.add("transfer", total+markers, totalBytes)
 	j.setMeta(path.Base(strings.TrimSuffix(keys[0], "/")),
 		s3Label(srcBucket, ""), s3Label(dstBucket, dstPrefix), len(keys), move)
-	j.setNames(keys)
+	its := make([]TransferItem, len(keys))
+	for i, it := range items {
+		row := TransferItem{Name: keys[i]}
+		for _, t := range it.timelines {
+			row.Files += len(t.Versions)
+			if t.IsDeleted {
+				row.Files++ // the marker recreation is a file slot too
+			}
+			for _, v := range t.Versions {
+				row.Total += v.Size
+			}
+		}
+		its[i] = row
+	}
+	j.setItems(its)
 	id := j.info.ID
 	verb := "copying"
 	if move {
@@ -151,20 +165,27 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 	failed := 0
 	n := 0 // 1-based ordinal across versions and markers
 
-	for _, it := range items {
+	for ii, it := range items {
 		for _, t := range it.timelines {
 			dk := vcopyDstKey(dstPrefix, it.prefix, it.exact, t.Key)
 			if dk == "" || (srcBucket == dstBucket && dk == t.Key) {
 				n++
-				j.startFile(n, t.Key, 0)
+				j.startFile(ii, n, t.Key, 0)
 				failed++
 				lastErr = fmt.Sprintf("%s: source and destination are the same", t.Key)
-				j.fileDone(0, true)
+				j.fileDone(ii, 0, ItemFailed)
 				continue
 			}
 			for _, v := range t.Versions {
 				n++
-				j.startFile(n, fmt.Sprintf("%s@%s", t.Key, v.VersionID), v.Size)
+				// Same client = one server-side CopyObject: no byte stream
+				// crosses the wire, so the per-file line gets no size to
+				// grind against (0 lights the row's server-side chip).
+				sz := v.Size
+				if srcC == dstC {
+					sz = 0
+				}
+				j.startFile(ii, n, fmt.Sprintf("%s@%s", t.Key, v.VersionID), sz)
 				if err := versioning.CopyOneVersion(ctx, srcC.S3, srcBucket, t.Key, v.VersionID, dstC.S3, dstBucket, dk); err != nil {
 					if ctx.Err() != nil {
 						a.finishJob(j, JobCanceled, "canceled")
@@ -172,11 +193,11 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 					}
 					failed++
 					lastErr = fmt.Sprintf("%s@%s: %v", t.Key, v.VersionID, err)
-					j.fileDone(v.Size, true)
+					j.fileDone(ii, v.Size, ItemFailed)
 					j.emit(true)
 					continue
 				}
-				j.fileDone(v.Size, false)
+				j.fileDone(ii, v.Size, ItemDone)
 				j.emit(false)
 			}
 			if t.IsDeleted {
@@ -184,16 +205,16 @@ func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBuck
 				// delete becomes the destination's current state, exactly
 				// as at the source.
 				n++
-				j.startFile(n, t.Key+" (delete marker)", 0)
+				j.startFile(ii, n, t.Key+" (delete marker)", 0)
 				if _, err := dstC.S3.DeleteObject(ctx, &s3.DeleteObjectInput{
 					Bucket: aws.String(dstBucket), Key: aws.String(dk),
 				}); err != nil {
 					failed++
 					lastErr = fmt.Sprintf("%s: recreate delete marker: %v", t.Key, err)
-					j.fileDone(0, true)
+					j.fileDone(ii, 0, ItemFailed)
 					continue
 				}
-				j.fileDone(0, false)
+				j.fileDone(ii, 0, ItemDone)
 				j.emit(true)
 			}
 		}

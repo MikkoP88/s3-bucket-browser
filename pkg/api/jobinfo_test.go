@@ -14,7 +14,7 @@ func TestProgressFeedsLiveStateAndEmits(t *testing.T) {
 	a.jobs.setContext(context.Background())
 	j := a.jobs.add("upload", 1, 1000)
 	j.setMeta("video.mp4", `C:\shoot`, "s3://team-files/shoot", 1, false)
-	j.startFile(1, `C:\shoot\video.mp4`, 1000)
+	j.startFile(0, 1, `C:\shoot\video.mp4`, 1000)
 
 	// The 0%→100% bug: progress() used to update SentBytes silently and
 	// only file boundaries emitted. Now every read both updates the
@@ -31,7 +31,7 @@ func TestProgressFeedsLiveStateAndEmits(t *testing.T) {
 		t.Fatalf("file ordinal/phase = %d/%q", snap.FileIndex, snap.Phase)
 	}
 
-	j.fileDone(1000, false)
+	j.fileDone(0, 1000, ItemDone)
 	snap = a.jobs.snapshot()[0]
 	if snap.DoneFiles != 1 || snap.CurrentSent != 0 || snap.CurrentTotal != 0 {
 		t.Fatalf("post-fileDone state = %+v", snap)
@@ -41,7 +41,7 @@ func TestProgressFeedsLiveStateAndEmits(t *testing.T) {
 func TestStallFlagFollowsByteMovement(t *testing.T) {
 	a := newTestApp(t)
 	j := a.jobs.add("download", 1, 100)
-	j.startFile(1, "big.bin", 100)
+	j.startFile(0, 1, "big.bin", 100)
 	j.progress(10, 100)
 	if got := a.jobs.snapshot()[0].Stalled; got {
 		t.Fatal("fresh movement flagged stalled")
@@ -72,9 +72,9 @@ func TestFinishStampsElapsedAndClearsCurrent(t *testing.T) {
 	a := newTestApp(t)
 	j := a.jobs.add("transfer", 2, 50)
 	j.setMeta("docs", "s3://a", "s3://b", 2, true)
-	j.startFile(1, "docs/x.txt", 50)
+	j.startFile(0, 1, "docs/x.txt", 50)
 	j.progress(50, 50)
-	j.fileDone(50, false)
+	j.fileDone(0, 50, ItemDone)
 	a.finishJob(j, JobDone, "")
 
 	snap := a.jobs.snapshot()[0]
@@ -120,7 +120,7 @@ func TestRunningTasksLabelsJobsByName(t *testing.T) {
 	}
 	// name-less jobs fall back to the current file, then the ID
 	k := a.jobs.add("download", 1, 1)
-	k.startFile(1, "a.txt", 1)
+	k.startFile(0, 1, "a.txt", 1)
 	got = a.RunningTasks()
 	if got[1].Label != "a.txt" {
 		t.Fatalf("fallback label = %+v", got[1])
@@ -135,7 +135,7 @@ func TestFinishStampsEndedAndItems(t *testing.T) {
 	a := newTestApp(t)
 	j := a.jobs.add("upload", 2, 20)
 	j.setMeta("a.txt", `C:\\`, "s3://b", 2, false)
-	j.setNames([]string{`C:\\a.txt`, `C:\\b.txt`})
+	j.setItems([]TransferItem{{Name: `C:\\a.txt`, Files: 1, Total: 10}, {Name: `C:\\b.txt`, Files: 1, Total: 10}})
 	if names := a.TransferItems(j.info.ID); len(names) != 2 || names[0] != `C:\\a.txt` || names[1] != `C:\\b.txt` {
 		t.Fatalf("TransferItems = %v", names)
 	}
