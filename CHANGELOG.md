@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0-beta.2] — 2026-10-06
+
 ### Changed
 
 - **Every data source is exactly one root — no account-level
