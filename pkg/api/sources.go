@@ -220,6 +220,118 @@ func (a *App) RemoveSource(idOrName string) error {
 	return fmt.Errorf("%w: source %q", profile.ErrNotFound, idOrName)
 }
 
+// SplitCreated names one bucket-scoped source an account split produced.
+type SplitCreated struct {
+	Name   string `json:"name"`
+	Bucket string `json:"bucket"`
+}
+
+// SplitResult reports one account-wide source's split: the bucket sources
+// that were created, and the buckets whose connection already had a source
+// (refreshed in place).
+type SplitResult struct {
+	Source  string         `json:"source"`
+	Created []SplitCreated `json:"created"`
+	Matched []string       `json:"matched"`
+}
+
+// SplitAccountSource replaces a legacy account-wide S3 source with one
+// bucket-scoped source per visible bucket, named after the bucket — the
+// one-bucket model's migration step. Idempotent: buckets whose connection
+// already has a source refresh it in place, and the account source is
+// removed only after every bucket save settled. A listing failure returns
+// the error and leaves the source untouched (the frontend retries on the
+// next sources refresh or reconnect).
+func (a *App) SplitAccountSource(idOrName string) (SplitResult, error) {
+	a.splitMu.Lock()
+	defer a.splitMu.Unlock()
+	src, err := a.sourceByIDOrName(idOrName)
+	if err != nil {
+		return SplitResult{}, err
+	}
+	if src.Type != profile.TypeS3 || src.S3 == nil {
+		return SplitResult{}, fmt.Errorf("source %q (%s) is not an s3 source", src.Name, src.Type)
+	}
+	if src.Bucket != "" {
+		return SplitResult{}, fmt.Errorf("source %q is already scoped to bucket %q", src.Name, src.Bucket)
+	}
+	names, err := a.listCandidateBuckets(src)
+	if err != nil {
+		return SplitResult{}, fmt.Errorf("listing buckets of %q: %w", src.Name, err)
+	}
+	if len(names) == 0 {
+		// Same rule as credential import: an account that sees nothing (or a
+		// scoped-down key that cannot list) keeps its account-wide source.
+		return SplitResult{}, fmt.Errorf("source %q sees no buckets — nothing to split into", src.Name)
+	}
+	res := SplitResult{Source: src.Name, Created: []SplitCreated{}, Matched: []string{}}
+	for _, bucket := range names {
+		bktSrc := src
+		p := *src.S3
+		p.Name = bucket
+		bktSrc.S3 = &p
+		// The clone must never carry the account's ID: UpsertSourceIn keys
+		// on ID, and importSource's same-connection match would otherwise
+		// overwrite the account row with the first bucket.
+		bktSrc.ID = ""
+		bktSrc.Name = bucket
+		bktSrc.Bucket = bucket
+		var ir ImportResult
+		a.importSource(bktSrc, &ir)
+		switch {
+		case len(ir.Imported) == 1:
+			res.Created = append(res.Created, SplitCreated{Name: ir.Imported[0], Bucket: bucket})
+		case len(ir.Updated) == 1:
+			res.Matched = append(res.Matched, bucket)
+		default: // Skipped: the save failed — stop before removing anything
+			return res, fmt.Errorf("saving the bucket source for %q failed", bucket)
+		}
+	}
+	if err := a.RemoveSource(src.ID); err != nil {
+		// Every bucket settled; only the account's own removal failed — the
+		// next pass matches every bucket and retries just this step.
+		return res, err
+	}
+	a.emitLogSrc(LogInfo, "sources", src.Name, fmt.Sprintf(
+		"account source %q split into %d bucket source(s) (%d already present)",
+		src.Name, len(res.Created), len(res.Matched)))
+	return res, nil
+}
+
+// CreateBucketSource scopes a copy of an s3 source to one bucket — the
+// New-bucket flow's second half (CreateBucketInSource makes the bucket,
+// this makes it a data source). The clone happens server-side with the
+// stored credentials: the masked editor round-trip cannot carry them, and
+// SaveSource's mask-inheritance keys on ID/name, so a frontend clone with
+// a fresh ID would silently store the mask. Idempotent by connection: a
+// bucket that already has a source refreshes it in place.
+func (a *App) CreateBucketSource(idOrName, bucket string) (SplitCreated, error) {
+	src, err := a.sourceByIDOrName(idOrName)
+	if err != nil {
+		return SplitCreated{}, err
+	}
+	if src.Type != profile.TypeS3 || src.S3 == nil {
+		return SplitCreated{}, fmt.Errorf("source %q (%s) is not an s3 source", src.Name, src.Type)
+	}
+	bktSrc := src
+	p := *src.S3
+	p.Name = bucket
+	bktSrc.S3 = &p
+	bktSrc.ID = "" // fresh row — never overwrite the connection source (see SplitAccountSource)
+	bktSrc.Name = bucket
+	bktSrc.Bucket = bucket
+	var ir ImportResult
+	a.importSource(bktSrc, &ir)
+	switch {
+	case len(ir.Imported) == 1:
+		return SplitCreated{Name: ir.Imported[0], Bucket: bucket}, nil
+	case len(ir.Updated) == 1:
+		return SplitCreated{Name: bucket, Bucket: bucket}, nil
+	default:
+		return SplitCreated{}, fmt.Errorf("saving the bucket source for %q failed", bucket)
+	}
+}
+
 // TestSource probes a data source. S3 sources scoped to one bucket get a
 // HEAD on that bucket (the credential may not list all buckets);
 // account-wide S3 sources list buckets; other engines dial remotefs.

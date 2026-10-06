@@ -11,6 +11,7 @@ import {
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   renderPopoutView, licenseGate,
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile, applySearchCols,
+  bucketSourceDialog,
 } from './dialogs.js';
 import { SR_DEFAULT_COLS, storedSearchCols } from './srgrid.js';
 import { LICENSE, licenseLine } from './license.js';
@@ -221,6 +222,9 @@ async function reconnectSource(name, reloadNodeId = null) {
     hideConnBanner();
     toast(t('reconnected', { src: name }), 'ok');
     if (currentViewSourceName() === name) refreshCurrent();
+    // the reconnect just proved a legacy account is reachable again —
+    // migrate it now instead of waiting for the next refresh
+    if (src.type === 's3' && !src.bucket) await splitLegacySources();
   } else {
     toast(t('reconnectFailed', { src: name }), 'error');
   }
@@ -498,8 +502,59 @@ async function refreshSources() {
     return false;
   }
   probeSources();
+  // legacy account-wide sources migrate on every pass that can list them
+  // (unreachable ones stay and retry on the next refresh/reconnect)
+  void splitLegacySources();
   updateCommandState();
   return true;
+}
+
+// splitLegacySources is the one-bucket model's migration funnel: every
+// legacy account-wide s3 source becomes one bucket-scoped source per
+// visible bucket (named after the bucket). A source that cannot be listed
+// keeps its shape and is retried on the next refresh or reconnect; a
+// split that lands refreshes the workspace and re-homes a view whose
+// source just vanished.
+let splitInFlight = false;
+async function splitLegacySources() {
+  const legacy = sources.filter((s) => s.type === 's3' && !s.bucket);
+  if (!legacy.length || splitInFlight) return false;
+  splitInFlight = true;
+  try {
+    const gone = new Set(legacy.map((s) => s.name));
+    let splitAny = false;
+    let firstCreated = null;
+    for (const src of legacy) {
+      try {
+        const res = await api.SplitAccountSource(src.id || src.name);
+        splitAny = true;
+        if (!firstCreated && res.created?.length) firstCreated = res.created[0];
+        const n = (res.created?.length || 0) + (res.matched?.length || 0);
+        toast(t('sourceSplit', { src: res.source || src.name, n }), 'ok');
+      } catch { /* unreachable or empty: the legacy source stays */ }
+    }
+    if (splitAny) {
+      await refreshSources();
+      refreshPfState();
+      // re-home a view whose source was just split away: an object
+      // listing reopens the same bucket through its new scoped source,
+      // anything else continues into the split's first created bucket
+      // (created order); an all-matched split lands on the first scoped
+      if (gone.has(nav.current?.source)) {
+        const cur = nav.current;
+        const reHome = cur.kind === 'objects'
+          ? sources.find((s) => s.type === 's3' && s.bucket === cur.bucket)
+          : null;
+        nav.replace(reHome
+          ? { kind: 'objects', source: reHome.name, bucket: cur.bucket, prefix: cur.prefix || '' }
+          : sourceHomeLoc(sources.find((s) => s.type === 's3' && s.bucket === (firstCreated?.bucket || ''))
+            || sources.find((s) => s.type === 's3' && s.bucket) || sources[0]));
+      }
+    }
+    return splitAny;
+  } finally {
+    splitInFlight = false;
+  }
 }
 
 // sourceHomeLoc is the landing view of a source (or the first one): S3
@@ -729,15 +784,25 @@ async function importCredsUi() {
   });
 }
 
-function afterSourceSaved(saved) {
+function afterSourceSaved(saved, split) {
   refreshSources().then((ok) => {
     // ListSources is name-sorted, so "the last entry" is NOT reliably the
     // source just saved — navigate to the saved one (falling back for
-    // callers without a source object).
-    if (ok) nav.to(sourceHomeLoc(saved || sources[sources.length - 1]));
+    // callers without a source object). A split (the editor's Split
+    // button) lands in the first bucket it created.
+    if (ok) nav.to(sourceHomeLoc(split
+      ? (split.created?.length
+        ? { type: 's3', name: split.created[0].name, bucket: split.created[0].bucket }
+        : sources[0])
+      : saved || sources[sources.length - 1]));
   });
   refreshPfState(); // a container edit flips the dirty flag
-  toast('Source saved', 'ok');
+  if (split) {
+    const n = (split.created?.length || 0) + (split.matched?.length || 0);
+    toast(t('sourceSplit', { src: split.source, n }), 'ok');
+  } else {
+    toast('Source saved', 'ok');
+  }
 }
 
 // ============================ tree filter ============================
@@ -980,7 +1045,7 @@ async function loadView(loc, { silent = false } = {}) {
       renderFavorites();
       if (!currentEntries.length) {
         showEmpty(t('noBuckets'), t('noBucketsSub'), [
-          el('button', { class: 'btn primary', text: t('createBucket'), onclick: createBucket }),
+          el('button', { class: 'btn primary', text: t('createBucket'), onclick: () => newBucketUi(viewSource) }),
         ]);
       }
       // always feed the tree — the legacy bucket level tracks the live
@@ -1808,6 +1873,7 @@ function wireGrid() {
     e.preventDefault();
     openMenu(e, [
       [t('addSource'), '', () => sourceEditor(null, afterSourceSaved)],
+      [t('createBucket') + '\u2026', '', () => newBucketUi(), !sources.some((s) => s.type === 's3')],
       null,
       ['Import S3 Credential\u2026', '', () => importCredsUi()],
       null,
@@ -2094,7 +2160,7 @@ function showEmptyAreaMenu(e) {
   const st = commandState();
   if (loc.kind === 'buckets') {
     openMenu(e, [
-      ['New bucket\u2026', '', () => createBucket(), !st.canCreateBucket],
+      [t('createBucket') + '\u2026', '', () => newBucketUi(viewSource), !st.canCreateBucket],
       null,
       ['Import S3 Credential\u2026', '', () => importCredsUi()],
       null,
@@ -2268,6 +2334,7 @@ function showTreeMenu(e, node) {
       ['Doctor\u2026', '', goThen(() => runDoctor(node.bucket)), !st.hasProfile],
       ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
       null,
+      ['New bucket on this connection\u2026', '', () => newBucketUi(node.source), !st.hasProfile],
       ['Delete bucket\u2026', '', goThen(() => deleteBucket(node.bucket)), !st.hasProfile],
       null,
       ['Refresh', 'F5', () => tree.reload(node.id)],
@@ -2351,6 +2418,7 @@ function showTreeMenu(e, node) {
       ['Doctor\u2026', '', goThen(() => runDoctor(node.bucket)), !st.hasProfile],
       ['Properties', '', goThen(() => bucketProperties(node.bucket)), !st.hasProfile],
       null,
+      ['New bucket on this connection\u2026', '', () => newBucketUi(node.source), !st.hasProfile],
       ['Delete bucket\u2026', '', goThen(() => deleteBucket(node.bucket)), !st.hasProfile],
     ]);
     return;
@@ -3111,13 +3179,27 @@ async function deleteRemoteSelection(overrideSource, overrideKeys, presetMode = 
   }
 }
 
-async function createBucket() {
-  const name = await prompt({ title: t('createBucket'), label: 'Bucket name (globally unique, DNS-safe)' });
-  if (!name) return;
+// newBucketUi creates a bucket AND its data source in one gesture — the
+// one-root model's creation path: the bucket is born on a chosen s3
+// connection and immediately scoped into its own source. Both halves run
+// server-side (CreateBucketInSource dials the connection,
+// CreateBucketSource clones it with its real credentials — the masked
+// editor round-trip cannot carry them).
+async function newBucketUi(fromName) {
+  const conns = sources.filter((s) => s.type === 's3');
+  if (!conns.length) { toast('Add an S3 data source first', 'error'); return; }
+  const def = conns.find((s) => s.name === fromName)
+    || conns.find((s) => s.name === viewSource)
+    || conns[0];
+  const pick = await bucketSourceDialog(conns, def ? (def.id || def.name) : '');
+  if (!pick) return;
   try {
-    await api.CreateBucket(name, '');
-    toast(`Bucket ${name} created`, 'ok');
-    refreshCurrent();
+    await api.CreateBucketInSource(pick.conn, pick.name, '');
+    const created = await api.CreateBucketSource(pick.conn, pick.name);
+    await refreshSources();
+    refreshPfState();
+    toast(`Bucket ${created.name} created`, 'ok');
+    nav.to({ kind: 'objects', source: created.name, bucket: pick.name, prefix: '' });
   } catch (err) {
     toast(`Create bucket failed: ${err}`, 'error');
   }
@@ -3148,7 +3230,19 @@ async function deleteBucket(bucket) {
     if (go === null) return;
     const res = await api.DeleteBucket(bucket, true);
     toast(`Bucket removed (${res.deleted} object(s) emptied)`, 'ok');
-    nav.to({ kind: 'buckets', source: viewSource });
+    // one-root rule: a source scoped to the deleted bucket goes with it —
+    // its root no longer exists. The view re-homes to the first survivor.
+    const scoped = sources.find((s) => s.type === 's3' && s.bucket === bucket);
+    if (scoped) {
+      try {
+        await api.RemoveSource(scoped.id || scoped.name);
+      } catch (err) { toast(`Remove source failed: ${err}`, 'error'); }
+      await refreshSources();
+      refreshPfState();
+      nav.to(sourceHomeLoc(sources[0]));
+    } else {
+      nav.to({ kind: 'buckets', source: viewSource });
+    }
   } catch (err) {
     toast(`Delete bucket failed: ${err}`, 'error');
   }

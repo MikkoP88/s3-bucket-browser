@@ -92,6 +92,7 @@ described here. The same engine backs both.
   - [s3b source import](#s3b-source-import) — Import sources from an encrypted profile file
   - [s3b source list](#s3b-source-list) — List data sources (secrets masked)
   - [s3b source remove](#s3b-source-remove) — Remove a data source
+  - [s3b source split](#s3b-source-split) — Split a legacy account-wide s3 source into one data source per bucket
   - [s3b source test](#s3b-source-test) — Test connectivity for a source
 - [s3b stat](#s3b-stat) — Show bucket, object or source-path metadata
 - [s3b sync](#s3b-sync) — Sync a local folder with an S3 prefix (either direction)
@@ -2432,6 +2433,7 @@ keeps resolving them by name.
 * [s3b source import](#s3b-source-import)
 * [s3b source list](#s3b-source-list)
 * [s3b source remove](#s3b-source-remove)
+* [s3b source split](#s3b-source-split)
 * [s3b source test](#s3b-source-test)
 
 ## s3b source add
@@ -2605,6 +2607,52 @@ Remove a data source
 
 ```
 s3b source remove NAME|ID
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b source](#s3b-source)
+
+## s3b source split
+
+Split a legacy account-wide s3 source into one data source per bucket
+
+### Synopsis
+
+Split a legacy account-wide s3 source into one bucket-scoped
+data source per visible bucket, named after the bucket (every S3 data
+source is one bucket).
+Idempotent: buckets whose connection already has a source are
+refreshed in place, and the account source (and its mirrored profile)
+is removed only after every bucket settled.
+
+```
+s3b source split NAME [flags]
+```
+
+### Options
+
+```
+      --dry-run   list what the split would create, change nothing
+
 ```
 
 ### Options inherited from parent commands

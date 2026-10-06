@@ -6,6 +6,25 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Every data source is exactly one root — no account-level
+  sources.** An S3 source is one bucket, a remote source one host
+  root, a local source one folder, on every face. Legacy account-wide
+  S3 sources split automatically the first time the account can be
+  listed — one bucket-scoped source per visible bucket, named after
+  the bucket — while an unreachable account keeps its legacy source
+  and is retried on every sources refresh and reconnect; the source
+  editor gains *Split into one source per bucket…* for the manual
+  path. Cross-bucket drops and pastes are cross-source transfers now
+  (same-client copies still ride server-side). **New bucket…** on the
+  sidebar or an S3 source's context menu creates the bucket and its
+  data source in one step, Delete bucket removes the source with it,
+  and the CLI requires a bucket on `source add` and gains `s3b
+  source split` (with `--dry-run` and `--json`). The single-root
+  model is pinned for every source type in the visual battery (S3
+  bucket roots, remote host roots, local folders).
+
 ### Fixed
 
 - **The Data sources tree parks every indicator flush — no empty

@@ -321,7 +321,12 @@ func TestS3SourceURIReadCommandsRejected(t *testing.T) {
 func TestS3SourceCopyGrammar(t *testing.T) {
 	cliEnv(t)
 	addS3Source(t, "pb", "my-bucket") // per-bucket
-	addS3Source(t, "acct", "")        // account-wide
+	// the account-wide shape still reaches the store through the legacy
+	// profile face — the door `source split` later migrates it through
+	if code := Execute([]string{"profile", "add", "acct", "--endpoint", "http://127.0.0.1:1",
+		"--access-key", "test", "--secret-key", "test"}); code != 0 {
+		t.Fatalf("profile add acct: exit %d", code)
+	}
 	dst := t.TempDir()
 
 	if code := Execute([]string{"cp", "ghost://x", dst}); code != exitUsage {

@@ -61,6 +61,8 @@ type App struct {
 
 	pendingMu    sync.Mutex
 	pendingCreds map[string]pendingCred // import-candidate stash (secrets stay Go-side)
+
+	splitMu sync.Mutex // serializes SplitAccountSource: popout windows and the main window can both reach for it
 }
 
 // New creates the service. version is shown in the About dialog / status bar.

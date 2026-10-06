@@ -47,7 +47,8 @@ func TestSourceAddListUseRemove(t *testing.T) {
 		t.Fatalf("add local: exit %d", code)
 	}
 	if code := Execute([]string{"source", "add", "prod", "--type", "s3",
-		"--endpoint", "http://localhost:9000", "--access-key", "a", "--secret-key", "s"}); code != 0 {
+		"--endpoint", "http://localhost:9000", "--access-key", "a", "--secret-key", "s",
+		"--bucket", "prod-data"}); code != 0 {
 		t.Fatalf("add s3: exit %d", code)
 	}
 
@@ -208,7 +209,8 @@ func TestSourceExportImportRoundTrip(t *testing.T) {
 		t.Fatalf("add local: exit %d", code)
 	}
 	if code := Execute([]string{"source", "add", "prod", "--type", "s3",
-		"--endpoint", "http://localhost:9000", "--access-key", "a", "--secret-key", "s"}); code != 0 {
+		"--endpoint", "http://localhost:9000", "--access-key", "a", "--secret-key", "s",
+		"--bucket", "prod-data"}); code != 0 {
 		t.Fatalf("add s3: exit %d", code)
 	}
 

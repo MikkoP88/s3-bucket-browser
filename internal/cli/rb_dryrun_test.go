@@ -67,7 +67,8 @@ func TestRbDryRun(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	if code := Execute([]string{"source", "add", "store", "--type", "s3",
-		"--endpoint", srv.URL, "--access-key", "k", "--secret-key", "s"}); code != 0 {
+		"--endpoint", srv.URL, "--access-key", "k", "--secret-key", "s",
+		"--bucket", "lab"}); code != 0 {
 		t.Fatalf("source add: exit %d", code)
 	}
 

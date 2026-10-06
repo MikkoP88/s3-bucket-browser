@@ -256,6 +256,10 @@ async function waitFor(fn, timeout = 6000, what = 'condition') {
 function shim() {
   if (window.__shim) return;
   const EMPTY = new URLSearchParams(location.search).get('empty') === '1';
+  // legacy-offline world: hetzner stays account-wide AND its bucket list /
+  // probe fail — the exact stored-account shape a user carries when the
+  // network is down (the pre-migration fallback this feature keeps alive)
+  const LEGACY = new URLSearchParams(location.search).get('legacy') === 'offline';
 
   // Deterministic harness defaults: no blocking conflict dialogs during the
   // DnD matrix, stable theme/lang, no persisted side-pane binding.
@@ -444,7 +448,7 @@ function shim() {
     // buckets / remote / local handlers consult this — { listDelayMs,
     // listError, listBeginError, bucketsDelayMs, bucketsError, remoteDelayMs,
     // remoteError, localDelayMs, localError }; null = healthy backend.
-    fault: null,
+    fault: LEGACY ? { bucketsError: 'dial tcp: no route to host', probeError: 'dial tcp: no route to host' } : null,
     // CheckConflicts fixture — empty means a clean destination; the
     // conflict-view step seeds real collisions before uploading
     conflicts: [],
@@ -871,7 +875,12 @@ function shim() {
       if (f.bucketsError) throw new Error(f.bucketsError);
       return JSON.parse(JSON.stringify(world.buckets));
     },
-    ListSourceBuckets: (_src) => JSON.parse(JSON.stringify(world.buckets)),
+    ListSourceBuckets: async () => {
+      const f = world.fault || {};
+      if (f.bucketsDelayMs) await new Promise((r) => setTimeout(r, f.bucketsDelayMs));
+      if (f.bucketsError) throw new Error(f.bucketsError);
+      return JSON.parse(JSON.stringify(world.buckets));
+    },
     // probeError faults the probe itself (connection-states step): the
     // source answers listings or not, but the PROBE says down.
     TestSource: (_idOrName) => {
@@ -1106,7 +1115,13 @@ function shim() {
     // bucket-grade destructive flows (all route through the unified
     // Delete Window — see the delete-window-uniform step)
     PreviewBucketDelete: () => ({ objectCount: 7, versionCount: 12, deleteMarkers: 2, versioned: true, requiresL2: true }),
-    DeleteBucket: (_bucket, _force) => ({ deleted: 7 }),
+    // the real backend removes the bucket and its objects — the world must
+    // follow or later listings resurrect a deleted bucket
+    DeleteBucket: (bucket, _force) => {
+      world.buckets = world.buckets.filter((b) => b.name !== bucket);
+      delete world.objects[bucket];
+      return { deleted: 7 };
+    },
     PurgePreview: () => 60, // >50: the purge window types the escalation word
     PurgeVersions: () => ({ deleted: 60 }),
     EmptyBucketAllVersions: () => ({ deleted: 14 }),
@@ -1261,7 +1276,7 @@ function shim() {
         };
         const mode = scope.mode || 'all';
         if (mode === 's3') {
-          let name = scope.source || world.viewSource || 'hetzner';
+          let name = scope.source || world.viewSource || 'team-files';
           const src = world.sources.find((x) => x.name === name || x.id === scope.source);
           if (src) name = src.name;
           // bucket "" walks every bucket the source holds (account-wide
@@ -1427,6 +1442,52 @@ function shim() {
       }
       world.pfState.sourceCount = world.sources.length;
       return { imported, updated, skipped: [] };
+    },
+    // ---- the one-bucket model ----
+    // SplitAccountSource mirrors the backend contract: legacy account-wide
+    // only, per-bucket scoped clones named after the bucket (the account
+    // color rides along), matched buckets skip, the account source is
+    // removed only when the fan-out settled, bucketsError keeps it whole
+    SplitAccountSource: (idOrName) => {
+      const f = world.fault || {};
+      if (f.bucketsError) throw new Error(f.bucketsError);
+      const acct = world.sources.find((x) => x.id === idOrName || x.name === idOrName);
+      if (!acct) throw new Error(`source not found: ${idOrName}`);
+      if (acct.type !== 's3' || acct.bucket) throw new Error('not a legacy account-wide s3 source');
+      const created = [];
+      const matched = [];
+      for (const b of world.buckets) {
+        const ex = world.sources.find((x) => x.type === 's3' && x.bucket === b.name);
+        if (ex) { matched.push(b.name); continue; }
+        world.sources.push({ id: 'src-' + b.name, name: b.name, type: 's3', bucket: b.name, color: acct.color });
+        created.push({ name: b.name, bucket: b.name });
+      }
+      if (!created.length && !matched.length) throw new Error('the account sees no buckets');
+      world.sources = world.sources.filter((x) => x !== acct);
+      world.pfState.sourceCount = world.sources.length;
+      return { source: acct.name, created, matched };
+    },
+    CreateBucketInSource: (_src, name) => {
+      if (world.buckets.some((b) => b.name === name)) throw new Error('bucket already exists');
+      world.buckets.push({ name, createdAt: new Date().toISOString() });
+      world.objects[name] = [];
+      return {};
+    },
+    // server-side scoped clone: the caller never re-submits credentials
+    CreateBucketSource: (idOrName, bucket) => {
+      const conn = world.sources.find((x) => x.id === idOrName || x.name === idOrName);
+      if (!conn) throw new Error(`source not found: ${idOrName}`);
+      let name = bucket;
+      let n = 2;
+      while (world.sources.some((x) => x.name === name)) name = `${bucket}-${n++}`;
+      world.sources.push({ id: 'src-' + name, name, type: 's3', bucket, color: conn.color });
+      world.pfState.sourceCount = world.sources.length;
+      return { name, bucket };
+    },
+    RemoveSource: (idOrName) => {
+      world.sources = world.sources.filter((x) => x.id !== idOrName && x.name !== idOrName);
+      world.pfState.sourceCount = world.sources.length;
+      return {};
     },
   };
 
@@ -1689,8 +1750,11 @@ await step('boot', async () => {
   await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'boot version');
   await ok('menubar mounted', evalPage(() => document.querySelectorAll('#menubar .mb-title').length >= 5));
   await ok('toolbar mounted', evalPage(() => !!document.getElementById('btn-upload')));
-  await ok('buckets listed', waitFor(async () => (await rowKeys()).length >= 4, 6000, 'buckets'));
-  await ok('tree shows all sources', evalPage(() => ['hetzner', 'backup-box', 'dav-claims']
+  // the legacy account-wide source splits on the boot pass itself: the
+  // landing view continues into the split's first created bucket (created
+  // order), the account row is gone, every bucket rides as its own source
+  await ok('the landing view lists the first split bucket objects', waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'landing objects'));
+  await ok('tree shows the split sources', evalPage(() => ['team-files', 'backup-box', 'dav-claims']
     .every((n) => Array.from(document.querySelectorAll('#tree .tlabel')).some((l) => l.textContent === n))));
   // source rows wear the bold type label — the three source types
   // here (s3, sftp, webdav) read as distinct text badges
@@ -1700,32 +1764,206 @@ await step('boot', async () => {
         .find((r) => r.querySelector('.tlabel')?.textContent === name);
       return (row?.querySelector('.ticon')?.textContent || '').trim();
     };
-    const s3 = label('hetzner'), sftp = label('backup-box'), dav = label('dav-claims');
+    const s3 = label('team-files'), sftp = label('backup-box'), dav = label('dav-claims');
     return s3 === 'S3' && sftp === 'SFTP' && dav === 'WebDAV';
   }));
-  await shot('boot-buckets');
+  await shot('boot-objects');
 });
 
-await step('buckets-fill', async () => {
-  // bucket rows are folder rows too: the lazy fill rides the boot view
-  // itself — no navigation — walking whole buckets through the same
-  // engine the bar uses (team-files: 10 live files, 217 MB)
-  await ok('bucket rows fill their sizes in place (team-files 217 MB)', waitFor(async () => evalPage(() => {
-    const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
-      .find((x) => x.querySelector('.tname')?.textContent.trim() === 'team-files');
-    return !!r && (r.querySelector('.gc.size')?.textContent.trim() || '') === '217 MB';
-  }), 8000, 'bucket size fill'));
+await step('split-migration', async () => {
+  // the census of the migrated world: the boot pass split the legacy
+  // account-wide fixture and every bucket rides as its own top-level data
+  // source — nothing sits above any source, on any source type
+  await ok('every bucket rides as its own top-level row', evalPage(() => {
+    const labels = Array.from(document.querySelectorAll('#tree .tlabel')).map((l) => l.textContent);
+    return ['team-files', 'logs-2026', 'media-assets', 'archive-cold', 'website-prod', 'nightly', 'backup-box', 'dav-claims']
+      .every((n) => labels.includes(n)) && !labels.includes('hetzner');
+  }));
+  await ok('the store holds eight single-root sources, six of them S3 (no account row)', evalPage(() => {
+    const w = window.__shim.world;
+    const s3s = w.sources.filter((x) => x.type === 's3');
+    return w.sources.length === 8 && s3s.length === 6 && s3s.every((x) => !!x.bucket)
+      && !w.sources.some((x) => x.name === 'hetzner');
+  }));
+  await ok('pfState counts the eight sources', evalPage(() =>
+    window.__shim.world.pfState.sourceCount === 8));
+  // the guards and the status ball moved up with the bucket: the split
+  // row carries both markers right after its name
+  await ok('the team-files source row carries its guards and ball', evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((r) => r.querySelector('.tlabel')?.textContent === 'team-files');
+    if (!row) return false;
+    return row.querySelectorAll('.tguard').length === 2 && !!row.querySelector('.sball');
+  }));
+  await ok('the badge chain rides the row rhythm (name, ball, guards)', evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((r) => r.querySelector('.tlabel')?.textContent === 'team-files');
+    if (!row) return false;
+    const name = row.querySelector('.tlabel').getBoundingClientRect();
+    const ball = row.querySelector('.sball');
+    const g = Array.from(row.querySelectorAll('.tguard')).map((x) => x.getBoundingClientRect());
+    if (!ball || g.length !== 2) return false;
+    const b = ball.getBoundingClientRect();
+    return b.left - name.right <= 14 && g[0].left - b.right <= 14 && g[1].left - g[0].right <= 14;
+  }));
+  // the single-root census on the other types (the one-root model is every
+  // type's law): a remote source expands to its root entries directly —
+  // never a second picker level under it (the tree lists directories;
+  // files live in the grid)
+  await evalHandleClickTwist('backup-box');
+  await ok('the sftp source expands to its root entries directly', waitFor(async () => evalPage(() => {
+    const labels = Array.from(document.querySelectorAll('#tree .tlabel')).map((l) => l.textContent);
+    return labels.includes('docs') && labels.includes('upload');
+  }), 6000, 'backup-box children'));
+  await evalHandleClickTwist('dav-claims');
+  await ok('the webdav source expands to its root entries directly', waitFor(async () => evalPage(() => {
+    const labels = Array.from(document.querySelectorAll('#tree .tlabel')).map((l) => l.textContent);
+    return labels.includes('invoices');
+  }), 6000, 'dav-claims children'));
+  // leave the tree as boot left it
+  await evalHandleClickTwist('backup-box');
+  await evalHandleClickTwist('dav-claims');
+  await shot('split-migration');
 });
 
-await step('buckets-ctxmenu', async () => {
-  const n = await openCtx('team-files');
-  await ok('bucket menu has items', n >= 5);
+await step('split-idempotence', async () => {
+  // a reconnect re-runs the sources refresh end-to-end; a world with no
+  // legacy account left must stay exactly as it is — no duplicate fan-out,
+  // no source churn, no split attempted
+  await resetCalls();
+  await rightClick(await treeRow('team-files'));
+  await sleep(60);
+  await ctxItem(/reconnect/i);
+  await ok('reconnect re-saves and re-probes the source', waitFor(async () =>
+    (await findCall('SaveSource')) !== null, 6000, 'reconnect re-saved'));
+  await ok('no split was attempted (nothing legacy left)', waitFor(async () =>
+    !(await calls()).some((c) => c.m === 'SplitAccountSource'), 6000, 'refresh settled'));
+  await ok('the tree still carries exactly one team-files row', evalPage(() =>
+    Array.from(document.querySelectorAll('#tree .tlabel'))
+      .filter((l) => l.textContent === 'team-files').length === 1));
+  await ok('the store holds the steady eight', evalPage(() =>
+    window.__shim.world.sources.length === 8
+    && window.__shim.world.sources.filter((x) => x.type === 's3').length === 6
+    && window.__shim.world.pfState.sourceCount === 8));
+});
+
+await step('split-offline-fallback', async () => {
+  // the pre-migration fallback this feature keeps alive: an account-wide
+  // source whose buckets cannot be listed stays whole — red ball, buckets
+  // view error, no split — and the split lands the moment the network
+  // returns (the reconnect proves reachability and retries the split)
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE + '?legacy=offline');
+  await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'offline boot version');
+  await ok('the legacy account row survives offline', waitFor(async () => !!(await treeRow('hetzner')), 8000, 'hetzner row'));
+  await ok('its ball is error red', evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((r) => r.querySelector('.tlabel')?.textContent === 'hetzner');
+    return !!row && (row.querySelector('.sball') || {}).className.includes('error');
+  }));
+  await ok('the account stays whole offline (no fan-out)', evalPage(() =>
+    window.__shim.world.sources.some((x) => x.name === 'hetzner' && !x.bucket)
+    && window.__shim.world.sources.filter((x) => x.type === 's3').length === 3));
+  await clickTree('hetzner');
+  await ok('the buckets view fails in place (no crash, honest error)', waitFor(async () => evalPage(() =>
+    !document.getElementById('empty-state').classList.contains('hidden')
+    && document.getElementById('empty-state').textContent.includes('no route to host')), 8000, 'buckets error'));
+  await ok('no bucket rows render', evalPage(() =>
+    Array.from(document.querySelectorAll('#grid-body .grid-row')).length === 0));
+  // the network returns: Reconnect re-proves the account and the split
+  // lands through the retry loop
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await resetCalls();
+  await rightClick(await treeRow('hetzner'));
+  await sleep(60);
+  await ctxItem(/reconnect/i);
+  await ok('reconnect re-saves the account source', waitFor(async () =>
+    (await findCall('SaveSource')) !== null, 6000, 'reconnect re-saved'));
+  await ok('the reachable account splits on the spot', waitFor(async () =>
+    (await findCall('SplitAccountSource')) !== null, 6000, 'split attempted'));
+  await ok('the account row is replaced by its buckets', waitFor(async () => evalPage(() => {
+    const labels = Array.from(document.querySelectorAll('#tree .tlabel')).map((l) => l.textContent);
+    return !labels.includes('hetzner') && labels.includes('team-files') && labels.includes('archive-cold');
+  }), 8000, 'late split lands'));
+  await ok('the store reaches the same eight', evalPage(() =>
+    window.__shim.world.sources.length === 8
+    && window.__shim.world.sources.filter((x) => x.type === 's3').length === 6
+    && window.__shim.world.pfState.sourceCount === 8));
+  await ok('the view re-homes into the first created bucket', waitFor(async () =>
+    (await rowKeys()).includes('readme.md'), 8000, 're-home landing'));
+  // back to the plain world for the steps that follow
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE);
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'objects after return');
+});
+
+await step('editor-split', async () => {
+  // the manual path: the editor of a legacy account-wide source offers the
+  // one-time migration — offline it fails honestly (editor stays open,
+  // nothing half-migrated), online it splits, closes, toasts, and lands in
+  // the first bucket it created
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE + '?legacy=offline');
+  await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'offline boot version');
+  await waitFor(async () => !!(await treeRow('hetzner')), 8000, 'hetzner row');
+  await rightClick(await treeRow('hetzner'));
+  await sleep(60);
+  await ctxItem(/edit source/i);
+  await ok('the editor opens on the legacy source', waitFor(async () => evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('Edit source — hetzner')), 4000, 'editor open'));
+  await ok('the Split button is offered (account-wide sources only)', evalPage(() =>
+    Array.from(document.querySelectorAll('#modal-root .btn'))
+      .some((b) => /split into one source per bucket/i.test(b.textContent))));
+  // offline: the split fails, the editor stays open with the raw error
+  await resetCalls();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /split into one source per bucket/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('offline split refuses honestly', waitFor(async () => evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('no route to host')), 4000, 'error status'));
+  await ok('the editor stays open (nothing half-migrated)', evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('Edit source — hetzner')
+    && window.__shim.world.sources.some((x) => x.name === 'hetzner')));
+  // the network returns: Split again — the editor closes, the split lands
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /split into one source per bucket/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('the editor closes on success', waitFor(async () => evalPage(() =>
+    !document.getElementById('modal-root').textContent.includes('Edit source — hetzner')), 4000, 'editor closed'));
+  await ok('the split landed through the editor', waitFor(async () => evalPage(() =>
+    !Array.from(document.querySelectorAll('#tree .tlabel')).map((l) => l.textContent).includes('hetzner')
+    && window.__shim.world.pfState.sourceCount === 8), 8000, 'split landed'));
+  await ok('the landing continues into the first created bucket', waitFor(async () =>
+    (await rowKeys()).includes('readme.md'), 8000, 'landing'));
+  await ok('the split toast tells the story', (await txt('#toasts')).includes('Split hetzner into 4'));
+  // back to the plain world for the steps that follow
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE);
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'objects after return');
+});
+
+await step('source-ctxmenu', async () => {
+  // the bucket-scoped source row's context menu — the bucket IS the data
+  // source now: open, secondary pane, favorites, upload, paste, search in
+  // bucket, admin, doctor, properties, delete bucket (no account level
+  // sits above it anymore)
+  await rightClick(await treeRow('team-files'));
+  await sleep(60);
+  const n = await evalPage(() => document.querySelectorAll('#ctxmenu:not(.hidden) .item').length);
+  await ok('source menu has items', n >= 5);
   await shot('ctx-bucket');
   await closeCtx();
 });
 
 await step('objects-view', async () => {
-  await dblClickRow('team-files');
+  await clickTree('team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects of team-files');
   await ok('breadcrumb shows bucket', (await txt('#breadcrumb')).includes('team-files'));
   await ok('marker folder lends its date (docs/ dated, photos/ honestly blank)', evalPage(() => {
@@ -1898,8 +2136,7 @@ await step('connection-states', async () => {
   // the monitor's natural 60 s beat is noise inside this step — every
   // tick below is forced through the hook, so pause the timer first
   await evalPage(() => window.__s3bConnPause());
-  // source rows only — a bucket of the same name may sit under another
-  // source (hetzner also has a team-files bucket row, but no ball)
+  // source rows only — no other node kind carries a ball
   const ballOf = (label) => evalPage((l) => {
     const row = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'))
       .find((r) => r.textContent.includes(l));
@@ -1919,7 +2156,7 @@ await step('connection-states', async () => {
   await ok('raw backend message stays the sub-line', (await txt('#empty-sub')).includes('connection refused'));
   await ok('Reconnect is offered first', waitFor(async () => /reconnect/i.test((await panelButtons())[0] || ''), 3000, 'reconnect first'));
   await ok('Retry stays beside it', waitFor(async () => (await panelButtons()).some((x) => /retry/i.test(x)), 3000, 'retry present'));
-  await ok('sidebar ball agrees: error', waitFor(async () => (await ballOf('hetzner')).includes('error'), 3000, 'ball error'));
+  await ok('sidebar ball agrees: error', waitFor(async () => (await ballOf('team-files')).includes('error'), 3000, 'ball error'));
   await shot('conn-not-connected');
 
   // -- Reconnect that fails: honest toast, the state persists --
@@ -1927,12 +2164,12 @@ await step('connection-states', async () => {
   (await panelButton('reconnect')).asElement().click();
   await ok('failed reconnect says so', waitFor(async () => (await txt('#toasts')).includes('Could not reconnect'), 4000, 'reconnect-fail toast'));
   await ok('not-connected panel persists', (await txt('#empty-title')).includes('not connected'));
-  await ok('ball stays error after a failed reconnect', (await ballOf('hetzner')).includes('error'));
+  await ok('ball stays error after a failed reconnect', (await ballOf('team-files')).includes('error'));
 
   // -- Reconnect that succeeds: ball ok + the view reloads --
   await evalPage(() => { window.__shim.world.fault = null; });
   (await panelButton('reconnect')).asElement().click();
-  await ok('reconnect greens the ball', waitFor(async () => (await ballOf('hetzner')).includes('ok'), 4000, 'ball ok'));
+  await ok('reconnect greens the ball', waitFor(async () => (await ballOf('team-files')).includes('ok'), 4000, 'ball ok'));
   await ok('reconnect reloads the view', waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'rows after reconnect'));
   await ok('reconnect success toast', waitFor(async () => (await txt('#toasts')).includes('Reconnected'), 4000, 'reconnected toast'));
   await ok('panel cleared by the reload', evalPage(() => document.getElementById('empty-state').classList.contains('hidden')));
@@ -1945,7 +2182,7 @@ await step('connection-states', async () => {
   await ok('banner appears over the kept rows', waitFor(() => evalPage(() => !document.getElementById('conn-banner').classList.contains('hidden')), 3000, 'banner shown'));
   await ok('banner names the source as not connected', (await txt('#conn-banner-text')).includes('not connected'));
   await ok('rows stay on screen under the banner', (await rowKeys()).includes('readme.md'));
-  await ok('ball red from the monitor', (await ballOf('hetzner')).includes('error'));
+  await ok('ball red from the monitor', (await ballOf('team-files')).includes('error'));
   await shot('conn-banner');
   await ok('other balls survive the update (status merge)', waitFor(async () => (await ballOf('backup-box')).includes('ok'), 3000, 'merge keeps other balls'));
 
@@ -2067,7 +2304,7 @@ await step('copy-as-ctxmenu', async () => {
   await ok('the s3:// URI action is gone — Copy path carries the Name/contents form', !items.some((x) => /s3 uri/i.test(x)));
   await ctxItem(/^copy path$/i);
   let c = await findCall('ClipboardSetText');
-  await ok('copy path puts the normalized path on the clipboard', !!c && c.args[0] === 'hetzner/team-files/readme.md');
+  await ok('copy path puts the normalized path on the clipboard', !!c && c.args[0] === 'team-files/readme.md');
   await openCtx('readme.md');
   await ctxItem(/^copy name$/i);
   c = await findCall('ClipboardSetText');
@@ -2079,8 +2316,8 @@ await step('copy-as-ctxmenu', async () => {
   c = await findCall('ClipboardSetText');
   let sc = await findCall('SourceObjectUrls');
   await ok('copy url resolves the endpoint address (view source)', !!c
-    && c.args[0] === 'https://hetzner.s3.example.test/team-files/readme.md'
-    && !!sc && sc.args[0] === 'hetzner' && sc.args[1] === 'team-files'
+    && c.args[0] === 'https://team-files.s3.example.test/team-files/readme.md'
+    && !!sc && sc.args[0] === 'team-files' && sc.args[1] === 'team-files'
     && sc.args[2][0] === 'readme.md');
   await clickRetry('no grid row "scan.png"', () => gridRow('scan.png'),
     (h) => h.asElement().click({ modifiers: ['Control'] }));
@@ -2089,7 +2326,7 @@ await step('copy-as-ctxmenu', async () => {
   c = await findCall('ClipboardSetText');
   sc = await findCall('SourceObjectUrls');
   await ok('multi-selection: one batched call, one URL per line', !!c
-    && c.args[0] === 'https://hetzner.s3.example.test/team-files/readme.md\nhttps://hetzner.s3.example.test/team-files/scan.png'
+    && c.args[0] === 'https://team-files.s3.example.test/team-files/readme.md\nhttps://team-files.s3.example.test/team-files/scan.png'
     && !!sc && sc.args[2].length === 2);
   await closeCtx();
 });
@@ -2488,9 +2725,9 @@ await step('empty-ctxmenu', async () => {
 await step('tree-lazy', async () => {
   // navigation already ran reveal() on the bucket node (expanded); only
   // expand when the folder level is not rendered yet
-  if (!(await treeRow('docs'))) await evalHandleClickTwist('team-files'); // bucket node → folder level
-  await waitFor(async () => !!(await treeRow('docs')), 6000, 'bucket children');
-  await ok('bucket expanded to folders', !!(await treeRow('docs')) && !!(await treeRow('photos')));
+  if (!(await treeRow('docs'))) await evalHandleClickTwist('team-files'); // source node → folder level
+  await waitFor(async () => !!(await treeRow('docs')), 6000, 'source children');
+  await ok('source expanded to folders', !!(await treeRow('docs')) && !!(await treeRow('photos')));
   if (!(await treeRow('legacy'))) await evalHandleClickTwist('docs');
   await waitFor(async () => !!(await treeRow('legacy')), 6000, 'docs children');
   await ok('docs expanded to legacy', !!(await treeRow('legacy')));
@@ -2506,7 +2743,7 @@ await step('tree-lazy', async () => {
     // style.color serializes '#0b63ce' to rgb() in Chromium — accept both
     const c = ic?.style.color || '';
     return !!ic && ic.textContent === 'S3' && ['#0b63ce', 'rgb(11, 99, 206)'].includes(c)
-      && (root.textContent || '').includes('hetzner');
+      && (root.textContent || '').includes('team-files');
   }));
   await shot('tree-docs');
   await page.keyboard.press('Escape');
@@ -2527,9 +2764,7 @@ await step('empty-dir-ctxmenu', async () => {
   // an empty directory covers the grid with the empty-state overlay —
   // right-clicking it must still open the folder menu (paste/upload/new
   // folder), not the browser default
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('archive-cold'), 6000, 'buckets of hetzner');
-  await dblClickRow('archive-cold');
+  await clickTree('archive-cold');
   await waitFor(async () => evalPage(() => !document.getElementById('empty-state').classList.contains('hidden')), 6000, 'empty state');
   const overlay = await page.$('#empty-state');
   await rightClick(overlay);
@@ -2543,8 +2778,8 @@ await step('tree-single-bucket-first-click', async () => {
   // the fresh-source path: clicking a NEVER-expanded bucket-scoped source
   // label must open the bucket contents directly. The bucket comes from
   // the source definition, so no listing round trip may intervene — if
-  // the tree asked for the bucket list first, this world answers with
-  // hetzner's four buckets and the assertion below fails.
+  // the tree asked for a bucket list first, this world would answer
+  // with the account's buckets and the assertion below fails.
   await clickTree('nightly');
   await waitFor(async () => (await rowKeys()).includes('hello.txt'), 6000, 'first-click contents');
   // canonical hierarchy: a scoped source's name IS the bucket, so the
@@ -2677,7 +2912,7 @@ await step('ctxmenu-click-outside', async () => {
   // the Help dropdown — short enough to clear the rows — drives the same closer.)
   // The second half builds the hidden-objects view (View toggles + ghost
   // rows) so the ⛔ badge and the delete-marked rows get the same treatment.
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await waitFor(() => gridRow('readme.md'), 6000, 'readme row');
   const menuHidden = () => evalPage(() => document.getElementById('ctxmenu').classList.contains('hidden'));
   const ddHidden = () => evalPage(() => !document.querySelector('#menubar .mb-dd:not(.hidden)'));
@@ -3846,9 +4081,10 @@ await step('tree-filter', async () => {
   // tree-lazy already loaded the deepest chain in memory, so this step
   // reboots the page for a deterministic fresh-boot tree — the storage
   // snapshot + one-shot keep hatch carries every s3b-* key through the
-  // reload (search-window precedent). Fresh boot expands hetzner (the
-  // buckets view feeds the tree), so "the whole tree" here means nine
-  // rows: hetzner + its four buckets + the four other sources.
+  // reload (search-window precedent). Fresh boot reveals a flat tree —
+  // every bucket is its own source after the split — and the landing in
+  // team-files reveals its folder level, so "the whole tree" here means
+  // the eight source rows plus docs and photos.
   const store0 = await evalPage(() => JSON.parse(JSON.stringify(
     Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith('s3b-'))))));
   await evalPage((d) => {
@@ -3858,8 +4094,8 @@ await step('tree-filter', async () => {
   await page.goto(BASE);
   const treeLabels = () => evalPage(() => Array.from(document.querySelectorAll('#tree .tnode .tlabel'))
     .map((e) => e.textContent));
-  const WHOLE = ['backup-box', 'dav-claims', 'hetzner', 'logs-2026', 'media-assets',
-    'nightly', 'archive-cold', 'team-files', 'website-prod'];
+  const WHOLE = ['archive-cold', 'backup-box', 'dav-claims', 'docs', 'logs-2026', 'media-assets',
+    'nightly', 'photos', 'reports', 'team-files', 'website-prod'];
   const sameRows = (want, what) => waitFor(async () => {
     const got = (await treeLabels()).slice().sort().join('|');
     return got === want.slice().sort().join('|');
@@ -3904,15 +4140,15 @@ await step('tree-filter', async () => {
 
   // hierarchy: folder rows match under their (dimmed) source — the
   // instant pass sees the auto-loaded first level of every source.
-  // 'assets' also substring-matches hetzner's media-assets bucket: the
-  // pattern narrows ROWS, so a matching bucket row surfaces with its
-  // source as one more dim carrier — exactly the hierarchy behavior.
+  // 'assets' also matches the media-assets source itself: that row is
+  // a bright match in its own right, while matching folders surface
+  // with their sources as dim carriers — the hierarchy behavior.
   await page.fill('#tree-filter-input', 'invoices assets');
   await page.press('#tree-filter-input', 'Enter');
-  await sameRows(['dav-claims', 'invoices', 'hetzner', 'media-assets', 'website-prod', 'assets'], 'multi-pattern OR');
+  await sameRows(['dav-claims', 'invoices', 'media-assets', 'website-prod', 'assets'], 'multi-pattern OR');
   await ok('pass-through ancestors render dimmed', evalPage(() => {
     const dims = Array.from(document.querySelectorAll('#tree .tnode.dim .tlabel')).map((e) => e.textContent);
-    return dims.join('|') === 'dav-claims|hetzner|website-prod';
+    return dims.join('|') === 'dav-claims|website-prod';
   }));
 
   // no match: one note row, zero tree rows
@@ -3949,34 +4185,34 @@ await step('tree-filter', async () => {
   await page.click('#tree .tree-empty-note .tree-note-act');
   await ok('deep walk reports the source being scanned', waitFor(async () => {
     const st = await txt('#side-foot-count');
-    return /backup-box|dav-claims|hetzner|nightly|website-prod/.test(st)
+    return /backup-box|dav-claims|team-files|nightly|website-prod/.test(st)
       && await evalPage(() => !document.getElementById('side-foot-stop').classList.contains('hidden'));
   }, 8000, 'walk status'));
   await page.click('#side-foot-stop');
   await ok('Stop cancels the walk and opts out of deep', waitFor(async () => evalPage(() =>
     document.getElementById('side-foot-stop').classList.contains('hidden')
-    && !/backup-box|dav-claims|hetzner|nightly|website-prod/.test(
+    && !/backup-box|dav-claims|team-files|nightly|website-prod/.test(
       document.getElementById('side-foot-count').textContent)), 4000, 'walk stopped'));
   await ok('the no-match note offers the deep search again after Stop', evalPage(() =>
     !!document.querySelector('#tree .tree-empty-note .tree-note-act')));
   await evalPage(() => { window.__shim.world.fault = null; });
 
   // with deep reached through the note, a pattern matching a folder NO
-  // expansion ever loaded surfaces it: the walk loads hetzner ->
-  // team-files -> docs -> legacy
+  // expansion ever loaded surfaces it: the walk loads team-files ->
+  // docs -> legacy
   await page.fill('#tree-filter-input', 'legacy');
   await page.press('#tree-filter-input', 'Enter');
   await page.click('#tree .tree-empty-note .tree-note-act');
-  await sameRows(['hetzner', 'team-files', 'docs', 'legacy'], 'deep walk reaches legacy');
+  await sameRows(['team-files', 'docs', 'legacy'], 'deep walk reaches legacy');
   await ok('match renders bright, carriers dim', evalPage(() => {
     const dims = Array.from(document.querySelectorAll('#tree .tnode.dim .tlabel')).map((e) => e.textContent);
-    return dims.join('|') === 'hetzner|team-files|docs';
+    return dims.join('|') === 'team-files|docs';
   }));
   await ok('footer counts the shown rows', waitFor(async () =>
-    (await txt('#side-foot-count')).includes('4'), 4000, 'shown count'));
+    (await txt('#side-foot-count')).includes('3'), 4000, 'shown count'));
 
   // leave the world as it was: no filter, no deep, panel closed, and a
-  // familiar bucket view on screen for the steps that follow — and the
+  // familiar objects view on screen for the steps that follow — and the
   // clear must have reset the deep opt-in along with the pattern
   await page.fill('#tree-filter-input', '');
   await page.press('#tree-filter-input', 'Enter');
@@ -3989,7 +4225,7 @@ await step('tree-filter', async () => {
   await page.press('#tree-filter-input', 'Enter');
   await sameRows(WHOLE, 'cleanup restores the tree');
   await page.press('#tree-filter-input', 'Escape');
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
 });
 
 await step('source-editor-autoname', async () => {
@@ -4111,7 +4347,7 @@ await step('doctor', async () => {
   await waitFor(modalVisible, 4000, 'doctor picker modal');
   await ok('picker lists S3 sources only', waitFor(async () => {
     const names = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .picker-row .picker-name')).map((n) => n.textContent));
-    return ['hetzner', 'website-prod', 'nightly'].every((n) => names.includes(n))
+    return ['team-files', 'website-prod', 'nightly'].every((n) => names.includes(n))
       && !names.includes('backup-box') && !names.includes('dav-claims');
   }, 4000, 'picker rows'));
   await shot('doctor-picker');
@@ -4136,14 +4372,12 @@ await step('doctor', async () => {
 });
 
 await step('admin-panel', async () => {
-  // deterministic: the default S3 source's tree node lands on its buckets view
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
-  await ok('bucket rows are dated (a bucket knows its creation date)', evalPage(() =>
-    Array.from(document.querySelectorAll('#grid-body .grid-row')).every((r) =>
-      (r.querySelector('.gc.lastModified')?.textContent.trim() || '') !== '')));
-  const n = await openCtx('team-files');
-  await ok('bucket menu has items', n >= 5);
+  // deterministic: the team-files source row's tree menu — the bucket IS
+  // the data source, admin rides the source row now
+  await rightClick(await treeRow('team-files'));
+  await sleep(60);
+  const n = await evalPage(() => document.querySelectorAll('#ctxmenu:not(.hidden) .item').length);
+  await ok('source menu has items', n >= 5);
   await ctxItem(/admin panel/i);
   await waitFor(modalVisible, 4000, 'admin modal');
   await ok('title names the bucket', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).startsWith('Admin panel — team-files'));
@@ -4249,8 +4483,8 @@ await step('search-window', async () => {
     const sel = document.querySelector(s + ' .sr-scope');
     const labels = Array.from(sel.options).map((o) => o.textContent.trim());
     return sel.querySelectorAll('optgroup').length === 0
-      && labels.length === 6 && labels[0] === 'All data sources'
-      && ['S3 · hetzner', 'S3 · website-prod', 'S3 · nightly', 'SFTP · backup-box', 'WebDAV · dav-claims']
+      && labels.length === 9 && labels[0] === 'All data sources'
+      && ['S3 · team-files', 'S3 · logs-2026', 'S3 · website-prod', 'S3 · nightly', 'SFTP · backup-box', 'WebDAV · dav-claims']
         .every((n) => labels.includes(n))
       && labels.every((l) => !l.includes('s3://'));
   }, S));
@@ -4308,7 +4542,7 @@ await step('search-window', async () => {
     const heads = Array.from(document.querySelectorAll(s + ' .grid-head .gh')).map((h) => h.dataset.col);
     const last = document.querySelector(s + ' .sr-list .grid-row').lastElementChild;
     return !!col && col.textContent.includes('Source')
-      && cells.length === 2 && cells.every((b) => b === 'S3hetzner/team-files')
+      && cells.length === 2 && cells.every((b) => b === 'S3team-files')
       && heads[heads.length - 1] === 'source' && last.classList.contains('source');
   }, S));
   await ok('Source column cells wear the source type badge, crumb-style', evalPage((s) => {
@@ -4329,7 +4563,7 @@ await step('search-window', async () => {
     return a && !rows[0].classList.contains('sel') && rows[1].classList.contains('sel');
   }, S));
   await ok('done stats count the sources searched', waitFor(() => evalPage((s) =>
-    /in 5 source\(s\)/.test(document.querySelector(s + ' .sr-status').textContent), S), 4000, 'done stats'));
+    /in 8 source\(s\)/.test(document.querySelector(s + ' .sr-status').textContent), S), 4000, 'done stats'));
 
   // streaming never moves the viewport: a broad run overflows the list
   // and the scroll position stays exactly where the user left it
@@ -4373,7 +4607,7 @@ await step('search-window', async () => {
   await waitFor(() => popoutVisible('search'), 4000, 'preset popout');
   await ok('folder preset preselects the scoped entry', evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
-    return !!sel && sel.selectedOptions[0].textContent.trim() === 'S3 · hetzner/team-files/docs/';
+    return !!sel && sel.selectedOptions[0].textContent.trim() === 'S3 · team-files/docs/';
   }, S));
   await ok('the preset scope is not counted as a filter on the chip', evalPage((s) =>
     !document.querySelector(s + ' .sr-more').textContent.includes('\u00B7'), S));
@@ -4382,7 +4616,7 @@ await step('search-window', async () => {
   const presetCall = await findCall('Search');
   await ok('preset scope reaches the backend exactly', !!presetCall
     && presetCall.args[0].mode === 's3' && presetCall.args[0].bucket === 'team-files'
-    && presetCall.args[0].prefix === 'docs/' && presetCall.args[0].source === 'hetzner'
+    && presetCall.args[0].prefix === 'docs/' && presetCall.args[0].source === 'team-files'
     && presetCall.args[1].pattern === 'old');
   await waitFor(() => evalPage((s) => Array.from(document.querySelectorAll(s + ' .sr-list .grid-row'))
     .some((r) => r.textContent.includes('docs/legacy/old.txt')), S), 4000, 'scoped result');
@@ -4397,25 +4631,27 @@ await step('search-window', async () => {
     return !!sel && sel.textContent.includes('old.txt');
   }));
 
-  // picking one source scopes the search to it alone: an S3 source walks
-  // every bucket it holds, a remote walks from its root
+  // picking one source scopes the search to it alone: an S3 source is
+  // its one bucket, a remote walks from its root
   await resetCalls();
   await evalPage((s) => {
     const sel = document.querySelector(s + ' .sr-scope');
-    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'S3 · hetzner').value;
+    sel.value = Array.from(sel.options).find((o) => o.textContent.trim() === 'S3 · team-files').value;
   }, S);
   await runSearch('.');
   await waitFor(() => findCall('Search').then((c) => !!c && c.args[0].mode === 's3'), 4000, 'source-scoped Search call');
-  await ok('an S3 source scope reaches the backend as every-bucket', (async () => {
+  // the scope folds at the source list (dialogs.js searchSourceScopes):
+  // the source name IS the bucket, so the walk leaves with bucket '' —
+  // the engine resolves the source's own bucket from the name alone
+  await ok('an S3 source scope reaches the backend as its one bucket', (async () => {
     const c = await findCall('Search');
-    return !!c && c.args[0].mode === 's3' && c.args[0].source === 'hetzner'
+    return !!c && c.args[0].mode === 's3' && c.args[0].source === 'team-files'
       && c.args[0].bucket === '' && c.args[1].pattern === '.';
   })());
   await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 3, S), 4000, 'source results');
   await ok('source scope stays inside the picked source only', evalPage((s) => {
     const cells = Array.from(document.querySelectorAll(s + ' .gc.source')).map((b) => b.textContent);
-    const hetzner = new Set(['S3hetzner/team-files', 'S3hetzner/logs-2026', 'S3hetzner/media-assets', 'S3hetzner/archive-cold']);
-    return cells.length >= 3 && new Set(cells).size >= 2 && cells.every((b) => hetzner.has(b));
+    return cells.length >= 3 && cells.every((b) => b === 'S3team-files');
   }, S));
 
   await resetCalls();
@@ -4850,18 +5086,21 @@ await step('search-window', async () => {
   };
   await sp.addInitScript(shim);
   await sp.addInitScript(seedSearchWin);
-  await sp.goto(BASE + '?popout=search&source=hetzner&bucket=team-files&prefix=docs/');
+  await sp.goto(BASE + '?popout=search&source=team-files&bucket=team-files&prefix=docs/');
   await sp.waitForSelector('.sr-body', { timeout: 8000 });
   await ok('native window: search renders full-bleed with the preset scope', await sp.evaluate(() => {
     const sel = document.querySelector('#popout-root .sr-scope');
     const pad = getComputedStyle(document.querySelector('#popout-root .popout[data-pop="search"] .modal-body')).padding;
     return document.body.classList.contains('popout-win')
-      && !!sel && sel.selectedOptions[0].textContent.trim() === 'S3 · hetzner/team-files/docs/'
+      && !!sel && sel.selectedOptions[0].textContent.trim() === 'S3 · team-files/docs/'
       && pad === '0px'
       && !sel.classList.contains('sr-locked') && getComputedStyle(sel).appearance !== 'none';
   }));
+  // the native window's own webview carries the pristine seed world —
+  // no boot pass splits the legacy account inside it — so the census
+  // lists the seed sources (website-prod leads the scoped S3 ones)
   await sp.waitForFunction(() => Array.from(document.querySelectorAll('.sr-scope option'))
-    .some((o) => o.textContent.trim() === 'S3 · hetzner'), null, { timeout: 8000 });
+    .some((o) => o.textContent.trim() === 'S3 · website-prod'), null, { timeout: 8000 });
   await ok('native window: the dropdown lists every source too', await sp.evaluate(() => {
     const labels = Array.from(document.querySelectorAll('.sr-scope option')).map((o) => o.textContent.trim());
     return labels.includes('All data sources') && labels.includes('SFTP · backup-box');
@@ -4924,7 +5163,7 @@ await step('search-window', async () => {
 
   // the relay lands in the main window: search:open navigates and selects
   await evalPage(() => window.__shim.emit('search:open', {
-    key: 'docs/notes.md', bucket: 'team-files', source: 'hetzner', isDir: false, size: 900,
+    key: 'docs/notes.md', bucket: 'team-files', source: 'team-files', isDir: false, size: 900,
   }));
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 5000, 'relay navigation');
   await ok('search:open relay navigates the main window and selects the row', evalPage(() => {
@@ -5116,10 +5355,9 @@ await step('props-dialogs', async () => {
   await ok('object props layout clean', (await layoutAudit()).ok);
   await shot('props-object');
   await closeModal();
-  // bucket properties (buckets view)
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
-  await openCtx('team-files');
+  // bucket properties (the scoped source row owns the bucket now)
+  await rightClick(await treeRow('team-files'));
+  await sleep(60);
   await ctxItem(/properties/i);
   await waitFor(modalVisible, 4000, 'bucket props');
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .kv .k').length)) >= 6, 4000, 'bucket props rows');
@@ -6160,9 +6398,9 @@ await step('status-badges', async () => {
 });
 
 await step('popouts', async () => {
-  // deterministic grid state: the buckets view of the default S3 source
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+  // deterministic grid state: the first scoped source's objects view
+  await clickTree('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects view');
   // open the transfer manager as a floating window
   await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'running', totalFiles: 3, doneFiles: 1 }));
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
@@ -6176,8 +6414,8 @@ await step('popouts', async () => {
   // floating window itself, and the point of the check is that the root
   // passes clicks through everywhere else
   await ok('popout casts no modal mask', (await modalVisible()) === false);
-  const rowH = await gridRow('team-files');
-  if (!rowH) throw new Error('no grid row "team-files"');
+  const rowH = await gridRow('readme.md');
+  if (!rowH) throw new Error('no grid row "readme.md"');
   await rowH.asElement().click({ position: { x: 20, y: 8 } });
   await ok('grid still interactive under a popout', /^1 of /.test(await txt('#status-selection')));
   // header drag moves the window and persists its geometry
@@ -6615,8 +6853,8 @@ await step('dual-pane', async () => {
   // direct rebind, the same act the picker's choice performs)
   await ok('the pane picker names every source by type, badge-style', evalPage(() => {
     const labels = Array.from(document.querySelectorAll('#local-src option')).map((o) => o.textContent.trim());
-    return labels.length === 6 && labels[0] === 'Local'
-      && ['S3 · hetzner', 'S3 · website-prod', 'S3 · nightly', 'SFTP · backup-box', 'WebDAV · dav-claims']
+    return labels.length === 9 && labels[0] === 'Local'
+      && ['S3 · team-files', 'S3 · logs-2026', 'S3 · website-prod', 'S3 · nightly', 'SFTP · backup-box', 'WebDAV · dav-claims']
         .every((l) => labels.includes(l));
   }));
   await page.selectOption('#local-src', 'local');
@@ -6674,13 +6912,13 @@ await step('dual-pane', async () => {
   await waitFor(async () => (await findCall('RemoteMkdir')) !== null, 4000, 'RemoteMkdir');
   const mk = await findCall('RemoteMkdir');
   await ok('pane New folder lands in the pane source', mk && mk.args[0] === 'src-box' && mk.args[1] === '/pane-made');
-  // s3 binding: a source node opens the buckets view
-  const hz = await treeRow('hetzner');
+  // s3 binding: a scoped source node opens its bucket contents directly
+  const hz = await treeRow('team-files');
   await rightClick(hz);
   await sleep(60);
   await ctxItem(/^open on secondary pane$/i);
   await sleep(400);
-  if (!(await sideKeys()).includes('logs-2026')) {
+  if (!(await sideKeys()).includes('readme.md')) {
     // the s3 ctx click never reached the pane — dump state, then drive
     // openAt directly so the label says which link broke
     const st = await evalPage(() => {
@@ -6689,19 +6927,19 @@ await step('dual-pane', async () => {
         + ' ctxHidden=' + document.getElementById('ctxmenu').classList.contains('hidden')
         + ' modalKids=' + document.getElementById('modal-root').children.length;
     });
-    await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'hetzner', bucket: '', prefix: '' }); });
-    await waitFor(async () => (await sideKeys()).includes('logs-2026'), 6000,
-      'pane s3 buckets [ctx miss; ' + st + ']');
+    await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+    await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000,
+      'pane s3 objects [ctx miss; ' + st + ']');
     await ok('s3 tree ctx item reached the pane (no fallback needed)', false);
   } else {
     await ok('s3 tree ctx item reached the pane (no fallback needed)', true);
   }
-  await ok('pane lists S3 buckets', (await txt('#local-crumb')).includes('hetzner'));
+  await ok('pane lists the scoped source bucket', (await txt('#local-crumb')).includes('team-files'));
   await shot('pane-s3');
   // the pane's own filter narrows its grid only
   await evalPage(() => {
     const f = document.getElementById('local-filter');
-    f.value = 'logs';
+    f.value = 'docs';
     f.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await sleep(260); // the pane filter debounces at 120ms
@@ -6709,7 +6947,7 @@ await step('dual-pane', async () => {
     const rows = Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
       .filter((r) => r.style.display !== 'none' && r._model);
     return document.getElementById('filter').value === ''
-      && rows.length > 0 && rows.every((r) => /logs/i.test(r._model.name));
+      && rows.length > 0 && rows.every((r) => /docs/i.test(r._model.name));
   }));
   await evalPage(() => {
     const f = document.getElementById('local-filter');
@@ -6719,9 +6957,9 @@ await step('dual-pane', async () => {
   await sleep(260);
   // parent row: gated by the same setting as the main pane's
   await evalPage(() => localStorage.setItem('s3b-parent-row', '1'));
-  const lg = await sideRow('logs-2026');
+  const lg = await sideRow('docs');
   await lg.asElement().dblclick();
-  await waitFor(async () => (await txt('#local-crumb')).includes('logs-2026'), 6000, 'inside bucket');
+  await waitFor(async () => (await txt('#local-crumb')).includes('docs'), 6000, 'inside folder');
   await ok('pane parent row seats when the setting is on', waitFor(async () =>
     evalPage(() => !document.getElementById('local-upbar').classList.contains('hidden')), 4000, 'pane upbar seats'));
   // the pane's New file composes into its own bucket/prefix
@@ -6736,10 +6974,10 @@ await step('dual-pane', async () => {
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
   await waitFor(async () => (await findCall('SourceCreateFile')) !== null, 4000, 'SourceCreateFile');
   const mf = await findCall('SourceCreateFile');
-  await ok('pane New file lands in the pane bucket', mf && mf.args[0] === 'src-hetzner'
-    && mf.args[1] === 'logs-2026' && mf.args[3] === 'pane-note');
+  await ok('pane New file lands in the pane bucket', mf && mf.args[0] === 'src-team-files'
+    && mf.args[1] === 'team-files' && mf.args[3] === 'pane-note');
   await evalPage(() => document.getElementById('local-upbar').click());
-  await waitFor(async () => !(await txt('#local-crumb')).includes('logs-2026'), 4000, 'pane upbar climbs');
+  await waitFor(async () => !(await txt('#local-crumb')).includes('docs'), 4000, 'pane upbar climbs');
   await evalPage(() => localStorage.removeItem('s3b-parent-row'));
   await ok('pane parent row rests when the setting is off', waitFor(async () =>
     evalPage(() => document.getElementById('local-upbar').classList.contains('hidden')), 4000, 'pane upbar rests'));
@@ -6959,7 +7197,7 @@ await step('side-pane-editpath', async () => {
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor again');
   // pasting another source's Name/contents path rebinds the pane (it
   // was bound to backup-box) and navigates
-  await page.fill('#local-crumb input.path-edit', 'hetzner/logs-2026/');
+  await page.fill('#local-crumb input.path-edit', 'logs-2026/');
   await page.keyboard.press('Enter');
   await waitFor(async () => (await sideKeys()).includes('app/'), 6000, 'pane navigated via path');
   await ok('pasting a Name/contents path rebinds and navigates the pane', (await txt('#local-crumb')).includes('logs-2026'));
@@ -7005,9 +7243,9 @@ await step('side-pane-editpath', async () => {
   await evalPage(() => document.querySelector('#local-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#local-crumb input.path-edit')), 4000, 'editor local name');
-  await page.fill('#local-crumb input.path-edit', 'hetzner/team-files');
+  await page.fill('#local-crumb input.path-edit', 'team-files/docs');
   await page.keyboard.press('Enter');
-  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'pane rebound via name');
+  await waitFor(async () => (await sideKeys()).includes('docs/notes.md'), 6000, 'pane rebound via name');
   await ok('a Name/contents path rebinds a locally-bound pane', evalPage(() =>
     !document.querySelector('#local-crumb input.path-edit')
     && window.__s3bSidePane.binding.kind === 's3'));
@@ -7221,19 +7459,17 @@ await step('home-buttons', async () => {
       .find((x) => x._model?.key === 'C:\\Users\\demo\\Documents');
     return !!r && (r.querySelector('.gc.size')?.textContent.trim() || '') === '130 KB';
   }), 6000, 'pane folder size'));
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
-  await dblClickRow('team-files');
+  await clickTree('team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'objects view');
   await dblClickRow('docs');
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'inside docs');
   await page.click('#btn-home');
   await waitFor(async () => {
     const k = await rowKeys();
-    return k.includes('team-files') && !k.includes('readme.md');
+    return k.includes('readme.md') && !k.some((x) => x.startsWith('docs/notes'));
   }, 6000, 'main home relanded');
-  await ok('main Home returns to the open source home (account-wide: the bucket list)', evalPage(() =>
-    (document.getElementById('breadcrumb').textContent || '').includes('hetzner')));
+  await ok('main Home returns to the open source home (one bucket: its root listing)', evalPage(() =>
+    (document.getElementById('breadcrumb').textContent || '').includes('team-files')));
   await evalPage(() => document.querySelector('.navbar').dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit')), 4000, 'path editor');
   await page.fill('#breadcrumb input.path-edit', 'C:\\Users\\demo\\Documents');
@@ -7249,7 +7485,7 @@ await step('home-buttons', async () => {
   await ok('a local main view homes to the workstation home folder', evalPage(() =>
     document.querySelector('#breadcrumb .crumb.current')?.textContent === 'demo'));
   // leave the main view back on a source for successors
-  await clickTree('hetzner');
+  await clickTree('team-files');
 });
 
 await step('side-pane-delete-window', async () => {
@@ -7369,9 +7605,8 @@ await step('delete-window-uniform', async () => {
     for (const k of ['s3b-del-window', 's3b-del-typeconfirm', 's3b-del-autoconfirm']) localStorage.removeItem(k);
   });
   const openBucketCtx = async () => {
-    await clickTree('hetzner');
-    await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'bucket list');
-    await openCtx('team-files');
+    await rightClick(await treeRow('team-files'));
+    await sleep(60);
   };
   const adminVersions = async () => { // the cleanup windows stack ON the
     // admin panel; the modal stack returns it when they close, so (d)+
@@ -7406,6 +7641,13 @@ await step('delete-window-uniform', async () => {
   await sleep(80);
   await evalPage(() => document.querySelector('#modal-root .delw-modal .btn.danger').click());
   await waitFor(async () => (await findCall('DeleteBucket')) !== null, 4000, 'DeleteBucket fired');
+  // deleting the bucket takes its scoped source with it (one-bucket
+  // model) — restore the fixture world for the legs that follow: the
+  // reload re-seeds the legacy account and the boot pass re-runs the
+  // split, so team-files is itself again
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.reload();
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'boot objects after restore');
 
   // (b) window OFF — the classic typedConfirm ladder (still the name)
   await evalPage(() => localStorage.setItem('s3b-del-window', '0'));
@@ -7421,6 +7663,10 @@ await step('delete-window-uniform', async () => {
   await evalPage(() => document.querySelector('#modal-root .btn.danger').click());
   await waitFor(async () => (await findCall('DeleteBucket')) !== null, 4000, 'classic DeleteBucket fired');
   await evalPage(() => localStorage.removeItem('s3b-del-window'));
+  // same restore: leg (b) deleted the bucket (and its source) again
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.reload();
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'boot objects after restore (b)');
 
   // (c) purge noncurrent — same window, 'purge' escalation at >50
   await adminVersions();
@@ -7723,10 +7969,16 @@ await step('dnd-s3-to-s3-tree', async () => {
   const from = await gridRow('readme.md');
   const to = await treeRow('logs-2026');
   await dnd(from, to);
-  const c = await findCall('CopySelection');
-  await ok('routes to CopySelection', !!c);
-  await ok('args: src team-files → dst logs-2026', c && c.args[0] === 'team-files' && c.args[2] === 'logs-2026');
-  await ok('copy by default (move=false)', c && c.args[4] === false);
+  // one bucket is one source: a cross-bucket drop is a cross-SOURCE
+  // transfer now — TransferCross carries it (same-client S3 copies ride
+  // server-side there), never the in-view CopySelection shortcut
+  const c = await findCall('TransferCross');
+  await ok('routes to TransferCross (cross-source S3 to S3)', !!c);
+  await ok('args: src team-files → dst logs-2026', c && c.args[0][0].source === 'team-files'
+    && c.args[0][0].bucket === 'team-files' && c.args[0][0].key === 'readme.md'
+    && c.args[2].kind === 's3' && c.args[2].source === 'logs-2026'
+    && c.args[2].bucket === 'logs-2026' && c.args[2].dir === '');
+  await ok('copy by default (move=false)', c && c.args[5] === false);
   await ok('toast confirms copy', (await txt('#toasts')).length > 0);
 });
 
@@ -7735,8 +7987,8 @@ await step('dnd-s3-to-s3-shift-move', async () => {
   const from = await gridRow('readme.md');
   const to = await treeRow('logs-2026');
   await dnd(from, to, { shift: true });
-  const c = await findCall('CopySelection');
-  await ok('Shift forces move', c && c.args[4] === true);
+  const c = await findCall('TransferCross');
+  await ok('Shift forces move', c && c.args[5] === true);
 });
 
 await step('dnd-s3-to-remote-tree', async () => {
@@ -7746,7 +7998,7 @@ await step('dnd-s3-to-remote-tree', async () => {
   await dnd(from, to);
   const c = await findCall('TransferCross');
   await ok('routes to TransferCross', !!c);
-  await ok('items pin the originating S3 source', c && c.args[0][0].bucket === 'team-files' && c.args[0][0].source === 'hetzner');
+  await ok('items pin the originating S3 source', c && c.args[0][0].bucket === 'team-files' && c.args[0][0].source === 'team-files');
   await ok('dest is the remote source', c && c.args[2].kind === 'remote' && c.args[2].source === 'backup-box');
   await shot('dnd-s3-remote');
 });
@@ -7836,8 +8088,8 @@ await step('dnd-os-file-drop', async () => {
 
 await step('dnd-os-file-drop-tree', async () => {
   // OS files dropped ONTO a sidebar node: the node under the cursor decides
-  // the destination, never the accidentally-open main view. Bucket node →
-  // s3 dest carrying the node's source; non-S3 source root → remote root.
+  // the destination, never the accidentally-open main view. An S3 source
+  // node → s3 dest carrying the node; non-S3 source root → remote root.
   const overTreeNode = async (label) => {
     const r = await treeRow(label);
     if (!r) throw new Error(`no tree node "${label}"`);
@@ -7848,11 +8100,11 @@ await step('dnd-os-file-drop-tree', async () => {
   };
   await resetCalls();
   await overTreeNode('team-files');
-  await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'bucket-node drop');
+  await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 's3 source-node drop');
   let c = await findCall('TransferCross');
-  await ok('drop on bucket node uploads to that bucket root', c
+  await ok('drop on an S3 source node uploads to its bucket root', c
     && c.args[2].bucket === 'team-files' && c.args[2].dir === '' && /photos\.zip$/.test(c.args[1][0]));
-  await ok('bucket node carries its source', c && c.args[2].source === 'hetzner');
+  await ok('the S3 source node is the dest source', c && c.args[2].source === 'team-files');
   await resetCalls();
   await overTreeNode('dav-claims');
   await waitFor(async () => (await findCall('TransferCross')) !== null, 4000, 'remote-source-node drop');
@@ -7892,9 +8144,12 @@ await step('paste-parity', async () => {
   await clickTree('logs-2026');
   await waitFor(async () => (await rowKeys()).includes('app/'), 6000, 'logs objects');
   await page.keyboard.press('Control+v');
-  await sleep(200);
-  let c = await findCall('CopySelection');
-  await ok('Ctrl+C/V copies across buckets', c && c.args[0] === 'team-files' && c.args[2] === 'logs-2026' && c.args[4] === false);
+  await sleep(400);
+  let c = await findCall('TransferCross');
+  await ok('Ctrl+C/V copies across buckets', c && c.args[0][0].source === 'team-files'
+    && c.args[0][0].bucket === 'team-files' && c.args[0][0].key === 'readme.md'
+    && c.args[2].kind === 's3' && c.args[2].source === 'logs-2026'
+    && c.args[2].bucket === 'logs-2026' && c.args[5] === false);
   // cut → move (the logs-2026 root collapses prefixes into the app/ folder
   // row — enter the folder to reach the file rows)
   await resetCalls();
@@ -7908,9 +8163,10 @@ await step('paste-parity', async () => {
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back to team-files');
   await page.keyboard.press('Control+v');
   await vcvChoose(false); // team-files is versioned — decline the history copy
-  await sleep(200);
-  c = await findCall('CopySelection');
-  await ok('Ctrl+X/V moves', c && c.args[4] === true && c.args[2] === 'team-files');
+  await sleep(400);
+  c = await findCall('TransferCross');
+  await ok('Ctrl+X/V moves', c && c.args[5] === true && c.args[2].kind === 's3'
+    && c.args[2].source === 'team-files' && c.args[2].bucket === 'team-files');
   // remote clipboard → paste into S3 streams through TransferCross. The
   // Ctrl+C also fires the OS-clipboard mirror's HIDDEN staging transfer
   // (dest = the local clipboard dir) — the assert picks the REAL transfer
@@ -7929,7 +8185,8 @@ await step('paste-parity', async () => {
 });
 
 await step('copy-versions-choice', async () => {
-  // Per-task version preservation on S3→S3: asked ONLY when the
+  // Per-task version preservation on S3→S3 (cross-source transfers since
+  // the split — one bucket is one source): asked ONLY when the
   // destination bucket has versioning enabled; the checkbox pre-sets
   // from the Settings toggle (default on).
   // (a) Suspended destination → straight plain copy, no dialog at all
@@ -7938,7 +8195,7 @@ await step('copy-versions-choice', async () => {
   let from = await gridRow('readme.md');
   await dnd(from, await treeRow('logs-2026'));
   await sleep(300); // let any (wrong) async guard/dialog path settle
-  let c = await findCall('CopySelection');
+  let c = await findCall('TransferCross');
   await ok('Suspended dest copies without asking', !!c && !(await modalVisible())
     && (await calls()).every((x) => x.m !== 'CopySelectionVersions'));
   // (b) Enabled destination → dialog with the checkbox pre-set on →
@@ -7954,8 +8211,8 @@ await step('copy-versions-choice', async () => {
   await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
   await waitFor(async () => (await findCall('CopySelectionVersions')) !== null, 4000, 'versioned copy started');
   c = await findCall('CopySelectionVersions');
-  await ok('versioned job args', c && c.args[0] === '' && c.args[1] === 'logs-2026'
-    && c.args[2][0] === 'app/' && ['hetzner', ''].includes(c.args[3])
+  await ok('versioned job args', c && c.args[0] === 'logs-2026' && c.args[1] === 'logs-2026'
+    && c.args[2][0] === 'app/' && c.args[3] === 'team-files'
     && c.args[4] === 'team-files' && c.args[6] === false);
   // (c) Settings default off → checkbox starts unchecked → falls back to
   // the plain latest-version copy
@@ -7966,8 +8223,10 @@ await step('copy-versions-choice', async () => {
   await waitFor(modalVisible, 4000, 'dialog again');
   await ok('checkbox pre-set off with Settings off', evalPage(() => document.querySelector('#modal-root .vcv-row input')?.checked === false));
   await vcvChoose(false);
-  c = await findCall('CopySelection');
-  await ok('unchecked falls back to plain copy', !!c && c.args[2] === 'team-files'
+  await sleep(300);
+  c = await findCall('TransferCross');
+  await ok('unchecked falls back to plain copy', !!c && c.args[2].source === 'team-files'
+    && c.args[2].bucket === 'team-files'
     && (await calls()).every((x) => x.m !== 'CopySelectionVersions'));
   await evalPage(() => localStorage.removeItem('s3b-copy-versions'));
 });
@@ -8084,8 +8343,8 @@ await step('search-samename-source', async () => {
   // reads once: the Search window's Source column shows the name alone,
   // never the doubled name/bucket
   await resetCalls();
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'main back on hetzner');
+  await clickTree('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'main back on team-files');
   await page.click('#btn-find');
   await waitFor(() => popoutVisible('search'), 4000, 'search window');
   const S = '#popout-root .popout[data-pop="search"]';
@@ -8173,10 +8432,10 @@ await step('view-source-switch', async () => {
   const c = await findCall('SetViewSource');
   await ok('opening a source pins it as the view source', c && c.args[0] === 'from-file-photos');
   await ok('content bottom bar carries the active source', (await txt('#grid-source')).includes('from-file-photos'));
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'back to hetzner buckets');
+  await clickTree('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back to team-files root');
   const c2 = await findCall('SetViewSource');
-  await ok('switching back re-pins hetzner', c2 && c2.args[0] === 'hetzner');
+  await ok('switching back re-pins team-files', c2 && c2.args[0] === 'team-files');
 });
 
 await step('status-balls', async () => {
@@ -8187,15 +8446,15 @@ await step('status-balls', async () => {
 });
 
 await step('breadcrumb-path-nav', async () => {
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   // clicking the navbar's empty area opens the inline path editor holding
   // the typed scheme://Name/bucket/prefix address
   await evalPage(() => document.querySelector('.navbar').dispatchEvent(new MouseEvent('click', { bubbles: true })));
   await waitFor(async () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit')), 4000, 'path editor');
-  await ok('path field holds the typed source address', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 's3://hetzner/team-files/'));
+  await ok('path field holds the typed source address', evalPage(() => document.querySelector('#breadcrumb input.path-edit')?.value === 's3://team-files/'));
   await shot('path-edit');
   // type another location and press Enter — parsePath navigates
-  await page.fill('#breadcrumb input.path-edit', 'hetzner/logs-2026/');
+  await page.fill('#breadcrumb input.path-edit', 'logs-2026/');
   await page.keyboard.press('Enter');
   await waitFor(async () => (await rowKeys()).includes('app/'), 6000, 'navigated via path');
   await ok('pasting a Name/contents path navigates', (await txt('#breadcrumb')).includes('logs-2026'));
@@ -8206,7 +8465,7 @@ await step('breadcrumb-path-nav', async () => {
 // source — an unconfigured one stands up, saves and joins the tree — and
 // nothing unrecognized navigates anywhere
 await step('path-address', async () => {
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   const openEditor = () => evalPage(() => document.querySelector('#main-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   const editorOpen = () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit'));
@@ -8243,7 +8502,7 @@ await step('path-address', async () => {
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'main navigated via s3://');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical s3');
-  await ok('an s3:// URI lands on the owning source', (await editorValue()) === 's3://hetzner/team-files/docs/');
+  await ok('an s3:// URI lands on the owning source', (await editorValue()) === 's3://team-files/docs/');
   await page.keyboard.press('Escape');
   // the typed form scheme://Name/contents — the scheme is the source's
   // TYPE and the first segment its NAME: the canonical address every
@@ -8251,12 +8510,12 @@ await step('path-address', async () => {
   // speak this typed form — the scheme is visible only while editing)
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor open typed-s3');
-  await page.fill('#breadcrumb input.path-edit', 's3://hetzner/team-files/');
+  await page.fill('#breadcrumb input.path-edit', 's3://team-files/');
   await page.keyboard.press('Enter');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'main navigated via typed s3://');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical typed-s3');
-  await ok('a typed s3:// address names its source outright', (await editorValue()) === 's3://hetzner/team-files/');
+  await ok('a typed s3:// address names its source outright', (await editorValue()) === 's3://team-files/');
   // the seeded line pastes straight back: Enter on the untouched value
   // navigates the same listing and closes the editor
   await page.keyboard.press('Enter');
@@ -8274,16 +8533,16 @@ await step('path-address', async () => {
   await ok('a typed sftp:// address opens the configured source — no stand-up', (await editorValue()) === 'sftp://backup-box/'
     && (await findCall('SaveSource')) === null);
   await page.keyboard.press('Escape');
-  // a bare source name opens that source's home — the account-wide
-  // source lands on its buckets view
+  // a bare source name opens that source's home — the scoped source
+  // lands on its root listing
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor open bare');
-  await page.fill('#breadcrumb input.path-edit', 'hetzner');
+  await page.fill('#breadcrumb input.path-edit', 'team-files');
   await page.keyboard.press('Enter');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'source home via bare name');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'source home via bare name');
   await openEditor();
   await waitFor(editorOpen, 4000, 'editor canonical bare');
-  await ok('a bare source name opens its buckets view', (await editorValue()) === 's3://hetzner');
+  await ok('a bare source name opens its root', (await editorValue()) === 's3://team-files/');
   await page.keyboard.press('Escape');
   // the scoped source has no buckets view — its bare name opens its
   // root instead (canonical carries the trailing slash)
@@ -8347,7 +8606,7 @@ await step('main-local', async () => {
   // the workstation folder as a first-class main view: enter through the
   // path editor, read the listing, walk into a folder, copy out of it,
   // refresh and climb back — the secondary pane never wakes once
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   const openEditor = () => evalPage(() => document.querySelector('#main-pane .navbar')
     .dispatchEvent(new MouseEvent('click', { bubbles: true })));
   const editorOpen = () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit'));
@@ -8435,12 +8694,12 @@ await step('main-local', async () => {
   // that stood before the detour repaints it
   await ok('a local view clears the bottom-bar source tag', evalPage(() =>
     document.getElementById('grid-source').classList.contains('hidden')));
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back on the source');
   await ok('returning to the same source repaints the tag, badge and all', evalPage(() => {
     const tag = document.getElementById('grid-source');
     const chip = tag.querySelector('.src-ic');
-    return !tag.classList.contains('hidden') && tag.textContent === 'S3hetzner'
+    return !tag.classList.contains('hidden') && tag.textContent === 'S3team-files'
       && !!chip && chip.textContent === 'S3';
   }));
   await evalPage(() => document.getElementById('toasts').replaceChildren());
@@ -8643,7 +8902,7 @@ await step('os-clipboard-precedence', async () => {
   await ok('Explorer copy outranks the stale app clipboard', up && /notes\.txt$/.test(up.args[0][0]) && up.args[1] === 'team-files');
 
   // (b) OS clipboard unchanged since our copy → the app payload wins
-  // (server-side CopySelection, no Upload of staged files)
+  // (server-side TransferCross copy, no Upload of staged files)
   await selectRow('readme.md');
   await p4.keyboard.press('Control+c');
   // wait for THIS copy's own hidden mirror — the staged readme.md landing
@@ -8653,10 +8912,13 @@ await step('os-clipboard-precedence', async () => {
   await openBucket('logs-2026', 'app/');
   await p4.evaluate(() => { window.__shim.calls.length = 0; });
   await p4.keyboard.press('Control+v');
-  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'CopySelection'), null, { timeout: 6000 });
-  const cp = await p4.evaluate(() => window.__shim.calls.find((x) => x.m === 'CopySelection'));
+  await p4.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'TransferCross'), null, { timeout: 6000 });
+  const cp = await p4.evaluate(() => window.__shim.calls.find((x) => x.m === 'TransferCross'));
   const noUp = await p4.evaluate(() => !window.__shim.calls.some((x) => x.m === 'Upload'));
-  await ok('unchanged OS clipboard keeps app payload precedence', cp && cp.args[0] === 'team-files' && cp.args[2] === 'logs-2026' && noUp);
+  await ok('unchanged OS clipboard keeps app payload precedence', cp
+    && cp.args[0][0].source === 'team-files' && cp.args[0][0].bucket === 'team-files'
+    && cp.args[2].kind === 's3' && cp.args[2].source === 'logs-2026'
+    && cp.args[2].bucket === 'logs-2026' && cp.args[2].dir === '' && noUp);
   await p4.close();
 });
 
@@ -8930,14 +9192,14 @@ await step('popout-session-geom', async () => {
 await step('drag-urls', async () => {
   // selecting files precomputes drag-out URLs (OS drag needs synchronous
   // data in dragstart)
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await resetCalls();
   await clickRow('readme.md');
   await waitFor(async () => (await findCall('MakeDragUrls')) !== null, 4000, 'drag urls');
   const c = await findCall('MakeDragUrls');
   await ok('selection precomputes drag-out URLs', c && c.args[0][0].bucket === 'team-files'
     && c.args[0][0].key === 'readme.md' && c.args[0][0].name === 'readme.md');
-  await ok('drag items tag the originating source', c && c.args[0][0].source === 'hetzner');
+  await ok('drag items tag the originating source', c && c.args[0][0].source === 'team-files');
 });
 
 await step('drag-out-native', async () => {
@@ -8983,7 +9245,7 @@ await step('drag-out-native', async () => {
   await sleep(200);
   const c = await p7.evaluate(() => window.__shim.calls.find((x) => x.m === 'DragOutFiles') || null);
   await ok('plain drag cancels the DOM drag', plainStopped === true);
-  await ok('plain drag hands rows to DragOutFiles', c && c.args[0][0].source === 'hetzner'
+  await ok('plain drag hands rows to DragOutFiles', c && c.args[0][0].source === 'team-files'
     && c.args[0][0].bucket === 'team-files' && c.args[0][0].key === 'readme.md'
     && c.args[0][0].size === 1234);
   // folder rows must keep the in-app HTML5 drag: never native
@@ -9003,7 +9265,7 @@ await step('drag-out-native', async () => {
     folderNative.stopped === false && folderNative.calls === 1);
   // self-drop: the same gesture released over the app routes internally.
   // Re-select the file, restart the gesture, and drop over the sidebar's
-  // logs-2026 bucket node — cross-bucket copy through CopySelection (dest
+  // logs-2026 source row — cross-source copy through TransferCross (dest
   // has no versioning, so no choice dialog).
   await p7.evaluate(() => {
     const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
@@ -9018,11 +9280,11 @@ await step('drag-out-native', async () => {
     const r = tnode.getBoundingClientRect();
     window.__emit('drag:self-drop', r.left + r.width / 2, r.top + r.height / 2, false, false);
   });
-  await p7.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'CopySelection'), null, { timeout: 6000 });
-  const cc = await p7.evaluate(() => window.__shim.calls.find((x) => x.m === 'CopySelection') || null);
-  await ok('self-drop over a tree bucket routes as a cross-bucket copy',
-    cc && cc.args[0] === 'team-files' && cc.args[1][0] === 'readme.md'
-    && cc.args[2] === 'logs-2026' && cc.args[4] === false);
+  await p7.waitForFunction(() => (window.__shim.calls || []).some((x) => x.m === 'TransferCross'), null, { timeout: 6000 });
+  const cc = await p7.evaluate(() => window.__shim.calls.find((x) => x.m === 'TransferCross') || null);
+  await ok('self-drop over a tree source routes as a cross-source copy',
+    cc && cc.args[0][0].source === 'team-files' && cc.args[0][0].key === 'readme.md'
+    && cc.args[2].source === 'logs-2026' && cc.args[2].bucket === 'logs-2026' && cc.args[5] === false);
   await p7.close();
 });
 
@@ -9033,7 +9295,7 @@ await step('toolbar-nav', async () => {
   await ok('Up button retired from the toolbar', evalPage(() => !document.getElementById('btn-up')));
   await ok('back/forward render arrow icons', evalPage(() =>
     !!document.querySelector('#btn-back svg') && !!document.querySelector('#btn-forward svg')));
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await dblClickRow('docs');
   await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 6000, 'inside docs');
   await ok('Back enabled after navigating', evalPage(() => !document.getElementById('btn-back').disabled));
@@ -9064,11 +9326,18 @@ await step('toolbar-nav', async () => {
   }, 6000, 'root rows settled after F5');
   // the data-source tree is a road uphill too: climbing it while deeper
   // in a bucket leaves Forward armed exactly like the Back button does —
-  // the report was that only the Back button armed it
+  // the report was that only the Back button armed it. The account
+  // buckets view that owned the uphill climb is gone with the account
+  // level; the source's own row is the uphill road now — an ancestor
+  // hop, which is a backward move in disguise (state.js parks the
+  // deeper view one Forward away)
   await dblClickRow('docs');
   await waitFor(async () => (await txt('#breadcrumb')).includes('docs'), 6000, 'docs for the tree climb');
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'tree climb to the buckets view');
+  await clickTree('team-files');
+  await waitFor(async () => {
+    const k = await rowKeys();
+    return k.includes('readme.md') && !k.includes('docs/notes.md');
+  }, 6000, 'tree climb to the source root');
   await ok('tree climb leaves Forward armed', evalPage(() =>
     !document.getElementById('btn-forward').disabled));
   await page.click('#btn-forward');
@@ -9109,7 +9378,7 @@ await step('parent-row', async () => {
   // it on first; its closing leg flips it off and proves the gate
   await evalPage(() => localStorage.setItem('s3b-parent-row', '1'));
   // -- placement: a row of the listing, not chrome above it --
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await dblClickRow('docs');
   // rows, not breadcrumb: the parent row returns with the first streamed page
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'inside docs');
@@ -9134,15 +9403,9 @@ await step('parent-row', async () => {
   await page.click('#btn-forward');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'forward to bucket root');
   await ok('back/forward work across row navigation', true);
-  // -- bucket root: still a parent — the buckets view --
+  // -- a scoped source root: nothing above it — no row at all --
   s = await row();
-  await ok('parent row shown at a bucket root', !!s && s.vis);
-  await page.click('#upbar');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'row reaches buckets view');
-  await ok('row click at bucket root opens the buckets view', true);
-  // -- the Data source main view: nothing above it — no row at all --
-  s = await row();
-  await ok('no parent row at the Data source main view (nothing above it)', !!s && !s.vis);
+  await ok('no parent row at a scoped source root (nothing above it)', !!s && !s.vis);
   // -- a bucket-scoped source: its home IS the bucket's contents and the
   // account bucket list is unreachable from inside it — the root has
   // nothing above it: no row, and the climb keys die at the top --
@@ -9168,10 +9431,11 @@ await step('parent-row', async () => {
   await page.click('#upbar');
   await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'row climbs the remote tree');
   await ok('row click climbs a remote folder', true);
-  // -- empty folder: the empty view and the parent row coexist --
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('archive-cold'), 6000, 'buckets of hetzner');
-  await dblClickRow('archive-cold');
+  // -- empty folder: the empty view and the parent row coexist -- the
+  // empty-bucket source root is the wrong stage since the account level
+  // died (nothing above a source root, proven above); backup-box's
+  // /upload/ is an empty folder WITH a parent above it
+  await dblClickRow('upload');
   await waitFor(async () => evalPage(() => !document.getElementById('empty-state').classList.contains('hidden')
     && !document.getElementById('empty-state').classList.contains('is-loading')), 6000, 'empty view');
   s = await row();
@@ -9180,7 +9444,7 @@ await step('parent-row', async () => {
     !!s && s.vis && s.over && emptyShown);
   await shotOf('winscp-parent-empty', '#grid-wrap');
   // -- information panels: the row steps aside --
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await evalPage(() => { window.__shim.world.fault = { listDelayMs: 1200 }; });
   await dblClickRow('docs');
   // poll for the transient in-flight state: stream.begin resolves at token
@@ -9218,7 +9482,7 @@ await step('parent-row', async () => {
 
 await step('crumb-click', async () => {
   // clicking a breadcrumb segment navigates straight to it
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await dblClickRow('docs');
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'docs rows');
   // one level deeper so the docs crumb is not the current location
@@ -9230,13 +9494,13 @@ await step('crumb-click', async () => {
   if (crumb) await crumb.asElement().click();
   await waitFor(async () => !(await txt('#breadcrumb')).includes('legacy'), 6000, 'crumb nav');
   await ok('crumb click navigates to that folder', (await txt('#breadcrumb')).includes('docs'));
-  // the source root crumb goes back to the buckets view
+  // the source root crumb goes back to the source root
   const root = await elOrNull(() => Array.from(document.querySelectorAll('#breadcrumb .crumb'))
-    .find((c) => /hetzner/.test(c.textContent)) || null);
+    .find((c) => /team-files/.test(c.textContent)) || null);
   await ok('source crumb rendered', !!root);
   if (root) await root.asElement().click();
-  await waitFor(async () => (await rowKeys()).includes('logs-2026'), 6000, 'buckets via crumb');
-  await ok('source crumb returns to the buckets view', true);
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'source root via crumb');
+  await ok('source crumb returns to the source root', true);
   // the Explorer rule the history now carries: a climb to an ancestor by
   // crumb is a backward move in disguise — the deeper view stays one
   // Forward away instead of being cut
@@ -9246,25 +9510,26 @@ await step('crumb-click', async () => {
   await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'forward back into docs');
   await ok('Forward click returns into the folder the climb left', true);
   await page.click('#btn-back');
-  await waitFor(async () => (await rowKeys()).includes('logs-2026'), 6000, 'back to buckets again');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'back to the source root again');
   await ok('Back arms Forward again', evalPage(() =>
     !document.getElementById('btn-forward').disabled));
   // re-listing the very same place (the crumb that is already current)
   // moves no history at all — Forward must survive the re-list untouched
   const cur = await elOrNull(() => Array.from(document.querySelectorAll('#breadcrumb .crumb'))
-    .find((c) => /hetzner/.test(c.textContent)) || null);
+    .find((c) => /team-files/.test(c.textContent)) || null);
   if (cur) await cur.asElement().click();
-  await waitFor(async () => (await rowKeys()).includes('logs-2026'), 6000, 'current crumb re-list');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'current crumb re-list');
   await ok('clicking the current crumb is history-neutral', evalPage(() =>
     !document.getElementById('btn-forward').disabled));
 });
 
 await step('favorites', async () => {
-  // star a bucket from its context menu, jump in from the sidebar, unstar
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
+  // star the source from its tree menu, jump in from the sidebar, unstar
+  await clickTree('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'team-files root');
   await ok('favorites hidden while empty', evalPage(() => document.getElementById('fav-section').classList.contains('hidden')));
-  await openCtx('team-files');
+  await rightClick(await treeRow('team-files'));
+  await sleep(60);
   await ctxItem(/add to favorites/i);
   await waitFor(async () => !!(await elOrNull(() => document.querySelector('#favorites .fav-row') || null)), 4000, 'fav row');
   await ok('favorite appears in the sidebar', evalPage(() => document.querySelector('#favorites .fav-label')?.textContent === 'team-files'));
@@ -9289,9 +9554,8 @@ await step('favorites', async () => {
     && (await rowKeys()).some((k) => k === 'readme.md'), 6000, 'fav navigation');
   await ok('clicking a favorite opens the bucket', true);
   // remove again — the section hides
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view again');
-  await openCtx('team-files');
+  await rightClick(await treeRow('team-files'));
+  await sleep(60);
   await ctxItem(/remove from favorites/i);
   await ok('unstar hides the section', waitFor(async () => evalPage(() => document.getElementById('fav-section').classList.contains('hidden')), 4000, 'fav hidden'));
   await ok('favorites emptied', (await evalPage(() => localStorage.getItem('s3b-favs'))) === '[]');
@@ -9323,7 +9587,7 @@ await step('auto-refresh', async () => {
   await evalPage(() => window.__shim.emit('transfer:update', { id: 't1', op: 'upload', status: 'done' }));
   await waitFor(async () => evalPage(() => document.getElementById('status-jobs').classList.contains('hidden')), 4000, 'jobs badge retired');
   await page.bringToFront();
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   // Default is OFF: with no stored interval the indicator must stay hidden.
   await ok('auto refresh default OFF (no indicator)', evalPage(() => document.getElementById('status-auto').classList.contains('hidden')));
   await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
@@ -9436,7 +9700,7 @@ await step('hidden-ghost-refresh', async () => {
 
 await step('marquee-select', async () => {
   // rubber-band starting in the empty area below the rows, dragged up
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await waitFor(async () => (await rowKeys()).length > 0, 6000, 'rows listed');
   // measure the empty band from the bottom-most RENDERED row — whatever
   // rides in-flow above the canvas (the opt-in parent row), the body's
@@ -9480,7 +9744,7 @@ await step('editors-manager', async () => {
 await step('download-selection', async () => {
   // Ctrl+D (and the toolbar button) download through DownloadRefs after
   // a destination folder pick
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await clickRow('readme.md');
   await resetCalls();
   await page.keyboard.press('Control+d');
@@ -9495,10 +9759,10 @@ await step('size-bar', async () => {
   // The content viewer's bottom bar (#grid-status — source name in
   // #grid-source, size text in #grid-status-text): real recursive
   // sizes of the listing or the selection on every source type — S3
-  // objects (versioned / suspended / plain), the buckets view (single
-  // source only), remote engines — plus the busy, error-fallback,
-  // stale-drop, cache and geometry contracts. Every number is pinned
-  // byte-exact against the world fixtures.
+  // objects (versioned / suspended / plain), remote engines — plus
+  // the busy, error-fallback, stale-drop, cache and geometry
+  // contracts. Every number is pinned byte-exact against the world
+  // fixtures.
   const barTxt = () => txt('#grid-status-text');
   const barHas = (s) => waitFor(async () => (await barTxt()).includes(s), 5000, 'bar shows "' + s + '"')
     .catch(async (e) => {
@@ -9513,13 +9777,13 @@ await step('size-bar', async () => {
   // 1. versioned whole listing (team-files, nothing selected): 10 live
   //    files = 227861215 B, 4 folders, old versions 1100+900+400 = 2400 B
   //    over 17 versions (10 files + 4 folder markers + 3 old), 1 marker
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await barHas('217 MB');
   const t1 = await barTxt();
   await ok('versioned whole: files/folders/bytes + version split',
     t1 === '10 file(s), 4 folder(s), 217 MB — old versions: 2.3 KB (17 version(s), 1 marker(s))');
   await ok('the source name parks on the bar right end, WinSCP session-style',
-    (await txt('#grid-source')) === 'S3hetzner'
+    (await txt('#grid-source')) === 'S3team-files'
       && (await evalPage(() => {
         const bar = document.getElementById('grid-status');
         const src = document.getElementById('grid-source').getBoundingClientRect();
@@ -9586,14 +9850,14 @@ await step('size-bar', async () => {
     && (await usageCalls()).filter((c) => (c.args[2] || []).includes('readme.md')).length === 0);
 
   // 6. never-versioned bucket (no guard): no version part at all
-  await navObjectsOf('hetzner', 'media-assets');
+  await navObjects('media-assets');
   await barHas('8.0 KB');
   const t6 = await barTxt();
   await ok('unversioned bucket: no version part',
     t6 === '1 file(s), 1 folder(s), 8.0 KB');
 
   // 7. suspended bucket: the enabled-era history still counts
-  await navObjectsOf('hetzner', 'logs-2026');
+  await navObjects('logs-2026');
   await barHas('19.5 MB');
   const t7 = await barTxt();
   await ok('suspended bucket: old versions priced in',
@@ -9604,48 +9868,10 @@ await step('size-bar', async () => {
   await waitFor(async () => (await barTxt()) === '0 B', 5000, 'empty bucket bar');
   await ok('empty bucket reads an exact 0 B', (await barTxt()) === '0 B');
 
-  // 9. buckets view root: the SOURCE total — the four buckets of the
-  //    browsed source only, never an aggregate across data sources
-  await resetCalls();
-  await clickTree('hetzner');
-  await barHas('4 bucket(s)');
-  // this step already passed through the buckets view on its way
-  // into team-files, so the four whole-bucket walks answer from
-  // cache here. Invalidate the way a cross-bucket mass delete
-  // would — a per-bucket s3:changed — and the re-walk must ask for
-  // exactly this source's buckets
-  await evalPage(() => ['archive-cold', 'logs-2026', 'media-assets', 'team-files']
-    .forEach((b) => window.__shim.emit('s3:changed', { bucket: b })));
-  // a silent refresh keeps the bar's previous text on screen, so a
-  // text wait here would pass off the pre-invalidation paint — the
-  // re-walk is observed on the wire: the debounced bar run must ask
-  // for exactly this source's buckets again
-  await waitFor(async () => {
-    const asked = new Set((await calls())
-      .filter((c) => c.m === 'BucketUsage')
-      .flatMap((c) => c.args[0] || []));
-    return asked.size === 4;
-  }, 6000, 'invalidated buckets re-walk');
-  // the SET of bucket names asked for is the contract (single
-  // source, all of its buckets, never another source's); the order
-  // is whatever the grid is sorted by
-  const names = new Set((await calls())
-    .filter((c) => c.m === 'BucketUsage')
-    .flatMap((c) => c.args[0] || []));
-  await ok('buckets bar walks only the browsed source bucket list',
-    names.size === 4 && [...names].sort().join() === 'archive-cold,logs-2026,media-assets,team-files');
-  const t9exp = '4 bucket(s) — 13 file(s), 6 folder(s), 237 MB — old versions: 4.8 MB (23 version(s), 1 marker(s))';
-  await waitFor(async () => (await barTxt()) === t9exp, 6000, 're-walked source total paints');
-  await ok('buckets root: the single-source recursive total', (await barTxt()) === t9exp);
+  // (retired with the account level: the buckets-view aggregate — every
+  // S3 surface is one bucket now, no view totals a source's buckets)
 
-  // 10. one bucket selected at the root: that bucket alone
-  await clickRow('team-files');
-  await barHas('1 selected — 10 file(s)');
-  const t10 = await barTxt();
-  await ok('bucket selection narrows to that bucket',
-    t10 === '1 selected — 10 file(s), 4 folder(s), 217 MB — old versions: 2.3 KB (17 version(s), 1 marker(s))');
-
-  // 11. remote SFTP: whole listing, then one folder child. Earlier
+  // 9. remote SFTP: whole listing, then one folder child. Earlier
   //     battery steps deleted /upload/ and created files in this
   //     source; restore the pristine rows so the exact totals below
   //     are the contract (the battery's direct world-write idiom)
@@ -9671,7 +9897,7 @@ await step('size-bar', async () => {
     t11b === '1 selected — 1 file(s), 2.0 KB');
   await shot('sizebar-remote');
 
-  // 12. remote WebDAV: a file child is stated, not walked
+  // 10. remote WebDAV: a file child is stated, not walked
   await clickTree('dav-claims');
   await waitFor(async () => (await rowKeys()).includes('/claim-2026-08.pdf'), 6000, 'dav-claims listing');
   await clickRow('claim-2026-08.pdf');
@@ -9680,9 +9906,9 @@ await step('size-bar', async () => {
   await ok('webdav file selection states the file',
     t12 === '1 selected — 1 file(s), 89.0 KB');
 
-  // 13. busy state: a slow walk shows calculating…, then the answer
+  // 11. busy state: a slow walk shows calculating…, then the answer
   await evalPage(() => { window.__shim.world.fault = { usageDelayMs: 900 }; });
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await dblClickRow('photos');
   await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('/img-001.jpg')), 6000, 'photos listing');
   let sawBusy = false;
@@ -9697,9 +9923,9 @@ await step('size-bar', async () => {
     (await barTxt()) === '2 file(s), 3.0 MB');
   await evalPage(() => { window.__shim.world.fault = null; });
 
-  // 14. error state: fallback level sums, partial stated, error in title
+  // 12. error state: fallback level sums, partial stated, error in title
   await evalPage(() => { window.__shim.world.fault = { usageError: 'usage walk failed' }; });
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await dblClickRow('reports');
   await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('/q4-summary.pdf')), 6000, 'reports listing');
   await barHas('partial');
@@ -9711,14 +9937,14 @@ await step('size-bar', async () => {
   await shot('sizebar-error');
   await evalPage(() => { window.__shim.world.fault = null; });
 
-  // 15. stale drop: a walk resolved after navigating away never paints
+  // 13. stale drop: a walk resolved after navigating away never paints
   //     (docs/ whole would read 52.9 KB — it must never appear)
-  await navObjectsOf('hetzner', 'team-files');
+  await navObjects('team-files');
   await evalPage(() => { window.__shim.world.fault = { usageDelayMs: 800 }; });
   await dblClickRow('docs');
   await waitFor(async () => (await rowKeys()).some((k) => k.endsWith('/notes.md')), 6000, 'docs listing');
   await sleep(350); // the delayed walk is in flight
-  await navObjectsOf('hetzner', 'team-files'); // away: seq ages the walk out
+  await navObjects('team-files'); // away: seq ages the walk out
   await sleep(600); // the stale result lands here — and is dropped
   await ok('stale walk never paints', !(await barTxt()).includes('52.9 KB'));
   await barHas('217 MB'); // the fresh view's own (delayed) walk paints
@@ -9726,7 +9952,7 @@ await step('size-bar', async () => {
     (await barTxt()).includes('217 MB') && !(await barTxt()).includes('52.9 KB'));
   await evalPage(() => { window.__shim.world.fault = null; });
 
-  // 16. geometry: the bar spans the content area only — right of the
+  // 14. geometry: the bar spans the content area only — right of the
   //     sidebar, ending at the window edge; with the side pane open it
   //     ends at the pane boundary (never full window width). Earlier
   //     steps may have left the pane open — settle a closed baseline
@@ -9766,7 +9992,7 @@ await step('size-bar', async () => {
   await page.keyboard.press('F9'); // close: later steps expect a single pane
   await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed');
 
-  // 17. localized bar: a second page booted in Finnish (the main page
+  // 15. localized bar: a second page booted in Finnish (the main page
   //     keeps its state; the shim keep-lang escape hatch preserves the
   //     choice through that boot only)
   await evalPage(() => {
@@ -9778,10 +10004,10 @@ await step('size-bar', async () => {
   await p8.addInitScript(shim);
   await p8.goto(BASE);
   await p8.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
-  await p8.waitForFunction(() => /bucketia/.test(document.getElementById('grid-status')?.textContent || ''), null, { timeout: 8000 });
+  await p8.waitForFunction(() => /tiedosto\(a\)/.test(document.getElementById('grid-status')?.textContent || ''), null, { timeout: 8000 });
   const fi = await p8.evaluate(() => document.getElementById('grid-status')?.textContent || '');
   await ok('Finnish bar: localized counts and version part',
-    fi.includes('4 bucketia') && fi.includes('tiedosto(a)') && fi.includes('kansio(ta)')
+    fi.includes('tiedosto(a)') && fi.includes('kansio(ta)')
     && fi.includes('vanhat versiot:') && fi.includes('poistomerkintää'));
   await p8.close();
   await evalPage(() => localStorage.setItem('s3b-lang', 'en'));
@@ -9808,6 +10034,106 @@ await step('shortcut-keys', async () => {
   await ok('F9 opens the side pane', waitFor(async () => evalPage(() => !document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane open'));
   await page.keyboard.press('F9');
   await ok('F9 closes it again', waitFor(async () => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed'));
+});
+
+await step('new-bucket', async () => {
+  // creating a bucket IS creating a data source: the sidebar's New-bucket
+  // flow makes the bucket on a chosen connection and scopes it into its
+  // own source in one gesture (both halves server-side, credentials never
+  // round-tripped through the editor)
+  await resetCalls();
+  const n0 = await evalPage(() => window.__shim.world.pfState.sourceCount);
+  // right-click the tree's empty area (below the last row, never on a node)
+  const spot = await evalPage(() => {
+    const tree = document.getElementById('tree').getBoundingClientRect();
+    const rows = document.querySelectorAll('#tree .tnode');
+    const last = rows.length ? rows[rows.length - 1].getBoundingClientRect() : tree;
+    const y = Math.min(last.bottom + 14, window.innerHeight - 8, tree.bottom - 4);
+    return { x: tree.left + tree.width / 2, y };
+  });
+  await page.mouse.click(spot.x, spot.y, { button: 'right' });
+  await sleep(60);
+  await ctxItem(/create bucket/i);
+  await ok('the New-bucket dialog opens', waitFor(async () => evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('New bucket')), 4000, 'bucket dialog'));
+  const conn = await evalPage(() => (document.querySelector('#modal-root select') || {}).value || '');
+  await evalPage(() => {
+    const i = document.querySelector('#modal-root input.mono');
+    if (i) i.focus();
+    return !!i;
+  });
+  await page.keyboard.type('made-by-ui');
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => x.textContent.trim() === 'Create');
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('CreateBucketInSource dialed the chosen connection', waitFor(async () => {
+    const c = await findCall('CreateBucketInSource');
+    return !!c && c.args[0] === conn && c.args[1] === 'made-by-ui' && c.args[2] === '';
+  }, 6000, 'CreateBucketInSource fired'));
+  await ok('CreateBucketSource scoped it into its own source', waitFor(async () => {
+    const c = await findCall('CreateBucketSource');
+    return !!c && c.args[0] === conn && c.args[1] === 'made-by-ui';
+  }, 6000, 'CreateBucketSource fired'));
+  await ok('the new source appears in the tree', waitFor(async () =>
+    !!(await treeRow('made-by-ui')), 6000, 'tree gains made-by-ui'));
+  // hidden ghost rows from the view just left stay parked in the DOM —
+  // emptiness reads on the VISIBLE rows (all display:none) plus the
+  // settled empty panel, never on the element count
+  await ok('the landing view is the newborn bucket (empty)', waitFor(async () => evalPage(() =>
+    Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .every((r) => r.style.display === 'none')
+    && !document.getElementById('empty-state').classList.contains('hidden')
+    && !document.getElementById('empty-state').classList.contains('is-loading')), 6000, 'empty landing'));
+  await ok('the world mirror holds the bucket and its objects', evalPage(() =>
+    window.__shim.world.buckets.some((b) => b.name === 'made-by-ui')
+    && Array.isArray(window.__shim.world.objects['made-by-ui'])
+    && window.__shim.world.objects['made-by-ui'].length === 0));
+  // relative, not absolute: earlier steps keep their own sources alive
+  // in the one page world (import mirrors, URI stand-ups) — the net of
+  // THIS gesture is exactly one source more
+  await ok('pfState counts one more source', evalPage((n) =>
+    window.__shim.world.pfState.sourceCount === n + 1
+    && window.__shim.world.sources.some((x) => x.name === 'made-by-ui'), n0));
+  await shot('new-bucket');
+});
+
+await step('delete-bucket-removes-source', async () => {
+  // the one-root rule's other half: a deleted bucket takes its scoped
+  // source with it — the row must not linger over a root that no longer
+  // exists, and the view re-homes to a surviving source (net zero
+  // against whatever the world carried when the step began)
+  await resetCalls();
+  const n0 = await evalPage(() => window.__shim.world.pfState.sourceCount);
+  await rightClick(await treeRow('made-by-ui'));
+  await sleep(60);
+  await ctxItem(/delete bucket/i);
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .delw-modal')), 4000, 'delete window');
+  await ok('the window types the bucket own name', evalPage(() =>
+    document.querySelector('#modal-root .delw-modal').textContent.includes('Type "made-by-ui" to confirm:')));
+  await evalPage(() => document.querySelector('#modal-root .delw-confirm input').focus());
+  await page.keyboard.type('made-by-ui');
+  await sleep(80);
+  await evalPage(() => document.querySelector('#modal-root .delw-modal .btn.danger').click());
+  await ok('DeleteBucket fired on the bucket', waitFor(async () => {
+    const c = await findCall('DeleteBucket');
+    return !!c && c.args[0] === 'made-by-ui';
+  }, 4000, 'DeleteBucket fired'));
+  await ok('the scoped source goes with it', waitFor(async () => {
+    const c = await findCall('RemoveSource');
+    return !!c && c.args[0] === 'src-made-by-ui';
+  }, 4000, 'RemoveSource fired'));
+  await ok('the tree row is gone', waitFor(async () =>
+    !(await treeRow('made-by-ui')), 6000, 'row gone'));
+  await ok('the store is back where it started (net zero)', evalPage((n) =>
+    window.__shim.world.pfState.sourceCount === n - 1
+    && !window.__shim.world.sources.some((x) => x.name === 'made-by-ui'), n0));
+  // the store's first source in insertion order — website-prod leads
+  // the seed and the split's bucket clones append after it
+  await ok('the view re-homed to a surviving source', waitFor(async () =>
+    (await txt('#breadcrumb')).includes('website-prod'), 6000, 're-homed'));
 });
 
 await step('small-viewport-sweep', async () => {
@@ -9882,8 +10208,6 @@ await step('small-viewport-sweep', async () => {
     // the menu must open fully inside the window (clamped by its REAL
     // width, not a guessed one)
     if (w === 820) {
-      await clickTree('hetzner');
-      await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
       await navObjects('team-files');
       await evalPage(() => {
         const row = document.querySelector('#grid-body .grid-row');
@@ -9937,9 +10261,8 @@ await step('layout-audit', async () => {
   await page.setViewportSize({ width: 1024, height: 640 });
   await sleep(150);
   await ok('main view fits at 1024×640', evalPage(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
-  await clickTree('hetzner');
-  await waitFor(async () => (await rowKeys()).includes('team-files'), 6000, 'buckets view');
-  await openCtx('team-files');
+  await rightClick(await treeRow('team-files'));
+  await sleep(60);
   await ctxItem(/admin panel/i);
   await waitFor(modalVisible, 4000, 'admin modal');
   await waitFor(async () => (await evalPage(() => document.querySelectorAll('.tabstrip .tab').length)) === 11, 4000, 'admin tabs');
@@ -10019,6 +10342,11 @@ await step('settings-honor', async () => {
   await navObjects('media-assets');
   await waitFor(() => evalPage((x) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
     .some((r) => r.style.display !== 'none' && r._model && r._model.name === x), 'brand'), 6000, 'row brand');
+  // the parent-row legs below need a parent above the view — a source
+  // root has nothing above it (parent-row pins that) — so the walk sits
+  // one level deep inside brand while the settings land
+  await dblClickRow('brand');
+  await waitFor(async () => (await rowKeys()).includes('brand/logo.svg'), 6000, 'inside brand');
   const openSettings = async () => {
     await page.locator('#menubar .mb-title', { hasText: /settings/i }).first().click();
     await sleep(80);

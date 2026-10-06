@@ -218,6 +218,33 @@ func (a *App) CreateBucket(name, region string) error {
 	return nil
 }
 
+// CreateBucketInSource makes a new bucket through a NAMED s3 source's
+// connection (CreateBucket rides the view source's engine, useless from the
+// sources area). Callers follow up with a bucket-scoped SaveSource so the
+// new bucket becomes its own data source.
+func (a *App) CreateBucketInSource(idOrName, name, region string) error {
+	src, err := a.sourceByIDOrName(idOrName)
+	if err != nil {
+		return err
+	}
+	if src.Type != profile.TypeS3 || src.S3 == nil {
+		return fmt.Errorf("source %q (%s) is not an s3 source", src.Name, src.Type)
+	}
+	c, err := a.client(src.Name)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := a.quickCtx()
+	defer cancel()
+	if err := bucketops.Create(ctx, c.S3, name, firstNonEmpty(region, c.Region), false); err != nil {
+		a.emitLogSrc(LogError, "admin", name, fmt.Sprintf("creating bucket failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogInfo, "admin", name, "bucket created")
+	a.emit(EventS3Changed, map[string]string{"bucket": name})
+	return nil
+}
+
 // BucketDeletePreview feeds the L2 confirmation dialog: how many objects
 // (and versions, when the bucket is versioned) would be removed.
 type BucketDeletePreview struct {

@@ -12,12 +12,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/provider"
+	aws "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -37,6 +39,7 @@ func sourceCmd() *cobra.Command {
 		sourceListCmd(),
 		sourceRemoveCmd(),
 		sourceTestCmd(),
+		sourceSplitCmd(),
 		sourceExportCmd(),
 		sourceImportCmd(),
 	)
@@ -182,6 +185,9 @@ func sourceAddCmd() *cobra.Command {
 			var src profile.Source
 			switch typ {
 			case profile.TypeS3:
+				if bucket == "" {
+					return usageErr("an S3 data source is one bucket — pass --bucket BUCKET or use the s3://BUCKET shorthand")
+				}
 				accessKey = first(accessKey, os.Getenv("S3B_ACCESS_KEY"))
 				secretKey = first(secretKey, os.Getenv("S3B_SECRET_KEY"))
 				p := profile.Profile{
@@ -205,17 +211,15 @@ func sourceAddCmd() *cobra.Command {
 				if err := s.UpsertS3Profile(p); err != nil {
 					return usageErr("%v", err)
 				}
-				if bucket != "" {
-					// bucket scoping is source-only (profiles cannot carry
-					// it) — set it on the mirror the upsert just made
-					m, err := s.GetSource(name)
-					if err != nil {
-						return opErr(err)
-					}
-					m.Bucket = bucket
-					if err := s.UpsertSource(m); err != nil {
-						return usageErr("%v", err)
-					}
+				// bucket scoping is source-only (profiles cannot carry it)
+				// — set it on the mirror the upsert just made
+				m, err := s.GetSource(name)
+				if err != nil {
+					return opErr(err)
+				}
+				m.Bucket = bucket
+				if err := s.UpsertSource(m); err != nil {
+					return usageErr("%v", err)
 				}
 				if err := s.Save(); err != nil {
 					return opErr(err)
@@ -226,7 +230,7 @@ func sourceAddCmd() *cobra.Command {
 				}
 				col.hi.Printf("source %q saved (s3)\n", name)
 				fmt.Printf("  endpoint: %s\n", orDefault(p.Endpoint, "(AWS default)"))
-				fmt.Printf("  bucket:   %s\n", orDefault(bucket, "(all — account-wide)"))
+				fmt.Printf("  bucket:   %s\n", bucket)
 				fmt.Printf("  style:    %s\n", styleName(p.PathStyle))
 				if p.Insecure {
 					col.warn.Println("  warning:  TLS verification disabled (--insecure)")
@@ -350,7 +354,7 @@ func sourceDetail(s profile.Source) string {
 		if s.Bucket != "" {
 			return fmt.Sprintf("%s @ %s", s.Bucket, ep)
 		}
-		return ep
+		return fmt.Sprintf("%s (account-wide — run 's3b source split %s')", ep, s.Name)
 	case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS, profile.TypeWebDAV, profile.TypeWebDAVS:
 		port := s.Port
 		if port == 0 {
@@ -388,11 +392,11 @@ func sourceListCmd() *cobra.Command {
 				return printJSON(list)
 			}
 			if len(s.Sources) == 0 {
-				fmt.Println("no data sources — add one with: s3b source add <name> --type s3 --endpoint ...")
+				rprintf("no data sources — add one with: s3b source add <name> --type s3 --endpoint ...\n")
 				return nil
 			}
 			for _, src := range s.SortedSources() {
-				fmt.Printf("  %-26s %s\n", sourceTypeLabel(src.Type)+" · "+src.Name, sourceDetail(src))
+				rprintf("  %-26s %s\n", sourceTypeLabel(src.Type)+" · "+src.Name, sourceDetail(src))
 			}
 			return nil
 		},
@@ -498,6 +502,136 @@ func sourceTestCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// sourceSplitCmd splits a legacy account-wide s3 source into one
+// bucket-scoped source per visible bucket — the CLI face of the one-bucket
+// model's migration (the GUI runs the same split automatically).
+func sourceSplitCmd() *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "split NAME",
+		Short: "Split a legacy account-wide s3 source into one data source per bucket",
+		Long: "Split a legacy account-wide s3 source into one bucket-scoped\ndata source per visible bucket, named after the bucket (every S3 data\nsource is one bucket).\n" +
+			"Idempotent: buckets whose connection already has a source are\nrefreshed in place, and the account source (and its mirrored profile)\nis removed only after every bucket settled.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			s, err := store()
+			if err != nil {
+				return err
+			}
+			src, err := s.GetSource(args[0])
+			if err != nil {
+				return usageErr("%v", err)
+			}
+			if src.Type != profile.TypeS3 || src.S3 == nil {
+				return usageErr("source %q (%s) is not an s3 source", src.Name, src.Type)
+			}
+			if src.Bucket != "" {
+				return usageErr("source %q is already scoped to bucket %q — nothing to split", src.Name, src.Bucket)
+			}
+			p := *src.S3
+			p.Name = src.Name
+			c, err := newClient(cmd.Context(), p)
+			if err != nil {
+				return err
+			}
+			buckets, err := listingBuckets(cmd, c)
+			if err != nil {
+				if a := errAdvice(err); a != nil {
+					fmt.Fprintln(os.Stderr, errhelp.Format(a))
+				}
+				return opErr(fmt.Errorf("listing buckets of %q: %w", src.Name, err))
+			}
+			names := make([]string, 0, len(buckets))
+			for _, b := range buckets {
+				if n := strings.TrimSpace(aws.ToString(b.Name)); n != "" {
+					names = append(names, n)
+				}
+			}
+			sort.Strings(names)
+			if len(names) == 0 {
+				return opErr(fmt.Errorf("source %q sees no buckets — nothing to split into", src.Name))
+			}
+			if dryRun {
+				if flagJSON {
+					return printJSON(map[string]any{"source": src.Name, "buckets": names})
+				}
+				rprintf("%q would split into %d bucket source(s):\n", src.Name, len(names))
+				for _, n := range names {
+					rprintf("  %s\n", n)
+				}
+				return nil
+			}
+			var created, matched []string
+			for _, bucket := range names {
+				if ex := splitExistingSource(s, src, bucket); ex != nil {
+					// same connection already has a source for this bucket:
+					// refresh its credentials in place, keep its name
+					bp := *src.S3
+					bp.Name = ex.Name
+					if err := s.UpsertS3Profile(bp); err != nil {
+						return usageErr("%v", err)
+					}
+					matched = append(matched, bucket)
+					continue
+				}
+				bp := *src.S3
+				bp.Name = bucket
+				if err := s.UpsertS3Profile(bp); err != nil {
+					return usageErr("%v", err)
+				}
+				// bucket scoping is source-only (profiles cannot carry it)
+				// — set it on the mirror the upsert just made
+				m, err := s.GetSource(bucket)
+				if err != nil {
+					return opErr(err)
+				}
+				m.Bucket = bucket
+				if err := s.UpsertSource(m); err != nil {
+					return usageErr("%v", err)
+				}
+				created = append(created, bucket)
+			}
+			// the account source and its mirrored profile are one legacy
+			// connection — both go when every bucket settled
+			if err := s.RemoveS3Profile(src.Name); err != nil {
+				return opErr(err)
+			}
+			if err := s.Save(); err != nil {
+				return opErr(err)
+			}
+			if flagJSON {
+				return printJSON(map[string]any{"source": src.Name, "created": created, "matched": matched})
+			}
+			rprintf("split %q into %d bucket source(s) (%d already present)\n", src.Name, len(created), len(matched))
+			for _, n := range created {
+				rprintf("  + %s\n", n)
+			}
+			for _, n := range matched {
+				rprintf("  = %s (refreshed)\n", n)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "list what the split would create, change nothing")
+	return cmd
+}
+
+// splitExistingSource finds the stored source the split would refresh: one
+// scoped to the bucket on the account's connection (endpoint + access key).
+func splitExistingSource(s *profile.Store, acct profile.Source, bucket string) *profile.Source {
+	for i := range s.Sources {
+		c := &s.Sources[i]
+		if c.Type != profile.TypeS3 || c.S3 == nil || c.Bucket != bucket {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSuffix(c.S3.Endpoint, "/"), strings.TrimSuffix(acct.S3.Endpoint, "/")) &&
+			c.S3.AccessKeyID == acct.S3.AccessKeyID {
+			return c
+		}
+	}
+	return nil
 }
 
 func sourceExportCmd() *cobra.Command {

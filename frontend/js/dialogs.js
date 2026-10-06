@@ -1187,6 +1187,41 @@ export function prompt({ title, label, value = '', okLabel = 'OK', password = fa
   });
 }
 
+// bucketSourceDialog is the New-bucket flow's input half: which s3
+// connection the bucket is born on, and its name (conns are the s3
+// sources, defId the preselected one). Resolves { conn, name } on
+// Create, null on cancel.
+export function bucketSourceDialog(conns, defId = '') {
+  let settled = false;
+  return new Promise((resolve) => {
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    const sel = el('select', { class: 'input' },
+      conns.map((src) => el('option', { value: src.id || src.name }, `S3 \u00b7 ${src.name}`)));
+    if (defId && conns.some((src) => (src.id || src.name) === defId)) sel.value = defId;
+    const input = el('input', { class: 'input mono', spellcheck: 'false', placeholder: 'globally unique, DNS-safe' });
+    const submit = (close) => {
+      const name = input.value.trim();
+      if (!name) { input.focus(); return; }
+      done({ conn: sel.value, name });
+      close();
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(closeRef.close); });
+    const closeRef = openModal({
+      title: 'New bucket',
+      body: el('div', {},
+        el('label', { class: 'field', text: 'Connection' }), sel,
+        el('label', { class: 'field', text: 'Bucket name' }), input,
+      ),
+      buttons: [
+        { label: 'Cancel', onclick: (c) => { done(null); c(); } },
+        { label: 'Create', class: 'primary', onclick: submit },
+      ],
+      onClose: () => done(null),
+    });
+    input.focus();
+  });
+}
+
 // ---------- new file (WinSCP-style) ----------
 
 // FILE_TYPES is the New-file dialog's type dropdown: common text-ish
@@ -2305,6 +2340,21 @@ export function sourceEditor(existing, onSaved) {
     cls: 'srcw-modal',
     body,
     buttons: [
+      // a legacy account-wide source has one better move than editing:
+      // the one-time migration to one source per bucket
+      ...((existing?.type === 's3' && !existing?.bucket) ? [{
+        label: 'Split into one source per bucket',
+        onclick: async (close) => {
+          try {
+            const res = await api.SplitAccountSource(existing.id || existing.name);
+            close();
+            onSaved?.(null, res);
+          } catch (err) {
+            status.textContent = `\u274C ${err}`;
+            status.style.color = 'var(--danger)';
+          }
+        },
+      }] : []),
       {
         label: 'Test',
         onclick: async () => {

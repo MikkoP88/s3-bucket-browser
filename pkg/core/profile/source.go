@@ -37,8 +37,11 @@ type Source struct {
 	S3 *Profile `json:"s3,omitempty"`
 
 	// Bucket scopes an S3 source to ONE bucket — every S3 data source is
-	// an individual bucket. Legacy account-wide sources carry no bucket
-	// and keep the bucket-list view.
+	// an individual bucket, exactly as every remote source is one host
+	// root and every local source is one folder. A source without a
+	// bucket is a legacy transitional shape: it is split automatically
+	// into one bucket-scoped source per visible bucket the first time
+	// the account can be listed.
 	Bucket string `json:"bucket,omitempty"`
 
 	// Remote filesystem (Type in sftp/scp/ftp/ftps).

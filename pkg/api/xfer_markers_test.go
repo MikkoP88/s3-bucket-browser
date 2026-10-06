@@ -87,6 +87,9 @@ func (f *fakeS3) serve(t *testing.T) string {
 		switch {
 		case r.URL.Query().Get("list-type") == "2":
 			f.list(w, bucket, r.URL.Query().Get("prefix"))
+		case r.Method == http.MethodGet && bucket == "":
+			// GET / is ListBuckets — the account-level call the split dials.
+			f.listBuckets(w)
 		case r.Method == http.MethodGet:
 			f.getObject(w, bucket, key)
 		case r.Method == http.MethodPut && r.Header.Get("x-amz-copy-source") != "":
@@ -127,6 +130,29 @@ func (f *fakeS3) list(w http.ResponseWriter, bucket, prefix string) {
 			k, len(f.objects[bucket][k]))
 	}
 	b.WriteString("</ListBucketResult>")
+	w.Header().Set("Content-Type", "application/xml")
+	io.WriteString(w, b.String())
+}
+
+// listBuckets answers GET / — the account-level ListBuckets call the
+// split dials to fan an account source out per bucket (same XML shape as
+// newUsageServer's).
+func (f *fakeS3) listBuckets(w http.ResponseWriter) {
+	f.mu.Lock()
+	names := make([]string, 0, len(f.objects))
+	for b := range f.objects {
+		names = append(names, b)
+	}
+	f.mu.Unlock()
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString(xml.Header)
+	b.WriteString("<ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">")
+	b.WriteString("<Owner><ID>fake</ID><DisplayName>fake</DisplayName></Owner><Buckets>")
+	for _, n := range names {
+		b.WriteString("<Bucket><Name>" + n + "</Name></Bucket>")
+	}
+	b.WriteString("</Buckets></ListAllMyBucketsResult>")
 	w.Header().Set("Content-Type", "application/xml")
 	io.WriteString(w, b.String())
 }

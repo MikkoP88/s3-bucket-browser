@@ -34,7 +34,7 @@ one binary, same engine.
 ### Add a data source
 
 Click the **+** next to *DATA SOURCES* in the sidebar (or the button on
-the empty state). Every connection — an S3 endpoint, an SFTP server, an
+the empty state). Every connection — an S3 bucket, an SFTP server, an
 FTP site, a WebDAV share, a local folder — is a *data source*; click one
 in the tree to browse it in the main view. Sources are color-coded, and
 each carries a live connectivity ball (green = reachable).
@@ -117,10 +117,23 @@ else does.
 | | `webdav://` `webdavs://` | RFC 4918 over HTTP(S); Apache, nginx, rclone serve webdav, Nextcloud, IIS |
 | Local filesystem | — | the secondary pane (F9) browses local drives; any source type can be bound to it |
 
-An S3 source is either **account-wide** (all buckets the key can list)
-or **bucket-scoped** — `s3b source add s3://my-bucket` or the `--bucket`
-option pins it to one bucket, which is what credential imports create.
-On the CLI every source is reachable as a URI (`hetzner://bucket/prefix`,
+Every data source is exactly one root: an S3 source is one bucket, an
+SFTP/FTP source is one server directory (or the whole host — still one
+root), a WebDAV source is one endpoint path, a local source is one
+folder. Nothing sits above a source's root — there are no
+account-level sources. `s3b source add s3://my-bucket` (or the
+`--bucket` option) is the bucket-scoped form the source editor
+requires and credential imports build — one source per bucket, named
+after it. Workspaces from older versions may still hold account-wide
+S3 sources: each splits automatically — one bucket-scoped source per
+visible bucket, named after the bucket — the first time the account is
+reachable, while an unreachable account keeps its legacy source and is
+retried on every sources refresh and reconnect (the editor's *Split
+into one source per bucket…* button does it on demand, `s3b source
+split NAME` on the CLI). **New bucket…** on the sidebar or an S3
+source's context menu creates a bucket and seats its data source in
+one step, and deleting a bucket removes its data source with it. On
+the CLI every source is reachable as a URI (`team-files://docs/`,
 `vault://media/…`) with the same flags everywhere.
 
 All of them browse, upload, download, rename and delete like any other
@@ -133,7 +146,7 @@ directory compare) with S3 and the secondary pane.
 
 ![Main window](screenshots/main-view.png)
 
-- **Sidebar tree** — sources → buckets → folders. Every source wears
+- **Sidebar tree** — sources → folders; an S3 source IS the bucket. Every source wears
   its type as a bold text label (S3, SFTP, WebDAV, …) painted in its
   accent color — the same badge rides the breadcrumb roots and the
   source pickers. Click to navigate; right-click a node for
@@ -149,7 +162,7 @@ directory compare) with S3 and the secondary pane.
   anywhere in a row's name (case-insensitive substring); `*` and `?`
   are wildcards (`prod-*`, `?ightly`); space- or comma-separated
   patterns OR together. Matches surface through the whole hierarchy —
-  buckets and folders inside sources, not just source names — with
+  folders inside sources, not just source names — with
   pass-through ancestors dimmed, and the pattern narrows the Favorites
   list to matching buckets too. Everything the tree has loaded filters
   as you type; emptying the box restores the tree, Enter applies at
@@ -259,7 +272,8 @@ directory compare) with S3 and the secondary pane.
   sides, so the main view and the secondary pane stay
   button-for-button twins of each other below the global bar.
   **Home** on the main side returns to the open data source's start
-  view — its bucket list or contents root, a remote's root — and to
+  view — its contents root, a remote's root (a legacy account-wide
+  source's bucket list) — and to
   the workstation home folder when a local folder owns the main
   view; Home on the secondary pane is the Dual-pane picker's
   **Home view** — the workstation home folder. The seam between them
@@ -268,8 +282,8 @@ directory compare) with S3 and the secondary pane.
   equally wide, and a double-click on the seam restores the even split.
 - **Path bar** — the breadcrumb shows where you are; click it (or the
   edit icon) and it becomes an editable line holding the view's typed
-  source address, `scheme://Name/bucket/folder/` —
-  `s3://hetzner/team-files/`, the scheme speaking the source's type
+  source address, `scheme://Name/folder/` —
+  `s3://team-files/docs/`, the scheme speaking the source's type
   (visible only while editing; the workstation side stays a bare
   native path). The same line minus its scheme is the
   `Name/contents` form the Copy path action puts on the clipboard,
@@ -333,14 +347,14 @@ directory compare) with S3 and the secondary pane.
   Sources is a flat list with no grouping — *All data sources*
   (the default: every bucket of every S3 source plus every remote
   source from its root) and each configured source by type and name
-  (`S3 · hetzner` — the type badge's text form; the pane's source
+  (`S3 · team-files` — the type badge's text form; the pane's source
   picker labels its options the same way), an S3
   source searched across every bucket it holds, a remote source
   (local, SFTP, FTP, WebDAV) from its root. Every search honors
   each source's own boundary — a bucket-scoped S3 source is
   searched in its one bucket alone (buckets that belong to other
-  sources over the same endpoint never leak in under its name), an
-  account-wide source keeps its every-bucket walk, and a folder
+  sources over the same endpoint never leak in under its name), a
+  legacy account-wide source keeps its every-bucket walk, and a folder
   preset scopes the walk itself to that folder — and two Search
   windows running at once never cross-paint: every page a window
   paints belongs to its own run's token. Everything else folds
@@ -740,6 +754,7 @@ complete tree is in [cli.md](cli.md). The shape of it:
 s3b profile add lab --endpoint http://localhost:9000 \
     --access-key minioadmin --secret-key minioadmin --default
 s3b source add vault sftp://deploy@backups.example.com
+s3b source split old-account                # legacy account → one source per bucket
 
 s3b ls            s3b ls vault://media      # any source, same flags
 s3b cp ./site s3://b/site/ -r               # upload (or download, or copy)
