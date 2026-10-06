@@ -181,8 +181,13 @@ pass "MinIO, SFTP, FTP and WebDAV reachable"
 
 step "sources: local, s3 (MinIO), sftp, ftp, webdav"
 mkdir -p "$WORK/lroot"
+# one-root: an S3 source IS one bucket — the add names it, and the
+# bucket is born before the test (a scoped source probes its own bucket;
+# the connection's other buckets stay addressable via full operands)
 "$BIN" source add lab --type s3 --endpoint "http://localhost:$MINIO_PORT" \
+  --bucket "$BUCKET" \
   --access-key minioadmin --secret-key minioadmin >/dev/null
+"$BIN" mb "s3://$BUCKET" >/dev/null || fail "mb"
 "$BIN" source test lab | grep 'OK' >/dev/null || fail "lab source test"
 # saved LOCAL source: exercises the local engine as a first-class source
 "$BIN" source add xl --type local --root "$WORK/lroot" >/dev/null
@@ -193,7 +198,6 @@ mkdir -p "$WORK/lroot"
   --username e2e --password e2epass >/dev/null
 "$BIN" source add xw "webdav://e2e:e2epass@127.0.0.1:${WEBDAV_PORT}/" >/dev/null
 for s in xt xf xw; do "$BIN" source test "$s" | grep 'OK' >/dev/null || fail "$s source test"; done
-"$BIN" mb "s3://$BUCKET" >/dev/null || fail "mb"
 pass "five sources online (lab/xl/xt/xf/xw)"
 
 step "seed tree"
@@ -326,9 +330,10 @@ if [ -n "${S3B_HETZNER_ACCESS_KEY:-}" ] && [ -n "${S3B_HETZNER_SECRET_KEY:-}" ];
   HENDPOINT="${S3B_HETZNER_ENDPOINT:-https://fsn1.yourobjectstorage.com}"
   HBUCKET="${S3B_HETZNER_BUCKET:-s3b-e2e-cross-$RANDOM$RANDOM}"
   "$BIN" source add xh --type s3 --endpoint "$HENDPOINT" \
+    --bucket "$HBUCKET" \
     --access-key "$S3B_HETZNER_ACCESS_KEY" --secret-key "$S3B_HETZNER_SECRET_KEY" >/dev/null
-  "$BIN" source test xh | grep 'OK' >/dev/null || fail "hetzner source test"
   "$BIN" mb "s3://$HBUCKET" --profile xh >/dev/null || fail "mb hetzner"
+  "$BIN" source test xh | grep 'OK' >/dev/null || fail "hetzner source test"
   "$BIN" bucket versioning "s3://$HBUCKET" on --profile xh >/dev/null || fail "hetzner versioning"
   "$BIN" cp -r "$SEED" "xh://$HBUCKET/$RUN/tree" >/dev/null || fail "seed hetzner"
   tree_diff "seed hetzner" "$SEED" "s3://$HBUCKET/$RUN/tree" "" "xh"

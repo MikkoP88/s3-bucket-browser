@@ -37,16 +37,20 @@ expect_fail() {
 }
 
 step "source add + connectivity test"
+# one-root: an S3 source IS one bucket — the add names it, and the
+# bucket is born before the tests (a scoped source probes its own bucket)
 "$BIN" source add lab --type s3 --endpoint http://localhost:9000 \
+  --bucket "$BUCKET" \
   --access-key minioadmin --secret-key minioadmin >/dev/null
 "$BIN" source list | grep -q 'lab' || fail "source not listed"
 # s3 sources mirror as legacy profiles — --profile keeps resolving them
 "$BIN" profile list | grep -q 'lab' || fail "s3 source not mirrored as profile"
-"$BIN" profile test lab | grep -q 'OK' || fail "profile test failed"
-pass "source created, mirrored as profile, connectivity OK"
-
-step "bucket + folder creation"
 "$BIN" mb "s3://$BUCKET" | grep -q 'created bucket' || fail "mb"
+"$BIN" source test lab | grep -q 'OK' || fail "source test"
+"$BIN" profile test lab | grep -q 'OK' || fail "profile test failed"
+pass "source created (scoped to its bucket), mirrored as profile, connectivity OK"
+
+step "folder creation"
 "$BIN" mkdir "s3://$BUCKET/docs/" | grep -q 'created folder' || fail "mkdir"
 pass "bucket and folder marker created"
 
@@ -301,7 +305,9 @@ if command -v node >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
   done
   fmode() { curl -s -X POST -H 'content-type: application/json' -d "$1" \
     "http://127.0.0.1:$FCTL/mode" >/dev/null; }
+  # one-root: the fault source is scoped to the bucket under test too
   "$BIN" source add faultlab --type s3 --endpoint "http://127.0.0.1:$FPORT" \
+    --bucket "$BUCKET" \
     --access-key minioadmin --secret-key minioadmin >/dev/null
 
   # direct (control): the proxy itself is transparent
