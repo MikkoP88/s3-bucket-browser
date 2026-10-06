@@ -89,18 +89,13 @@ GitHub-hosted runners — a USB token would force a self-hosted runner).
    (pay-as-you-go is enough).
 2. **Trusted Signing account** — search the portal for *Trusted
    Signing*, create an account (pick any available region), then a
-   **certificate profile** inside it, type **Public Trust** (the *Test*
-   flavor exercises the flow but its signatures are not publicly
-   trusted). Note the **endpoint URL** shown on the account overview —
-   it looks like `https://<account>.<region>.codesigning.azure.net`.
+   **certificate profile** inside it (public trust, default settings).
+   Note the **endpoint URL** shown on the account overview — it looks
+   like `https://<account>.<region>.codesigning.azure.net`.
 3. **Identity validation** — under the account, submit a validation
    (individual: government photo ID and liveness check; organization:
-   business registry). When the portal asks **Public or Private**,
-   choose **Public**: only Public Trust profiles chain to a root the
-   world's Windows machines recognize, while a Private identity trusts
-   inside your own tenant only — the same closed world as a self-signed
-   certificate. Allow several days. The validated name becomes the
-   certificate's publisher subject — you cannot name it "S3 Bucket
+   business registry). Allow several days. The validated name becomes
+   the certificate's publisher subject — you cannot name it "S3 Bucket
    Browser" freely; it will read as the validated publisher.
 4. **Service principal** — Microsoft Entra ID → App registrations →
    New registration; then grant it the **Trusted Signing Certificate
