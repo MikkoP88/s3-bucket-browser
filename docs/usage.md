@@ -345,11 +345,13 @@ directory compare) with S3 and the secondary pane.
   and **Sources** sit side by side, always in view: Name is a
   substring or glob (Enter runs the search from any field),
   Sources is a flat list with no grouping — *All data sources*
-  (the default: every bucket of every S3 source plus every remote
-  source from its root) and each configured source by type and name
+  (the default: every data source from its root — an S3 source is one
+  bucket, a remote source one host root) and each configured source
+  by type and name
   (`S3 · team-files` — the type badge's text form; the pane's source
   picker labels its options the same way), an S3
-  source searched across every bucket it holds, a remote source
+  source searched in its one bucket (a legacy account-wide source,
+  its every bucket), a remote source
   (local, SFTP, FTP, WebDAV) from its root. Every search honors
   each source's own boundary — a bucket-scoped S3 source is
   searched in its one bucket alone (buckets that belong to other
@@ -669,6 +671,17 @@ delete guard, and always applies.
 ---
 
 ## 6. Bucket administration
+
+A bucket is born with its data source in the same gesture: **New
+bucket…** on the sidebar's background menu (right-click the data
+sources area) or on an S3 source's context menu picks the
+connection, creates the bucket, and seats its data source in the
+tree — the newborn source opens on its empty contents immediately.
+**Delete bucket** on a source removes the bucket *and* its data
+source together, and the view re-homes to a surviving source: a
+source whose bucket is gone never lingers.
+
+![New bucket — the newborn source's empty landing](screenshots/new-bucket.png)
 
 Right-click a bucket → **Admin panel**: one tabbed dialog for
 versioning, policy, ACL, CORS, lifecycle rules, default encryption,

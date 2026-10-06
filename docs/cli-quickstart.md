@@ -23,6 +23,10 @@ s3b doctor s3://my-bucket    # deep diagnosis: DNS → TCP → TLS → auth → 
 # / $S3B_PASSWORD work like on the S3 side
 s3b source add vault sftp://deploy@backups.example.com
 s3b ls vault://media         # same engine, same flags as s3://
+
+# An account-wide S3 source from an older workspace splits on demand —
+# --dry-run previews, --json lists what would be created
+s3b source split old-account
 ```
 
 Sources and legacy profiles are one store: `s3b source list` and
@@ -62,6 +66,7 @@ s3b rm s3://b/tmp/file.txt                # single object
 s3b rm -r --dry-run s3://b/tmp/           # preview a prefix delete
 s3b rm -r --force s3://b/tmp/             # >50 objects requires --force
 s3b rm -r --versions --force s3://b/tmp/  # destroy all versions too (L3)
+s3b rb s3://old-bucket --dry-run          # the removal plan, nothing touched
 s3b rb s3://old-bucket --force            # empty + remove (L2; purges
                                           #   version history if versioned)
 ```
@@ -93,6 +98,7 @@ s3b bucket tags put s3://b team=infra     #      encryption | pab | website
 s3b find s3://b --name 'backup*'          # substring or glob over the key
 s3b find s3://b/photos/ --larger 10MB --older 90d
 s3b find s3://b --kind file               # only files (kind: file|dir)
+s3b find s3://b --ext pdf,csv --path docs # filter by extension and path
 s3b find s3://b --class GLACIER --limit 100
 ```
 

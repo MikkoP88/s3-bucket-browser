@@ -4,7 +4,7 @@
 
 **A unified desktop browser and CLI with Windows File Explorer and a WinSCP inspired interface for managing S3‑compatible cloud storages and remote file servers, offering comprehensive supporting S3 buckets/objects, SFTP/SCP, FTP/FTPS, WebDAV, and local folders, with robust versioning, bucket administration, and security, and cross‑storage migration capabilities.**
 
-> **Status: v1.0 released; 1.2.0 in beta (current pre-release: 1.2.0-beta.1).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 added a unified data-source hierarchy, OS clipboard/drag interop, credential import and a unified versioned-delete flow; 1.2 adds a floating Search window across every source, engine-level transfer cycle guards, folder sizes in every view, and GUI-matched CLI formats — see the [CHANGELOG](CHANGELOG.md).
+> **Status: v1.0 released; 1.2.0 in beta (current pre-release: 1.2.0-beta.1).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 added a unified data-source hierarchy, OS clipboard/drag interop, credential import and a unified versioned-delete flow; 1.2 makes every data source exactly one root (an S3 source is one bucket — legacy accounts split automatically), adds a floating Search window across every source, engine-level transfer cycle guards, folder sizes in every view, and GUI-matched CLI formats — see the [CHANGELOG](CHANGELOG.md).
 
 ## Key Features of S3 Bucket Browser(s3b)
 
@@ -21,7 +21,7 @@
 - Type‑to‑jump, drag & drop everywhere  
 - Context menus, breadcrumbs, folder tree  
 - Sortable details grid with pickable, resizable, reorderable columns  
-- Dual‑pane local browser  
+- Dual‑pane with any source on either side — S3, remote or local — and directory compare  
 - Keyboard‑first operation (**F1** shows the full map)  
 - Guarded exit: never drops running transfers or unsaved profile work
 
@@ -29,12 +29,13 @@
 - **S3‑compatible:** AWS, MinIO, Wasabi, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, IBM COS, Hetzner, Ceph, Dell ECS, StorageGRID  
 - **Remote servers:** SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs  
 - **Local folders**  
+- Every source is exactly one root — an S3 source is one bucket (**New bucket…** creates the bucket and its data source in one step; legacy account-wide sources split automatically)  
 - All color‑coded in one sidebar  
 - Same UI and same CLI (`NAME://` URIs)
 
 ### ✔ Deep search, one window
 - **Ctrl+Shift+F** — floating Search window (or tear it out as a native OS window)  
-- Filters: name/glob, size, modified/created dates, storage class  
+- Filters: name/glob, kind, size, age, extension, path  
 - **All sources at once** or scoped to one folder — each source searched inside its own boundary  
 - Source column with type badges on multi-origin runs; double-click jumps to the hit  
 - Cancelable; results stream in page by page
@@ -177,6 +178,7 @@ More screenshots:
 | ![Search window](docs/screenshots/search.png) | ![Transfer manager](docs/screenshots/transfers.png) |
 | ![Versions](docs/screenshots/versions.png) | ![Delete window](docs/screenshots/delete-window.png) |
 | ![Admin panel](docs/screenshots/admin-panel.png) | ![Dark theme](docs/screenshots/dark-theme.png) |
+| ![New bucket — bucket and data source in one step](docs/screenshots/new-bucket.png) | ![Credential import](docs/screenshots/import-credentials.png) |
 
 The full tour with screenshots lives in the **[GUI usage guide](docs/usage.md)**; the app carries the same guide (Help → User guide, F1).
 

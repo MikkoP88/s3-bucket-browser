@@ -2500,14 +2500,14 @@ export function helpSheet() {
 // is stable documentation.
 const GUIDE_SECTIONS = [
   ['Getting started', [
-    ['Add a data source', 'Click the + button next to DATA SOURCES on the left (or the button on the empty state). Every connection is a data source; click one to browse it in the main view.'],
+    ['Add a data source', 'Click the + button next to DATA SOURCES on the left (or the button on the empty state). Every connection is a data source — an S3 source is one bucket, a remote source one server root, a local source one folder; click one to browse it in the main view.'],
     ['Import existing credentials', '"Import S3 Credential" (File menu or the empty state) reads credential files — AWS INI (~/.aws/credentials), rclone, JSON, .env, encrypted .s3bprofile — or a KMS service (Vault, AWS SM, Azure, GCP). Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3. Test each candidate before importing. Picks accumulate — add from several files and services, remove any row (or clear all), then import the checked ones.'],
     ['Save your workspace', 'Data sources live in the session until saved. Ctrl+S / File → Save As writes an encrypted .s3bprofile you can reopen, keep or share; the status bar counts unsaved sources.'],
     ['Secrets', 'Keys and passwords are stored in the OS keyring (Windows Credential Manager, macOS Keychain, Linux SecretService) when available, with a 0600-permission file fallback on headless hosts.'],
     ['Settings', 'The Settings menu opens one dialog with a page tree: theme (light/dark), 15 languages, view options, network timeouts and S3 retries, the transfer engine (multipart part size, parts in flight, stall threshold), delete gates and security — including the opt-in Secure Storage mode that encrypts the whole source store. Every change applies immediately; no restart.'],
   ]],
   ['Browsing', [
-    ['Sidebar tree', 'Sources → buckets → folders. Click to navigate; right-click a node for Properties, Admin panel, transfers and more.'],
+    ['Sidebar tree', 'Sources → folders; an S3 source IS the bucket — nothing sits above a source’s root. Click to navigate; right-click a node for Properties, Admin panel, transfers and more.'],
     ['Grid', 'Click, Ctrl+click and Shift+click to select, Ctrl+A for all, Ctrl+I to invert, drag a marquee, or just type to jump to an item. The funnel row under the header filters per column; right-click the header to pick columns; Ctrl+F focuses the quick filter.'],
     ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and the line turns editable holding the typed source address (s3://Name/contents — the scheme is the source type, visible only while editing; the workstation side stays a bare native path). Paste any address to jump straight there: that typed form, a plain Name/contents source path, an s3:// URI, a connection URL (sftp://user:pass@host:21/root — an unconfigured one is saved as a new source), a local folder (C:\Projects, \\server\share, ~) or a file:/// URL. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here. The Home button on each pane toolbar jumps to its side home: the main pane returns to the open data source start view, the secondary pane lands on the workstation home folder.'],
@@ -2532,12 +2532,13 @@ const GUIDE_SECTIONS = [
   ]],
   ['Administration', [
     ['Admin panel', 'Right-click a bucket → Admin panel: versioning, policy, ACL, CORS, lifecycle, encryption, public-access block, website, tags, versions and lock — one tabbed dialog.'],
+    ['New bucket, one step', 'New bucket… on the sidebar’s background menu or an S3 source’s context menu creates the bucket and seats its data source in one gesture — the newborn source appears in the tree and its empty contents open. Deleting a bucket removes its data source with it. Account-wide S3 sources from older workspaces split into one source per bucket automatically the first time the account is reachable (on demand too: the source editor’s Split button, or s3b source split on the CLI).'],
     ['Doctor', 'Help → Doctor opens a picker of your S3 sources — choose one and it runs a guided diagnosis: DNS → TCP → TLS → auth → permissions, with one-click re-runs of individual checks. Right-clicking a bucket → Doctor… goes straight there.'],
     ['Presign & storage class', 'The context menu creates time-limited pre-signed URLs and converts objects between storage classes (server-side copy).'],
     ['Properties', 'Context menu → Properties shows full metadata for buckets, folders, objects and sources — provider, region, versioning, lock, encryption, policy state.'],
   ]],
   ['Tips & tricks', [
-    ['Search anywhere', 'Ctrl+Shift+F opens the Search window — every data source at once, or narrowed to the open folder, bucket or remote source. Filter by name glob, kind, size, age or storage class (extra filters hide behind More filters), press Enter to run; results stream in and are cancelable.'],
+    ['Search anywhere', 'Ctrl+Shift+F opens the Search window — every data source at once, or narrowed to the open folder or source. Filter by name glob, kind, size, age, extension or path (extra filters hide behind More filters), press Enter to run; results stream in and are cancelable.'],
     ['Local log', 'Ctrl+L toggles the event log; Settings can mirror it to a file.'],
     ['Portable mode', 'Drop an empty s3b-portable marker file next to the binary and all settings stay beside it — perfect for USB sticks.'],
     ['Same binary, full CLI', 's3b on the terminal drives the same engine: ls, cp, sync, find, doctor, bucket admin and more — see `s3b --help`.'],
@@ -3870,9 +3871,11 @@ function searchScopeLabel(s, srcs = []) {
 }
 
 // searchSourceScopes turns a source list into one pickable scope each: an
-// S3 source searches every bucket it holds, a remote engine walks from
-// its root. The Search window pairs these with the All default — a flat
-// list of typed names, no group headers, every source one pick away.
+// S3 source walks the bucket it IS — the scope leaves with bucket '' and
+// the engine resolves the source's own bucket from its name (a legacy
+// account-wide source keeps the every-bucket walk), a remote engine walks
+// from its root. The Search window pairs these with the All default — a
+// flat list of typed names, no group headers, every source one pick away.
 export function searchSourceScopes(list = []) {
   return list.map((s) => (s.type === 's3'
     ? { label: typedSourceLabel(s.type, s.name), scope: { mode: 's3', source: s.name, bucket: '', prefix: '' } }

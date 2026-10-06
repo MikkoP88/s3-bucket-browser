@@ -27,6 +27,26 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The local-address ladder means the same thing on every
+  platform.** Three contracts only another operating system could
+  see: a Windows-shaped directory pasted into a mac or linux pane
+  came back rewritten (local:// folded every backslash to a forward
+  slash before FromSlash, and FromSlash is the identity on unix),
+  the ~ expansion joined home and tail with no separator of its own
+  (the tail's grammar backslash survived as a literal on unix —
+  ~\Documents became /Users/you/\Documents), and a pasted C:\
+  escaped the delete gate everywhere but Windows, because isFsRoot
+  leaned on filepath.VolumeName, which knows volumes only on
+  Windows — so removing a drive root fell through to the OS error
+  instead of the fast per-item refusal. The local surface's
+  canonical form keeps backslash forms native on every platform and
+  folds only the slash forms, the tail after ~ rejoins the home
+  dir through filepath.Join, and drive roots are recognized by
+  shape (bare drive, drive plus one separator, nothing more) so
+  the refusal fires before the OS is ever asked, wherever the path
+  was pasted. The root-refusal test drives C:\ and / through both
+  rungs on every platform.
+
 - **The Data sources tree parks every indicator flush — no empty
   space anywhere.** The type slot was a shared column seated on the
   widest chip the list carries, so a mixed list parked a WebDAV-wide
