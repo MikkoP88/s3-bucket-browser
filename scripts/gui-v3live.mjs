@@ -528,7 +528,7 @@ async function cleanReady() {
   if (cleanReadyDone) return;
   await rm(CLEAN_CFG, { recursive: true, force: true });
   await mkdir(CLEAN_CFG, { recursive: true });
-  execFileSync(cleanExe(), ['source', 'add', 'cleanup', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET], { stdio: 'pipe', windowsHide: true, env: cleanEnv() });
+  execFileSync(cleanExe(), ['source', 'add', 'cleanup', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET], { stdio: 'pipe', windowsHide: true, env: cleanEnv() });
   cleanReadyDone = true;
 }
 function shq(args, { tolerate = false } = {}) {

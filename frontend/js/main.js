@@ -571,6 +571,19 @@ function sourceHomeLoc(src) {
   return { kind: 'remote', source: s.name, path: '' };
 }
 
+// reHomeView re-seats the main view after the source that owned it left
+// the store (Remove source, Delete bucket). The heir must be an S3
+// source when one survives — engine-native S3 features resolve the
+// view source Go-side (SetViewSource), and a remote/local heir would
+// leave the dead pointer armed; with no S3 source left, any survivor
+// hosts the view and the pointer is cleared so bindings fail honestly
+// instead of naming a ghost.
+function reHomeView() {
+  const heir = sources.find((s) => s.type === 's3') || sources[0];
+  nav.to(sourceHomeLoc(heir));
+  if (heir && heir.type !== 's3') api.SetViewSource('').catch(() => {});
+}
+
 // navThen navigates and runs fn once the view source has settled on the
 // target's source — engine-native dialogs (admin/doctor/versions/stat)
 // address the view source, so a bucket of another source must be opened
@@ -2300,9 +2313,14 @@ function showTreeMenu(e, node) {
           danger: true, okLabel: 'Remove',
         })) {
           try {
+            const wasView = nav.current?.source === src.name;
             await api.RemoveSource(src.id || src.name);
             await refreshSources();
             refreshPfState();
+            // one-root rule: a source that owned the view takes the view
+            // with it — re-home so the next view-source binding resolves
+            // a live source (an S3 heir keeps the engine pointer live)
+            if (wasView) reHomeView();
           } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
         }
       }],
@@ -2353,9 +2371,14 @@ function showTreeMenu(e, node) {
           danger: true, okLabel: 'Remove',
         })) {
           try {
+            const wasView = nav.current?.source === src.name;
             await api.RemoveSource(src.id || src.name);
             await refreshSources();
             refreshPfState();
+            // one-root rule: a source that owned the view takes the view
+            // with it — re-home so the next view-source binding resolves
+            // a live source (an S3 heir keeps the engine pointer live)
+            if (wasView) reHomeView();
           } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
         }
       }],
@@ -3231,7 +3254,8 @@ async function deleteBucket(bucket) {
     const res = await api.DeleteBucket(bucket, true);
     toast(`Bucket removed (${res.deleted} object(s) emptied)`, 'ok');
     // one-root rule: a source scoped to the deleted bucket goes with it —
-    // its root no longer exists. The view re-homes to the first survivor.
+    // its root no longer exists. The view re-homes (an S3 heir keeps
+    // the engine's view-source pointer live).
     const scoped = sources.find((s) => s.type === 's3' && s.bucket === bucket);
     if (scoped) {
       try {
@@ -3239,7 +3263,7 @@ async function deleteBucket(bucket) {
       } catch (err) { toast(`Remove source failed: ${err}`, 'error'); }
       await refreshSources();
       refreshPfState();
-      nav.to(sourceHomeLoc(sources[0]));
+      reHomeView();
     } else {
       nav.to({ kind: 'buckets', source: viewSource });
     }

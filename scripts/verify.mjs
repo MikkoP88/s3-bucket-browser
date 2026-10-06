@@ -263,16 +263,18 @@ async function writeFixtures() {
 // ============================================================
 async function cliS3() {
   const B = `s3://${BUCKET}`;
-  await verify({ id: 'CLI-S3-01', area: 'sources', action: 'Add + test S3 source', ds: 'S3 (MinIO)', scenario: 'source add with endpoint/keys; source test dials; list shows it; mirrors as profile', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-01', area: 'sources', action: 'Add + test S3 source', ds: 'S3 (MinIO)', scenario: 'a bucket-less add is refused (an S3 data source is one bucket); the scoped add with endpoint/keys lands; source test dials; list shows the scope; mirrors as profile', face: 'CLI' }, async () => {
     let r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+    need(r.code !== 0 && /one bucket/.test(r.out + r.err), `bucket-less add must refuse with the one-bucket contract: ${r.out}${r.err}`);
+    r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET]);
     need(r.code === 0, `source add: ${r.err}`);
     r = await cli(['source', 'test', 'verifys3']);
     need(r.code === 0 && /✅|OK/.test(r.out + r.err), `source test: ${r.out}${r.err}`);
     r = await cli(['source', 'list']);
-    need(r.out.includes('verifys3'), 'source list missing verifys3');
+    need(r.out.includes('verifys3') && r.out.includes(BUCKET), `source list missing verifys3 or its scope: ${r.out}${r.err}`);
     r = await cli(['profile', 'list']);
     need(r.out.includes('verifys3'), 'profile mirror missing');
-    return 'added, tested, listed, mirrored';
+    return 'bucket-less refused; scoped add tested, listed, mirrored';
   });
 
   await verify({ id: 'CLI-S3-48', area: 'sources', action: 'Bucket-scoped addressing: NAME:// is content-only — the bucket never repeats', ds: 'S3 (dead endpoint)', scenario: 'a scoped source is ONE data source: its name carries the bucket, so NAME:// operands address content INSIDE it (the bucket must never appear twice in any rendered path); the listing shows the scope; browsing correctly refuses and points at s3:// URIs; same-object cp fires before any dial', face: 'CLI' }, async () => {
@@ -295,6 +297,54 @@ async function cliS3() {
     need(r.code !== 0, 'same-object cp must refuse before dialing');
     await rm(dir, { recursive: true, force: true });
     return 'scoped operands are content-only; browsing stays on s3://';
+  });
+
+  await verify({ id: 'CLI-S3-49', area: 'sources', action: 'Legacy account split: one data source per bucket', ds: 'S3 (MinIO)', scenario: 'a stored account-wide source (the pre-one-root shape, synthesized by stripping the bucket key from a scratch store on a live connection) migrates itself: dry-run lists what the split would create and changes nothing; the real split lands one bucket-named scoped source per visible bucket and removes the account source and its hint; splitting a scoped source refuses with the scope it holds; the staged buckets leave and the scratch store goes', face: 'CLI' }, async () => {
+    const dir = path.join(ART, 's49-config');
+    await rm(dir, { recursive: true, force: true });
+    await mkdir(dir, { recursive: true });
+    const k = { cfg: dir, nokeyring: true };
+    const BA = `split-${RUNID}-a`;
+    const BB = `split-${RUNID}-b`;
+    // seed: a scoped add (the only shape the CLI accepts now), then strip
+    // the bucket key from the store file — the exact workspace a
+    // pre-one-root binary would have left behind: an account-wide source
+    let r = await cli(['source', 'add', 'splitacct', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BA], k);
+    need(r.code === 0, `seed add: ${r.err}`);
+    // the staged buckets ride the scratch store's sole profile (connection
+    // addressing, not source scoping) — CLI-S3-02 has not run yet
+    for (const b of [BA, BB]) {
+      r = await cli(['mb', `s3://${b}`], k);
+      need(r.code === 0, `mb ${b}: ${r.out}${r.err}`);
+    }
+    const store = path.join(dir, 'profiles.json');
+    const data = JSON.parse(await readFile(store, 'utf8'));
+    const strip = (o) => { for (const key of Object.keys(o)) { if (key === 'bucket') delete o[key]; else if (o[key] && typeof o[key] === 'object') strip(o[key]); } };
+    strip(data);
+    await writeFile(store, JSON.stringify(data, null, 2));
+    r = await cli(['source', 'list'], k);
+    need(r.out.includes('splitacct') && /account-wide/.test(r.out), `legacy row must show the account-wide hint: ${r.out}${r.err}`);
+    // dry-run: the would-create list carries both staged buckets, store untouched
+    r = await cli(['source', 'split', 'splitacct', '--dry-run'], k);
+    need(r.code === 0 && /would split into/.test(r.out) && r.out.includes(BA) && r.out.includes(BB), `dry-run: ${r.out}${r.err}`);
+    r = await cli(['source', 'list'], k);
+    need(r.out.includes('splitacct') && /account-wide/.test(r.out), `dry-run changed the store: ${r.out}${r.err}`);
+    // real split: bucket-named scoped sources land, the account source goes
+    r = await cli(['source', 'split', 'splitacct'], k);
+    need(r.code === 0 && new RegExp('split "splitacct" into \\d+ bucket source').test(r.out) && r.out.includes(`+ ${BA}`) && r.out.includes(`+ ${BB}`), `split: ${r.out}${r.err}`);
+    r = await cli(['source', 'list'], k);
+    need(countLines(r.out, 'splitacct') === 0, `the account source survived the split: ${r.out}${r.err}`);
+    need(!/account-wide/.test(r.out), `an account-wide hint survived the split: ${r.out}${r.err}`);
+    // a scoped source has nothing to split — refused with the scope it holds
+    r = await cli(['source', 'split', BA], k);
+    need(r.code !== 0 && /already scoped to bucket/.test(r.out + r.err), `scoped split must refuse: ${r.out}${r.err}`);
+    // leave the world as found: staged buckets out, scratch store gone
+    for (const b of [BA, BB]) {
+      r = await cli(['rb', `s3://${b}`, '--force', '--profile', b], k);
+      need(r.code === 0, `rb ${b}: ${r.out}${r.err}`);
+    }
+    await rm(dir, { recursive: true, force: true });
+    return 'legacy store migrated to bucket sources; dry-run touched nothing; scoped split refused';
   });
 
   await verify({ id: 'CLI-S3-02', area: 'buckets', action: 'Create versioned bucket', ds: 'S3 (MinIO)', scenario: 'mb + bucket versioning on (the delete-marker scenarios need it)', face: 'CLI' }, async () => {
@@ -1118,11 +1168,11 @@ async function cliS3() {
     const dir = path.join(ART, 'upd-config');
     await rm(dir, { recursive: true, force: true });
     await mkdir(dir, { recursive: true });
-    let r = await cli(['source', 'add', 'upd1', '--type', 's3', '--endpoint', 'http://127.0.0.1:1', '--access-key', 'updkey', '--secret-key', 'upd1-s3cret-zz'], { cfg: dir });
+    let r = await cli(['source', 'add', 'upd1', '--type', 's3', '--endpoint', 'http://127.0.0.1:1', '--access-key', 'updkey', '--secret-key', 'upd1-s3cret-zz', '--bucket', 'upd-bkt'], { cfg: dir });
     need(r.code === 0, `add: ${r.err}`);
     let l = await cli(['source', 'list'], { cfg: dir });
     need(l.code === 0 && countLines(l.out, 'upd1') === 1, `first add left ${countLines(l.out, 'upd1')} row(s)`);
-    r = await cli(['source', 'add', 'upd1', '--type', 's3', '--endpoint', 'http://127.0.0.2:2', '--access-key', 'updkey', '--secret-key', 'upd1-s3cret-zz'], { cfg: dir });
+    r = await cli(['source', 'add', 'upd1', '--type', 's3', '--endpoint', 'http://127.0.0.2:2', '--access-key', 'updkey', '--secret-key', 'upd1-s3cret-zz', '--bucket', 'upd-bkt'], { cfg: dir });
     l = await cli(['source', 'list'], { cfg: dir });
     need(l.code === 0, `list after re-add: ${l.err}`);
     need(!l.out.includes('upd1-s3cret-zz'), 'the secret leaked into a listing');
@@ -1405,7 +1455,7 @@ async function cliCross() {
   {
     const srcs = await cli(['source', 'list']).catch(() => ({ out: '' }));
     if (!srcs.out.includes('verifys3')) {
-      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET]);
       need(r.code === 0, `prologue: verifys3 source add (cross): ${r.err}`);
     }
     await cli(['mb', `s3://${BUCKET}`]).catch(() => {});
@@ -1538,7 +1588,7 @@ async function cliCross() {
   });
 
   await verify({ id: 'CLI-X-09', area: 'sources', action: 'Source lifecycle: profile test + remove', ds: 'S3 (MinIO)', scenario: 'add a temp source; profile test dials it (OK + bucket count); source remove drops it from BOTH source list and profile mirror', face: 'CLI' }, async () => {
-    let r = await cli(['source', 'add', 'verifytmp', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+    let r = await cli(['source', 'add', 'verifytmp', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET]);
     need(r.code === 0, `add: ${r.err}`);
     r = await cli(['profile', 'test', 'verifytmp']);
     need(r.code === 0 && /OK/.test(r.out), `profile test: ${r.out}${r.err}`);
@@ -1638,7 +1688,7 @@ async function cliCross() {
     // add moves it to a dead endpoint), then import on top: the store must
     // not fork, must not lose anything else, and must stay removable
     const before = (await cli(['source', 'list'], { cfg: dir, nokeyring: true })).out.split('\n').filter((x) => x.trim());
-    r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', 'http://127.0.0.1:1', '--access-key', 'x12', '--secret-key', 'x12'], { cfg: dir, nokeyring: true });
+    r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', 'http://127.0.0.1:1', '--access-key', 'x12', '--secret-key', 'x12', '--bucket', 'primed-bkt'], { cfg: dir, nokeyring: true });
     need(r.code === 0, `name-priming add: ${r.out}${r.err}`);
     r = await cli(['source', 'import', f, '--password', 'x12-collision-pw'], { cfg: dir, timeout: 60000, nokeyring: true });
     need(r.code === 0, `import over a name collision: ${r.out}${r.err}`);
@@ -1785,7 +1835,7 @@ async function cliResilience() {
   {
     const srcs = await cli(['source', 'list']).catch(() => ({ out: '' }));
     if (!srcs.out.includes('verifys3')) {
-      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET]);
       need(r.code === 0, `prologue: verifys3 source add (resilience): ${r.err}`);
     }
     await cli(['mb', `s3://${BUCKET}`]).catch(() => {});
@@ -1796,7 +1846,7 @@ async function cliResilience() {
   await verify({ id: 'CLI-RES-01', area: 'resilience', action: 'Slow link: latency +600ms/chunk', ds: 'S3 via faultproxy', scenario: 'listing through a delayed proxy completes with correct output, measurably slower', face: 'CLI' }, async () => {
     proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(FPORT), '--control', String(FCTL), '--target', '127.0.0.1:9000'], { stdio: 'ignore', windowsHide: true });
     for (let i = 0; i < 50; i++) { try { await fetch(`http://127.0.0.1:${FCTL}/state`, { signal: AbortSignal.timeout(500) }); break; } catch { await sleep(100); } }
-    await cli(['source', 'add', 'verifyfault', '--type', 's3', '--endpoint', `http://127.0.0.1:${FPORT}`, '--access-key', KEY, '--secret-key', SECRET]);
+    await cli(['source', 'add', 'verifyfault', '--type', 's3', '--endpoint', `http://127.0.0.1:${FPORT}`, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET]);
     await fmode({ mode: 'latency', delayMs: 600 });
     const t0 = Date.now();
     const r = await cli(['ls', `s3://${BUCKET}`, '--recursive', '--json', '--profile', 'verifyfault']);
@@ -2126,7 +2176,7 @@ async function cliMeta() {
 
   await verify({ id: 'CLI-M-04', area: 'security', action: 'Secrets never printed', ds: 'S3 (MinIO)', scenario: 'a source with a distinctive secret key: every output surface — source list (text + json), source test, the 403 transfer path, profile list, activity log — must run but never echo the secret, even on failure paths', face: 'CLI' }, async () => {
     const TOKEN = `zz9-secret-${RUNID}-never-print`;
-    let r = await cli(['source', 'add', 'verifyleak', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', TOKEN]);
+    let r = await cli(['source', 'add', 'verifyleak', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', TOKEN, '--bucket', BUCKET]);
     need(r.code === 0, `source add: ${r.err}`);
     const surfaces = [];
     const grab = (label, res) => { surfaces.push([label, (res.out + res.err)]); return res; };
@@ -2149,7 +2199,7 @@ async function cliMeta() {
   await verify({ id: 'CLI-M-05', area: 'security', action: 'Secrets encrypted at rest', ds: 'config store + OS keyring', scenario: 'a distinctive secret added to the store, then a RAW byte-scan of every file under the whole config directory (recursive): the secret may live only inside the OS keyring — never on disk in any file the app wrote this run', face: 'CLI' }, async () => {
     if (process.env.S3B_NO_KEYRING) return skip('S3B_NO_KEYRING set — documented headless plaintext mode, at-rest scan N/A');
     const TOKEN = `zz9-atrest-${RUNID}-secret`;
-    let r = await cli(['source', 'add', 'verifyrest', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', TOKEN]);
+    let r = await cli(['source', 'add', 'verifyrest', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', TOKEN, '--bucket', BUCKET]);
     need(r.code === 0, `add: ${r.err}`);
     await cli(['source', 'list']); // settle the store
     const needle = Buffer.from(TOKEN, 'utf8');
@@ -2526,6 +2576,11 @@ const bodyH = () => page.evaluateHandle(() => document.getElementById('grid-body
 const sideBodyH = () => page.evaluateHandle(() => document.getElementById('local-grid-body'));
 // binding calls straight through the bridge the app itself uses
 const call = (method, ...args) => evalPage(([m, a]) => window.go['github.com/MikkoP88/s3-bucket-browser/pkg/api'].App[m](...a), [method, args]);
+// a fired-and-polled binding must carry its rejection handler from the
+// start — a fast rejection (a dead view source, a refused operand) would
+// otherwise reach Node's unhandled-rejection exit and take the whole
+// battery down before any row could record the failure
+const fireAndPoll = (p) => { p.catch(() => {}); return p; };
 
 function startServer() {
   return new Promise((resolve, reject) => {
@@ -2575,7 +2630,7 @@ async function guiBattery() {
     const ftpUp = await portOpen(FTP_PORT);
     const srcs = await cli(['source', 'list']).catch(() => ({ out: '' }));
     if (!srcs.out.includes('verifys3')) {
-      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET]);
+      const r = await cli(['source', 'add', 'verifys3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET]);
       need(r.code === 0, `prologue: verifys3 source add: ${r.err}`);
     }
     if (ftpUp && !srcs.out.includes('xf')) {
@@ -2882,52 +2937,49 @@ async function guiBattery() {
     await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
     await enterFolder('verify-gui');
   };
-  // The verify-minio source is bucket-scoped: one data source = one
-  // bucket. Its root crumb opens the bucket's CONTENTS — the account's
-  // bucket list is deliberately unreachable from inside it (a data source
-  // never contains other data sources). Rows that legitimately need the
-  // buckets view (cross-bucket paste, sibling-bucket admin) enter through
-  // verify-acct, a legacy account-wide source that keeps the bucket-list
-  // view (and whose tree adopts the live bucket set).
-  const ACCT = 'verify-acct';
-  const ensureAcctSource = async () => {
-    if (((await call('ListSources')) || []).some((s) => (s?.name || s?.Name) === ACCT)) return;
-    await call('SaveSource', { name: ACCT, type: 's3', s3: { name: ACCT, endpoint: ENDPOINT, region: REGION, accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
-    await page.reload(); // boot re-reads sources — a bridge SaveSource never reaches the page's tree
-    await waitFor(() => evalPage(() => !!window.go && !!window.runtime), 15000, 'bridge after acct reload');
+  // One root, one source (the a537026 model): every scratch bucket this
+  // battery drives gets its own data source through the REAL editor
+  // gesture, the source row's own context menu is the path to bucket
+  // admin/delete, and a row's teardown takes its data source with it.
+  // There is no account level anywhere in the battery's world — and no
+  // page.reload() either, so the in-memory app clipboard survives.
+  const addGuiBucketSource = async (name) => {
+    try { await closeModal(); } catch { /* best effort — a leaked modal would cover the sidebar */ }
+    await page.locator('#sidebar-head .side-add').click();
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n >= 6), 5000, 'the source editor');
+    const inputs = page.locator('#modal-root .modal input.input');
+    await inputs.nth(0).fill(name); // the source's name
+    await inputs.nth(1).fill(name); // its bucket — the source IS the bucket
+    await inputs.nth(2).fill(ENDPOINT);
+    await inputs.nth(3).fill(REGION);
+    await inputs.nth(4).fill(KEY);
+    await inputs.nth(5).fill(SECRET);
+    await page.locator('#modal-root .modal input[type="checkbox"]').first().check(); // path-style — MinIO
+    await clickFooter(/^save$/i);
+    await waitFor(() => evalPage((l) => Array.from(document.querySelectorAll('#tree .tnode'))
+      .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), name), 10000, `tree row "${name}"`);
+    await sleep(300); // probeSources repaints the row's state ball async
   };
-  // Materialize the account source NOW, at battery boot: creation needs a
-  // page.reload(), and a reload wipes the in-memory app clipboard — doing
-  // it lazily inside the first goBuckets() call destroyed the Ctrl+C
-  // GUI-31 had staged moments earlier (run 1: "timeout waiting for the
-  // version-choice dialog"). After this call the lazy check above is a
-  // no-op for the whole battery: no row ever reloads mid-flight.
-  await ensureAcctSource();
-  const goBuckets = async () => {
-    // cascade insurance: the account source's own tree node opens the
-    // buckets view directly — no crumb-shape guessing, no dependence on
-    // whatever view an earlier row left behind.
-    await ensureAcctSource();
-    await treeOpen(ACCT);
-    try {
-      // the buckets view's breadcrumb is exactly ONE crumb (the source
-      // root, current) — a virtualization-proof signature: this endpoint
-      // accumulates dozens of leftover buckets, far more than the grid's
-      // rendered viewport, so row-based probes are blind down the list
-      await waitFor(() => evalPage(() => document.querySelectorAll('#breadcrumb .crumb').length === 1), 10000, 'the buckets view (single-crumb breadcrumb)');
-    } catch (e) {
-      // one-line state dump + screenshot: FAIL details are truncated to
-      // their first line, so the whole view state must fit on one line
-      await shot('buckets-timeout');
-      const state = await evalPage(() => JSON.stringify({
-        crumbs: Array.from(document.querySelectorAll('#breadcrumb .crumb')).map((c) => c.textContent),
-        rows: Array.from(document.querySelectorAll('#grid-body .grid-row')).slice(0, 12)
-          .map((r) => r.dataset.key ?? (r.textContent || '').slice(0, 24)),
-        empty: document.getElementById('empty-state')?.className || 'none',
-        cur: document.querySelector('#breadcrumb .crumb.current')?.textContent || '',
-      }));
-      throw new Error(`${e.message}: ${state}`);
-    }
+  // The scoped-source row's context menu, synthetic like rightClickRow: a
+  // real handle right-click once starved its whole actionability budget.
+  const treeMenu = (label) => waitFor(() => evalPage((l) => {
+    const n = Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((x) => (x.querySelector('.tlabel')?.textContent || '').trim() === l);
+    if (!n) return false;
+    const rc = n.getBoundingClientRect();
+    n.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: Math.round(rc.left + rc.width / 2), clientY: Math.round(rc.top + rc.height / 2),
+    }));
+    return true;
+  }, label).catch(() => false), 10000, `tree node "${label}" for the context menu`).then(() => sleep(80));
+  const removeGuiSource = async (name) => {
+    await treeMenu(name);
+    await ctxItem(/remove source/i);
+    await clickFooter(/^remove$/i);
+    await waitFor(() => evalPage((l) => !Array.from(document.querySelectorAll('#tree .tnode'))
+      .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), name), 10000, `tree row "${name}" to leave`);
+    await sleep(300);
   };
   // #local-grid-body is permanently mounted (index.html) and only hidden via
   // the pane's .hidden class, so visibility — not existence — is the probe.
@@ -3281,11 +3333,13 @@ async function guiBattery() {
   });
 
   await verify({ id: 'GUI-22', area: 'gates', action: 'L2 identity gate: Empty-bucket window', ds: 'S3 (MinIO)', scenario: 'the destructive Empty-bucket window demands the bucket\'s OWN name: a wrong word keeps the destructive button disabled; Cancel preserves every object', face: 'GUI' }, async () => {
+    // one-root: the bucket guard lives on the source's own row — the
+    // source IS the bucket, and its guard opens the bucket's admin panel
     const guard = await elOrNull((b) => {
       const n = Array.from(document.querySelectorAll('#tree .tnode'))
         .find((x) => (x.querySelector('.tlabel')?.textContent || '').trim() === b);
       return n?.querySelector('.tguard') || document.querySelector('#tree .tguard');
-    }, BUCKET);
+    }, SRCNAME);
     need(guard, 'no bucket guard in the tree');
     await guard.asElement().click();
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'admin panel');
@@ -3355,6 +3409,9 @@ async function guiBattery() {
   });
 
   await verify({ id: 'GUI-24', area: 'security', action: 'Pre-sign URL dialog (GUI)', ds: 'S3 (MinIO)', scenario: 'context menu → Pre-sign URL: the dialog exposes a READ-ONLY signed URL that a bare HTTP client outside the app can actually use to fetch the exact object bytes', face: 'GUI' }, async () => {
+    // cascade insurance: a failed earlier row can leave its modal open — the
+    // real toolbar clicks below cannot pass through that overlay
+    try { await closeModal(); } catch { /* best effort */ }
     await navCertGui();
     await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('readme.md')); }, 15000, 'readme row');
     await rightClickRow('readme.md');
@@ -3427,6 +3484,9 @@ async function guiBattery() {
   });
 
   await verify({ id: 'GUI-26', area: 'transfers', action: 'Ctrl+C stages HIDDEN — nothing lands until Paste', ds: 'S3 (MinIO)', scenario: 'the two-part copy contract: select remote rows, Ctrl+C → the Explorer mirror runs as a HIDDEN staging job (a scratch download for paste-out, invisible in every list) while the bucket itself stays bit-for-bit unchanged until a Paste happens', face: 'GUI' }, async () => {
+    // cascade insurance: a failed earlier row can leave its modal open — the
+    // real toolbar clicks below cannot pass through that overlay
+    try { await closeModal(); } catch { /* best effort */ }
     await navCertGui();
     await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('readme.md')); }, 15000, 'readme row');
     const cnt = async () => countLines((await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive', '--json'])).out, '"key"');
@@ -3689,21 +3749,18 @@ async function guiBattery() {
     await s3(['cp', path.join(ART, 'mig-v3.txt'), K, '--force']);
     const nv = async (uri) => countLines((await s3(['versions', 'ls', uri, '--json'])).out, '"versionId"');
     need(await nv(K) === 3, 'seed timeline');
+    // one-root: the fresh bucket gets its own data source through the real
+    // editor gesture — the paste then targets that source's own root
+    await addGuiBucketSource(MIG);
     await navCertGui();
     await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('mighist.txt')); }, 15000, 'mighist row');
     await clickRow('mighist.txt');
     await page.keyboard.press('Control+c');
     await sleep(600); // the hidden Explorer staging job also starts — irrelevant here
-    await goBuckets();
-    // dozens of leftover buckets out-scroll the virtualized grid — filter
-    // the list so the target row materializes, then open the bucket
-    await filterTo(MIG);
-    await waitFor(async () => (await visKeys()).some((k) => k === MIG), 8000, 'the mig bucket row');
-    await dblClickRow(MIG);
-    await clearFilter();
+    await treeOpen(MIG);
     await waitFor(async () => (await txt('#breadcrumb')).includes(MIG), 10000, 'inside the mig bucket');
     // Ctrl+V is swallowed while focus sits in the filter input (wireKeys
-    // ignores in-input keys) — hand focus back to the page body first
+    // ignores in-input keys) — hand focus back to the page body defensively
     await evalPage(() => { document.getElementById('filter')?.blur(); });
     await page.keyboard.press('Control+v');
     await waitFor(async () => /copy s3/i.test(await modalText()), 8000, 'the version-choice dialog');
@@ -3728,13 +3785,8 @@ async function guiBattery() {
     let r = await s3(['mb', `s3://${AB}`]);
     need(r.code === 0, `mb: ${r.out}${r.err}`);
     await s3(['bucket', 'versioning', `s3://${AB}`, 'on']);
-    await navCertGui();
-    await goBuckets();
-    // the unfiltered grid virtualizes: the adm bucket sorts far down the
-    // leftover-bucket list and never renders — filter it into view
-    await filterTo(AB);
-    await waitFor(async () => (await visKeys()).some((k) => k === AB), 8000, 'the adm bucket row');
-    await rightClickRow(AB);
+    await addGuiBucketSource(AB);
+    await treeMenu(AB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
     const clickBtn = (re) => evalPage((src) => {
@@ -3770,9 +3822,9 @@ async function guiBattery() {
     await waitFor(() => clickBtn('delete all'), 5000, 'Tags Delete all');
     await waitFor(async () => !(await s3(['bucket', 'tags', 'get', `s3://${AB}`])).out.includes('roundtrip'), 20000, 'the tag to be gone');
     await closeModal();
-    await clearFilter();
     await shot('32-admin-mutations');
     await s3(['rb', `s3://${AB}`, '--force']);
+    await removeGuiSource(AB);
     return 'versioning suspend/enable + tags put/delete landed server-side, CLI-verified';
   });
 
@@ -3787,12 +3839,8 @@ async function guiBattery() {
     for (let i = 7; i <= 8; i++) await s3(['rm', `s3://${EB}/y/l${i}.txt`]); // delete markers
     let st = JSON.parse((await s3(['versions', 'stat', `s3://${EB}`, '--json'])).out || '{}');
     need((st.versions || 0) >= 20 && (st.deleteMarkers || 0) >= 2, `seed stats: ${JSON.stringify(st)}`);
-    await navCertGui();
-    await goBuckets();
-    // same virtualized-grid blindness as GUI-32 — filter the bucket into view
-    await filterTo(EB);
-    await waitFor(async () => (await visKeys()).some((k) => k === EB), 8000, 'the l2x bucket row');
-    await rightClickRow(EB);
+    await addGuiBucketSource(EB);
+    await treeMenu(EB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
     await page.locator('#modal-root .tab[data-tab="Versions"]').click();
@@ -3854,8 +3902,8 @@ async function guiBattery() {
     r = await s3(['cp', path.join(ART, 'l2x-after.txt'), `s3://${EB}/after.txt`]);
     need(r.code === 0, `the emptied bucket no longer takes writes: ${r.out}${r.err}`);
     await closeModal();
-    await clearFilter();
     await s3(['rb', `s3://${EB}`, '--force']);
+    await removeGuiSource(EB);
     return 'executed: every version and marker destroyed; the bucket survives and takes writes';
   });
 
@@ -3945,11 +3993,8 @@ async function guiBattery() {
     const AB = `${BUCKET}-gcors`;
     let r = await s3(['mb', `s3://${AB}`]);
     need(r.code === 0, `mb: ${r.out}${r.err}`);
-    await navCertGui();
-    await goBuckets();
-    await filterTo(AB);
-    await waitFor(async () => (await visKeys()).some((k) => k === AB), 8000, 'the gcors bucket row');
-    await rightClickRow(AB);
+    await addGuiBucketSource(AB);
+    await treeMenu(AB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
     const clickBtn = (re) => evalPage((src) => {
@@ -3975,8 +4020,8 @@ async function guiBattery() {
       await writeFile(f, JSON.stringify([{ origins: ['https://verify-gui.example.com'], methods: ['GET'], headers: [], expose: [], maxAge: 60 }]));
       const put = await s3(['bucket', 'cors', 'put', `s3://${AB}`, f]);
       await closeModal();
-      await clearFilter();
       await s3(['rb', `s3://${AB}`, '--force']);
+      await removeGuiSource(AB);
       need(put.code !== 0, `CORS put unexpectedly succeeded where the panel said unsupported: ${put.out}`);
       return skip(`provider refused the CORS API (recorded gap): pane "${paneErr.trim().slice(0, 80)}"; CLI put: ${(put.out + put.err).trim().slice(0, 80)}`);
     }
@@ -4010,8 +4055,8 @@ async function guiBattery() {
       await writeFile(f, JSON.stringify([{ origins: ['https://verify-gui.example.com'], methods: ['GET'], headers: [], expose: [], maxAge: 60 }]));
       const put = await s3(['bucket', 'cors', 'put', `s3://${AB}`, f]);
       await closeModal();
-      await clearFilter();
       await s3(['rb', `s3://${AB}`, '--force']);
+      await removeGuiSource(AB);
       if (put.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(put.out + put.err)) {
         return skip(`provider refused CORS on this build (recorded gap): ${(put.out + put.err).trim().slice(0, 120)}`);
       }
@@ -4024,9 +4069,9 @@ async function guiBattery() {
     await waitFor(() => clickBtn('delete all'), 5000, 'CORS Delete all');
     await waitFor(async () => !(await s3(['bucket', 'cors', 'get', `s3://${AB}`, '--json'])).out.includes('verify-gui.example.com'), 20000, 'the rule to be gone');
     await closeModal();
-    await clearFilter();
     await shot('35-admin-cors');
     await s3(['rb', `s3://${AB}`, '--force']);
+    await removeGuiSource(AB);
     return 'CORS rule authored in the panel, CLI-verified, deleted';
   });
 
@@ -4034,11 +4079,8 @@ async function guiBattery() {
     const AB = `${BUCKET}-gweb`;
     let r = await s3(['mb', `s3://${AB}`]);
     need(r.code === 0, `mb: ${r.out}${r.err}`);
-    await navCertGui();
-    await goBuckets();
-    await filterTo(AB);
-    await waitFor(async () => (await visKeys()).some((k) => k === AB), 8000, 'the gweb bucket row');
-    await rightClickRow(AB);
+    await addGuiBucketSource(AB);
+    await treeMenu(AB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
     const clickBtn = (re) => evalPage((src) => {
@@ -4059,8 +4101,8 @@ async function guiBattery() {
     if (/not supported/i.test(paneErr)) {
       const put = await s3(['bucket', 'website', 'put', `s3://${AB}`, '--index', 'gui-index.html', '--error', 'gui-404.html']);
       await closeModal();
-      await clearFilter();
       await s3(['rb', `s3://${AB}`, '--force']);
+      await removeGuiSource(AB);
       need(put.code !== 0, `website put unexpectedly succeeded where the panel said unsupported: ${put.out}`);
       return skip(`provider refused the website API (recorded gap): pane "${paneErr.trim().slice(0, 80)}"; CLI put: ${(put.out + put.err).trim().slice(0, 80)}`);
     }
@@ -4087,8 +4129,8 @@ async function guiBattery() {
     if (!ok) {
       const put = await s3(['bucket', 'website', 'put', `s3://${AB}`, '--index', 'gui-index.html', '--error', 'gui-404.html']);
       await closeModal();
-      await clearFilter();
       await s3(['rb', `s3://${AB}`, '--force']);
+      await removeGuiSource(AB);
       if (put.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(put.out + put.err)) {
         return skip(`provider refused website config on this build (recorded gap): ${(put.out + put.err).trim().slice(0, 120)}`);
       }
@@ -4097,9 +4139,9 @@ async function guiBattery() {
     await waitFor(() => clickBtn('^disable$'), 5000, 'Website Disable');
     await waitFor(async () => !(await s3(['bucket', 'website', 'get', `s3://${AB}`, '--json'])).out.includes('gui-index.html'), 20000, 'the config to be gone');
     await closeModal();
-    await clearFilter();
     await shot('36-admin-website');
     await s3(['rb', `s3://${AB}`, '--force']);
+    await removeGuiSource(AB);
     return 'website documents saved from the panel, CLI-verified, disabled';
   });
 
@@ -4983,7 +5025,7 @@ async function guiBattery() {
     r = await s3(['cp', '-r', big, `s3://${BUCKET}/verify-gui/cancel/`, '--json']);
     need(r.code === 0 && r.out.includes(`"items": ${N}`), `big seed: ${r.out}${r.err}`);
     for (const n of ['k-0', 'k-1', 'k-2']) await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `s3://${BUCKET}/verify-gui/cancel-keep/${n}.txt`]);
-    const deleting = call('DeleteSelection', BUCKET, ['verify-gui/cancel/'], true);
+    const deleting = fireAndPoll(call('DeleteSelection', BUCKET, ['verify-gui/cancel/'], true));
     let id = null;
     for (let i = 0; i < 200 && !id; i++) {
       id = ((await call('RunningTasks')) || []).find((t) => t.kind === 'delete' && t.status === 'running')?.id;
@@ -5264,7 +5306,7 @@ async function guiBattery() {
       // the delayed source lives in the GUI store (GUICFG), not the CLI one
       await call('SaveSource', { name: 'verify-slow', type: 's3', s3: { name: 'verify-slow', endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 1500 }) });
-      const deleting = call('SourceDeleteSelection', 'verify-slow', BUCKET, ['verify-gui/countcancel/'], true);
+      const deleting = fireAndPoll(call('SourceDeleteSelection', 'verify-slow', BUCKET, ['verify-gui/countcancel/'], true));
       let id = null;
       for (let i = 0; i < 400 && !id; i++) {
         id = ((await call('RunningTasks')) || []).find((t) => t.kind === 'delete' && t.status === 'running' && t.phase === 'count')?.id;
@@ -5289,7 +5331,7 @@ async function guiBattery() {
     }
   });
 
-  await verify({ id: 'GUI-63', area: 'gates', action: 'Delete bucket ladder: typed name → Cancel → execute', ds: 'S3 (MinIO)', scenario: 'the buckets-view Delete bucket… window pre-counts the inventory and demands the bucket\'s OWN name (L2 — force, never auto-confirmed): a wrong word keeps the button disabled; Cancel leaves bucket AND contents intact on both faces; only the typed execute removes bucket and contents in one motion; an empty bucket confirms the lighter path under the same typed gate', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-63', area: 'gates', action: 'Delete bucket ladder: typed name → Cancel → execute', ds: 'S3 (MinIO)', scenario: 'the source row\'s Delete bucket… window pre-counts the inventory and demands the bucket\'s OWN name (L2 — force, never auto-confirmed): a wrong word keeps the button disabled; Cancel leaves bucket AND contents intact on both faces; only the typed execute removes bucket and contents in one motion; an empty bucket confirms the lighter path under the same typed gate', face: 'GUI' }, async () => {
     const OB = `${BUCKET}-del63`, EB = `${BUCKET}-e63`;
     for (const b of [OB, EB]) await s3(['rb', `s3://${b}`, '--force']).catch(() => {}); // residue of a failed earlier run (best effort)
     let r = await s3(['mb', `s3://${OB}`]);
@@ -5298,12 +5340,13 @@ async function guiBattery() {
     need(r.code === 0, `mb empty: ${r.out}${r.err}`);
     r = await s3(['cp', path.join(FIX, 'data', 'readme.md'), `s3://${OB}/keep.txt`]);
     need(r.code === 0, `seed: ${r.out}${r.err}`);
-    await navCertGui();
-    await goBuckets();
+    await addGuiBucketSource(OB);
+    await addGuiBucketSource(EB);
+    // one-root: each bucket IS a data source — the Delete bucket window
+    // arms from the source's own tree row, and the execute takes the
+    // source with the bucket (asserted at the end: net zero sources)
     const armDeleteWindow = async (name) => {
-      await filterTo(name.slice(BUCKET.length)); // the unique -suffix
-      await waitFor(async () => (await rowKeys()).some((k) => k === name), 15000, `the ${name} row`);
-      await rightClickRow(name);
+      await treeMenu(name);
       await ctxItem(/delete bucket/i);
       await waitFor(async () => /delete bucket/i.test(await modalText()), 8000, 'the Delete bucket window');
     };
@@ -5338,8 +5381,12 @@ async function guiBattery() {
     await page.locator('#modal-root .delw-confirm input').fill(EB);
     await clickFooter(/^delete bucket$/i);
     await waitFor(async () => (await s3(['stat', `s3://${EB}`])).code !== 0, 60000, 'empty bucket gone');
-    await clearFilter();
-    return 'wrong word held; Cancel kept everything; both executes removed bucket + contents';
+    // the sources must leave WITH their buckets — the tree ends net zero
+    for (const b of [OB, EB]) {
+      await waitFor(() => evalPage((l) => !Array.from(document.querySelectorAll('#tree .tnode'))
+        .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), b), 10000, `source row "${b}" to leave with its bucket`);
+    }
+    return 'wrong word held; Cancel kept everything; both executes removed bucket + contents AND their data sources';
   });
 
   await verify({ id: 'GUI-64', area: 'transfers', action: 'Cancel mid-download: the local original survives, no partial lands', ds: 'S3 (MinIO) → local', scenario: 'the download-side twin of GUI-21: an 8 MiB download dragged onto a local file that ALREADY EXISTS, canceled mid-flight under a 256 kB/s throttle, must leave the pre-existing local bytes byte-identical (the staging rename never ran), leave no .s3b-part- residue in the destination folder and never a partial at the final name; the retried download then replaces the original whole and sha-identical', face: 'GUI' }, async () => {
@@ -5537,12 +5584,10 @@ async function guiBattery() {
     }
     const gvc = await snap(kv, 'gv-cur.txt');
     const gvBefore = await cliVerCount(kv);
-    // open the admin panel on the verify bucket through the buckets view
+    // the admin panel opens on the browse source's own tree row — the
+    // source IS the bucket now
     await navCertGui();
-    await goBuckets();
-    await filterTo(BUCKET); // BUCKET, not RUNID — independent timestamps
-    await waitFor(async () => (await rowKeys()).some((k) => k === BUCKET), 15000, 'the verify bucket row');
-    await rightClickRow(BUCKET);
+    await treeMenu(SRCNAME);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
     const clickTab = (name) => evalPage((n) => {
@@ -5740,14 +5785,11 @@ async function guiBattery() {
       await shot(`69-worm-${tag}`);
       await clickFooter(/^delete$/i);
     };
-    // open the bucket through the buckets view (the browse source is bucket-scoped)
-    await navCertGui();
-    await goBuckets();
-    await filterTo('-l69');
-    await waitFor(async () => (await rowKeys()).some((k) => k === LB), 15000, 'the lock bucket row');
-    await rightClickRow(LB);
-    await ctxItem(/^open/i);
-    await clearFilter(); // the filter survives navigation — worm69.txt doesn't match '-l69' (run 2)
+    // one-root: the lock bucket gets its own data source, entered through
+    // its own tree row — the source IS the bucket
+    await addGuiBucketSource(LB);
+    await treeOpen(LB);
+    await clearFilter(); // defensive: a leaked grid filter would hide the object row (run 2's lesson)
     await waitForRows(K, 20000, 'the locked object row');
     const openLock = async () => {
       await rightClickRow(K);
@@ -5790,7 +5832,7 @@ async function guiBattery() {
     await waitFor(async () => (await verN()) === 0, 45000, 'the unlocked permanent delete landed');
     r = await s3(['rb', `s3://${LB}`, '--force']);
     need(r.code === 0, `rb teardown: ${r.out}${r.err}`);
-    await clearFilter();
+    await removeGuiSource(LB);
     return 'retention and hold each refused the GUI permanent delete; unlock re-armed it';
   });
 
@@ -5808,11 +5850,8 @@ async function guiBattery() {
     await writeFile(pol, POLICY);
     r = await s3(['bucket', 'policy', 'put', `s3://${PB}`, pol]);
     need(r.code === 0, `baseline policy put: ${r.out}${r.err}`);
-    await navCertGui();
-    await goBuckets();
-    await filterTo('-p70');
-    await waitFor(async () => (await rowKeys()).some((k) => k === PB), 15000, 'the policy bucket row');
-    await rightClickRow(PB);
+    await addGuiBucketSource(PB);
+    await treeMenu(PB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
     const clickTab = (name) => evalPage((n) => {
@@ -5851,9 +5890,9 @@ async function guiBattery() {
     g = await s3(['bucket', 'policy', 'get', `s3://${PB}`]);
     need(/no policy/i.test(g.out + g.err) || g.code !== 0, `the policy outlived the dialog delete: ${(g.out + g.err).slice(0, 160)}`);
     await closeModal();
-    await clearFilter();
     r = await s3(['rb', `s3://${PB}`, '--force']);
     need(r.code === 0, `rb teardown: ${r.out}${r.err}`);
+    await removeGuiSource(PB);
     return 'Save and Delete both landed, CLI-verified';
   });
 
@@ -6010,7 +6049,7 @@ async function guiBattery() {
       need(up, 'the faultproxy control channel never came up');
       await call('SaveSource', { name: 'verify-slow72', type: 's3', s3: { name: 'verify-slow72', endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 1500 }) });
-      const destroying = call('SourceDeleteSelectionPermanent', 'verify-slow72', BUCKET, [PFX], true);
+      const destroying = fireAndPoll(call('SourceDeleteSelectionPermanent', 'verify-slow72', BUCKET, [PFX], true));
       let id = null;
       for (let i = 0; i < 400 && !id; i++) {
         id = ((await call('RunningTasks')) || []).find((t) => t.kind === 'purge' && t.status === 'running' && t.phase === 'count')?.id;
@@ -6054,12 +6093,9 @@ async function guiBattery() {
       return (a && a.lock) || {};
     };
     const clearToasts = () => evalPage(() => { document.getElementById('toasts')?.replaceChildren(); return true; });
-    await navCertGui();
-    await goBuckets();
     // ---- leg 1: the typed gate + the honest refusal on a plain bucket ----
-    await filterTo('-n73');
-    await waitFor(async () => (await rowKeys()).some((k) => k === NB), 15000, 'the plain bucket row');
-    await rightClickRow(NB);
+    await addGuiBucketSource(NB);
+    await treeMenu(NB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
     await page.locator('#modal-root .tab[data-tab="Lock"]').click();
@@ -6095,8 +6131,8 @@ async function guiBattery() {
     }, 20000, 'the enable attempt to resolve (refusal or provider gap)');
     if (allowed) {
       await closeModal().catch(() => {});
-      await clearFilter();
       await s3(['rb', `s3://${NB}`, '--force']);
+      await removeGuiSource(NB);
       return skip('provider ALLOWED enabling object lock post-creation (recorded gap — AWS semantics refuse this)');
     }
     need(refused, 'the refused enable never surfaced in the UI');
@@ -6106,11 +6142,10 @@ async function guiBattery() {
     need(r.code === 0, `the plain bucket stopped taking writes after the refused enable: ${r.out}${r.err}`);
     await s3(['rb', `s3://${NB}`, '--force']);
     await closeModal().catch(() => {});
-    await clearFilter();
+    await removeGuiSource(NB);
     // ---- leg 2: the default-retention rule on a lock-enabled bucket ----
-    await filterTo('-l73');
-    await waitFor(async () => (await rowKeys()).some((k) => k === LB), 15000, 'the lock bucket row');
-    await rightClickRow(LB);
+    await addGuiBucketSource(LB);
+    await treeMenu(LB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the lock admin panel');
     await page.locator('#modal-root .tab[data-tab="Lock"]').click();
@@ -6139,8 +6174,8 @@ async function guiBattery() {
     }, 20000, 'the default rule to resolve (saved or refused)');
     if (ruleRefused) {
       await closeModal().catch(() => {});
-      await clearFilter();
       await s3(['rb', `s3://${LB}`, '--force']);
+      await removeGuiSource(LB);
       return skip('provider refused the bucket default-retention rule (recorded gap)');
     }
     need(ruleLanded, 'the default rule never landed and never reported why');
@@ -6150,8 +6185,8 @@ async function guiBattery() {
     need(r.code === 0, `new object: ${r.out}${r.err}`);
     const armed = await call('GetObjectLock', LB, K, '').catch(() => ({}));
     if (!/(governance|compliance)/i.test(JSON.stringify(armed))) {
-      await clearFilter();
       await s3(['rb', `s3://${LB}`, '--force']);
+      await removeGuiSource(LB);
       return skip('provider does not apply the bucket default retention to new objects (recorded gap)');
     }
     const KS = `s3://${LB}/${K}`;
@@ -6171,9 +6206,8 @@ async function guiBattery() {
       await shot(`73-lock-${tag}`);
       await clickFooter(/^delete$/i);
     };
-    await rightClickRow(LB);
-    await ctxItem(/^open/i);
-    await clearFilter(); // the filter survives navigation — l73.txt doesn't match '-l73'
+    await treeOpen(LB);
+    await clearFilter(); // defensive: a leaked grid filter would hide the object row
     await waitForRows(K, 20000, ' the default-locked object row');
     await permanentDeleteAttempt('default-rule');
     await waitErrToast();
@@ -6197,8 +6231,16 @@ async function guiBattery() {
     await waitFor(async () => (await verN()) === 0, 45000, 'the re-armed permanent delete to land');
     r = await s3(['rb', `s3://${LB}`, '--force']);
     need(r.code === 0, `rb teardown: ${r.out}${r.err}`);
-    await clearFilter();
-    return 'typed gate inert on a wrong word; the refused enable surfaced honestly; the saved default rule armed WORM on a new object and defeated the GUI permanent destroy';
+    await removeGuiSource(LB);
+    // one-root: the removed source owned the view (its admin and object
+    // legs navigated here) — the view must re-home to a live source, and
+    // the next view-source binding must resolve it (the stale-view crash)
+    // one-root: the removed source owned the view — the re-home must seat
+    // an S3 heir (a remote heir leaves the engine pointer on the ghost),
+    // and the next view-source binding must resolve it (the stale-view
+    // crash died exactly here)
+    await waitFor(() => call('ListBuckets').then(() => true, () => false), 8000, 'the re-homed view source to resolve');
+    return 'typed gate inert on a wrong word; the refused enable surfaced honestly; the saved default rule armed WORM on a new object and defeated the GUI permanent destroy; the removed source\'s view re-homed alive';
   });
   await verify({ id: 'GUI-74', area: 'deletion', action: 'SFTP mutations on the GUI face: the clobber guard, and the delete ladder', ds: 'SFTP', scenario: 'SFTP posix-rename OVERWRITES a standing file silently — the app-level refuse-not-clobber guard is the only thing between a rename and destroyed bytes: renaming onto an occupied name must be refused with BOTH files byte-intact, a free name lands; the delete ladder then behaves like every engine — root refused, the pre-counted window Cancel keeps every byte, execute removes exactly the selected subtree while the sibling and parent survive — every oracle re-checked through the CLI face on its own connection', face: 'GUI' }, async () => {
     if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
@@ -6363,7 +6405,7 @@ async function guiBattery() {
       return n;
     };
     need((await countRR()) === 0, 'the seed was not all-STANDARD');
-    const conv = call('ConvertStorageClass', BUCKET, [PFX], 'REDUCED_REDUNDANCY', true);
+    const conv = fireAndPoll(call('ConvertStorageClass', BUCKET, [PFX], 'REDUCED_REDUNDANCY', true));
     let id = null;
     for (let i = 0; i < 800 && !id; i++) {
       const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'convert' && x.status === 'running');
@@ -6434,7 +6476,7 @@ async function guiBattery() {
       await call('SaveSource', { name: 'verify-slow77', type: 's3', s3: { name: 'verify-slow77', endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 200 }) });
       const KEYS = Array.from({ length: N }, (_, i) => `${PFX}f-${String(i).padStart(2, '0')}.txt`);
-      const destroying = call('SourceDeleteSelectionPermanent', 'verify-slow77', BUCKET, KEYS, true);
+      const destroying = fireAndPoll(call('SourceDeleteSelectionPermanent', 'verify-slow77', BUCKET, KEYS, true));
       let id = null;
       for (let i = 0; i < 3000 && !id; i++) {
         const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'purge' && x.status === 'running' && x.doneUnits >= 3);
@@ -6489,7 +6531,7 @@ async function guiBattery() {
       need(up, 'the faultproxy control channel never came up');
       await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
-      const killing = call('RemoteRemove', P, KEYS, false);
+      const killing = fireAndPoll(call('RemoteRemove', P, KEYS, false));
       let id = null;
       for (let i = 0; i < 3000 && !id; i++) {
         const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
@@ -6541,7 +6583,7 @@ async function guiBattery() {
       need(up, 'the faultproxy control channel never came up');
       await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
-      const killing = call('RemoteRemove', P, KEYS, false);
+      const killing = fireAndPoll(call('RemoteRemove', P, KEYS, false));
       let id = null;
       for (let i = 0; i < 3000 && !id; i++) {
         const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
@@ -6701,7 +6743,7 @@ async function guiBattery() {
       need(up, 'the faultproxy control channel never came up');
       await call('SaveSource', { name: P, type: 'sftp', host: '127.0.0.1', port: PPORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
-      const killing = call('RemoteRemove', P, KEYS, false);
+      const killing = fireAndPoll(call('RemoteRemove', P, KEYS, false));
       let id = null;
       for (let i = 0; i < 3000 && !id; i++) {
         const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'delete' && x.status === 'running' && x.doneUnits >= 3);
@@ -6761,7 +6803,7 @@ async function guiBattery() {
       await call('SaveSource', { name: 'verify-slow83', type: 's3', s3: { name: 'verify-slow83', endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
       await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 200 }) });
       const KEYS = Array.from({ length: N }, (_, i) => `${PFX}f-${String(i).padStart(2, '0')}.txt`);
-      const destroying = call('SourceDeleteSelectionPermanent', 'verify-slow83', BUCKET, KEYS, true);
+      const destroying = fireAndPoll(call('SourceDeleteSelectionPermanent', 'verify-slow83', BUCKET, KEYS, true));
       let id = null;
       for (let i = 0; i < 3000 && !id; i++) {
         const t = ((await call('RunningTasks')) || []).find((x) => x.kind === 'purge' && x.status === 'running' && x.doneUnits >= 2);

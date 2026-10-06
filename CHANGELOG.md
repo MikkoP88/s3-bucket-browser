@@ -60,6 +60,24 @@ follow [Semantic Versioning](https://semver.org/).
   and each name starts right after its own indicator. Pinned by two
   reworked visual battery legs.
 
+- **Removing the data source behind the main view re-homes the view.**
+  The tree's Remove source confirmed and refreshed but left the view
+  pointing at the source it had just deleted — the next operation
+  that resolves the view source (a storage-class convert, an admin
+  dialog…) died with `profile not found`. Delete bucket and the
+  legacy split already re-homed a vanished source's view; the Remove
+  source menu items (legacy account rows and bucket-scoped rows
+  alike) now do the same — the view lands on the store's first
+  surviving S3 source, because a remote heir would seat the view
+  while the engine's view-source pointer stayed on the ghost
+  (remote views never re-point it); with no S3 source left, any
+  survivor hosts the view and the pointer is cleared. Delete
+  bucket's re-home rides the same heir rule. Caught live by the
+  re-pointed verification gate: a
+  teardown removed the source whose admin panel the row had just
+  walked, and the next row's first binding crashed the battery on
+  the dead view.
+
 ## [1.2.0-beta.1] — 2026-10-05
 
 ### Added
