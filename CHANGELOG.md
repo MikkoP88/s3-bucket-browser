@@ -8,25 +8,18 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **The Data sources tree rides one spacing rhythm — no dead air
-  anywhere.** Three compounding spacing defects made the sidebar read
-  ragged. The type column is seated on the widest chip the list
-  actually carries, but chips hugged that stop's right edge — so a
-  mixed list parked a WebDAV-wide stretch of dead air to the left of
-  every S3/SFTP badge. Bucket and folder glyphs centered in the same
-  measured column, floating mid-dead-space with a gap to their names
-  that grew with the longest type chip. And the badges after the
-  names stacked their own margins on top of the row's flex gap, so
-  the versioning and object-lock markers sat more than twice as far
-  apart as everything else in the row. The column's right edge is now
-  the one runway every row parks against: chips fill the measured
-  stop with their text centered (the badge's own tinted body owns the
-  width, and an S3-only sidebar still wears no WebDAV-sized hole
-  because the stop itself stays measured), bucket and folder glyphs
-  hug the runway so the air to their left reads as indentation, and
-  guard chips and status balls ride the row's own 4px gap (the
-  ball's 6px runway) instead of compounding margins. Pinned by three
-  new visual battery legs.
+- **The Data sources tree parks every indicator flush — no empty
+  space anywhere.** The type slot was a shared column seated on the
+  widest chip the list carries, so a mixed list parked a WebDAV-wide
+  stretch of empty space to the left of every S3/SFTP badge, and
+  bucket and folder glyphs centered in that same measured column,
+  floating mid-column with a gap to their names that grew with the
+  longest type chip. The shared column is gone: the slot is
+  content-sized now — every chip and glyph keeps exactly the width
+  its own text needs, parks flush after the expander, and the name
+  follows on the row's own 4px gap, so no row carries empty space
+  and each name starts right after its own indicator. Pinned by two
+  reworked visual battery legs.
 
 ## [1.2.0-beta.1] — 2026-10-05
 

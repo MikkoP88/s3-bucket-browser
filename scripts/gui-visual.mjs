@@ -3768,74 +3768,62 @@ await step('sources-in-tree', async () => {
     const c = r?.querySelector('.ticon .src-ic')?.style.color || '';
     return !!r && ['#1b7f3b', 'rgb(27, 127, 59)'].includes(c);
   }));
-  await ok('type labels are tinted chips that fit the type column', evalPage(() => {
-    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
+  await ok('type labels are tinted chips at their natural width', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'))
+      .filter((r) => r.getBoundingClientRect().width);
     return rows.length >= 3 && rows.every((r) => {
       const chip = r.querySelector('.ticon .src-ic');
       const col = r.querySelector('.ticon');
       if (!chip || !col) return false;
       const cs = getComputedStyle(chip);
+      // the slot shrink-wraps its chip: the chip's box IS the slot's box
+      const c = chip.getBoundingClientRect(), b = col.getBoundingClientRect();
       return cs.borderRadius === '4px' && cs.backgroundColor !== 'rgba(0, 0, 0, 0)'
-        && chip.getBoundingClientRect().width <= col.getBoundingClientRect().width + 0.5;
+        && Math.abs(c.left - b.left) <= 1 && b.right - c.right <= 1.5;
     });
   }));
-  // the chip's right edge keeps its runway to the name — the filled
-  // column's right edge minus the 2px cushion + the row gap is all the
-  // air between badge and label (4px gap + 2px padding = 6, rounding
-  // tolerance) — names never touch the badge whatever the chip width
+  // the chip keeps the row's own runway to the name — the 4px flex gap
+  // is all the air between badge and label (rounding tolerance), the
+  // same rhythm the expander and the name ride on — names never touch
+  // the badge whatever the chip width
   await ok('type chips keep their runway to the source name', evalPage(() => {
-    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
+    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'))
+      .filter((r) => r.getBoundingClientRect().width);
     return rows.length >= 3 && rows.every((r) => {
       const c = r.querySelector('.ticon .src-ic')?.getBoundingClientRect();
       const l = r.querySelector('.tlabel')?.getBoundingClientRect();
-      return !!c && !!l && l.left - c.right >= 4 && l.left - c.right <= 8;
+      return !!c && !!l && l.left - c.right >= 3 && l.left - c.right <= 7;
     });
   }));
-  // the stop itself is measured, not a fixed constant: the widest chip
-  // present plus its 2px cushion is the whole column — a fixed
-  // WebDAVS-sized 62px would park ~30px of dead air left of every
-  // S3/SFTP chip — and every source name keeps the one shared stop
-  await ok('type column measured to its widest chip, names share one stop', evalPage(() => {
-    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
+  // no shared column anymore: every chip parks flush after the expander
+  // at its natural width — all source rows share one left edge, chip
+  // widths stay what their own text needs (a mixed list carries at least
+  // two distinct widths), and no row seats a WebDAV-wide stretch of
+  // nothing beside an S3/SFTP badge
+  await ok('type chips park flush after the expander — natural widths, no dead air', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'))
+      .filter((r) => r.getBoundingClientRect().width);
     if (rows.length < 3) return false;
-    let widest = 0;
+    const edges = new Set(), widths = new Set();
     for (const r of rows) {
-      const chip = r.querySelector('.ticon .src-ic');
-      if (!chip) return false;
-      widest = Math.max(widest, chip.getBoundingClientRect().width);
+      const twist = r.querySelector('.twist')?.getBoundingClientRect();
+      const col = r.querySelector('.ticon')?.getBoundingClientRect();
+      if (!twist || !col) return false;
+      if (col.left - twist.right < 2 || col.left - twist.right > 7) return false;
+      edges.add(Math.round(col.left));
+      widths.add(Math.round(col.width));
     }
-    const stops = new Set();
-    for (const r of rows) {
-      const col = r.querySelector('.ticon').getBoundingClientRect().width;
-      if (col < widest - 1 || col > widest + 4.5) return false;
-      stops.add(Math.round(r.querySelector('.tlabel').getBoundingClientRect().left));
-    }
-    return stops.size === 1;
+    return edges.size === 1 && widths.size >= 2;
   }));
-  // and no chip parks dead air at the column's left edge: every badge
-  // fills the measured stop — its left edge at the column's left, its
-  // right edge at the column's right minus the 2px cushion — so the
-  // widest chip in a mixed list seats the column without leaving a
-  // WebDAV-sized hole beside every S3/SFTP chip
-  await ok('type chips fill the column — no dead air at the left edge', evalPage(() => {
-    const rows = Array.from(document.querySelectorAll('#tree .tnode[data-tkind="source"]'));
-    if (rows.length < 3) return false;
-    for (const r of rows) {
-      const c = r.querySelector('.ticon .src-ic')?.getBoundingClientRect();
-      const col = r.querySelector('.ticon').getBoundingClientRect();
-      if (!c || !col) return false;
-      if (c.left - col.left > 1.5) return false; // left edge shared with the column
-      if (col.right - c.right > 3.5) return false; // fills the box to its cushion
-    }
-    return true;
-  }));
-  // and the sub-contents inherit the runway: every bucket and folder
-  // glyph hugs the column's right edge with the same 2px cushion —
-  // centered, a glyph would float mid-column in a WebDAV-wide dead
-  // space, its gap to the name growing with the longest type chip
-  // (the glyph is a bare text node, so its box comes from a Range)
-  await ok('sub-content glyphs hug the column edge, not float in dead air', evalPage(() => {
+
+  // the sub-contents ride the same flow: every bucket and folder glyph
+  // parks flush after the expander — left-aligned at its natural size,
+  // no shared column to float in — and the name follows tight on the
+  // row's gap (the glyph is a bare text node, so its box comes from a
+  // Range; emoji side bearings eat a couple of px)
+  await ok('sub-content glyphs park flush after the expander, names flow tight', evalPage(() => {
     const rows = Array.from(document.querySelectorAll('#tree .tnode:not([data-tkind="source"])'))
+      .filter((r) => r.getBoundingClientRect().width)
       .filter((r) => (r.querySelector('.ticon')?.textContent || '').trim() !== '');
     if (rows.length < 2) return false;
     for (const r of rows) {
@@ -3844,36 +3832,11 @@ await step('sources-in-tree', async () => {
       g.selectNodeContents(r.querySelector('.ticon'));
       const b = g.getBoundingClientRect();
       if (!b.width) return false;
-      if (b.right > col.right) return false; // never past the edge
-      if (col.right - b.right > 3.5) return false; // hugs the cushion
+      if (b.left - col.left > 2) return false; // flush at the slot's left edge
+      const l = r.querySelector('.tlabel')?.getBoundingClientRect();
+      if (!l || l.left - b.right < 3 || l.left - b.right > 9) return false; // tight name
     }
     return true;
-  }));
-  // and the badges after the name ride the row's own gap rhythm: the
-  // badge cluster (status ball, then guard chips — a bucket-scoped
-  // source row carries its guards after the ball) parks every ADJACENT
-  // pair 3-8px apart — the row's own 4px gap, the ball's 6px runway —
-  // where the old margin-left compounding stacked 9-10px of dead air
-  // and the versioning/lock pair read as a broken, detached cluster
-  await ok('name badges ride the row gap — guards and balls park tight', evalPage(() => {
-    let guardSeen = false, ballSeen = false;
-    for (const r of document.querySelectorAll('#tree .tnode')) {
-      if (!r.getBoundingClientRect().width) continue; // hidden stale row
-      const label = r.querySelector('.tlabel')?.getBoundingClientRect();
-      if (!label) continue;
-      const badges = Array.from(r.children)
-        .filter((c) => c.classList.contains('sball') || c.classList.contains('tguard'))
-        .map((c) => ({ guard: c.classList.contains('tguard'), b: c.getBoundingClientRect() }));
-      if (!badges.length) continue;
-      let prev = label;
-      for (const bd of badges) {
-        const d = bd.b.left - prev.right;
-        if (d < 3 || d > 8) return false;
-        if (bd.guard) guardSeen = true; else ballSeen = true;
-        prev = bd.b;
-      }
-    }
-    return guardSeen && ballSeen; // the boot world carries both shapes
   }));
   await shotOf('sources-tree', '#tree');
 });
