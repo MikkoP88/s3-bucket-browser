@@ -143,6 +143,80 @@ func TestEditPushBackoff(t *testing.T) {
 	}
 }
 
+// The push's own deadline breaks the silent wedge: the editor push rides
+// no transport budget (Timeout:-1) and no task the user can cancel — its
+// caller is the watcher goroutine — so against a peer that takes the PUT
+// body and never answers (no FIN, no RST), editPushTimeout is the only
+// thing that ever fires. The verdict must be an ordinary deadline error
+// (the failing-push voice carries it), and it must arrive in bounded time
+// instead of parking the watcher for the life of the process.
+func TestUploadEditDeadlineBreaksSilentWedge(t *testing.T) {
+	oldOpen := openInEditor
+	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
+	defer func() { openInEditor = oldOpen }()
+	oldBudget := editPushTimeout
+	editPushTimeout = 150 * time.Millisecond
+	defer func() { editPushTimeout = oldBudget }()
+
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("docs")
+	f.seed("docs", "notes.md", "v1")
+	// release lets cleanup tear the wedge down even if the client's abort
+	// never reaches the parked handler as a context cancellation (the
+	// verdict contract is uploadEdit's bounded return, not the rig's
+	// socket lifecycle). Registered AFTER srv.Close: cleanups run LIFO,
+	// so the channel closes before Close starts waiting on the handler.
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			// the wedge: take the request, answer nothing
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+			return
+		}
+		f.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+	f.mu.Lock()
+	f.url = srv.URL
+	f.mu.Unlock()
+	if err := a.SaveSource(fakeS3Source("editwedge", srv.URL)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := a.EditObject("docs", "notes.md", false); err == nil {
+		t.Fatal("EditObject err = nil, want the could-not-open-editor error")
+	}
+	a.editorsMu.Lock()
+	s := a.editors["docs\x00notes.md"]
+	a.editorsMu.Unlock()
+	if s == nil {
+		t.Fatal("session not registered")
+	}
+	if err := os.WriteFile(s.Local, []byte("v2 wedged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	if err := a.uploadEdit(s); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("uploadEdit under a wedged peer = %v, want the push budget's deadline", err)
+	}
+	el := time.Since(start)
+	t.Logf("wedged push verdict in %v", el)
+	if el > 5*time.Second {
+		t.Fatalf("the break took %v — the push budget never fired", el)
+	}
+	// the voice takes it from here: notePushFailed, backoff, retry — the
+	// contract the failing-push tests above already pin
+	if err := a.StopEdit("docs", "notes.md", false); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A push that keeps failing gets a voice and a gentler cadence: the
 // session turns dirty AND pushFailed in the status view (the indicator's
 // failing state and the dialog's warning ride it), and once the endpoint

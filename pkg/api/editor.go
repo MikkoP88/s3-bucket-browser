@@ -72,6 +72,22 @@ func editPushBackoff(fails int) time.Duration {
 	return watcherPoll * time.Duration(1<<fails)
 }
 
+// editPushTimeout bounds one editor push. The push rides no transport
+// budget (s3Opts installs Timeout:-1 so a slow link never kills a transfer)
+// and no registry task either — its caller is the watcher goroutine, whose
+// only cancellation is app shutdown — so without a deadline of its own, a
+// peer that takes the body and goes silent (no FIN, no RST — the wedge
+// class the wire engines were hardened against) parks the response wait
+// for the life of the process: the watcher dies inside one push, the
+// failure never reaches notePushFailed, and the session just sits dirty
+// with no voice. The budget turns the wedge into an ordinary failed push
+// — voiced, backed off, retried — which is the contract everything
+// downstream already knows. A push that legitimately needs longer than
+// this is not an editor edit anymore; the failure says so honestly. A
+// var so tests can shorten it; read once per push in the caller's
+// goroutine (the retire-grace discipline).
+var editPushTimeout = 15 * time.Minute
+
 // notePushFailed records one failed upload attempt on a session: the
 // backoff bookkeeping, the per-attempt error line and the once-per-streak
 // event the status-bar pill escalates on. The watcher's retries and
@@ -278,11 +294,17 @@ func (a *App) uploadEdit(s *editSession) error {
 	}
 	// Shutdown stops an in-flight push through the app context; the exit
 	// gate already refuses a quit while a session is dirty, so a push
-	// canceled here is an explicitly confirmed discard.
-	ctx := context.Background()
+	// canceled here is an explicitly confirmed discard. The deadline is the
+	// push's own (editPushTimeout owns the reasoning): it is the only bound
+	// standing between a silently vanished peer and a watcher parked
+	// forever inside one unanswered response wait.
+	budget := editPushTimeout
+	var base context.Context = context.Background()
 	if a.ctx != nil {
-		ctx = a.ctx
+		base = a.ctx
 	}
+	ctx, cancel := context.WithTimeout(base, budget)
+	defer cancel()
 	// engine tuning (Settings → Transfers) applies to editor pushes too
 	partSize, conc := a.partTunables()
 	return transfer.UploadFile(ctx, c.S3, s.Local, s.Bucket, s.Key,
