@@ -605,7 +605,7 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   **Retry failed** — one click resubmits exactly the failed items
   (a canceled job's unfinished ones) as a fresh job under skip
   semantics: what landed stays untouched, only what failed goes
-  again, and the original row keeps its verdict.
+  again, and the original row keeps its verdict. **Show destination** on a settled row opens where the bytes landed — the bucket folder, the remote directory or the local folder — in the main window, wherever the transfers window floats.
 - **Running tasks** — View → Running tasks (or the status-bar ⚙
   indicator) is the everything-monitor. The ⚙ indicator always shows
   a live count of active tasks (e.g. "⚙ 2 tasks — search 3/10") and

@@ -11,7 +11,7 @@ import {
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   renderPopoutView, licenseGate,
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile, applySearchCols,
-  bucketSourceDialog,
+  bucketSourceDialog, setXferGoto,
 } from './dialogs.js';
 import { SR_DEFAULT_COLS, storedSearchCols } from './srgrid.js';
 import { LICENSE, licenseLine } from './license.js';
@@ -1404,6 +1404,17 @@ async function gotoSearchHit(r) {
   const parent = parentPrefix(r.key);
   pendingSelect = { key: r.key, bucket: r.bucket, prefix: parent };
   nav.to({ kind: 'objects', source: r.source || viewSource, bucket: r.bucket, prefix: parent });
+}
+
+// gotoDest routes a typed transfer destination (JobInfo.Dest — where a
+// job's bytes landed) through the app's own navigation: the bucket folder
+// the job uploaded into, the remote directory it copied to, or the local
+// folder it downloaded to. Mirrors gotoSearchHit's three loc shapes.
+function gotoDest(d) {
+  if (!d?.kind) return;
+  if (d.kind === 's3') { nav.to({ kind: 'objects', source: d.source || viewSource, bucket: d.bucket, prefix: d.dir || '' }); return; }
+  if (d.kind === 'remote') { nav.to({ kind: 'remote', source: d.source, path: d.dir }); return; }
+  nav.to({ kind: 'local', dir: d.dir });
 }
 
 function refreshCurrent(silent = false) {
@@ -5146,6 +5157,12 @@ function wireEvents() {
     }
     gotoSearchHit(r);
   });
+
+  // A transfers window's "Show destination" pick relays the same way when
+  // the window floats (xfer:dest from the backend bus); the docked one
+  // calls gotoDest directly through the hook installed here.
+  setXferGoto(gotoDest);
+  onEvent('xfer:dest', (d) => gotoDest(d));
   // Guarded exit: the backend refused an exit that would lose work (the X
   // button or File → Exit while transfers run / the profile is dirty) and
   // asks here. "Exit anyway" force-quits through ConfirmExit.

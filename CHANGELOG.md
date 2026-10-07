@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Show destination — one click from a transfer row to where the
+  bytes land** — every job now carries its destination typed (the
+  bucket and prefix it uploaded into, the remote directory it copied
+  to, the local folder it downloaded to), and a settled transfer
+  manager row grows a *Show destination* button beside *Retry failed*
+  that navigates the app there — the S3 bucket folder, the remote
+  source directory or the local pane folder — instead of re-walking
+  the tree by hand. In a floating transfers window the pick relays
+  through the backend event bus and the main window navigates (the
+  SearchGoto shape), so the affordance works wherever the window
+  floats; retried jobs re-enter the same entry points and stamp
+  their own destination, so the fresh row carries the button too.
+
 - **Server mode guide** — the windowless build (`-tags server`) now
   has a guide of its own (docs/server.md): the two environment
   variables that steer the listener, the `/health` probe, remote

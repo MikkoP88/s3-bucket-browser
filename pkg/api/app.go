@@ -21,6 +21,7 @@ const (
 	EventTasksUpdate    = "tasks:update"    // payload: none — re-poll RunningTasks
 	EventS3Changed      = "s3:changed"      // payload: {bucket, prefix} — refresh views
 	EventLogLine        = "log:line"        // payload: LogLine — in-app log drawer
+	EventXferDest       = "xfer:dest"       // payload: XferDest (GotoTransferDest relay — a popout names where to navigate)
 )
 
 // App is the Wails-bound service. A single instance lives for the whole

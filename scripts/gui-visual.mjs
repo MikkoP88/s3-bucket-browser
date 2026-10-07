@@ -1128,12 +1128,16 @@ function shim() {
         currentFile: keep[0].name, fileIndex: 1, currentSent: 0, currentTotal: keep[0].total || 0,
         totalFiles: keep.reduce((n, r) => n + (r.files || 0), 0), doneFiles: 0, failedFiles: 0, skippedFiles: 0,
         totalBytes: keep.reduce((n, r) => n + (r.total || 0), 0), sentBytes: 0, speedBps: 0,
-        name: keep[0].name, items: keep.length, from: j.from, to: j.to,
+        name: keep[0].name, items: keep.length, from: j.from, to: j.to, dest: j.dest,
         itemRows: keep.map((r) => ({ ...r, state: 'pending', done: 0, failed: 0, skipped: 0, sent: 0 })),
       }];
       emit('transfer:update', {});
       return nid;
     },
+    // GotoTransferDest relays a typed dest the way the Go binding does —
+    // the xfer:dest event the main window listens for. A floating
+    // transfers window picks Show destination; the main window navigates.
+    GotoTransferDest: (d) => { emit('xfer:dest', d); },
     // conflict pre-check (M12): whatever the step seeded, the dialog gets
     CheckConflicts: () => JSON.parse(JSON.stringify(world.conflicts || [])),
     ObjectVersions: () => JSON.parse(JSON.stringify(world.versions)),
@@ -6212,6 +6216,53 @@ await step('transfers', async () => {
     const btns = Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t2"] .tr-top .btn`)).map((b) => b.textContent);
     return !btns.some((x) => /retry/i.test(x));
   }, trSel), 4000, 'retry gone'));
+  await resetCalls();
+
+  // tr-dest leg: a settled row carries where its bytes landed (the typed
+  // dest), and one click navigates the main window there — docked through
+  // the shell hook, from a floating window through the backend relay
+  await evalPage(() => {
+    const t2 = window.__shim.world.transfers.find((x) => x.id === 't2');
+    t2.dest = { kind: 's3', source: 'hetzner', bucket: 'team-files', dir: 'photos/' };
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('settled row with a dest shows Show destination', waitFor(async () => evalPage((s) => {
+    const btns = Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t2"] .tr-top .btn`)).map((b) => b.textContent);
+    return btns.some((x) => /show destination/i.test(x));
+  }, trSel), 4000, 'dest shown'));
+  await ok('running row offers no destination', evalPage((s) => {
+    const btns = Array.from(document.querySelectorAll(`${s} .tr-job.running .tr-top .btn`)).map((b) => b.textContent);
+    return !btns.some((x) => /show destination/i.test(x));
+  }, trSel));
+  // docked click: the shell hook navigates the main view to the dest
+  // prefix (full-key rows, the anchored grammar)
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t2"] .tr-top .btn`)).find((b) => /show destination/i.test(b.textContent))?.click();
+  }, trSel);
+  await ok('docked click navigates the main window to the dest', waitFor(async () =>
+    (await rowKeys()).includes('photos/img-001.jpg'), 5000, 'dest navigation'));
+  // floating-window branch: the popout-win body class routes the same
+  // click through the backend relay instead (the shim stages the class —
+  // the native popout webview is the real-world carrier)
+  await resetCalls();
+  await evalPage(() => { document.body.classList.add('popout-win'); });
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t2"] .tr-top .btn`)).find((b) => /show destination/i.test(b.textContent))?.click();
+  }, trSel);
+  await ok('floating click relays through GotoTransferDest with the typed dest', waitFor(async () => {
+    const c = await findCall('GotoTransferDest');
+    return !!c && c.args[0] && c.args[0].kind === 's3' && c.args[0].bucket === 'team-files' && c.args[0].dir === 'photos/';
+  }, 4000, 'dest relay'));
+  await evalPage(() => { document.body.classList.remove('popout-win'); });
+  // back to the pre-leg world: the affordance leaves with the dest
+  await evalPage(() => {
+    delete window.__shim.world.transfers.find((x) => x.id === 't2').dest;
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('row without a dest shows no button', waitFor(async () => evalPage((s) => {
+    const btns = Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t2"] .tr-top .btn`)).map((b) => b.textContent);
+    return !btns.some((x) => /show destination/i.test(x));
+  }, trSel), 4000, 'dest gone'));
   await resetCalls();
   // a zero-byte finished job (server-side copy shape) reads 100%, never 0%
   await evalPage(() => {

@@ -105,6 +105,7 @@ type JobInfo struct {
 	ItemRows     []TransferItem `json:"itemRows,omitempty"`  // live per-item states (≤ itemRowCap) — the expanded panel's rows
 	From         string         `json:"from,omitempty"`      // human source label
 	To           string         `json:"to,omitempty"`        // human destination label
+	Dest         XferDest       `json:"dest"`                // where the bytes land, typed (XferDest reused — one wire grammar); Kind "" = unknown, the GUI hides the affordance
 	Phase        string         `json:"phase"`               // "transfer" | "cleanup"
 	FileIndex    int            `json:"fileIndex"`           // 1-based in-flight file ordinal
 	CurrentSent  int64          `json:"currentSent"`         // bytes of the in-flight file
@@ -459,6 +460,15 @@ func (j *jobHandle) setRetry(fn func(keep []bool) (string, error)) {
 	j.mu.Unlock()
 }
 
+// setDest stamps where the job's bytes land, in the navigation grammar
+// (not the label grammar of To): one click on the settled row routes the
+// app there. Written once at entry before the worker spawns.
+func (j *jobHandle) setDest(d XferDest) {
+	j.mu.Lock()
+	j.info.Dest = d
+	j.mu.Unlock()
+}
+
 // touchItemLocked mutates one item row copy-on-write: emitted snapshots
 // share the backing array with a marshal riding outside the lock, so the
 // worker never edits a slice a consumer may still be reading — it swaps
@@ -593,6 +603,12 @@ func (a *App) RetryTransfer(id string) (string, error) {
 	return fn(keep)
 }
 
+// GotoTransferDest relays a typed destination from a native popout (the
+// transfers window runs dialogs.js without main.js, so it cannot navigate
+// itself): the main window's xfer:dest listener routes the dest through
+// the app's own navigation. The SearchGoto shape, verbatim.
+func (a *App) GotoTransferDest(d XferDest) { a.emit(EventXferDest, d) }
+
 // TransferItems lists the top-level items of a job by ID — the expanded
 // panel's contents list ("photos +2" finally says who the other two are).
 func (a *App) TransferItems(id string) []string { return a.jobs.itemsOf(id) }
@@ -629,6 +645,10 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 	j := a.jobs.add("upload", len(pairs), total)
 	j.src = bucket
 	j.setMeta(uploadTitle(paths), filepath.Dir(paths[0]), s3Label(bucket, dirPrefix(prefix)), len(paths), false)
+	// The view source may be "" (single-source fallback) — the same value
+	// client("") resolved this job through, and the frontend resolves the
+	// same way when navigating back.
+	j.setDest(XferDest{Kind: "s3", Source: a.currentViewSource(), Bucket: bucket, Dir: dirPrefix(prefix)})
 	its := make([]TransferItem, len(paths))
 	for i, p := range paths {
 		its[i] = TransferItem{Name: p}
@@ -975,6 +995,7 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	j := a.jobs.add("download", len(items), total)
 	j.src = bucket
 	j.setMeta(downloadTitle(items), s3Label(bucket, ""), destDir, len(items), false)
+	j.setDest(XferDest{Kind: "local", Dir: destDir})
 	its := make([]TransferItem, len(items))
 	for i, it := range items {
 		nm := it.Key

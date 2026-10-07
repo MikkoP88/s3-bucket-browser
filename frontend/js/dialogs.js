@@ -8,6 +8,18 @@ import { makeSearchGrid, applyStoredCols } from './srgrid.js';
 
 const root = () => document.getElementById('modal-root');
 
+// A settled transfer row routes the app to where its bytes landed. The
+// docked transfer window calls the main shell navigator through this hook
+// (the manager opens itself — no callback param to pass, unlike the search
+// window); a native popout cannot reach the main window at all, so it
+// relays through the backend event bus instead (the SearchGoto shape).
+let onXferGoto = null;
+export const setXferGoto = (fn) => { onXferGoto = fn; };
+function xferGotoDest(d) {
+  if (document.body.classList.contains('popout-win')) { api.GotoTransferDest(d); return; }
+  onXferGoto?.(d);
+}
+
 // Modal stack: sub-dialogs (the source editor's directory browser, a
 // prompt opened from inside a dialog, a confirm gate over the settings
 // sheet) open ON TOP of their parent. Only the top modal answers Escape,
@@ -1842,6 +1854,7 @@ function openTransferManagerDom(onClose) {
             // what landed stays, what failed goes again.
             try { await api.RetryTransfer(j.id); } catch (e) { toast(String(e), 'error'); }
           } }) : null,
+        (!running && j.dest && j.dest.kind) ? el('button', { class: 'btn', text: t('transfer.showDest'), onclick: () => xferGotoDest(j.dest) }) : null,
         trMoreBtn(j.id, expanded.has(j.id), toggle),
       ),
       bar,
@@ -2557,7 +2570,7 @@ const GUIDE_SECTIONS = [
     ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move. Need the text instead? The context menu (or Edit → Copy as) copies names, normalized paths (Name/contents — the typed form the path line takes, minus its scheme) or real URLs to the OS clipboard.'],
     ['Two-way Explorer clipboard', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. The other direction works too — Ctrl+C here quietly stages small selections onto the OS clipboard (a hidden download that never shows in File transfers) so Ctrl+V in Explorer pastes them; pasting inside the app still uses the reference copy and runs the real transfer then. Cut never mirrors — an Explorer paste of a cut would move. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
     ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 1000 MB/s).'],
-    ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle. A row that settled with failures offers Retry failed — one click resubmits exactly the failed items (or the ones a canceled job left unfinished) as a fresh job under skip semantics: what landed stays, only what failed goes again.'],
+    ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle. A row that settled with failures offers Retry failed — one click resubmits exactly the failed items (or the ones a canceled job left unfinished) as a fresh job under skip semantics: what landed stays, only what failed goes again. Show destination on a settled row opens where the bytes landed — the bucket folder, the remote directory or the local folder — in the main window, wherever the transfers window floats.'],
     ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, searches, bulk deletes, version purges, folder and file creation, bucket deletes, pane compares, doctor runs — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
   ]],
   ['Versions & safety', [

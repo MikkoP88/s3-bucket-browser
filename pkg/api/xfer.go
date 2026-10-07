@@ -162,6 +162,7 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 	j := a.jobs.add("transfer", len(plan.files), plan.total)
 	j.src = xferDestSource(dest)
 	j.setMeta(xferTitle(items, localPaths), xferFromLabel(items, localPaths), xferDestLabel(dest), len(items)+len(localPaths), move)
+	j.setDest(dest)
 	its := make([]TransferItem, 0, len(items)+len(localPaths))
 	for _, it := range items {
 		its = append(its, TransferItem{Name: it.Key})
