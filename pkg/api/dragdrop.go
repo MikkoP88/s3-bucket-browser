@@ -202,9 +202,12 @@ func (st *dragStage) cleanup() {
 	if dir == "" {
 		return
 	}
+	// Capture the grace BEFORE the goroutine: a later seam swap (tests
+	// shorten it) must not race the sleeper's read of the package var.
+	grace := stageRetireGrace
 	go func() {
 		defer st.a.guardWorker("drag", nil) // the worker panic net (guard.go)
-		time.Sleep(stageRetireGrace)
+		time.Sleep(grace)
 		_ = os.RemoveAll(dir)
 	}()
 }

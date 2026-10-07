@@ -384,9 +384,12 @@ func (a *App) retireEditFile(path string) {
 	if path == "" {
 		return
 	}
+	// Capture the grace BEFORE the goroutine: a later seam swap (tests
+	// shorten it) must not race the sleeper's read of the package var.
+	grace := stageRetireGrace
 	go func() {
 		defer a.guardWorker("edit", nil) // the worker panic net (guard.go)
-		time.Sleep(stageRetireGrace)
+		time.Sleep(grace)
 		_ = os.Remove(path)
 	}()
 }

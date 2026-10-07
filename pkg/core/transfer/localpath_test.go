@@ -8,37 +8,50 @@ import (
 
 // SafeLocalJoin contains server-supplied paths inside the destination:
 // ordinary keys map to themselves (byte for byte), traversal and the
-// Windows minefield never escape.
+// Windows minefield never escape. The table asserts the mapped path as a
+// dir-relative slash path — the join itself speaks the platform's
+// separator, so the expectations stay truthful on every OS (on Linux the
+// backslashed dir is just a name, and filepath.Join uses "/").
 func TestSafeLocalJoin(t *testing.T) {
 	const dir = `C:\Users\demo\Downloads`
-	for _, tc := range []struct{ in, want string }{
+	for _, tc := range []struct{ in, wantRel string }{
 		// identity for ordinary keys — the compat contract every
 		// existing transfer rides on
-		{"notes.txt", `C:\Users\demo\Downloads\notes.txt`},
-		{"docs/notes.txt", `C:\Users\demo\Downloads\docs\notes.txt`},
-		{"a/b/c/report 2026.pdf", `C:\Users\demo\Downloads\a\b\c\report 2026.pdf`},
-		{"archive.tar.gz", `C:\Users\demo\Downloads\archive.tar.gz`},
+		{"notes.txt", `notes.txt`},
+		{"docs/notes.txt", `docs/notes.txt`},
+		{"a/b/c/report 2026.pdf", `a/b/c/report 2026.pdf`},
+		{"archive.tar.gz", `archive.tar.gz`},
 		// traversal is neutralized in place, never resolved
-		{"../evil.txt", `C:\Users\demo\Downloads\_\evil.txt`},
-		{"..\\..\\evil.txt", `C:\Users\demo\Downloads\_\_\evil.txt`},
-		{"docs/../../../Windows/system32/evil.dll", `C:\Users\demo\Downloads\docs\_\_\_\Windows\system32\evil.dll`},
-		{"/abs/path.txt", `C:\Users\demo\Downloads\abs\path.txt`},
+		{"../evil.txt", `_/evil.txt`},
+		{"..\\..\\evil.txt", `_/_/evil.txt`},
+		{"docs/../../../Windows/system32/evil.dll", `docs/_/_/_/Windows/system32/evil.dll`},
+		{"/abs/path.txt", `abs/path.txt`},
 		// drive and UNC shapes become literal contained names
-		{"C:/evil.txt", `C:\Users\demo\Downloads\C_\evil.txt`},
-		{`\\server\share\evil.txt`, `C:\Users\demo\Downloads\server\share\evil.txt`},
+		{"C:/evil.txt", `C_/evil.txt`},
+		{`\\server\share\evil.txt`, `server/share/evil.txt`},
 		// reserved device names are pushed past their device meaning
-		{"NUL", `C:\Users\demo\Downloads\_NUL`},
-		{"con.txt", `C:\Users\demo\Downloads\_con.txt`},
-		{"logs/COM1", `C:\Users\demo\Downloads\logs\_COM1`},
+		{"NUL", `_NUL`},
+		{"con.txt", `_con.txt`},
+		{"logs/COM1", `logs/_COM1`},
 		// Windows-invalid characters and trailing dots/spaces
-		{"re:port?.txt", `C:\Users\demo\Downloads\re_port_.txt`},
-		{"name. ", `C:\Users\demo\Downloads\name`},
-		{"name...", `C:\Users\demo\Downloads\name`},
+		{"re:port?.txt", `re_port_.txt`},
+		{"name. ", `name`},
+		{"name...", `name`},
 		// dot segments collapse; dotfiles survive
-		{"./a/.hidden", `C:\Users\demo\Downloads\_\a\.hidden`},
+		{"./a/.hidden", `_/a/.hidden`},
 	} {
-		if got := SafeLocalJoin(dir, tc.in); got != tc.want {
-			t.Errorf("SafeLocalJoin(%q, %q) = %q, want %q", dir, tc.in, got, tc.want)
+		got := SafeLocalJoin(dir, tc.in)
+		if !strings.HasPrefix(got, dir+string(filepath.Separator)) {
+			t.Errorf("SafeLocalJoin(%q, %q) = %q, want it under %q", dir, tc.in, got, dir)
+			continue
+		}
+		rel, err := filepath.Rel(dir, got)
+		if err != nil {
+			t.Errorf("SafeLocalJoin(%q, %q) = %q: %v", dir, tc.in, got, err)
+			continue
+		}
+		if rel != filepath.FromSlash(tc.wantRel) {
+			t.Errorf("SafeLocalJoin(%q, %q) = %q, want relative %q", dir, tc.in, got, tc.wantRel)
 		}
 	}
 }
