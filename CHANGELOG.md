@@ -188,6 +188,24 @@ follow [Semantic Versioning](https://semver.org/).
   gets (the editor process may still hold it open; the launch
   wipe backstops) instead of leaving the downloaded bytes in the
   edit workspace until the next boot.
+
+- **A second Edit re-focuses the live session instead of re-downloading
+  it** — EditObject never looked at the session registry before pulling,
+  so editing an object that was already being edited re-downloaded the
+  REMOTE bytes over the staged file — destroying every edit saved but
+  not yet uploaded — and replaced the registry entry while the old
+  watcher kept polling the same path: a leaked goroutine racing a
+  second one to upload. A second Edit now re-focuses the existing
+  session (the editor opens on the same staged file, pending edits and
+  all; no re-download, no second watcher), a concurrent double-Edit
+  whose pulls were both in flight keeps whichever session registered
+  first instead of stacking two watchers on one file, and a watcher
+  whose staged file is deleted ends the session in the registry too
+  (a zombie entry used to pin the indicator — and, when dirty, the
+  exit gate — on a file that no longer exists). A transient stat
+  failure — an editor’s atomic save (write temp, rename over) can
+  briefly hide the file — no longer kills the watcher: auto-upload
+  silently stopping forever was the cost; the next poll retries.
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed

@@ -364,3 +364,103 @@ func TestStopEditRetiresStagedFile(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// A second Edit on a live session re-focuses it: the staged file keeps
+// its pending edits (a re-download would write the REMOTE bytes over
+// them), no second watcher stacks on the file, and the call answers
+// with the same session.
+func TestEditObjectRefocusesExistingSession(t *testing.T) {
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("docs")
+	f.seed("docs", "notes.md", "remote v1")
+	url := f.serve(t)
+	if err := a.SaveSource(fakeS3Source("editrf", url)); err != nil {
+		t.Fatal(err)
+	}
+	opened := ""
+	oldOpen := openInEditor
+	defer func() { openInEditor = oldOpen }()
+	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
+
+	info1, err := a.EditObject("docs", "notes.md", false)
+	if err == nil || !strings.Contains(err.Error(), "could not open editor") {
+		t.Fatalf("EditObject err = %v, want the could-not-open-editor error", err)
+	}
+	// an edit lands on disk and is NOT yet uploaded (the pending edit a
+	// re-download would destroy)
+	if err := os.WriteFile(info1.Local, []byte("local v2 pending"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// the second Edit re-focuses: the editor opens on the SAME staged
+	// file, whose pending edit survives
+	openInEditor = func(_ *App, path string, _ bool) error { opened = path; return nil }
+	info2, err := a.EditObject("docs", "notes.md", false)
+	if err != nil {
+		t.Fatalf("second EditObject err = %v, want a clean re-focus", err)
+	}
+	if opened != info1.Local {
+		t.Fatalf("re-focus opened %q, want the existing staged file %q", opened, info1.Local)
+	}
+	if info2.Local != info1.Local {
+		t.Fatalf("second EditObject local = %q, want the same session (%q)", info2.Local, info1.Local)
+	}
+	b, rerr := os.ReadFile(info1.Local)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(b) != "local v2 pending" {
+		t.Fatalf("staged content = %q, want the pending edit (no re-download)", b)
+	}
+	if n := len(a.EditingFiles()); n != 1 {
+		t.Fatalf("EditingFiles = %d session(s), want the one re-focused session", n)
+	}
+	if err := a.StopEdit("docs", "notes.md", false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A watcher whose staged file is deleted ends the session in the
+// registry too — a zombie entry would pin the indicator (and, when
+// dirty, the exit gate) on a file that no longer exists.
+func TestWatcherEndsSessionWhenStagedFileRemoved(t *testing.T) {
+	oldPoll := watcherPoll
+	watcherPoll = 10 * time.Millisecond
+	defer func() { watcherPoll = oldPoll }()
+	oldOpen := openInEditor
+	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
+	defer func() { openInEditor = oldOpen }()
+
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("docs")
+	f.seed("docs", "gone.md", "v1")
+	url := f.serve(t)
+	if err := a.SaveSource(fakeS3Source("editrm", url)); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := a.EditObject("docs", "gone.md", false)
+	if err == nil || !strings.Contains(err.Error(), "could not open editor") {
+		t.Fatalf("EditObject err = %v, want the could-not-open-editor error", err)
+	}
+	a.editorsMu.Lock()
+	s := a.editors["docs\x00gone.md"]
+	a.editorsMu.Unlock()
+	go a.watchEditor(s)
+
+	if err := os.Remove(info.Local); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if n := len(a.EditingFiles()); n == 0 {
+			return // the session ended with its file
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("zombie session survived its staged file's removal: %+v", a.EditingFiles())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

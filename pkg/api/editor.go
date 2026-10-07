@@ -103,12 +103,32 @@ var openInEditor = func(a *App, path string, chooseApp bool) error {
 	return a.OpenLocal(path)
 }
 
+// refocus surfaces the editor for an already-open session. A second
+// Edit on a live session must not re-download over the staged file —
+// that would destroy edits saved but not yet uploaded (the pull writes
+// the REMOTE bytes) — and must not leak a second watcher on it.
+func (a *App) refocus(s *editSession, chooseApp bool) (EditInfo, error) {
+	if err := openInEditor(a, s.Local, chooseApp); err != nil {
+		return s.info(), fmt.Errorf("already being edited — could not open editor: %w", err)
+	}
+	return s.info(), nil
+}
+
 // EditObject downloads bucket/key into a temp workspace, opens it with
 // the OS default editor (or, chooseApp=true, the OS "Open with…" picker
 // so the user selects the editing application per file) and keeps
 // watching: every saved change is uploaded back automatically
 // (WinSCP-style "keep remote up to date").
 func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
+	a.editorsMu.Lock()
+	if s := a.editors[bucket+"\x00"+key]; s != nil {
+		a.editorsMu.Unlock()
+		// already being edited: re-focus the live session (idempotent
+		// per object — the staged file, with any pending edits, is what
+		// the editor gets; no re-download, no second watcher)
+		return a.refocus(s, chooseApp)
+	}
+	a.editorsMu.Unlock()
 	c, err := a.client("")
 	if err != nil {
 		return EditInfo{}, err
@@ -153,6 +173,14 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 		lastSize: st.Size(), lastMod: st.ModTime().UnixMilli(),
 	}
 	a.editorsMu.Lock()
+	if prev := a.editors[s.Bucket+"\x00"+s.Key]; prev != nil {
+		// a concurrent Edit for the same object registered first (both
+		// pulls were in flight): keep its session — the staged file is
+		// the same path holding the same fresh bytes — and surface the
+		// editor once more instead of stacking a second watcher on it
+		a.editorsMu.Unlock()
+		return a.refocus(prev, chooseApp)
+	}
 	a.editors[s.Bucket+"\x00"+s.Key] = s
 	a.editorsMu.Unlock()
 
@@ -185,8 +213,24 @@ func (a *App) watchEditor(s *editSession) {
 			return
 		}
 		st, err := os.Stat(s.Local)
+		if os.IsNotExist(err) {
+			// deleted: session over — and the registry must reflect it,
+			// or a zombie entry pins the indicator (and, when dirty,
+			// the exit gate) on a file that no longer exists
+			a.editorsMu.Lock()
+			if a.editors[s.Bucket+"\x00"+s.Key] == s {
+				delete(a.editors, s.Bucket+"\x00"+s.Key)
+			}
+			a.editorsMu.Unlock()
+			a.emitLog(LogInfo, "edit", fmt.Sprintf(
+				"session for %s/%s ended: staged file removed", s.Bucket, s.Key))
+			return
+		}
 		if err != nil {
-			return // deleted: session over
+			// transient — an editor's atomic save (write temp, rename
+			// over) can briefly hide the file; killing the watcher here
+			// would silently stop every future auto-upload
+			continue
 		}
 		size, mod := st.Size(), st.ModTime().UnixMilli()
 		s.mu.Lock()
