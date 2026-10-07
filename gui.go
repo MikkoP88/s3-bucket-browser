@@ -19,10 +19,12 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/api"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/appsettings"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/guihealth"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -53,9 +55,10 @@ func rigBrowserArgs() []string {
 }
 
 // popoutRect is a native popout's last on-screen rectangle. popoutGeoms
-// remembers it per id for the session only: a reopen lands where the user
-// left the window (position AND size), and closing the app forgets
-// everything — the memory lives in the process, never on disk.
+// remembers it per id: a reopen lands where the user left the window
+// (position AND size). The map is primed from the persisted window
+// memory at boot and snapshotted back into it on the way out, so the
+// placement survives restarts — see saveWindowState.
 type popoutRect struct{ x, y, w, h int }
 
 var (
@@ -77,6 +80,37 @@ func rememberPopout(id string, w *application.WebviewWindow) {
 	popoutMu.Lock()
 	popoutGeoms[id] = popoutRect{x, y, ww, hh}
 	popoutMu.Unlock()
+}
+
+// screenRects lists the screens that exist right now in the neutral
+// shape the sanity rules take.
+func screenRects(app3 *application.App) []appsettings.ScreenRect {
+	var out []appsettings.ScreenRect
+	for _, sc := range app3.Screen.GetAll() {
+		if sc == nil {
+			continue
+		}
+		out = append(out, appsettings.ScreenRect{X: sc.X, Y: sc.Y, W: sc.Size.Width, H: sc.Size.Height})
+	}
+	return out
+}
+
+// snapshotOpenPopouts remembers every still-open popout — the ones that
+// never closed have no closing event to snapshot themselves, and their
+// placement is exactly what the user left on screen at quit. The Window
+// interface answers Position/Size directly.
+func snapshotOpenPopouts(app3 *application.App) {
+	for _, wn := range app3.Window.GetAll() {
+		name := wn.Name()
+		if wn == nil || !strings.HasPrefix(name, popoutPrefix) {
+			continue
+		}
+		x, y := wn.Position()
+		w, h := wn.Size()
+		popoutMu.Lock()
+		popoutGeoms[strings.TrimPrefix(name, popoutPrefix)] = popoutRect{x, y, w, h}
+		popoutMu.Unlock()
+	}
 }
 
 // lifecycle adapts the app's Startup to Wails v3's service lifecycle: Run
@@ -169,7 +203,18 @@ func Run(version string) error {
 		menu.AddRole(application.WindowMenu)
 		app3.Menu.Set(menu)
 	}
-	mainWindow := app3.Window.NewWithOptions(application.WebviewWindowOptions{
+	// Window placement memory: the app reopens where the user left it.
+	// A remembered rect is honored only when it is sane against the
+	// screens that exist NOW (a monitor unplugged since last run must
+	// not strand the window off-screen where no drag can reach it); a
+	// missing or corrupt memory falls back to the shipped defaults.
+	wsMem := appsettings.LoadWindowState()
+	popoutMu.Lock()
+	for id, r := range wsMem.Popouts {
+		popoutGeoms[id] = popoutRect{r.X, r.Y, r.W, r.H}
+	}
+	popoutMu.Unlock()
+	mainOpts := application.WebviewWindowOptions{
 		Name:           "main",
 		Title:          "S3 Bucket Browser",
 		Width:          1280,
@@ -177,7 +222,36 @@ func Run(version string) error {
 		MinWidth:       960,
 		MinHeight:      600,
 		EnableFileDrop: true,
-	})
+	}
+	normalRect := appsettings.WindowRect{W: mainOpts.Width, H: mainOpts.Height}
+	if r, ok := wsMem.Main.Sane(mainOpts.MinWidth, mainOpts.MinHeight, screenRects(app3)); ok {
+		mainOpts.Width, mainOpts.Height = r.W, r.H
+		mainOpts.X, mainOpts.Y = r.X, r.Y
+		mainOpts.InitialPosition = application.WindowXY
+		if r.Max {
+			mainOpts.StartState = application.WindowStateMaximised
+		}
+		normalRect = r
+	}
+	mainWindow := app3.Window.NewWithOptions(mainOpts)
+	// The normal (un-maximized) rect is the part a maximized window
+	// cannot report on its way out — Position/Size answer the maximized
+	// frame. Tracking it live keeps the pre-maximize placement for the
+	// quit snapshot, so un-maximizing after a restart lands where the
+	// user left it.
+	var rectMu sync.Mutex
+	snapNormal := func() {
+		if mainWindow.IsMaximised() || mainWindow.IsMinimised() {
+			return
+		}
+		x, y := mainWindow.Position()
+		w, h := mainWindow.Size()
+		rectMu.Lock()
+		normalRect = appsettings.WindowRect{X: x, Y: y, W: w, H: h}
+		rectMu.Unlock()
+	}
+	mainWindow.OnWindowEvent(events.Common.WindowDidMove, func(*application.WindowEvent) { snapNormal() })
+	mainWindow.OnWindowEvent(events.Common.WindowDidResize, func(*application.WindowEvent) { snapNormal() })
 	// The X button asks before losing work (running transfers, unsaved
 	// profile) — the frontend confirms through exit:confirm/ConfirmExit.
 	// RegisterHook runs synchronously inside the window event dispatch:
@@ -197,6 +271,26 @@ func Run(version string) error {
 		if e.IsCancelled() {
 			return
 		}
+		// Persist the window memory on the way out (the exit gate has
+		// already spoken — this close is really happening): the main
+		// window's normal rect — live if it quits un-maximized, tracked
+		// if maximized — and every popout's last placement. Best-effort
+		// like every cosmetic write: a failed save costs the next boot
+		// its placement, nothing more, so it stays quiet.
+		snapshotOpenPopouts(app3)
+		rectMu.Lock()
+		main := normalRect
+		rectMu.Unlock()
+		if mainWindow.IsMaximised() {
+			main.Max = true
+		}
+		popoutMu.Lock()
+		popouts := make(map[string]appsettings.WindowRect, len(popoutGeoms))
+		for id, r := range popoutGeoms {
+			popouts[id] = appsettings.WindowRect{X: r.x, Y: r.y, W: r.w, H: r.h}
+		}
+		popoutMu.Unlock()
+		_ = appsettings.SaveWindowState(appsettings.WindowState{Main: main, Popouts: popouts})
 		go func() {
 			time.Sleep(100 * time.Millisecond)
 			app3.Quit()

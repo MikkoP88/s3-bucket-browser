@@ -8,6 +8,26 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The app remembers its windows** — the main window opened at a
+  fixed 1280×800 every launch, and every popout forgot its
+  placement when the app closed: the user resized, arranged on a
+  second monitor, maximized — and the next boot threw it all away.
+  The geometry (the main window’s rect and maximized state, each
+  popout’s rect) now persists to windows.json in the config dir
+  (written atomically, like every piece of state) and is re-applied
+  at launch under sanity rules: dimensions clamp to the minimums,
+  and a rect is honored only when it overlaps a screen that still
+  exists by enough to grab the title bar — a window remembered on a
+  monitor that is no longer attached falls back to default
+  placement instead of reopening stranded off-screen. A maximized
+  quit restores maximized, and the remembered rect is the window’s
+  NORMAL one — tracked live while it runs, since a maximized window
+  cannot report its pre-maximize frame on the way out — so
+  un-maximizing after a restart lands where the user left it.
+  Popouts reopen where they stood, still-open ones included
+  (snapshotted at quit, not only on their own close). A missing or
+  corrupt memory is simply defaults: placement is cosmetic and must
+  never block a boot.
 - **Signing guide (`docs/signing.md`)** — the one page answering "what
   do I need to sign every build": the Windows identity decision tree
   (self-signed fleet cert today; CA OV/EV under the post-2023
