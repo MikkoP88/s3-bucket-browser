@@ -113,6 +113,12 @@ it and open the URL it logs.
 go build -tags server -o s3b ./cmd/s3b && ./s3b
 ```
 
+The full guide lives in [server.md](server.md): remote access and
+firewalls, the no-auth/plain-HTTP trust model and how to front it
+safely (SSH tunnel, reverse proxy with TLS), secrets on a keyring-less
+host, running as a service, and exactly what changes when the app
+lives in a browser tab.
+
 ## Version stamping
 
 `s3b version`, the About box and diagnostics all report

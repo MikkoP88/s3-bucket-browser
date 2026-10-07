@@ -28,6 +28,9 @@ Install the [release artifact](https://github.com/MikkoP88/s3-bucket-browser/rel
 [build from source](build.md)) and start it: `s3b`
 with no arguments opens the desktop app, `s3b <args>` is the CLI —
 one binary, same engine.
+The same binary also builds windowless — the app served over HTTP
+and driven from a browser tab on any machine — see the
+[server mode guide](server.md).
 
 ![First launch — onboarding](screenshots/onboarding.png)
 

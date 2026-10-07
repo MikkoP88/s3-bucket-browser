@@ -13,10 +13,12 @@ package remotefs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
@@ -44,6 +46,69 @@ type FS interface {
 	// Close releases the underlying connection (no-op for stateless
 	// engines).
 	Close() error
+}
+
+// ErrCmdDeadline is the verdict an engine returns when it tore its own
+// connection down at a per-command deadline because the peer stopped
+// answering — no FIN, no RST, just silence. The connection is dead by
+// the engine's hand, so anything that heals connections (FTP's
+// withRetry, the api layer's engine cache) must treat it exactly like a
+// reset or an EOF and redial.
+var ErrCmdDeadline = errors.New("remotefs: command deadline exceeded")
+
+// forceBreaker is the surface the deadline machinery needs from an
+// engine's connection: something Quit can tear down hard. *ftp.ServerConn
+// carries Quit itself; the SSH engines adapt their transport.
+type forceBreaker interface{ Quit() error }
+
+// bound runs one engine command round-trip and force-breaks a wedged
+// channel. On the deadline (d > 0) or the caller's cancellation the
+// break is Quit: for FTP that is textproto's command write plus a socket
+// Close, for SSH the transport Close — either way any concurrent reply
+// read unblocks immediately with a connection-class error, so the
+// engine's redial policy takes over instead of the call hanging for the
+// life of the process. The runner goroutine holds only what fn captured
+// (the connection is passed in, never read back off the engine), so a
+// timed-out attempt still unwinding can never reach past its own
+// connection into a redialed successor. d <= 0 means context-only
+// bounding — the right shape for transfers and tree walks whose
+// legitimate duration is unknowable.
+func bound[T any](ctx context.Context, c forceBreaker, d time.Duration, fn func() (T, error)) (T, error) {
+	type res struct {
+		v   T
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		v, err := fn()
+		ch <- res{v: v, err: err}
+	}()
+	var timeout <-chan time.Time
+	if d > 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case r := <-ch:
+		return r.v, r.err
+	case <-ctx.Done():
+		_ = c.Quit() // force-close: the blocked read unblocks NOW
+		var zero T
+		return zero, fmt.Errorf("remotefs command: %w", ctx.Err())
+	case <-timeout:
+		_ = c.Quit()
+		var zero T
+		return zero, ErrCmdDeadline
+	}
+}
+
+// boundErr is bound for the commands that return nothing but their
+// error (the mutation half of the engine verb set — the T in bound
+// cannot be inferred from a func() error).
+func boundErr(ctx context.Context, c forceBreaker, d time.Duration, fn func() error) error {
+	_, err := bound(ctx, c, d, func() (struct{}, error) { return struct{}{}, fn() })
+	return err
 }
 
 // Dial connects to a data source and returns its filesystem. S3 sources

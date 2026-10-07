@@ -84,7 +84,8 @@ func DialFTP(ctx context.Context, src profile.Source) (FS, error) {
 	}
 	root := strings.TrimRight(src.Root, "/")
 	if root == "" {
-		if wd, err := conn.CurrentDir(); err == nil && wd != "" {
+		d := ftpCmdTimeout
+		if wd, err := bound(ctx, conn, d, func() (string, error) { return conn.CurrentDir() }); err == nil && wd != "" {
 			root = strings.TrimRight(wd, "/")
 		}
 	}
@@ -123,12 +124,16 @@ func ftpEntry(dir string, e *ftp.Entry) listing.Entry {
 
 // isConnErr reports whether err means the CONTROL CONNECTION is gone —
 // an idle-timeout write (the classic "server dropped us after ~5 minutes"
-// failure), an EOF/RST, or the server's polite 421 close. Server
+// failure), an EOF/RST, the server's polite 421 close, or the engine's
+// own deadline breaking a channel that stopped answering. Server
 // rejections about the filesystem (4xx/5xx such as 550 not-found) are
 // honest answers, never a reason to redial.
 func isConnErr(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, errFTPDeadline) {
+		return true
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
@@ -144,17 +149,39 @@ func isConnErr(err error) bool {
 	return false
 }
 
+// ftpCmdTimeout bounds one FTP command round-trip — the same 15 seconds
+// the engine's own dial options and the WebDAV engine's dial probe use.
+// jlaffaye's commands take no context, so without a bound a silently dead
+// peer (a NAT mapping that expired, a container that vanished — no FIN,
+// no RST, nothing) leaves the reply read blocked forever: no error is
+// ever returned, the redial below never fires, and the engine call hangs
+// for the life of the process — exactly the field shape behind stalled
+// navigation listings against an idle-dropped FTP source. A var so tests
+// can shorten it; every reader captures it at method entry, on the
+// caller's goroutine, so a test's swap can never race a running command
+// (the discipline the retire grace learned the hard way).
+var ftpCmdTimeout = 15 * time.Second
+
+// errFTPDeadline marks a command the engine broke at its deadline — the
+// shared remotefs.ErrCmdDeadline verdict. The connection is presumed
+// dead — the same verdict isConnErr hands a 421 or an EOF — so withRetry
+// redials on it.
+var errFTPDeadline = ErrCmdDeadline
+
 // withRetry runs one engine operation against the control connection.
-// FTP servers drop idle control connections (vsftpd after ~5 minutes) and
-// often silently — the next command write times out at the OS level or
-// reads EOF. That failure is about the CONNECTION, not the source, so
-// redial once with the stored source settings and retry; only a second
-// failure is reported. f.c is swapped here, which is race-safe because
-// every engine call on a source serializes on the app's per-source lock
-// (remote.go srcLock) and DialFTP publishes the engine only after
-// constructing it.
-func withRetry[T any](f *FTP, ctx context.Context, op func() (T, error)) (T, error) {
-	v, err := op()
+// FTP servers drop idle control connections (vsftpd after ~5 minutes)
+// and often silently — the next command write times out at the OS level,
+// reads EOF, or blocks on a vanished peer until the command deadline
+// breaks it. Every one of those failures is about the CONNECTION, not
+// the source, so redial once with the stored source settings and retry;
+// only a second failure is reported. The op receives the connection it
+// must use, captured here — every engine call serializes on the app's
+// per-source lock (remote.go srcLock), f.c is swapped only on this
+// goroutine, and DialFTP publishes the engine only after constructing
+// it — so a timed-out attempt still unwinding inside bound can never
+// touch the redialed successor connection.
+func withRetry[T any](f *FTP, ctx context.Context, op func(c *ftp.ServerConn) (T, error)) (T, error) {
+	v, err := op(f.c)
 	if err == nil || !(isConnErr(err) || errors.Is(err, errFTPEntryUnreliable)) {
 		return v, err
 	}
@@ -164,11 +191,32 @@ func withRetry[T any](f *FTP, ctx context.Context, op func() (T, error)) (T, err
 		return v, err // the original connection error is the honest one
 	}
 	f.c = c
-	return op()
+	return op(c)
 }
 
 func (f *FTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 	parent := CleanPath(dir)
+	d := ftpCmdTimeout
+	return withRetry(f, ctx, func(c *ftp.ServerConn) ([]listing.Entry, error) {
+		return listOn(ctx, c, d, f.abs(dir), parent)
+	})
+}
+
+// listOn is the hardened listing against one live connection — the body
+// of List and of every level of a recursive wipe (removeDir), so both
+// get the same empty-listing handling. An empty listing is ambiguous
+// twice over. A data connection that closes early truncates LIST to an
+// empty success — the scanner cannot tell an aborted stream from a
+// completed one, and vsftpd's three-port pasv range drops data
+// connections under churn — and vsftpd answers LIST on a MISSING
+// directory the same empty way, with the control-channel 550 arriving
+// too late for the parser. Both read as "no children" to every caller,
+// which inverts the safety of deletes and transfer planners: a wipe
+// scoped to a glitched path reports a no-op success. One retry absorbs
+// the transient; the stat then separates "gone" (550) from honestly
+// empty. Every command rides bound, so a channel that stopped answering
+// breaks at the deadline instead of hanging the caller.
+func listOn(ctx context.Context, c *ftp.ServerConn, d time.Duration, abs, parent string) ([]listing.Entry, error) {
 	filter := func(raw []*ftp.Entry) []listing.Entry {
 		entries := make([]listing.Entry, 0, len(raw))
 		for _, e := range raw {
@@ -179,39 +227,26 @@ func (f *FTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 		}
 		return entries
 	}
-	return withRetry(f, ctx, func() ([]listing.Entry, error) {
-		raw, err := f.c.List(f.abs(dir))
-		if err != nil {
-			return nil, err
+	raw, err := bound(ctx, c, d, func() ([]*ftp.Entry, error) { return c.List(abs) })
+	if err != nil {
+		return nil, err
+	}
+	entries := filter(raw)
+	if len(entries) == 0 {
+		if again, rerr := bound(ctx, c, d, func() ([]*ftp.Entry, error) { return c.List(abs) }); rerr == nil {
+			entries = filter(again)
 		}
-		entries := filter(raw)
 		if len(entries) == 0 {
-			// An empty listing is ambiguous twice over. A data connection
-			// that closes early truncates LIST to an empty success — the
-			// scanner cannot tell an aborted stream from a completed one,
-			// and vsftpd's three-port pasv range drops data connections
-			// under churn — and vsftpd answers LIST on a MISSING directory
-			// the same empty way, with the control-channel 550 arriving
-			// too late for the parser. Both read as "no children" to every
-			// caller, which inverts the safety of deletes and transfer
-			// planners: a wipe scoped to a glitched path reports a no-op
-			// success. One retry absorbs the transient; the stat then
-			// separates "gone" (550) from honestly empty.
-			if again, rerr := f.c.List(f.abs(dir)); rerr == nil {
-				entries = filter(again)
-			}
-			if len(entries) == 0 {
-				if _, gerr := ftpGetEntry(f.c, f.abs(dir)); gerr != nil {
-					if is550(gerr) {
-						return nil, &fs.PathError{Op: "list", Path: parent, Err: fs.ErrNotExist}
-					}
-					return nil, gerr
+			if _, gerr := ftpGetEntry(ctx, c, d, abs); gerr != nil {
+				if is550(gerr) {
+					return nil, &fs.PathError{Op: "list", Path: parent, Err: fs.ErrNotExist}
 				}
+				return nil, gerr
 			}
 		}
-		listing.SortEntries(entries)
-		return entries, nil
-	})
+	}
+	listing.SortEntries(entries)
+	return entries, nil
 }
 
 // ftpGetEntry stats one path. jlaffaye's GetEntry needs server-side MLST
@@ -227,11 +262,11 @@ func (f *FTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 // transfer's staging file stranded on the server.
 var errFTPEntryUnreliable = errors.New("ftp: entry probe unreliable")
 
-func ftpGetEntry(c *ftp.ServerConn, absPath string) (*ftp.Entry, error) {
+func ftpGetEntry(ctx context.Context, c *ftp.ServerConn, d time.Duration, absPath string) (*ftp.Entry, error) {
 	if strings.TrimSuffix(absPath, "/") == "" {
 		return &ftp.Entry{Type: ftp.EntryTypeFolder, Name: "/"}, nil // the root
 	}
-	e, err := c.GetEntry(absPath)
+	e, err := bound(ctx, c, d, func() (*ftp.Entry, error) { return c.GetEntry(absPath) })
 	if err == nil {
 		return e, nil
 	}
@@ -240,15 +275,18 @@ func ftpGetEntry(c *ftp.ServerConn, absPath string) (*ftp.Entry, error) {
 	if parent == "" {
 		parent = "/" // never a bare LIST — that reads the connection's CWD, which earlier engine ops may have moved
 	}
-	entries, lerr := c.List(parent)
+	list := func() ([]*ftp.Entry, error) {
+		return bound(ctx, c, d, func() ([]*ftp.Entry, error) { return c.List(parent) })
+	}
+	entries, lerr := list()
 	if lerr == nil && len(entries) == 0 {
 		// An empty parent listing is ambiguous — an honestly empty parent
-		// or a data connection that closed early (see List) — and the
+		// or a data connection that closed early (see listOn) — and the
 		// basename match below would turn the transient into a false
 		// "no such file" for a live path. One retry before declaring the
 		// path missing; Remove's pre-check and Mkdir's exists-tolerance
 		// both route through here.
-		entries, lerr = c.List(parent)
+		entries, lerr = list()
 	}
 	if lerr != nil {
 		// A 550 on the parent listing means the parent is gone, so the
@@ -275,7 +313,7 @@ func ftpGetEntry(c *ftp.ServerConn, absPath string) (*ftp.Entry, error) {
 	// the file is real and the miss was the lie — this is what makes a
 	// canceled transfer's stage removable even when the listing that
 	// should show it reads empty.
-	if size, serr := c.FileSize(absPath); serr == nil {
+	if size, serr := bound(ctx, c, d, func() (int64, error) { return c.FileSize(absPath) }); serr == nil {
 		sz := uint64(0)
 		if size > 0 {
 			sz = uint64(size)
@@ -295,12 +333,13 @@ func is550(err error) bool {
 }
 
 func (f *FTP) Stat(ctx context.Context, p string) (listing.Entry, error) {
-	v, err := withRetry(f, ctx, func() (listing.Entry, error) {
-		e, err := ftpGetEntry(f.c, f.abs(CleanPath(p)))
+	cleaned := CleanPath(p)
+	d := ftpCmdTimeout
+	v, err := withRetry(f, ctx, func(c *ftp.ServerConn) (listing.Entry, error) {
+		e, err := ftpGetEntry(ctx, c, d, f.abs(cleaned))
 		if err != nil {
 			return listing.Entry{}, err
 		}
-		cleaned := CleanPath(p)
 		name := path.Base(strings.TrimSuffix(cleaned, "/"))
 		entry := ftpEntry(path.Dir(cleaned), e)
 		entry.Name = name
@@ -330,16 +369,20 @@ type ftpOpen struct {
 }
 
 func (f *FTP) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) {
-	v, err := withRetry(f, ctx, func() (ftpOpen, error) {
+	d := ftpCmdTimeout
+	v, err := withRetry(f, ctx, func(c *ftp.ServerConn) (ftpOpen, error) {
 		// SIZE must precede RETR: the server sends the transfer-complete
 		// reply (226) right after the data connection closes, and that reply
 		// would still sit unread on the control channel when SIZE is issued,
 		// desyncing it (the size would silently come back 0).
-		size, err := f.c.FileSize(f.abs(p))
-		if err != nil {
+		size, serr := bound(ctx, c, d, func() (int64, error) { return c.FileSize(f.abs(p)) })
+		if serr != nil && isConnErr(serr) {
+			return ftpOpen{}, serr // channel gone: redial, don't stream off a corpse
+		}
+		if serr != nil {
 			size = 0 // server refused SIZE (ASCII mode); stream without it
 		}
-		resp, err := f.c.Retr(f.abs(p))
+		resp, err := bound(ctx, c, d, func() (*ftp.Response, error) { return c.Retr(f.abs(p)) })
 		if err != nil {
 			return ftpOpen{}, err
 		}
@@ -348,9 +391,14 @@ func (f *FTP) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) 
 	return v.rc, v.size, err
 }
 
+// Create streams the upload with context-only bounding: a legitimate
+// Stor runs as long as the bytes take, so no fixed deadline can be
+// right — the force-break on caller cancellation is what lets a
+// canceled transfer actually tear down an in-flight FTP upload instead
+// of waiting out the stream.
 func (f *FTP) Create(ctx context.Context, p string, r io.Reader) error {
-	_, err := withRetry(f, ctx, func() (struct{}, error) {
-		return struct{}{}, f.c.Stor(f.abs(p), r)
+	_, err := withRetry(f, ctx, func(c *ftp.ServerConn) (struct{}, error) {
+		return struct{}{}, boundErr(ctx, c, 0, func() error { return c.Stor(f.abs(p), r) })
 	})
 	return err
 }
@@ -363,14 +411,15 @@ func (f *FTP) MkdirAll(ctx context.Context, dir string) error {
 	if cleaned == "/" {
 		return nil
 	}
-	_, err := withRetry(f, ctx, func() (struct{}, error) {
+	d := ftpCmdTimeout
+	_, err := withRetry(f, ctx, func(c *ftp.ServerConn) (struct{}, error) {
 		cur := ""
 		for _, seg := range strings.Split(strings.Trim(cleaned, "/"), "/") {
 			cur += "/" + seg
 			// Every segment is anchored at the source root — a bare path
 			// would create the tree at the server root instead.
-			if err := f.c.MakeDir(f.abs(cur)); err != nil {
-				e, statErr := ftpGetEntry(f.c, f.abs(cur))
+			if err := boundErr(ctx, c, d, func() error { return c.MakeDir(f.abs(cur)) }); err != nil {
+				e, statErr := ftpGetEntry(ctx, c, d, f.abs(cur))
 				if statErr != nil || e.Type != ftp.EntryTypeFolder {
 					return struct{}{}, fmt.Errorf("mkdir %s: %w", cur, err)
 				}
@@ -386,26 +435,30 @@ func (f *FTP) MkdirAll(ctx context.Context, dir string) error {
 // empty-listing retry, so the transient above reads as "no children" —
 // deletes by RELATIVE name against whatever directory the connection
 // happens to sit in, and leaves the pooled connection CWDed at the parent
-// when it returns. Walking with f.List instead means every level of the
+// when it returns. Walking with listOn instead means every level of the
 // wipe gets the retry, every delete targets an absolute path, and the
 // server's refusal to RMDIR a non-empty directory stays as the backstop
-// against a listing that still lied.
-func (f *FTP) removeDir(ctx context.Context, cleaned string) error {
-	entries, err := f.List(ctx, cleaned)
+// against a listing that still lied. Each command rides bound, so a
+// channel that died silently breaks at the deadline instead of hanging
+// the walk; the walk as a whole has no fixed budget (a tree's size is
+// not the engine's to guess) — the caller's context gates it between
+// commands.
+func (f *FTP) removeDir(ctx context.Context, c *ftp.ServerConn, d time.Duration, cleaned string) error {
+	entries, err := listOn(ctx, c, d, f.abs(cleaned), cleaned)
 	if err != nil {
 		return err
 	}
 	for _, e := range entries {
 		child := path.Join(cleaned, e.Name)
 		if e.IsDir {
-			if err := f.removeDir(ctx, child); err != nil {
+			if err := f.removeDir(ctx, c, d, child); err != nil {
 				return err
 			}
-		} else if err := f.c.Delete(f.abs(child)); err != nil {
+		} else if err := boundErr(ctx, c, d, func() error { return c.Delete(f.abs(child)) }); err != nil {
 			return err
 		}
 	}
-	return f.c.RemoveDir(f.abs(cleaned))
+	return boundErr(ctx, c, d, func() error { return c.RemoveDir(f.abs(cleaned)) })
 }
 
 func (f *FTP) Remove(ctx context.Context, p string) error {
@@ -413,15 +466,16 @@ func (f *FTP) Remove(ctx context.Context, p string) error {
 	if cleaned == "/" {
 		return fmt.Errorf("refusing to remove the source root")
 	}
-	_, err := withRetry(f, ctx, func() (struct{}, error) {
-		e, err := ftpGetEntry(f.c, f.abs(cleaned))
+	d := ftpCmdTimeout
+	_, err := withRetry(f, ctx, func(c *ftp.ServerConn) (struct{}, error) {
+		e, err := ftpGetEntry(ctx, c, d, f.abs(cleaned))
 		if err != nil {
 			return struct{}{}, err
 		}
 		if e.Type == ftp.EntryTypeFolder {
-			return struct{}{}, f.removeDir(ctx, cleaned)
+			return struct{}{}, f.removeDir(ctx, c, d, cleaned)
 		}
-		return struct{}{}, f.c.Delete(f.abs(cleaned))
+		return struct{}{}, boundErr(ctx, c, d, func() error { return c.Delete(f.abs(cleaned)) })
 	})
 	// A clean miss arrives as a raw 550; map it to fs.ErrNotExist so
 	// callers (rm --force, idempotent re-runs, the transfer discard)
@@ -433,13 +487,21 @@ func (f *FTP) Rename(ctx context.Context, oldp, newp string) error {
 	if CleanPath(newp) == "/" {
 		return fmt.Errorf("invalid target")
 	}
-	_, err := withRetry(f, ctx, func() (struct{}, error) {
-		return struct{}{}, f.c.Rename(f.abs(oldp), f.abs(newp))
+	d := ftpCmdTimeout
+	_, err := withRetry(f, ctx, func(c *ftp.ServerConn) (struct{}, error) {
+		return struct{}{}, boundErr(ctx, c, d, func() error { return c.Rename(f.abs(oldp), f.abs(newp)) })
 	})
 	return err
 }
 
+// Close is bounded like any other command: Logout is a full REIN round
+// trip and wedges on a dead channel exactly like LIST would, and an
+// engine pool shutdown must never hang on a corpse. Quit itself never
+// blocks on a reply — it is the write-plus-Close the force-breaker
+// already leans on.
 func (f *FTP) Close() error {
-	_ = f.c.Logout()
-	return f.c.Quit()
+	c := f.c
+	d := ftpCmdTimeout
+	_ = boundErr(context.Background(), c, d, func() error { return c.Logout() })
+	return c.Quit()
 }

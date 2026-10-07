@@ -36,6 +36,12 @@ func connDead(err error) bool {
 		errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ETIMEDOUT) {
 		return true
 	}
+	// The engine's own deadline verdict: it tore the connection down
+	// because the peer went silent — dead by the engine's hand, so the
+	// cache redials exactly as it would for a reset.
+	if errors.Is(err, remotefs.ErrCmdDeadline) {
+		return true
+	}
 	// The ssh/sftp stack (and some ftp paths) raise plain sentinel strings
 	// that carry no type to errors.Is against.
 	s := strings.ToLower(err.Error())

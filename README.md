@@ -161,6 +161,7 @@ Prebuilt artifacts are attached to every [`v*` release](https://github.com/Mikko
 - **[CLI quickstart](docs/cli-quickstart.md)** — connect, browse, transfer and the safety ladder, one guided page
 - **[CLI reference](docs/cli.md)** — every command, generated from the cobra tree
 - **[Build from source](docs/build.md)** — every flavor: Windows, Linux, macOS, headless CLI, browser-driven
+- **[Server mode guide](docs/server.md)** — the app windowless, served over HTTP: run it, reach it from a browser tab, expose it safely, keep it running as a service
 - **[Security model](docs/security.md)** — keyring, Secure Storage, safety ladder, supply chain
 - **[Code signing guide](docs/signing.md)** — what to acquire for Authenticode, notarization and checksums, and where each plugs into the release
 - **[Verification reports](docs/verification/)** — per-release evidence: the build, the OS, and the full action-verification matrix behind every tag

@@ -5,6 +5,63 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions
 follow [Semantic Versioning](https://semver.org/).
 
 ## [1.2.0-beta.3] — 2026-10-07
+### Fixed
+
+- **FTP: a silently dead control channel can no longer hang the engine
+  forever** — jlaffaye/ftp's commands take no context, so a peer that
+  vanished without a FIN or an RST (an expired NAT mapping, a container
+  that disappeared mid-session) left the reply read blocked for the
+  life of the process: no error, no retry, and in the GUI a navigation
+  that had already painted its breadcrumb but never settled its
+  listing. Every FTP command round-trip now rides a 15-second
+  force-break (the same budget the dial options and the WebDAV engine
+  use): at the deadline the engine closes the socket — the blocked
+  read unblocks immediately — classifies the break exactly like a 421
+  or an EOF, and the existing one-redial policy answers on a fresh
+  connection; a canceled transfer context now tears down an in-flight
+  upload the same way. Recursive wipes and uploads keep a
+  caller-scoped budget (a tree's size is not the engine's to guess)
+  while every individual command inside them stays bounded. Covered
+  by an in-process FTP server that wedges its first listing and must
+  recover inside one deadline span, plus the force-breaker's own
+  pass-through/deadline/cancel contract.
+
+- **SFTP: the same silent-death class, closed with the same tool** —
+  pkg/sftp's requests carry no per-command deadline either, so a
+  peer that vanished mid-session left the reply wait blocked
+  forever; the engine now rides the same force-breaker the FTP
+  engine built (one deadline machinery, shared): every request
+  round-trip gets the 15-second budget, the subsystem handshake and
+  the home-directory query at dial get it too (both run under the
+  engine-cache lock, where a wedged dial would freeze every
+  source's resolution), and at the deadline the transport is closed
+  — the blocked request unblocks immediately — with the verdict
+  classified exactly like a reset, so the engine cache's healing
+  redial answers on a fresh connection. Recursive walks and uploads
+  keep a caller-scoped budget while the caller's context finally
+  has teeth there too: a canceled transfer tears the transport down
+  mid-copy. Covered by an in-process SSH server that wedges right
+  after the version exchange and must return the deadline verdict
+  inside one span, plus the classifier case that turns that verdict
+  into a redial.
+
+## [Unreleased]
+
+### Added
+
+- **Server mode guide** — the windowless build (`-tags server`) now
+  has a guide of its own (docs/server.md): the two environment
+  variables that steer the listener, the `/health` probe, remote
+  access with the firewall leg, and — the part that had never been
+  written down straight — the trust model: no authentication, no TLS,
+  and "local disk" meaning the host's disk, with SSH-tunnel,
+  reverse-proxy and trusted-LAN as the three safe exposures, plus
+  secrets on a keyring-less host (`S3B_NO_KEYRING=1`), systemd and
+  Task Scheduler service recipes, the desktop/server difference table
+  (popouts, drag-out's loopback-URL reach, clipboard focus) and a
+  troubleshooting table. README, build.md and the usage guide carry
+  the pointers.
+
 
 ### Added
 

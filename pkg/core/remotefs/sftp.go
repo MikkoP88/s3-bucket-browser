@@ -35,6 +35,25 @@ type SFTP struct {
 	root string // absolute remote path of the source root (no trailing slash)
 }
 
+// sftpCmdTimeout bounds one SFTP request round-trip — the same 15 seconds
+// the dial options use. pkg/sftp's requests carry no per-command
+// deadline, so without a bound a silently dead peer (a NAT mapping that
+// expired, a container that vanished mid-session — no FIN, no RST,
+// nothing) leaves the reply wait blocked forever: no error is ever
+// returned and the engine call hangs for the life of the process. A var
+// so tests can shorten it; every reader captures it once, on the
+// caller's goroutine, so a test's swap can never race a running command
+// (the discipline the retire grace learned the hard way).
+var sftpCmdTimeout = 15 * time.Second
+
+// sftpBreaker adapts the SSH transport to the force-breaker surface
+// bound needs. Quit closes the transport: every channel dies with it
+// and the sftp client's waiters unblock immediately — the same ordering
+// Close itself relies on (transport first, then the client's own Close).
+type sftpBreaker struct{ conn *ssh.Client }
+
+func (b sftpBreaker) Quit() error { return b.conn.Close() }
+
 // DialSFTP connects to src (sftp or scp) and anchors "/" at src.Root (the
 // account home directory when Root is empty).
 func DialSFTP(ctx context.Context, src profile.Source) (FS, error) {
@@ -92,7 +111,14 @@ func DialSFTP(ctx context.Context, src profile.Source) (FS, error) {
 		return nil, fmt.Errorf("sftp %s: %w", addr, err)
 	}
 	conn := ssh.NewClient(cc, chans, reqs)
-	sc, err := sftp.NewClient(conn)
+	brk := sftpBreaker{conn}
+	// The subsystem handshake and the home-directory query ride the same
+	// deadline as any command: both run under the app's engine-cache
+	// lock, so a peer that wedges mid-handshake must fail the dial fast
+	// instead of freezing every source's engine resolution.
+	sc, err := bound(ctx, brk, sftpCmdTimeout, func() (*sftp.Client, error) {
+		return sftp.NewClient(conn)
+	})
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("sftp %s: %w", addr, err)
@@ -100,7 +126,7 @@ func DialSFTP(ctx context.Context, src profile.Source) (FS, error) {
 
 	root := strings.TrimRight(src.Root, "/")
 	if root == "" {
-		if wd, err := sc.Getwd(); err == nil && wd != "" {
+		if wd, err := bound(ctx, brk, sftpCmdTimeout, func() (string, error) { return sc.Getwd() }); err == nil && wd != "" {
 			root = wd
 		}
 	}
@@ -139,7 +165,9 @@ func sftpEntry(dir, name string, info os.FileInfo) listing.Entry {
 }
 
 func (s *SFTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
-	infos, err := s.c.ReadDir(s.abs(dir))
+	infos, err := bound(ctx, sftpBreaker{s.conn}, sftpCmdTimeout, func() ([]os.FileInfo, error) {
+		return s.c.ReadDir(s.abs(dir))
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +183,9 @@ func (s *SFTP) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 
 func (s *SFTP) Stat(ctx context.Context, p string) (listing.Entry, error) {
 	cleaned := CleanPath(p)
-	info, err := s.c.Stat(s.abs(cleaned))
+	info, err := bound(ctx, sftpBreaker{s.conn}, sftpCmdTimeout, func() (os.FileInfo, error) {
+		return s.c.Stat(s.abs(cleaned))
+	})
 	if err != nil {
 		return listing.Entry{}, err
 	}
@@ -164,11 +194,17 @@ func (s *SFTP) Stat(ctx context.Context, p string) (listing.Entry, error) {
 }
 
 func (s *SFTP) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) {
-	f, err := s.c.Open(s.abs(p))
+	// The handshake (open + stat) rides the command deadline; the stream
+	// it returns is the caller's to pace — the same shape as FTP's Retr.
+	f, err := bound(ctx, sftpBreaker{s.conn}, sftpCmdTimeout, func() (*sftp.File, error) {
+		return s.c.Open(s.abs(p))
+	})
 	if err != nil {
 		return nil, 0, err
 	}
-	info, err := f.Stat()
+	info, err := bound(ctx, sftpBreaker{s.conn}, sftpCmdTimeout, func() (os.FileInfo, error) {
+		return f.Stat()
+	})
 	if err != nil {
 		f.Close()
 		return nil, 0, err
@@ -181,26 +217,40 @@ func (s *SFTP) Open(ctx context.Context, p string) (io.ReadCloser, int64, error)
 }
 
 func (s *SFTP) Create(ctx context.Context, p string, r io.Reader) error {
-	f, err := s.c.Create(s.abs(p))
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	// Context-only bounding: an upload's legitimate duration is
+	// unknowable, but a canceled transfer context tears the transport —
+	// and with it the in-flight copy — down immediately.
+	return boundErr(ctx, sftpBreaker{s.conn}, 0, func() error {
+		f, err := s.c.Create(s.abs(p))
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(f, r); err != nil {
+			f.Close()
+			return err
+		}
+		return f.Close()
+	})
 }
 
+// MkdirAll and Remove walk server-side trees through pkg/sftp's own
+// multi-request internals, so they ride context-only bounding — a walk's
+// legitimate duration is unknowable (caller-scoped, exactly like FTP's
+// recursive wipe), and a canceled context still tears the whole walk
+// down mid-request.
 func (s *SFTP) MkdirAll(ctx context.Context, dir string) error {
-	return s.c.MkdirAll(s.abs(dir))
+	return boundErr(ctx, sftpBreaker{s.conn}, 0, func() error {
+		return s.c.MkdirAll(s.abs(dir))
+	})
 }
 
 func (s *SFTP) Remove(ctx context.Context, p string) error {
 	if CleanPath(p) == "/" {
 		return errors.New("refusing to remove the source root")
 	}
-	return s.c.RemoveAll(s.abs(p))
+	return boundErr(ctx, sftpBreaker{s.conn}, 0, func() error {
+		return s.c.RemoveAll(s.abs(p))
+	})
 }
 
 func (s *SFTP) Rename(ctx context.Context, oldp, newp string) error {
@@ -208,11 +258,15 @@ func (s *SFTP) Rename(ctx context.Context, oldp, newp string) error {
 		return errors.New("invalid target")
 	}
 	// posix-rename overwrites the target (Explorer semantics); plain
-	// rename is the fallback for servers without the extension.
-	if err := s.c.PosixRename(s.abs(oldp), s.abs(newp)); err == nil {
-		return nil
-	}
-	return s.c.Rename(s.abs(oldp), s.abs(newp))
+	// rename is the fallback for servers without the extension. The pair
+	// shares one budget — a fallback that never starts because the posix
+	// attempt hung is not a fallback.
+	return boundErr(ctx, sftpBreaker{s.conn}, sftpCmdTimeout, func() error {
+		if err := s.c.PosixRename(s.abs(oldp), s.abs(newp)); err == nil {
+			return nil
+		}
+		return s.c.Rename(s.abs(oldp), s.abs(newp))
+	})
 }
 
 func (s *SFTP) Close() error {

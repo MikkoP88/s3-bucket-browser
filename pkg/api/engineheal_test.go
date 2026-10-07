@@ -7,6 +7,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -134,6 +135,10 @@ func TestConnDeadClassifier(t *testing.T) {
 		errors.New("ftp: control connection closed"),
 		errors.New("dial tcp: connection refused"),
 		errors.New("read: i/o timeout"),
+		// The engine's own force-break verdict — the cache must redial on
+		// it or every later op speaks to a deliberately torn corpse.
+		remotefs.ErrCmdDeadline,
+		fmt.Errorf("list %s: %w", "/dir", remotefs.ErrCmdDeadline),
 	}
 	for _, err := range dead {
 		if !connDead(err) {

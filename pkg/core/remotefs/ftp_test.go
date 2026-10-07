@@ -11,6 +11,7 @@ package remotefs
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -47,7 +48,7 @@ func startTestFTPServerMode(t *testing.T, mlst bool) (host string, port int, sto
 			if err != nil {
 				return
 			}
-			go serveFTPTestConn(conn, mlst)
+			go serveFTPTestConn(conn, mlst, false)
 		}
 	}()
 	addr := ln.Addr().(*net.TCPAddr)
@@ -55,6 +56,41 @@ func startTestFTPServerMode(t *testing.T, mlst bool) (host string, port int, sto
 		ln.Close()
 		<-done
 	}
+}
+
+// startTestFTPServerWedge serves normally except the FIRST control
+// session, which wedges on its first data-channel opener: EPSV/PASV
+// (and any listing attempt) is read and never answered — the silent
+// half-dead channel of a dropped NAT mapping, where the reply read on
+// the client blocks forever and no error ever comes back. count()
+// reports accepted sessions so the redial is provable.
+func startTestFTPServerWedge(t *testing.T) (host string, port int, count func() int, stop func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns int
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns++
+			wedge := conns == 1
+			mu.Unlock()
+			go serveFTPTestConn(conn, true, wedge)
+		}
+	}()
+	addr := ln.Addr().(*net.TCPAddr)
+	return addr.IP.String(), addr.Port,
+		func() int { mu.Lock(); defer mu.Unlock(); return conns },
+		func() { ln.Close(); <-done }
 }
 
 // startTestFTPServerSessions is startTestFTPServerMode plus live control
@@ -81,7 +117,7 @@ func startTestFTPServerSessions(t *testing.T, mlst bool) (host string, port int,
 			mu.Lock()
 			conns = append(conns, conn)
 			mu.Unlock()
-			go serveFTPTestConn(conn, mlst)
+			go serveFTPTestConn(conn, mlst, false)
 		}
 	}()
 	addr := ln.Addr().(*net.TCPAddr)
@@ -118,17 +154,19 @@ type ftpTestSession struct {
 	authed bool
 	rnfr   string
 	mlst   bool // advertise MLST/MLSD and answer MLST
+	wedge  bool // die silently on the first data-channel opener
 	dataLn net.Listener
 }
 
-func serveFTPTestConn(conn net.Conn, mlst bool) {
+func serveFTPTestConn(conn net.Conn, mlst bool, wedge bool) {
 	defer conn.Close()
 	s := &ftpTestSession{
-		c:    conn,
-		br:   bufio.NewReader(conn),
-		bw:   bufio.NewWriter(conn),
-		cwd:  "/",
-		mlst: mlst,
+		c:     conn,
+		br:    bufio.NewReader(conn),
+		bw:    bufio.NewWriter(conn),
+		cwd:   "/",
+		mlst:  mlst,
+		wedge: wedge,
 	}
 	s.reply("220 s3b test ftpd ready")
 	for {
@@ -209,6 +247,10 @@ func (s *ftpTestSession) handle(verb, arg string) (quit bool) {
 		s.cwd = path.Dir(s.cwd)
 		s.reply("250 directory changed")
 	case "EPSV", "PASV":
+		if s.wedge {
+			s.wedgeForever()
+			return false
+		}
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			s.reply("425 cannot open data connection")
@@ -478,6 +520,113 @@ func TestFTPRedialAfterControlDrop(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "after-redial.txt")); err != nil {
 		t.Fatalf("the post-redial write never landed: %v", err)
+	}
+}
+
+// wedgeForever impersonates a silently dead channel: commands keep
+// arriving and are read, but no reply ever leaves — the client's reply
+// read blocks until the engine's command deadline force-closes the
+// socket.
+func (s *ftpTestSession) wedgeForever() {
+	for {
+		if _, err := s.br.ReadString('\n'); err != nil {
+			return // the engine's Quit closed us; the session ends
+		}
+	}
+}
+
+// A control channel that dies SILENTLY — the peer vanishes without a
+// FIN or an RST (an expired NAT mapping, a vanished container) — never
+// returns an error at all: the reply read blocks forever, no retry ever
+// fires, and the engine call hangs for the life of the process. That is
+// exactly the field shape behind stalled navigation listings against an
+// idle-dropped FTP source: the command deadline force-breaks the wedged
+// read (Quit closes the socket, the blocked read unblocks), the
+// synthesized deadline error classifies as connection-gone, and the
+// redial answers on a fresh channel — the whole recovery lands inside
+// one deadline span.
+func TestFTPCommandDeadlineBreaksSilentWedge(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "readme.md"), []byte("over ftp"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host, port, count, stop := startTestFTPServerWedge(t)
+	defer stop()
+
+	save := ftpCmdTimeout
+	ftpCmdTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { ftpCmdTimeout = save })
+
+	fs := dialTestFTP(t, host, port, root) // login fine; the wedge strikes the first listing
+	start := time.Now()
+	entries, err := fs.List(context.Background(), "/")
+	if err != nil {
+		t.Fatalf("list through the wedged channel: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "readme.md" {
+		t.Fatalf("post-recovery listing: %+v", entries)
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("expected the deadline to force exactly one redial (2 sessions), saw %d", n)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("recovery took %s — the deadline did not break the wedge fast", d)
+	}
+}
+
+// bound's contract on its own: a fast command passes straight through
+// untouched; a wedged one is broken at the deadline with the connection
+// force-closed and the error classified for the redial; a wedged one
+// under a canceled context is broken the same way with the caller's
+// context error.
+type wedgeQuitter struct {
+	once   sync.Once
+	quitCh chan struct{}
+}
+
+func (w *wedgeQuitter) Quit() error { w.once.Do(func() { close(w.quitCh) }); return nil }
+
+func TestBoundPassthroughDeadlineAndCancel(t *testing.T) {
+	q := &wedgeQuitter{quitCh: make(chan struct{})}
+	v, err := bound(context.Background(), q, time.Minute, func() (int, error) { return 7, nil })
+	if err != nil || v != 7 {
+		t.Fatalf("passthrough: v=%d err=%v", v, err)
+	}
+	select {
+	case <-q.quitCh:
+		t.Fatal("a healthy command must not be force-broken")
+	default:
+	}
+
+	wedged := func() (int, error) { <-make(chan struct{}); return 0, nil } // never settles
+	start := time.Now()
+	_, err = bound(context.Background(), q, 60*time.Millisecond, wedged)
+	if !errors.Is(err, errFTPDeadline) {
+		t.Fatalf("deadline break err = %v", err)
+	}
+	if !isConnErr(err) {
+		t.Fatal("the deadline error must classify as connection-gone (the redial path)")
+	}
+	select {
+	case <-q.quitCh:
+	default:
+		t.Fatal("the wedged command's connection was never force-closed")
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("break took %s", d)
+	}
+
+	q2 := &wedgeQuitter{quitCh: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	go cancel()
+	_, err = bound(ctx, q2, time.Minute, wedged)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel break err = %v", err)
+	}
+	select {
+	case <-q2.quitCh:
+	default:
+		t.Fatal("cancellation must force-close the connection too")
 	}
 }
 

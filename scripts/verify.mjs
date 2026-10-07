@@ -2658,6 +2658,49 @@ async function guiBattery() {
         const c = await cli(['cp', '-r', path.join(FIX, 'data'), `xf://${RUNID}/gui`, '--json']);
         need(c.code === 0, `prologue: FTP seed cp failed: ${String(c.out || '')}${String(c.err || '')}`.slice(0, 300));
       }
+      // Cross-run residue: the rig's FTP root is shared by every
+      // battery run (the container keeps its filesystem between
+      // runs), so old RUNID trees and half-deleted del65-/nf66-
+      // folders pile up — deeper root listings, more scroll-window
+      // distance for the enter oracle, more stale-row traps. Purge
+      // everything that is not this run's tree, best-effort: with
+      // the engine's command deadline every rm -r is bounded even
+      // against a wedged channel.
+      const rootList = await cli(['ls', 'xf://', '--json']).catch(() => ({ out: '' }));
+      let staleDirs = [];
+      try {
+        staleDirs = (JSON.parse(String(rootList.out || '[]')) || [])
+          .map((e) => String(e.name || '').trim())
+          .filter((n) => n && n !== RUNID);
+      } catch { /* unparseable listing: skip the purge */ }
+      for (const name of staleDirs) {
+        await cli(['rm', '-r', `xf://${name}`]).catch(() => {});
+      }
+    }
+  }
+
+  {
+    // The SFTP rig's /upload root is shared the same way the FTP
+    // container's is (the failed-run folders the battery saw in the
+    // GUI-74 rows dump), so it gets the same best-effort purge
+    // through a throwaway source. Every SFTP seed carries this
+    // run's RUNID in its top folder name — keep those, remove
+    // everything else; with the engine's command deadline each
+    // rm -r is bounded even against a wedged channel.
+    if (await portOpen(SFTP_PORT)) {
+      const P = 'verify-sf-purge';
+      await cli(['source', 'add', P, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+      const rl = await cli(['ls', `${P}://`, '--json']).catch(() => ({ out: '' }));
+      let staleSf = [];
+      try {
+        staleSf = (JSON.parse(String(rl.out || '[]')) || [])
+          .map((e) => String(e.name || '').replace(/\/$/, '').trim())
+          .filter((n) => n && !n.includes(RUNID));
+      } catch { /* unparseable listing: skip the purge */ }
+      for (const name of staleSf) {
+        await cli(['rm', '-r', `${P}://${name}`]).catch(() => {});
+      }
+      await cli(['source', 'remove', P]).catch(() => {});
     }
   }
 
@@ -4666,7 +4709,11 @@ async function guiBattery() {
         }, label).catch(() => false);
         await sleep(300);
         return false;
-      }, 25000, `inside ${label} (its ${childNeedle} row visible)`);
+      // 35s: the engine now force-breaks a wedged FTP listing at its
+      // 15s command deadline and redials, so the oracle must outlast
+      // one full break-and-recover cycle with headroom (25s sat
+      // right on top of it).
+      }, 35000, `inside ${label} (its ${childNeedle} row visible)`);
     } catch (e) {
       // one-line state dump + screenshot: a covered row starves the
       // dblclick and the bare timeout says nothing about WHY (run 4 was
