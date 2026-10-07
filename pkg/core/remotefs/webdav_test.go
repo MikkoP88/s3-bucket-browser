@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -284,5 +286,122 @@ func TestWebDAVAuthAccepted(t *testing.T) {
 	defer f.Close()
 	if _, err := f.List(context.Background(), "/"); err != nil {
 		t.Fatalf("list root: %v", err)
+	}
+}
+
+// A peer that stops answering mid-session must not park the engine: the
+// metadata cap breaks the wait and the verdict is the shared deadline
+// sentinel the api layer's healing cache redials on. The server answers
+// exactly one request (the dial probe) and goes silent on every request
+// after it — no FIN, no RST, just a handler that never writes.
+func TestWebDAVCommandDeadlineBreaksSilentWedge(t *testing.T) {
+	var served atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if served.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprint(w, `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>`)
+			return
+		}
+		<-r.Context().Done() // the wedge: hold the request open, answer nothing
+	}))
+	t.Cleanup(srv.Close)
+
+	host, port, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")
+	p, _ := strconv.Atoi(port)
+	src := profile.Source{Name: "dav", Type: profile.TypeWebDAV, Host: host, Port: p}
+
+	old := davCmdTimeout
+	davCmdTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { davCmdTimeout = old })
+
+	fs, err := DialWebDAV(context.Background(), src) // the dial completes — the wedge is mid-session
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer fs.Close()
+
+	start := time.Now()
+	if _, err := fs.List(context.Background(), "/"); !errors.Is(err, ErrCmdDeadline) {
+		t.Fatalf("List under a wedged server = %v, want the command-deadline verdict", err)
+	}
+	if el := time.Since(start); el > 5*time.Second {
+		t.Fatalf("the break took %v — the deadline never fired", el)
+	}
+	// The verdict repeats fast on the next op: the engine never parks, and
+	// the redial is the api layer's answer to exactly this sentinel.
+	if _, err := fs.Stat(context.Background(), "/x"); !errors.Is(err, ErrCmdDeadline) {
+		t.Fatalf("Stat under a wedged server = %v, want the command-deadline verdict", err)
+	}
+}
+
+// Streams ride the caller's patience, not the metadata cap: a body that
+// legitimately outlives davCmdTimeout must still complete, because an
+// upload's or download's duration is not the engine's to guess.
+func TestWebDAVStreamsRideCallerPatience(t *testing.T) {
+	const probe = `<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/</D:href>
+    <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+  </D:response>
+</D:multistatus>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "PROPFIND":
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprint(w, probe)
+		case "PUT":
+			time.Sleep(250 * time.Millisecond) // slower than the swapped cap
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusCreated)
+		case "GET":
+			w.Header().Set("Content-Length", "30")
+			for i := 0; i < 3; i++ {
+				_, _ = w.Write([]byte("0123456789"))
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				time.Sleep(120 * time.Millisecond)
+			}
+		default:
+			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	host, port, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")
+	p, _ := strconv.Atoi(port)
+	src := profile.Source{Name: "dav", Type: profile.TypeWebDAV, Host: host, Port: p}
+
+	old := davCmdTimeout
+	davCmdTimeout = 100 * time.Millisecond // a stream outliving this must still finish
+	t.Cleanup(func() { davCmdTimeout = old })
+
+	fs, err := DialWebDAV(context.Background(), src)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer fs.Close()
+	ctx := context.Background()
+
+	// Upload: the PUT (handler slower than the cap) completes anyway.
+	if err := fs.Create(ctx, "/slow.bin", strings.NewReader("payload beyond the cap")); err != nil {
+		t.Fatalf("Create outliving the metadata cap = %v — streams must ride the caller's patience", err)
+	}
+	// Download: the GET body (three flushed chunks, 360 ms) reads whole.
+	rc, _, err := fs.Open(ctx, "/slow.bin")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	b, rerr := io.ReadAll(rc)
+	rc.Close()
+	if rerr != nil || string(b) != "012345678901234567890123456789" {
+		t.Fatalf("streamed body = %q err = %v — the cap must not cut a live stream", b, rerr)
 	}
 }

@@ -45,6 +45,30 @@ follow [Semantic Versioning](https://semver.org/).
   inside one span, plus the classifier case that turns that verdict
   into a redial.
 
+- **WebDAV: the same verdict, closed the HTTP way** — the engine
+  threads the caller's context into every request (net/http honors
+  it end to end), so cancel always had teeth there, but no command
+  carried a budget: a CLI path rides a context with no deadline at
+  all (a silently wedged peer hung it for the life of the process),
+  and a GUI listing paid the caller's whole patience budget per op,
+  failed with a deadline the healing contract deliberately ignores,
+  and repeated that forever — bounded per call, but never healing
+  and never ending. Every metadata round-trip now rides a 15-second
+  cap (PROPFIND, MKCOL per segment, MOVE, DELETE — request plus
+  body drain; the HTTP engine carries the context natively, so no
+  force-close is needed the way the FTP socket and the SSH
+  transport needed theirs), and when the cap fires while the
+  caller's own patience is unspent the verdict is the shared
+  deadline sentinel, classified like a reset so the engine cache's
+  redial answers with a fresh connection. Streams stay on the
+  caller's context alone — an upload's or download's duration is
+  not the engine's to guess, and cancel already has full teeth
+  over HTTP. Covered by a server that answers the dial probe and
+  goes silent on every request after it (List must return the
+  sentinel inside one span, the follow-up repeats fast), plus the
+  streams leg proving a body that outlives the cap still completes
+  whole.
+
 ## [Unreleased]
 
 ### Added

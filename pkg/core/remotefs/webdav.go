@@ -77,6 +77,37 @@ func davMapDialErr(err error) error {
 	return err
 }
 
+// davCmdTimeout bounds one WebDAV metadata round-trip (PROPFIND, MKCOL,
+// MOVE, DELETE — the request plus its response-body drain). The HTTP
+// engine carries the context end to end, so the cap needs no force-close
+// the way the FTP socket and the SSH transport needed theirs: the timeout
+// itself unblocks the wait against a silently dead peer (no FIN, no RST —
+// a vanished container, an expired NAT mapping). Streams (GET bodies, PUT
+// payloads) deliberately ride the caller's context alone: their
+// legitimate duration is unknowable, and a cancel there already has full
+// teeth over HTTP. A var so tests can shorten it; read once per command
+// in the caller's goroutine (the retire-grace discipline).
+var davCmdTimeout = 15 * time.Second
+
+// davCmd runs one metadata command under davCmdTimeout. When the cap
+// fires while the caller's own patience is unspent, the verdict becomes
+// the shared deadline sentinel — connDead classifies it like a reset, so
+// the engine cache's healing redial answers instead of every later op
+// parking behind the caller's full patience budget, failing, and
+// repeating forever. A caller deadline that fired first passes through
+// untouched (caller patience never redials).
+func davCmd[T any](ctx context.Context, fn func(context.Context) (T, error)) (T, error) {
+	budget := davCmdTimeout
+	cctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	v, err := fn(cctx)
+	if err == nil || ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+		return v, err
+	}
+	var zero T
+	return zero, ErrCmdDeadline
+}
+
 // urlFor builds the request URL for an anchored path under the source
 // root; escaping is handled by url.URL.
 func (d *WebDAV) urlFor(p string) *url.URL {
@@ -147,18 +178,22 @@ type davMultistatus struct {
 }
 
 // propfindDepth runs PROPFIND with the wanted Depth header and decodes the
-// multistatus body ("0" for one resource, "1" for a directory view).
+// multistatus body ("0" for one resource, "1" for a directory view). The
+// whole round-trip — request, response, and body decode — rides the
+// metadata cap.
 func (d *WebDAV) propfindDepth(ctx context.Context, p, depth string) ([]davResponse, error) {
-	resp, err := d.do(ctx, "PROPFIND", d.urlFor(p), nil, map[string]string{"Depth": depth})
-	if err != nil {
-		return nil, davNotExist(p, err)
-	}
-	defer resp.Body.Close()
-	var ms davMultistatus
-	if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {
-		return nil, fmt.Errorf("propfind %s: %w", CleanPath(p), err)
-	}
-	return ms.Response, nil
+	return davCmd(ctx, func(cctx context.Context) ([]davResponse, error) {
+		resp, err := d.do(cctx, "PROPFIND", d.urlFor(p), nil, map[string]string{"Depth": depth})
+		if err != nil {
+			return nil, davNotExist(p, err)
+		}
+		defer resp.Body.Close()
+		var ms davMultistatus
+		if err := xml.NewDecoder(resp.Body).Decode(&ms); err != nil {
+			return nil, fmt.Errorf("propfind %s: %w", CleanPath(p), err)
+		}
+		return ms.Response, nil
+	})
 }
 
 // davHrefPath unescapes a response href onto an anchored server path and
@@ -291,6 +326,9 @@ func (d *WebDAV) Stat(ctx context.Context, p string) (listing.Entry, error) {
 }
 
 func (d *WebDAV) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) {
+	// Caller's context only: the body this returns is the caller's to
+	// pace, so the metadata cap must not reach it (davCmdTimeout's
+	// comment owns the reasoning).
 	resp, err := d.do(ctx, "GET", d.urlFor(p), nil, nil)
 	if err != nil {
 		return nil, 0, davNotExist(p, err)
@@ -303,6 +341,8 @@ func (d *WebDAV) Open(ctx context.Context, p string) (io.ReadCloser, int64, erro
 }
 
 func (d *WebDAV) Create(ctx context.Context, p string, r io.Reader) error {
+	// Caller's context only, like Open's stream: an upload's duration is
+	// not the engine's to guess, and cancel has full teeth over HTTP.
 	resp, err := d.do(ctx, "PUT", d.urlFor(p), r, map[string]string{"Content-Type": "application/octet-stream"})
 	if err != nil {
 		return err
@@ -312,7 +352,8 @@ func (d *WebDAV) Create(ctx context.Context, p string, r io.Reader) error {
 }
 
 // MkdirAll creates dir segment by segment with MKCOL; 405 means the
-// collection already exists (RFC 4918 §9.3.1) and is skipped.
+// collection already exists (RFC 4918 §9.3.1) and is skipped. Each
+// segment's round-trip rides the metadata cap independently.
 func (d *WebDAV) MkdirAll(ctx context.Context, dir string) error {
 	cleaned := CleanPath(dir)
 	if cleaned == "/" {
@@ -321,33 +362,44 @@ func (d *WebDAV) MkdirAll(ctx context.Context, dir string) error {
 	cur := ""
 	for _, seg := range strings.Split(strings.Trim(cleaned, "/"), "/") {
 		cur += "/" + seg
-		resp, err := d.do(ctx, "MKCOL", d.urlFor(cur), nil, nil)
-		if err != nil {
+		if _, err := davCmd(ctx, func(cctx context.Context) (struct{}, error) {
+			resp, err := d.do(cctx, "MKCOL", d.urlFor(cur), nil, nil)
+			if err != nil {
+				return struct{}{}, err
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return struct{}{}, resp.Body.Close()
+		}); err != nil {
 			var se *davStatusError
 			if errors.As(err, &se) && se.code == 405 {
 				continue // exists
 			}
 			return fmt.Errorf("mkcol %s: %w", cur, davNotExist(cur, err))
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
 	}
 	return nil
 }
 
 // Remove deletes one file or a whole collection tree (a WebDAV DELETE on
-// a collection removes all members — RFC 4918 §9.6.1).
+// a collection removes all members — RFC 4918 §9.6.1). One request, one
+// metadata budget: a wedged peer breaks at the cap, and the sentinel it
+// returns lets the healing redial retry the (idempotent) delete once.
 func (d *WebDAV) Remove(ctx context.Context, p string) error {
 	cleaned := CleanPath(p)
 	if cleaned == "/" {
 		return fmt.Errorf("refusing to remove the source root")
 	}
-	resp, err := d.do(ctx, "DELETE", d.urlFor(cleaned), nil, nil)
-	if err != nil {
+	if _, err := davCmd(ctx, func(cctx context.Context) (struct{}, error) {
+		resp, err := d.do(cctx, "DELETE", d.urlFor(cleaned), nil, nil)
+		if err != nil {
+			return struct{}{}, err
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return struct{}{}, resp.Body.Close()
+	}); err != nil {
 		return davNotExist(cleaned, err)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.Body.Close()
+	return nil
 }
 
 // Rename moves within the server with MOVE (one request, no body); the
@@ -357,15 +409,20 @@ func (d *WebDAV) Rename(ctx context.Context, oldp, newp string) error {
 	if CleanPath(newp) == "/" {
 		return fmt.Errorf("invalid target")
 	}
-	resp, err := d.do(ctx, "MOVE", d.urlFor(oldp), nil, map[string]string{
-		"Destination": d.urlFor(newp).String(),
-		"Overwrite":   "T",
-	})
-	if err != nil {
+	if _, err := davCmd(ctx, func(cctx context.Context) (struct{}, error) {
+		resp, err := d.do(cctx, "MOVE", d.urlFor(oldp), nil, map[string]string{
+			"Destination": d.urlFor(newp).String(),
+			"Overwrite":   "T",
+		})
+		if err != nil {
+			return struct{}{}, err
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return struct{}{}, resp.Body.Close()
+	}); err != nil {
 		return davNotExist(oldp, err)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.Body.Close()
+	return nil
 }
 
 // Close is a no-op: the engine is stateless HTTP.
