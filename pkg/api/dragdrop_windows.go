@@ -369,6 +369,9 @@ func (a *App) dragOutRun(items []DragItem) error {
 		// other thread alone.
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
+		// The worker panic net (guard.go): the caller blocks on done — a
+		// panic must still answer it instead of hanging the fallback wait.
+		defer a.guardWorker("drag", func(err error) { done <- err })
 		_, err := a.dragOutLoop(items, "own-thread")
 		done <- err
 	}()

@@ -693,6 +693,7 @@ func markNonEmpty(nonEmpty map[string]bool, item int, rel string) {
 // runXfer executes the planned copies and (for moves) the source
 // deletions. One goroutine, mirroring runUpload's shape.
 func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy string, maxBPS int64, move bool, decisions map[string]string) {
+	defer a.guardJob("transfer", j) // the worker panic net (guard.go)
 	ctx := j.ctx
 
 	// Empty directories first (remote/local dests only; S3 has no real

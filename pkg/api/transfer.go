@@ -130,6 +130,7 @@ type jobHandle struct {
 	mu         sync.Mutex
 	info       JobInfo
 	src        string // source tag for log lines (bucket / source name)
+	finishing  bool   // set by finishJob: the first settle stands
 	ctx        context.Context
 	cancel     context.CancelFunc
 	start      time.Time
@@ -151,9 +152,20 @@ type jobManager struct {
 	all        []*jobHandle
 	seq        int
 	stallAfter time.Duration // Stalled threshold for NEW jobs (Settings → Transfers)
+	onPanic    func(string)  // heartbeat panic net (guard.go); App installs the hook
 }
 
 func newJobManager() *jobManager { return &jobManager{} }
+
+// recoverHeartbeat is the job heartbeat's slice of the worker panic net
+// (guard.go): the loop is a leaf (lock, stamp, emit), but a panic in it
+// must not take the process — report and let the row settle through its
+// own worker.
+func (m *jobManager) recoverHeartbeat() {
+	if e := recover(); e != nil {
+		logRegistryPanic(m.onPanic, "transfer", e)
+	}
+}
 
 func (m *jobManager) setContext(ctx context.Context) {
 	m.mu.Lock()
@@ -228,6 +240,7 @@ func (m *jobManager) add(op string, totalFiles int, totalBytes int64) *jobHandle
 // flag. It exits as soon as the job finishes (finishJob is the only
 // status transition, and it happens-before this read under j.mu).
 func (j *jobHandle) heartbeat() {
+	defer j.mgr.recoverHeartbeat() // the worker panic net (guard.go)
 	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	for range t.C {
@@ -605,6 +618,7 @@ func logDecisions(a *App, scope string, decisions map[string]string) {
 }
 
 func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs []uploadPair, policy string, decisions map[string]string, maxBPS int64) {
+	defer a.guardJob("upload", j) // the worker panic net (guard.go)
 	ctx := j.ctx
 	for i, p := range pairs {
 		if ctx.Err() != nil {
@@ -665,9 +679,16 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 }
 
 // finishJob stamps the final status, emits it and appends it to the local
-// transfer history log (JSONL M3).
+// transfer history log (JSONL M3). Idempotent: the first call wins, so a
+// worker that panics in a deferred cleanup AFTER settling (the guard's
+// finish, guard.go) cannot rewrite the row's real outcome.
 func (a *App) finishJob(j *jobHandle, status, errMsg string) {
 	j.mu.Lock()
+	if j.finishing {
+		j.mu.Unlock()
+		return
+	}
+	j.finishing = true
 	now := time.Now()
 	id, done, totalFiles, sentBytes, failedFiles, skipped :=
 		j.info.ID, j.info.DoneFiles, j.info.TotalFiles, j.info.SentBytes, j.info.FailedFiles, j.info.SkippedFiles
@@ -873,6 +894,7 @@ func downloadTitle(items []DownloadItem) string {
 }
 
 func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items []DownloadItem, destDir, policy string, decisions map[string]string, maxBPS int64) {
+	defer a.guardJob("download", j) // the worker panic net (guard.go)
 	ctx := j.ctx
 	for i, it := range items {
 		if ctx.Err() != nil {

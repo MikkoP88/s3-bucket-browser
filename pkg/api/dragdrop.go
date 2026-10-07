@@ -102,6 +102,11 @@ func (a *App) startDragStage(items []DragItem) *dragStage {
 	st := &dragStage{a: a, done: make(chan struct{})}
 	go func() {
 		defer close(st.done)
+		// The worker panic net (guard.go): the OLE data object's GetData
+		// waits on done — a panic must still hand it a failure instead of
+		// hanging the gesture. Registered after close so it runs first on
+		// unwind (LIFO) and st.failed is set before the waiters wake.
+		defer a.guardWorker("drag", func(err error) { st.failed = err })
 		dir, err := a.StageClipboardDir()
 		if err != nil {
 			st.failed = err

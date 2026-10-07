@@ -245,6 +245,18 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 		}
 		searched := map[string]bool{}
 		var srcErrs []string
+		// The worker panic net (guard.go): a panic mid-walk still settles
+		// the token — search-done carrying the error, task row failed —
+		// instead of a window that never finishes. Registered after the
+		// cleanup defer so it runs first on unwind (LIFO).
+		defer a.guardWorker("search", func(err error) {
+			task.progress(matched)
+			task.finish(err, false)
+			a.emit(EventSearchDone, SearchDone{
+				Token: token, Scanned: scanned, Matched: matched,
+				Sources: len(searched), SourceErrors: "internal error: " + err.Error(),
+			})
+		})
 		for _, j := range jobs {
 			if ctx.Err() != nil {
 				break

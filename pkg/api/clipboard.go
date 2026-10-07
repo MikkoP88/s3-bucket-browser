@@ -91,6 +91,7 @@ func (a *App) armPresignScrub(url string) {
 	scrubPending = url
 	scrubMu.Unlock()
 	go func() {
+		defer a.guardWorker("app", nil) // the worker panic net (guard.go)
 		t := time.NewTimer(presignScrubDelay)
 		defer t.Stop()
 		select {

@@ -79,6 +79,11 @@ func New(version string) *App {
 	}
 	a.tasks = newTaskRegistry()
 	a.tasks.notify = func() { a.emit(EventTasksUpdate) }
+	// The heartbeat panic nets (guard.go): through the App so the line
+	// reaches the log drawer too — the eventlog floor covers a bare
+	// registry (unit tests).
+	a.jobs.onPanic = func(p string) { a.emitLogSrc(LogError, "transfer", "", p) }
+	a.tasks.onPanic = func(p string) { a.emitLogSrc(LogError, "app", "", p) }
 	return a
 }
 

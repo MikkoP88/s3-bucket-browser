@@ -147,6 +147,15 @@ func Run(version string) error {
 			AdditionalBrowserArgs: rigBrowserArgs(),
 			WebviewUserDataPath:   os.Getenv("S3B_RIG_WEBVIEW_PROFILE"),
 		},
+		// The webview shell discards the default logger (one unconditional
+		// WebView2 startup line), so without this a panic recovered by the
+		// bindings layer would vanish server-side and a framework-internal
+		// one would take the fatal path. Routed into the app's event log
+		// instead: the log drawer and `s3b log` carry message and trace
+		// while the process lives on (guard.go's ReportPanic).
+		PanicHandler: func(d *application.PanicDetails) {
+			app.ReportPanic(d.Error, d.StackTrace)
+		},
 		OnShutdown: func() { app.Shutdown(context.Background()) },
 	})
 	if runtime.GOOS == "darwin" {

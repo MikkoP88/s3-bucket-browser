@@ -106,6 +106,14 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 			})
 			batch = make([]listing.Entry, 0, listPageSize)
 		}
+		// The worker panic net (guard.go): a panic mid-walk still settles
+		// the token — final page carrying the error, task row failed —
+		// instead of a spinner that never ends. Registered after the
+		// cleanup defers so it runs first on unwind (LIFO).
+		defer a.guardWorker("list", func(err error) {
+			task.finish(err, true)
+			emit(true, "internal error: "+err.Error())
+		})
 		err := listing.WalkDir(ctx, c.S3, bucket, prefix, listing.Options{}, func(e listing.Entry) error {
 			// Any progress resets the watchdog — a paginating walk whose
 			// pages trickle in slowly is alive; emit-level resets alone

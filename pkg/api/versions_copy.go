@@ -160,6 +160,7 @@ func vcopyDstKey(dstPrefix, sel string, exact bool, srcKey string) string {
 // version re-written oldest→newest, delete markers recreated last, then —
 // for a move with zero failures — the source timelines destroyed.
 func (a *App) runVersionsCopy(j *jobHandle, srcC, dstC *s3client.Client, srcBucket, dstBucket string, items []vcopyItem, dstPrefix string, move bool) {
+	defer a.guardJob("copy", j) // the worker panic net (guard.go)
 	ctx := j.ctx
 	var lastErr string
 	failed := 0

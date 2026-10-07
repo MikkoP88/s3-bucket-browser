@@ -47,6 +47,30 @@ follow [Semantic Versioning](https://semver.org/).
   command's own record. Seven unit tests pin the gates, the throttle,
   the format and the erase.
 
+- **The worker panic net** — the frontend got its last-resort net
+  for async failures; the backend never had one for its own goroutines.
+  Wails already recovers panics in bound methods, but every worker the
+  app spawns — listing streams, deep searches, the transfer-job
+  runners, the drag-out stage threads, the editor watcher, the task
+  and job heartbeats, the presign scrub — ran bare: one panic took
+  the whole desktop process and every in-flight transfer with it, and
+  whatever the goroutine was driving froze at “running” forever.
+  Each worker now defers a guard that recovers the panic and converts
+  it into the same shape every other failure already rides: one
+  event-log line with the message and the capped trace (log drawer,
+  `s3b log`, the opt-in file log), and the task or job settled as
+  failed — the view answers, the spinner ends. The webview shell
+  installs Wails’ PanicHandler so binding-layer and framework
+  panics land in the same log instead of vanishing into the discarded
+  default logger; finishJob becomes idempotent so a panic in a
+  deferred cleanup cannot rewrite a row’s real outcome; and the
+  CLI grows the same contract — a panic prints one
+  “unexpected: internal error:” line with the trace and exits 3
+  (the unexpected-error code) instead of the runtime’s raw dump and
+  exit 2, so scripts branching on the exit code see the app’s own
+  vocabulary. Eight unit tests pin the settle, the normalization, the
+  idempotence, the trace cap and both heartbeat fallbacks.
+
 ### Changed
 
 - **The last grid mirror folds** — the search pane's column

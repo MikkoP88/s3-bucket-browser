@@ -181,6 +181,19 @@ it, the sweep row is named). **OS** is the platform the verification ran on.
 | **The last-resort error net: silent failures surface** | shim world | an unhandled rejection and an uncaught sync error — each fired deliberately at the page — surface as exactly one error toast apiece with the message readable in the corner, a repeat of the same message deduped instead of flooding, and the corner cleared after; the battery's exit gate allowlists ONLY these sentinel-tagged probe errors, so any other page error still fails the run | — | — (sweep: error-net, SWEEP-VIS-01 — 1095/1095) | Win 11 x64 |
 | **CLI live transfer progress** | unit (fake clock + captured writer) | every streaming face — cp/mv upload and download, sync in both directions, NAME:// source-URI uploads — renders one rewriting stderr line while a file moves (sent/total, percentage when the total is known, speed smoothed over the window), and the gates hold: piped stderr and --json render nothing, a transfer under 1 MB that finishes inside a second renders nothing, redraws inside the 100 ms throttle window render nothing while the completed frame always renders, the line pads over its own residue when the readout shrinks and erases on settle, and long names cut on rune boundaries keeping the tail (CJK-safe) | — | — (go test: 7 progress tests, internal/cli) | Win 11 x64 |
 
+| **Worker panic net: panics settle instead of killing the process**
+| unit (guarded goroutines, event-log readback; pkg/api) |
+a panicking transfer worker settles its job as error carrying the
+“internal error:” message and a capped trace, and a job that
+already settled keeps its first outcome (finishJob idempotent — a
+late cleanup panic cannot rewrite the row); settle closures receive
+the normalized error for both error-valued and string panics;
+ReportPanic caps the trace at 4096 with an ellipsis and stays silent
+on nil; both registry heartbeats report through the App hook and
+fall back to the persisted event log when bare | — (Go-only round;
+the frontend’s net is the row above) | — (go test: 8 guard tests,
+pkg/api; full suite green) | Win 11 x64 |
+
 | **Cancel mid-transfer: no corrupt object; retry clean** | **S3 (MinIO)** | 8 MiB upload throttled to 256 kB/s; Cancel while running → job canceled and the object ABSENT (no partial lands); the unthrottled retry is sha-identical | — | ✅ GUI-21 | Win 11 x64 |
 | **Cancel mid-batch: finished files stay, the canceled one never lands** | **S3 (MinIO)** | five 2 MiB files drag-dropped as ONE batch job under a 128 kB/s throttle: canceled once the first file fully landed — exactly the finished file(s) exist remotely (byte-identical, CLI-verified) while in-flight and queued ones are absent with no partial left behind | — | ✅ GUI-34 | Win 11 x64 |
 | **Pane compare: all six categories exact** | **S3 (MinIO) + local** | a hand-built pair of dirs covering EVERY compare class — identical, only-left, only-right, different-size, newer-left, newer-right — the Compare button counts each category exactly 1 | — | ✅ GUI-25 | Win 11 x64 |

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -150,8 +151,27 @@ func NewRoot() *cobra.Command {
 }
 
 // Execute runs the CLI and returns the process exit code.
-func Execute(args []string) int {
+func Execute(args []string) (code int) {
 	attachParentConsole() // windowsgui builds: reattach the parent terminal
+	// The panic net: a panic is a bug, but its report still rides the CLI's
+	// own error contract — one "unexpected:" line, the trace beneath it
+	// (debug.Stack() from inside the deferred call still sees the panicking
+	// frames — the unwinding keeps them on the stack), and the
+	// unexpected-error exit code instead of the runtime's raw dump and
+	// exit 2. Scripts that branch on the exit code see the app's contract,
+	// not the runtime's.
+	defer func() {
+		e := recover()
+		if e == nil {
+			return
+		}
+		err, ok := e.(error)
+		if !ok {
+			err = fmt.Errorf("%v", e)
+		}
+		fmt.Fprintf(os.Stderr, "unexpected: internal error: %v\n%s\n", err, debug.Stack())
+		code = exitUnexpected
+	}()
 	if !colorEnabled() {
 		color.NoColor = true
 	}

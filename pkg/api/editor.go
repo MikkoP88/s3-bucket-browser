@@ -101,6 +101,7 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 
 // watchEditor polls the file and uploads stable changes back.
 func (a *App) watchEditor(s *editSession) {
+	defer a.guardWorker("app", nil) // the worker panic net (guard.go)
 	t := time.NewTicker(watcherPoll)
 	defer t.Stop()
 	for {

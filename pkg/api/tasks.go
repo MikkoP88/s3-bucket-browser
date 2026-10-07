@@ -72,14 +72,23 @@ type taskHandle struct {
 
 // taskRegistry owns all tasks in insertion order (jobManager's shape).
 type taskRegistry struct {
-	ctx    context.Context
-	mu     sync.Mutex
-	all    []*taskHandle
-	seq    int
-	notify func() // fires EventTasksUpdate (App installs the closure)
+	ctx     context.Context
+	mu      sync.Mutex
+	all     []*taskHandle
+	seq     int
+	notify  func() // fires EventTasksUpdate (App installs the closure)
+	onPanic func(string) // heartbeat panic net (guard.go); App installs the hook
 }
 
 func newTaskRegistry() *taskRegistry { return &taskRegistry{} }
+
+// recoverHeartbeat is the task heartbeat's slice of the worker panic net
+// (guard.go): a panic in the loop is reported, never fatal.
+func (r *taskRegistry) recoverHeartbeat() {
+	if e := recover(); e != nil {
+		logRegistryPanic(r.onPanic, "app", e)
+	}
+}
 
 func (r *taskRegistry) setContext(ctx context.Context) {
 	r.mu.Lock()
@@ -146,6 +155,7 @@ func (r *taskRegistry) newHandle(id, kind, label string) *taskHandle {
 // task finishes (finish is the only status transition, and it
 // happens-before this read under h.mu).
 func (h *taskHandle) heartbeat() {
+	defer h.reg.recoverHeartbeat() // the worker panic net (guard.go)
 	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	for range t.C {
