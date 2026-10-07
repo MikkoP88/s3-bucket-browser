@@ -3,12 +3,14 @@ package remotefs
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
@@ -180,7 +182,7 @@ func TestLocalStatOpenCreate(t *testing.T) {
 	if string(b) != "created" {
 		t.Errorf("Create round-trip = %q", b)
 	}
-	// Create truncates.
+	// Create replaces fully — a shorter rewrite leaves no tail.
 	if err := l.Create(ctx, "/docs/new.txt", bytes.NewReader([]byte("v2"))); err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +190,21 @@ func TestLocalStatOpenCreate(t *testing.T) {
 	b, _ = io.ReadAll(r)
 	r.Close()
 	if string(b) != "v2" {
-		t.Errorf("Create must truncate, got %q", b)
+		t.Errorf("Create must replace, got %q", b)
+	}
+	// A stream that dies mid-copy leaves the previous bytes intact —
+	// the staged-and-committed contract, never a truncated file.
+	if err := l.Create(ctx, "/docs/new.txt", iotest.ErrReader(errors.New("stream died"))); err == nil {
+		t.Fatal("Create with a dying stream must fail")
+	}
+	r, _, err = l.Open(ctx, "/docs/new.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ = io.ReadAll(r)
+	r.Close()
+	if string(b) != "v2" {
+		t.Errorf("failed Create damaged the file: %q", b)
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
@@ -156,5 +157,5 @@ func Save(t Tuning) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, b, 0o600)
+	return atomicfile.Write(p, b, 0o600)
 }

@@ -226,6 +226,29 @@ follow [Semantic Versioning](https://semver.org/).
   existing transfer rides on), pinned by a table test that also
   walks a hostile corpus, and an editor integration test downloads a
   traversal-shaped key strictly inside the workspace.
+
+- **Local state can no longer be destroyed by an interrupted
+  write** — every piece of persisted state (the profile/source store
+  itself, the encrypted Profile file and its Save As, the engine
+  tuning, the license record, the log settings, the seen-sources
+  list, the CLI’s `source export`) was written with os.WriteFile,
+  which opens the target with O_TRUNC: a full disk, a quota hit, or
+  a crash mid-write destroyed a previously good file — and for the
+  store that is every source and profile at once (plaintext secrets
+  included on keyring-less hosts), leaving “invalid profile store”
+  and no second copy. All of those writes now ride
+  pkg/core/atomicfile: bytes land in a sibling temp, are flushed to
+  disk, and replace the target by rename — the same critical-data
+  contract the transfer engine’s staging established for downloads
+  (same-volume atomic replace; a failure at any point leaves the
+  previous bytes untouched; a hard kill at worst strands one temp,
+  never a partial at the final name). The two streaming write paths
+  that truncated just the same — the cross-engine local Create and
+  the CLI’s NAME:// downloads — now stage and commit too, so a
+  transfer that fails mid-stream leaves the previous local file
+  byte-for-byte intact instead of trading it for a truncated copy,
+  and the log’s rotation rewrites atomically instead of cutting the
+  file down the middle on a crash.
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed

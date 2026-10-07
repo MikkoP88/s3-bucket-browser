@@ -8,6 +8,7 @@ package eventlog
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
@@ -125,7 +127,7 @@ func SaveSettings(s Settings) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, b, 0o600)
+	return atomicfile.Write(p, b, 0o600)
 }
 
 // sinkPath resolves where events.jsonl is written; ok=false means file
@@ -219,7 +221,7 @@ func registerSource(src string) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(p, b, 0o600)
+	_ = atomicfile.Write(p, b, 0o600)
 }
 
 // Append writes one line, rotating first when the file outgrew the cap.
@@ -292,20 +294,17 @@ func rotateIfBig(p string) error {
 		return err
 	}
 	keep := lines[len(lines)/2:]
-	f, err := os.Create(p)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	w := bufio.NewWriter(f)
+	// The rewrite is atomic: a crash mid-rotation keeps the full old
+	// file instead of trading it for a truncated one.
+	var buf bytes.Buffer
 	for _, l := range keep {
 		b, err := json.Marshal(l)
 		if err != nil {
 			continue
 		}
-		w.Write(append(b, '\n'))
+		buf.Write(append(b, '\n'))
 	}
-	return w.Flush()
+	return atomicfile.Write(p, buf.Bytes(), 0o600)
 }
 
 // readLines parses the file, newest last. n > 0 keeps only the last n

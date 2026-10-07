@@ -820,21 +820,16 @@ func copyFilesToLocal(ctx context.Context, files []copyFile, isDir bool, dst str
 			rc.Close()
 			return n, err
 		}
-		// dstF (not out — that is the CLI's writer; writing the verbose
-		// line to the downloaded file itself was both wrong and closed)
-		dstF, err := os.Create(local)
-		if err != nil {
-			rc.Close()
-			return n, err
-		}
-		_, copyErr := io.Copy(dstF, rc)
+		// Staged and committed, never truncated in place: a copy that
+		// fails mid-stream leaves the previous local bytes untouched
+		// (StageAndCommit syncs and renames only on success).
+		stageErr := transfer.StageAndCommit(local, func(f *os.File) error {
+			_, err := io.Copy(f, rc)
+			return err
+		})
 		rc.Close()
-		closeErr := dstF.Close()
-		if copyErr != nil {
-			return n, copyErr
-		}
-		if closeErr != nil {
-			return n, closeErr
+		if stageErr != nil {
+			return n, stageErr
 		}
 		n++
 		if flagVerbose {

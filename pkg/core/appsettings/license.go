@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
@@ -74,5 +75,5 @@ func SaveLicense(l LicenseAcceptance) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, b, 0o600)
+	return atomicfile.Write(p, b, 0o600)
 }

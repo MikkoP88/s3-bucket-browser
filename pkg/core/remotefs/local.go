@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 )
 
 // Local is an FS rooted at a directory on the local machine. Paths are
@@ -112,17 +113,15 @@ func (l *Local) Open(ctx context.Context, p string) (io.ReadCloser, int64, error
 	return f, info.Size(), nil
 }
 
+// Create writes a file from a stream — staged and committed, never
+// truncated in place: a transfer that fails mid-stream (network drop,
+// cancel) must leave the previous local bytes untouched, the same
+// critical-data contract the download path established.
 func (l *Local) Create(ctx context.Context, p string, r io.Reader) error {
-	full := l.join(p)
-	f, err := os.OpenFile(full, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
+	return transfer.StageAndCommit(l.join(p), func(f *os.File) error {
+		_, err := io.Copy(f, r)
 		return err
-	}
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
+	})
 }
 
 func (l *Local) MkdirAll(ctx context.Context, dir string) error {

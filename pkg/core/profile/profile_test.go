@@ -21,6 +21,32 @@ func newTestStore(t *testing.T) *Store {
 	return &Store{Path: filepath.Join(t.TempDir(), "profiles.json")}
 }
 
+// TestLoadFromTruncatedStoreFailsLoudly pins the corruption contract the
+// atomic Save exists to make unreachable: bytes cut mid-file (the exact
+// artifact of an O_TRUNC write interrupted by a full disk or a crash)
+// must fail the load loudly, naming the file — never parse into a
+// half-empty store that a later Save would cement over the wreckage.
+func TestLoadFromTruncatedStoreFailsLoudly(t *testing.T) {
+	s := newTestStore(t)
+	p := Profile{Name: "local", Endpoint: "http://localhost:9000", AccessKeyID: "minioadmin", SecretKey: "minioadmin", PathStyle: true}
+	if err := s.Upsert(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	full, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.Path, full[:len(full)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(s.Path); err == nil {
+		t.Fatal("a truncated store must fail to load")
+	}
+}
+
 func TestUpsertGetRemove(t *testing.T) {
 	s := newTestStore(t)
 

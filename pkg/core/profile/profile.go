@@ -16,6 +16,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/provider"
 )
 
@@ -199,7 +200,10 @@ func (s *Store) Save() error {
 			return err
 		}
 	}
-	return os.WriteFile(s.Path, data, 0o600)
+	// Atomic replace: the store is the app's most critical local state —
+	// an O_TRUNC write interrupted by a full disk or a crash would leave
+	// every source unreadable with no second copy.
+	return atomicfile.Write(s.Path, data, 0o600)
 }
 
 // Get returns the named profile.

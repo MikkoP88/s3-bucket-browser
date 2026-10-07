@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 )
@@ -479,7 +480,7 @@ func (a *App) SaveProfileFile() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(pf.path, data, 0o600); err != nil {
+	if err := atomicfile.Write(pf.path, data, 0o600); err != nil {
 		return err
 	}
 	pf.dirty = false
@@ -517,7 +518,7 @@ func (a *App) SaveProfileFileAs(path, password string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
 		return err
 	}
 	pf.path, pf.password, pf.dirty = path, password, false

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
@@ -661,7 +662,7 @@ func sourceExportCmd() *cobra.Command {
 			if err != nil {
 				return opErr(err)
 			}
-			if err := os.WriteFile(path, data, 0o600); err != nil {
+			if err := atomicfile.Write(path, data, 0o600); err != nil {
 				return opErr(err)
 			}
 			if flagJSON {
