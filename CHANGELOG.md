@@ -126,6 +126,17 @@ follow [Semantic Versioning](https://semver.org/).
   panic net. Cancels and self-drops are covered too: the stage knows
   its dir from the moment it is created, so an abandoned drag’s
   partial download retires on the same schedule.
+
+- **Quitting with unuploaded edits now asks** — the editor’s
+  keep-remote-up-to-date watcher pushes a save only after it stays
+  stable for two polls (~2.4s) plus the upload itself, and the
+  launch-time workspace wipe discards whatever was never pushed: quit
+  inside that window and the last edit vanished silently. A dirty
+  edit session now refuses the exit with the same confirmation every
+  other unsaved change gets — “N edited file(s) not yet
+  uploaded (e.g. notes.md)” — on both the window’s close
+  button and the menu’s Exit; exiting anyway is then an explicit
+  discard, exactly like Stop Edit without upload.
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed

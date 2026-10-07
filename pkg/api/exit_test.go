@@ -26,3 +26,29 @@ func TestExitBusyReasonCoversRunningTasks(t *testing.T) {
 	}
 	l.finish(nil, true)
 }
+
+// A dirty edit session refuses the exit like any unsaved work: the
+// watcher uploads only after the save settles, and the launch wipe
+// would discard whatever was never pushed.
+func TestExitBusyReasonCoversDirtyEditors(t *testing.T) {
+	a := newTestApp(t)
+	a.editorsMu.Lock()
+	a.editors["b\x00docs/notes.md"] = &editSession{Bucket: "b", Key: "docs/notes.md", dirty: true}
+	clean := &editSession{Bucket: "b", Key: "logo.png"}
+	a.editors["b\x00logo.png"] = clean
+	a.editorsMu.Unlock()
+
+	got := a.exitBusyReason()
+	if !strings.Contains(got, "1 edited file(s) not yet uploaded") || !strings.Contains(got, "notes.md") {
+		t.Fatalf("dirty editor reason = %q", got)
+	}
+
+	// the upload landed (watcher's dirty=false): no reason left
+	clean.dirty = false
+	clean.mu.Lock()
+	a.editors["b\x00docs/notes.md"].dirty = false
+	clean.mu.Unlock()
+	if got := a.exitBusyReason(); got != "" {
+		t.Fatalf("reason after uploads = %q, want empty", got)
+	}
+}

@@ -202,6 +202,14 @@ panic net | — (Go-only round; the drag-out battery legs ride the
 shim’s stage model, unchanged) | — (go test: 2 stage-cleanup
 tests, pkg/api; full suite green) | Win 11 x64 |
 
+| **Exit gate covers dirty editor sessions** | unit (exitBusyReason;
+pkg/api) | a dirty edit session makes the busy reason name the count and
+the file (“1 edited file(s) not yet uploaded (e.g. notes.md)”),
+a clean session never blocks, and the reason clears once the uploads
+land | — (Go-only round; the confirm dialog renders the reason
+string generically) | — (go test: 2 exit-gate tests, pkg/api; full
+suite green) | Win 11 x64 |
+
 | **Cancel mid-transfer: no corrupt object; retry clean** | **S3 (MinIO)** | 8 MiB upload throttled to 256 kB/s; Cancel while running → job canceled and the object ABSENT (no partial lands); the unthrottled retry is sha-identical | — | ✅ GUI-21 | Win 11 x64 |
 | **Cancel mid-batch: finished files stay, the canceled one never lands** | **S3 (MinIO)** | five 2 MiB files drag-dropped as ONE batch job under a 128 kB/s throttle: canceled once the first file fully landed — exactly the finished file(s) exist remotely (byte-identical, CLI-verified) while in-flight and queued ones are absent with no partial left behind | — | ✅ GUI-34 | Win 11 x64 |
 | **Pane compare: all six categories exact** | **S3 (MinIO) + local** | a hand-built pair of dirs covering EVERY compare class — identical, only-left, only-right, different-size, newer-left, newer-right — the Compare button counts each category exactly 1 | — | ✅ GUI-25 | Win 11 x64 |

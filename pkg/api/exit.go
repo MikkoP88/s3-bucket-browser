@@ -1,15 +1,19 @@
 package api
 
-import "fmt"
+import (
+	"fmt"
+	"path"
+)
 
 // EventExitConfirm asks the frontend to confirm an exit that would lose
 // work (running transfers, running tasks, unsaved profile changes). Payload: {reason}.
 const EventExitConfirm = "exit:confirm"
 
 // exitBusyReason returns why the app should not exit right now, or "" for
-// a clean exit: any running transfer job, any running registry task, a
-// dirty open profile file, or unsaved session sources (the same states
-// the profile bar badges).
+// a clean exit: any running transfer job, any running registry task, an
+// edited file whose changes were not uploaded yet, a dirty open profile
+// file, or unsaved session sources (the same states the profile bar
+// badges).
 func (a *App) exitBusyReason() string {
 	running := 0
 	var first JobInfo
@@ -43,6 +47,25 @@ func (a *App) exitBusyReason() string {
 	}
 	if running > 0 {
 		return fmt.Sprintf("%d task(s) still running (e.g. %s: %s)", running, firstTask.Kind, firstTask.Label)
+	}
+
+	// Dirty editor sessions: the watcher pushes a save only after it
+	// stays stable for two polls (~2.4s) plus the upload itself, and the
+	// launch-time workspace wipe discards whatever was never pushed —
+	// quitting inside that window would silently lose the edit, so it
+	// gets the same confirm every other unsaved change gets.
+	dirty, firstKey := 0, ""
+	for _, e := range a.EditingFiles() {
+		if e.Dirty {
+			dirty++
+			if dirty == 1 {
+				firstKey = e.Key
+			}
+		}
+	}
+	if dirty > 0 {
+		return fmt.Sprintf("%d edited file(s) not yet uploaded (e.g. %s)",
+			dirty, path.Base(firstKey))
 	}
 
 	st := a.GetProfileFileState()
