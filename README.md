@@ -4,7 +4,7 @@
 
 **A unified desktop browser and CLI with Windows File Explorer and a WinSCP inspired interface for managing S3‑compatible cloud storages and remote file servers, offering comprehensive supporting S3 buckets/objects, SFTP/SCP, FTP/FTPS, WebDAV, and local folders, with robust versioning, bucket administration, and security, and cross‑storage migration capabilities.**
 
-> **Status: v1.0 released; 1.2.0 in beta (current pre-release: 1.2.0-beta.2).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 added a unified data-source hierarchy, OS clipboard/drag interop, credential import and a unified versioned-delete flow; 1.2 makes every data source exactly one root (an S3 source is one bucket — legacy accounts split automatically), adds a floating Search window across every source, engine-level transfer cycle guards, folder sizes in every view, and GUI-matched CLI formats — see the [CHANGELOG](CHANGELOG.md).
+> **Status: v1.0 released; 1.2.0 in beta (current pre-release: 1.2.0-beta.3).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 added a unified data-source hierarchy, OS clipboard/drag interop, credential import and a unified versioned-delete flow; 1.2 makes every data source exactly one root (an S3 source is one bucket — legacy accounts split automatically), adds a floating Search window across every source, engine-level transfer cycle guards, folder sizes in every view, and GUI-matched CLI formats — see the [CHANGELOG](CHANGELOG.md).
 
 ## Key Features of S3 Bucket Browser(s3b)
 
