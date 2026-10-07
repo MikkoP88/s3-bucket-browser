@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestStagedPathsLayout(t *testing.T) {
@@ -89,4 +90,41 @@ func TestDragStageFailsCleanly(t *testing.T) {
 	if err := st.wait(); err == nil {
 		t.Fatal("staging a missing source must fail")
 	}
+}
+
+// The staged files retire after the grace — a drag-out's downloaded
+// bytes must not sit in the temp workspace until the next launch.
+func TestDragStageCleanupRemovesStagedDir(t *testing.T) {
+	a := newTestApp(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := &dragStage{a: a, done: make(chan struct{})}
+	st.mu.Lock()
+	st.dir = dir // as startDragStage would, right after creating it
+	st.mu.Unlock()
+
+	old := dragStageGrace
+	dragStageGrace = 20 * time.Millisecond
+	t.Cleanup(func() { dragStageGrace = old })
+
+	st.cleanup()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return // gone
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("staged dir survived the grace")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// cleanup without a staging dir (staging never got that far) is a no-op.
+func TestDragStageCleanupWithoutDirIsNoop(t *testing.T) {
+	a := newTestApp(t)
+	st := &dragStage{a: a, done: make(chan struct{})}
+	st.cleanup() // must neither panic nor remove anything
 }

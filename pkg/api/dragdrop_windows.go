@@ -416,8 +416,10 @@ func (a *App) dragOutLoop(items []DragItem, where string) (fallback bool, err er
 	a.emitLog(LogInfo, "drag", fmt.Sprintf(
 		"drag-out end: hr=0x%08x effect=%d qcd=%d", uint32(hr), eff, dragQCD.Swap(0)))
 	// DRAGDROP_S_DROP / _CANCEL are success endings of the gesture;
-	// either way the mouse is back — stop staging nobody will drop.
+	// either way the mouse is back — stop staging nobody will drop, and
+	// retire what already landed once the target is done reading it.
 	st.cancel()
+	st.cleanup()
 	// A non-cancelled gesture released over our own window is an
 	// internal drop: hand the frontend the coordinates and the
 	// release-time modifiers and let the ordinary move/copy logic run.

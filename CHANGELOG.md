@@ -112,6 +112,20 @@ follow [Semantic Versioning](https://semver.org/).
   counters are disjoint now — a skipped file no longer
   double-counts as done. The Running tasks window’s merged
   transfer rows carry the same live per-item disclosure.
+
+- **Drag-out staging retires after the gesture** — the files a
+  native drag-out stages for the drop target (a fresh temp dir per
+  gesture, downloaded through the transfer engine) were never removed
+  when the gesture ended: they sat in the temp workspace until the
+  NEXT launch’s wipe, so a long session of drag-outs piled up one
+  full copy of everything ever dragged. Each gesture now schedules
+  the staged dir’s removal ten minutes after the drag ends —
+  generous enough for a slow target still importing the files,
+  best-effort (files held open without FILE_SHARE_DELETE survive,
+  and the launch wipe remains the backstop), running under the worker
+  panic net. Cancels and self-drops are covered too: the stage knows
+  its dir from the moment it is created, so an abandoned drag’s
+  partial download retires on the same schedule.
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed

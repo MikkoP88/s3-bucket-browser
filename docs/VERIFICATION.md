@@ -194,6 +194,14 @@ fall back to the persisted event log when bare | — (Go-only round;
 the frontend’s net is the row above) | — (go test: 8 guard tests,
 pkg/api; full suite green) | Win 11 x64 |
 
+| **Drag-out staging cleanup: temp files retire after the gesture**
+| unit (grace-seamed cleanup; pkg/api) | a staged dir with content is
+gone once the (shortened) grace elapses; cleanup before the stage ever
+created a dir is a no-op; the retire runs as a guarded worker under the
+panic net | — (Go-only round; the drag-out battery legs ride the
+shim’s stage model, unchanged) | — (go test: 2 stage-cleanup
+tests, pkg/api; full suite green) | Win 11 x64 |
+
 | **Cancel mid-transfer: no corrupt object; retry clean** | **S3 (MinIO)** | 8 MiB upload throttled to 256 kB/s; Cancel while running → job canceled and the object ABSENT (no partial lands); the unthrottled retry is sha-identical | — | ✅ GUI-21 | Win 11 x64 |
 | **Cancel mid-batch: finished files stay, the canceled one never lands** | **S3 (MinIO)** | five 2 MiB files drag-dropped as ONE batch job under a 128 kB/s throttle: canceled once the first file fully landed — exactly the finished file(s) exist remotely (byte-identical, CLI-verified) while in-flight and queued ones are absent with no partial left behind | — | ✅ GUI-34 | Win 11 x64 |
 | **Pane compare: all six categories exact** | **S3 (MinIO) + local** | a hand-built pair of dirs covering EVERY compare class — identical, only-left, only-right, different-size, newer-left, newer-right — the Compare button counts each category exactly 1 | — | ✅ GUI-25 | Win 11 x64 |

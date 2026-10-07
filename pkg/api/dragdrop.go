@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,7 @@ type dragStage struct {
 	a    *App
 	mu   sync.Mutex
 	job  string // transfer job id (empty until registered)
+	dir  string // staging dir (empty until created) — cleanup retires it
 	done chan struct{}
 
 	// Written before close(done), read only after it.
@@ -112,6 +114,9 @@ func (a *App) startDragStage(items []DragItem) *dragStage {
 			st.failed = err
 			return
 		}
+		st.mu.Lock()
+		st.dir = dir
+		st.mu.Unlock()
 		xis := make([]XferItem, len(items))
 		for i, it := range items {
 			xis[i] = XferItem{Source: it.Source, Bucket: it.Bucket, Key: it.Key, Size: it.Size}
@@ -174,4 +179,31 @@ func (st *dragStage) cancel() {
 	if id != "" {
 		st.a.CancelTransfer(id)
 	}
+}
+
+// dragStageGrace is how long cleanup waits after the gesture before
+// removing the staged files: the drop target resolved during the drag in
+// the common case, but a slow async importer may still be reading them.
+// A var so tests can shorten it; the launch-time workspace wipe
+// (secure.go) backstops anything the grace leaves behind.
+var dragStageGrace = 10 * time.Minute
+
+// cleanup retires the staged files once the gesture is over — before it,
+// every drag-out left its downloaded bytes in the temp workspace until
+// the NEXT launch wiped it, so a long session of drags piled up one
+// full copy of everything ever dragged. The removal waits out the grace
+// (the target may still be reading) and is best-effort: files held open
+// without FILE_SHARE_DELETE survive until the launch wipe gets them.
+func (st *dragStage) cleanup() {
+	st.mu.Lock()
+	dir := st.dir
+	st.mu.Unlock()
+	if dir == "" {
+		return
+	}
+	go func() {
+		defer st.a.guardWorker("drag", nil) // the worker panic net (guard.go)
+		time.Sleep(dragStageGrace)
+		_ = os.RemoveAll(dir)
+	}()
 }
