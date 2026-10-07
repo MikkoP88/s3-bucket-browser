@@ -169,6 +169,25 @@ follow [Semantic Versioning](https://semver.org/).
   clears every mark (the existing “Uploaded” toast already voices
   the recovery). The session stays dirty the whole time, so the
   exit gate's confirmation keeps guarding the un-pushed edits.
+
+- **“Stop & upload” stops destroying the session when the upload
+  fails** — the manager’s explicit save deleted the edit session
+  before it pushed, so a network blip at the moment of stopping
+  removed the row and the status-bar indicator, silenced the
+  watcher, and dropped the exit gate’s guard while the edits had
+  reached nowhere — stranded on a staged file the next boot’s
+  workspace wipe deletes. “Stop & upload” is a save request, not a
+  discard: the session is only ended when the push lands, and a
+  failing one keeps it alive — still dirty, flagged with the
+  failure mark, retried by the watcher with backoff (the manager
+  row and the pill say so, the toast carries the cause, and the
+  exit gate keeps guarding) — so a clean second Stop settles it.
+  The dialog refreshes on failure too (the row regains its flag
+  and the pill escalates), and a settled session now retires its
+  staged file after the same ten-minute grace a drag-out stage
+  gets (the editor process may still hold it open; the launch
+  wipe backstops) instead of leaving the downloaded bytes in the
+  edit workspace until the next boot.
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed

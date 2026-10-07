@@ -72,6 +72,27 @@ func editPushBackoff(fails int) time.Duration {
 	return watcherPoll * time.Duration(1<<fails)
 }
 
+// notePushFailed records one failed upload attempt on a session: the
+// backoff bookkeeping, the per-attempt error line and the once-per-streak
+// event the status-bar pill escalates on. The watcher's retries and
+// StopEdit's explicit save ride the same voice.
+func (a *App) notePushFailed(s *editSession, err error) {
+	s.mu.Lock()
+	first := s.fails == 0
+	s.fails++
+	wait := editPushBackoff(s.fails)
+	s.nextTry = time.Now().Add(wait)
+	s.mu.Unlock()
+	a.emitLog(LogError, "edit", fmt.Sprintf(
+		"upload of %s/%s failed (retry in %s; edits stay pending): %v",
+		s.Bucket, s.Key, wait, err))
+	if first {
+		a.emit(EventEditorPushFailed, map[string]string{
+			"bucket": s.Bucket, "key": s.Key, "error": err.Error(),
+		})
+	}
+}
+
 // openInEditor launches the OS editor for the staged file (or, chooseApp,
 // the OS "Open with…" picker). A var so tests can pin the pull's task
 // lifecycle without spawning real editors on the test machine.
@@ -199,20 +220,7 @@ func (a *App) watchEditor(s *editSession) {
 				// stays visibly dirty — indicator and dialog carry the
 				// failure — until a push lands), and the retries back off
 				// instead of hammering a dead endpoint every poll.
-				s.mu.Lock()
-				first := s.fails == 0
-				s.fails++
-				wait := editPushBackoff(s.fails)
-				s.nextTry = now.Add(wait)
-				s.mu.Unlock()
-				a.emitLog(LogError, "edit", fmt.Sprintf(
-					"upload of %s/%s failed (retry in %s; edits stay pending): %v",
-					s.Bucket, s.Key, wait, err))
-				if first {
-					a.emit(EventEditorPushFailed, map[string]string{
-						"bucket": s.Bucket, "key": s.Key, "error": err.Error(),
-					})
-				}
+				a.notePushFailed(s, err)
 			}
 		}
 	}
@@ -269,21 +277,26 @@ func (a *App) EditingFiles() []EditInfo {
 }
 
 // StopEdit ends a session; upload=true pushes pending changes first.
+// The session is only ended when that push lands: "Stop & upload" is a
+// save request, not a discard — destroying the session on a failed
+// upload would strand the edits on a staged file the next boot's
+// workspace wipe deletes, with the indicator gone and the exit gate
+// no longer guarding. A failing explicit save keeps the session alive
+// (still dirty, flagged, retried by the watcher with backoff) and
+// returns the error.
 func (a *App) StopEdit(bucket, key string, upload bool) error {
 	a.editorsMu.Lock()
 	s := a.editors[bucket+"\x00"+key]
-	delete(a.editors, bucket+"\x00"+key)
 	a.editorsMu.Unlock()
 	if s == nil {
 		return fmt.Errorf("not being edited: %s", key)
 	}
-	s.mu.Lock()
-	s.done = true
 	// The watcher only notices changes on its poll (1.2s cadence); an
 	// explicit save right after an edit must not depend on that timing.
 	// Re-check the staged file against the last state the app knew, so
 	// "save and close" pushes what is on disk while an untouched file
 	// still costs no upload (and no extra object version).
+	s.mu.Lock()
 	if upload {
 		if st, err := os.Stat(s.Local); err == nil {
 			if st.Size() != s.lastSize || st.ModTime().UnixMilli() != s.lastMod {
@@ -295,9 +308,41 @@ func (a *App) StopEdit(bucket, key string, upload bool) error {
 	s.mu.Unlock()
 	if upload && dirty {
 		if err := a.uploadEdit(s); err != nil {
+			a.notePushFailed(s, err)
 			return err
 		}
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	}
+	// settle — only now, with the push landed (or none wanted): the
+	// watcher stops, the session leaves the registry (by identity, so a
+	// session re-opened mid-stop survives), and the staged file retires.
+	s.mu.Lock()
+	s.done = true
+	s.mu.Unlock()
+	a.editorsMu.Lock()
+	if a.editors[bucket+"\x00"+key] == s {
+		delete(a.editors, bucket+"\x00"+key)
+	}
+	a.editorsMu.Unlock()
+	a.retireEditFile(s.Local)
 	return nil
+}
+
+// retireEditFile schedules the staged file's removal once its session
+// settles — the drag-out stage's grace, for the same reasons: the editor
+// process may still hold the file open (without FILE_SHARE_DELETE the
+// removal simply fails), and a slow write-behind may still land.
+// Best-effort by design; the launch-time workspace wipe (secure.go)
+// backstops what the grace leaves behind. Before this, every stopped
+// session left its downloaded bytes in the edit workspace until the
+// NEXT boot wiped it.
+func (a *App) retireEditFile(path string) {
+	if path == "" {
+		return
+	}
+	go func() {
+		defer a.guardWorker("edit", nil) // the worker panic net (guard.go)
+		time.Sleep(stageRetireGrace)
+		_ = os.Remove(path)
+	}()
 }

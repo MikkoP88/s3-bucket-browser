@@ -181,12 +181,13 @@ func (st *dragStage) cancel() {
 	}
 }
 
-// dragStageGrace is how long cleanup waits after the gesture before
-// removing the staged files: the drop target resolved during the drag in
-// the common case, but a slow async importer may still be reading them.
-// A var so tests can shorten it; the launch-time workspace wipe
-// (secure.go) backstops anything the grace leaves behind.
-var dragStageGrace = 10 * time.Minute
+// stageRetireGrace is how long cleanup waits before removing staged
+// bytes after their gesture is over — drag-out drops (the target may
+// still be reading them) and settled edit sessions alike (the editor
+// process may still hold the file open). A var so tests can shorten it;
+// the launch-time workspace wipe (secure.go) backstops anything the
+// grace leaves behind.
+var stageRetireGrace = 10 * time.Minute
 
 // cleanup retires the staged files once the gesture is over — before it,
 // every drag-out left its downloaded bytes in the temp workspace until
@@ -203,7 +204,7 @@ func (st *dragStage) cleanup() {
 	}
 	go func() {
 		defer st.a.guardWorker("drag", nil) // the worker panic net (guard.go)
-		time.Sleep(dragStageGrace)
+		time.Sleep(stageRetireGrace)
 		_ = os.RemoveAll(dir)
 	}()
 }

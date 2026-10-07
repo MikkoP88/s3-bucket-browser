@@ -1403,6 +1403,15 @@ function shim() {
       if (world.editReject) throw new Error('cancelled');
       return {};
     },
+    // the backend contract: a failing explicit save keeps the session —
+    // fault.editStop makes a Stop & upload click fail so the row's
+    // survival is assertable
+    StopEdit: async (bucket, key) => {
+      const flt = (world.fault || {}).editStop;
+      if (flt) throw new Error(flt);
+      world.editing = (world.editing || []).filter((e) => !(e.bucket === bucket && e.key === key));
+      return {};
+    },
     // ---- OS interop ----
     PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
     // local delete (side pane): count-then-act preview + permanent remove
@@ -9872,6 +9881,44 @@ await step('editors-manager', async () => {
   });
   await ok('pill settles back once uploads land again', waitFor(async () => evalPage(() =>
     !document.getElementById('status-editing').classList.contains('failing')), 4000, 'settled pill'));
+  // Stop & upload that fails keeps the session (a save request, not a
+  // discard): the row survives its own failed save, flagged; a clean
+  // retry settles it and the pill clears with the last session
+  await evalPage(() => {
+    window.__shim.world.editing = [{ bucket: 'team-files', key: 'docs/notes.md', pushFailed: true }];
+    window.__shim.world.fault = { editStop: 'dial tcp: connection refused' };
+    window.dispatchEvent(new Event('focus'));
+  });
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await page.click('#status-editing');
+  await waitFor(modalVisible, 4000, 'editing modal (stop-fail)');
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /stop & upload/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('failed stop toasts and keeps the row', waitFor(async () =>
+    (await txt('#toasts')).includes('Stop failed')
+    && (await evalPage(() => document.getElementById('modal-root').textContent)).includes('notes.md'), 4000, 'kept row'));
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /stop & upload/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('a landed stop settles the session', waitFor(async () => evalPage(() =>
+    !document.getElementById('modal-root').textContent.includes('notes.md')), 4000, 'gone row'));
+  await closeModal();
+  await ok('the pill clears with the last session', waitFor(async () => evalPage(() =>
+    document.getElementById('status-editing').classList.contains('hidden')), 4000, 'cleared pill'));
+  await evalPage(() => {
+    window.__shim.world.editing = null;
+    window.dispatchEvent(new Event('focus'));
+  });
+  await ok('world restored (default editor session back)', waitFor(async () => evalPage(() =>
+    !document.getElementById('status-editing').classList.contains('hidden')), 4000, 'restored pill'));
 });
 
 await step('download-selection', async () => {

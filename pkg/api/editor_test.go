@@ -224,3 +224,143 @@ func TestWatchEditorVoicesAndRetriesFailingPush(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// "Stop & upload" is a save request, not a discard: a failing explicit
+// upload must keep the session alive (still registered, dirty, flagged —
+// the watcher retries it and the exit gate keeps guarding) instead of
+// destroying it and stranding the edits on a staged file the next boot's
+// workspace wipe deletes. A clean second stop settles the session.
+func TestStopEditUploadFailureKeepsSession(t *testing.T) {
+	oldPoll := watcherPoll
+	watcherPoll = 10 * time.Millisecond
+	defer func() { watcherPoll = oldPoll }()
+	oldOpen := openInEditor
+	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
+	defer func() { openInEditor = oldOpen }()
+
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("docs")
+	f.seed("docs", "notes.md", "v1")
+	var fault atomic.Bool
+	fault.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bucket, key := splitS3Path(r.URL.Path)
+		if fault.Load() && r.Method == http.MethodPut && bucket == "docs" && key == "notes.md" {
+			// 403, not 5xx: the SDK retries server errors, and the test
+			// wants the attempt to fail fast, not ride the retry ladder
+			http.Error(w, "injected fault", http.StatusForbidden)
+			return
+		}
+		f.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	f.mu.Lock()
+	f.url = srv.URL
+	f.mu.Unlock()
+	if err := a.SaveSource(fakeS3Source("editstop", srv.URL)); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := a.EditObject("docs", "notes.md", false)
+	if err == nil || !strings.Contains(err.Error(), "could not open editor") {
+		t.Fatalf("EditObject err = %v, want the could-not-open-editor error", err)
+	}
+	// start the watcher the successful editor launch would have started
+	a.editorsMu.Lock()
+	s := a.editors["docs\x00notes.md"]
+	a.editorsMu.Unlock()
+	go a.watchEditor(s)
+
+	if err := os.WriteFile(info.Local, []byte("v2 after failed stop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// the explicit save fails (endpoint down) — and must not end the session
+	if err := a.StopEdit("docs", "notes.md", true); err == nil {
+		t.Fatal("StopEdit with a failing upload must return the error")
+	}
+	sessions := a.EditingFiles()
+	if len(sessions) != 1 || !sessions[0].Dirty || !sessions[0].PushFailed {
+		t.Fatalf("EditingFiles = %+v, want one dirty+pushFailed survivor", sessions)
+	}
+	f.mu.Lock()
+	got := f.objects["docs"]["notes.md"]
+	f.mu.Unlock()
+	if got != "v1" {
+		t.Fatalf("object content = %q, want the pre-edit bytes", got)
+	}
+
+	// the endpoint recovers: the watcher's retry lands the edit
+	fault.Store(false)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		sv := a.EditingFiles()
+		if len(sv) == 1 && !sv[0].Dirty && !sv[0].PushFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session never recovered: %+v", sv)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	f.mu.Lock()
+	got = f.objects["docs"]["notes.md"]
+	f.mu.Unlock()
+	if got != "v2 after failed stop" {
+		t.Fatalf("object content = %q, want the edited bytes", got)
+	}
+
+	// the clean second stop settles the session
+	if err := a.StopEdit("docs", "notes.md", true); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(a.EditingFiles()); n != 0 {
+		t.Fatalf("EditingFiles = %d session(s) after a clean stop, want 0", n)
+	}
+}
+
+// A settled session retires its staged file after the grace (the editor
+// process may still hold it open) instead of leaving the downloaded
+// bytes in the edit workspace until the next boot's wipe.
+func TestStopEditRetiresStagedFile(t *testing.T) {
+	oldGrace := stageRetireGrace
+	stageRetireGrace = 20 * time.Millisecond
+	t.Cleanup(func() { stageRetireGrace = oldGrace })
+	oldOpen := openInEditor
+	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
+	defer func() { openInEditor = oldOpen }()
+
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("docs")
+	f.seed("docs", "notes.md", "staged v1")
+	url := f.serve(t)
+	if err := a.SaveSource(fakeS3Source("editret", url)); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := a.EditObject("docs", "notes.md", false)
+	if err == nil || !strings.Contains(err.Error(), "could not open editor") {
+		t.Fatalf("EditObject err = %v, want the could-not-open-editor error", err)
+	}
+	if _, err := os.Stat(info.Local); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.StopEdit("docs", "notes.md", false); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(a.EditingFiles()); n != 0 {
+		t.Fatalf("EditingFiles = %d session(s) after stop, want 0", n)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(info.Local); os.IsNotExist(err) {
+			return // retired
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("staged file %s survived its retire grace", info.Local)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

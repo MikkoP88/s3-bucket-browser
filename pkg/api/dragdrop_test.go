@@ -105,9 +105,9 @@ func TestDragStageCleanupRemovesStagedDir(t *testing.T) {
 	st.dir = dir // as startDragStage would, right after creating it
 	st.mu.Unlock()
 
-	old := dragStageGrace
-	dragStageGrace = 20 * time.Millisecond
-	t.Cleanup(func() { dragStageGrace = old })
+	old := stageRetireGrace
+	stageRetireGrace = 20 * time.Millisecond
+	t.Cleanup(func() { stageRetireGrace = old })
 
 	st.cleanup()
 	deadline := time.Now().Add(2 * time.Second)

@@ -3780,11 +3780,14 @@ export function editingDialog(onChanged) {
   const stop = async (f, upload) => {
     try {
       await api.StopEdit(f.bucket, f.key, upload);
-      onChanged?.();
-      draw();
     } catch (e) {
       toast(`Stop failed: ${e}`, 'error');
     }
+    // a failed save KEEPS the session — the watcher retries it with
+    // backoff — so both paths refresh: the row regains its failing
+    // flag and the status-bar pill escalates
+    onChanged?.();
+    draw();
   };
   async function draw() {
     let files;
