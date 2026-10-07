@@ -18,6 +18,32 @@ follow [Semantic Versioning](https://semver.org/).
   maintainers and end users; README's documentation index, build.md,
   security.md and CONTRIBUTING.md gain the pointer.
 
+- **The last-resort error net** — an async failure nobody caught (a
+  bare API call, a timer callback, a render pass) used to die
+  silently inside the webview: production users saw nothing at all.
+  Unhandled rejections and uncaught errors now surface as one error
+  toast per distinct message — a retry loop cannot flood the corner
+  — alongside the console record devtools expects, in the main
+  window and popouts alike; the toast helper itself no longer
+  crashes on a view that replaced the toast corner, and the
+  visual battery pins the net end to end (a deliberately fired
+  rejection and sync throw each land as exactly one toast, repeats
+  deduped).
+
+### Changed
+
+- **The last grid mirror folds** — the search pane's column
+  machinery (the persistence loader, the Type-column text, the
+  sizing floors) now imports the browser pane's exported
+  implementation instead of carrying a near-copy: one loader takes
+  the caller's column catalog so a persisted Source width survives,
+  one type formatter answers both grids, and the resize hit-slop
+  and minimum width live in one place. Seven single-module exports
+  across four files went back to module-private (sameLoc,
+  isAncestorLoc, srcIcon, markerDialog, typedConfirm,
+  composeFileName, browseDirDialog) — the public surface is now
+  exactly what other modules import.
+
 ### Fixed
 
 - **One speed-limit shelf everywhere** — the transfer dialog's limit

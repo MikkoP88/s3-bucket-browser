@@ -54,19 +54,26 @@ export const COLUMNS = [
 // header menu. A saved choice (s3b-cols in localStorage) always wins.
 export const DEFAULT_COLS = ['name', 'type', 'size', 'lastModified'];
 
-const MIN_COL_W = 48;      // resize floor for fixed-width columns
-const RZ_HIT_W = 10;       // boundary-handle hit width (keep in step with .gh-resize)
+// Both grids share the sizing floors (srgrid imports them) — one place to
+// keep in step with .gh-resize.
+export const MIN_COL_W = 48; // resize floor for fixed-width columns
+export const RZ_HIT_W = 10;  // boundary-handle hit width
 
 // Column-layout persistence, one key per pane ('s3b-cols' remote,
-// 's3b-cols-local' side pane). The value is JSON { cols: [ordered ids],
-// widths: { id: px } }; values written before widths existed are plain CSV
-// id lists and still load (order only). loadColState never throws — a
-// corrupt or unknown entry reads as "no preference".
-export function loadColState(key) {
+// 's3b-cols-local' side pane, 's3b-cols-sr' search window). The value is
+// JSON { cols: [ordered ids], widths: { id: px } }; values written before
+// widths existed are plain CSV id lists and still load (order only).
+// loadColState never throws — a corrupt or unknown entry reads as "no
+// preference". widthKnown optionally widens the accepted WIDTH ids (the
+// search pane passes its catalog so a persisted Source width survives);
+// the cols list always stays catalog-only — Source's presence is the
+// run's shape, never a saved choice.
+export function loadColState(key, widthKnown) {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return null;
     const known = new Set(COLUMNS.map((c) => c.id));
+    const wKnown = widthKnown || known;
     if (!raw.startsWith('{')) {
       return { cols: raw.split(',').map((s) => s.trim()).filter((id) => known.has(id)), widths: {} };
     }
@@ -75,7 +82,7 @@ export function loadColState(key) {
       ? v.cols.filter((id) => known.has(id)) : [];
     const widths = {};
     for (const [id, w] of Object.entries(v?.widths || {})) {
-      if (known.has(id) && Number.isFinite(w) && w >= MIN_COL_W && w <= 4000) widths[id] = Math.round(w);
+      if (wKnown.has(id) && Number.isFinite(w) && w >= MIN_COL_W && w <= 4000) widths[id] = Math.round(w);
     }
     return { cols, widths };
   } catch {
@@ -94,12 +101,14 @@ export function saveColState(key, cols, widths) {
 // friendly name of a common extension ("PNG image", "Text document") in
 // the UI language, or "<EXT> file" for the long tail. It derives
 // everything from the name alone, so every engine — S3, local, SFTP,
-// FTP, WebDAV — shows the same column for the same file name.
-function typeOf(r) {
-  if (r.isDir) return t('type.folder');
-  const i = String(r.name || '').lastIndexOf('.');
-  if (i > 0 && i < r.name.length - 1) {
-    const ext = r.name.slice(i + 1).toLowerCase();
+// FTP, WebDAV — shows the same column for the same file name; the
+// search pane feeds it key basenames the same way.
+export function typeOf(name, isDir) {
+  if (isDir) return t('type.folder');
+  const s = String(name || '');
+  const i = s.lastIndexOf('.');
+  if (i > 0 && i < s.length - 1) {
+    const ext = s.slice(i + 1).toLowerCase();
     if (has(`type.${ext}`)) return t(`type.${ext}`);
     return t('type.extFile', { ext: ext.toUpperCase() });
   }
@@ -120,7 +129,7 @@ const sizeOf = (r) => (r.isDir ? (r.contentSize == null ? null : r.contentSize) 
 function colText(r, id) {
   switch (id) {
     case 'name': return r.name || '';
-    case 'type': return typeOf(r);
+    case 'type': return typeOf(r.name, r.isDir);
     case 'mode': return r.mode || '';
     case 'size': {
       const s = sizeOf(r);
@@ -603,7 +612,7 @@ export class Grid {
     rows = [...rows].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1; // folders first, always
       let va = a[key], vb = b[key];
-      if (key === 'type') { va = typeOf(a); vb = typeOf(b); }
+      if (key === 'type') { va = typeOf(a.name, a.isDir); vb = typeOf(b.name, b.isDir); }
       else if (key === 'size') {
         // an unfilled folder sorts below a known-zero one: unknown, not empty
         va = sizeOf(a) ?? -1; vb = sizeOf(b) ?? -1;
@@ -749,7 +758,7 @@ export class Grid {
           mb.textContent = hasM ? (m.isDir ? `\u26D4 ${m.mcount}` : '\u26D4') : '';
           mb.title = hasM ? (m.isDir ? t('mark.count', { n: m.mcount }) : t('mark.has')) : '';
         } else if (c.id === 'type') {
-          cell.textContent = typeOf(m);
+          cell.textContent = typeOf(m.name, m.isDir);
         } else if (c.id === 'mode') {
           cell.textContent = m.mode || '';
         } else if (c.id === 'etag') {

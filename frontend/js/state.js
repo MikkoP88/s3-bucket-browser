@@ -112,7 +112,7 @@ const normRemotePath = (p) => String(p || '').replace(/^\/+/, '').replace(/\/+$/
 // sameLoc: do two locations name the same listing? The source must match
 // exactly; remote paths compare slash-normalized; object prefixes keep
 // their trailing-slash vocabulary but tolerate a missing one at the root.
-export function sameLoc(a, b) {
+function sameLoc(a, b) {
   if (!a || !b || a.kind !== b.kind) return false;
   if ((a.source || '') !== (b.source || '')) return false;
   if (a.kind === 'remote') return normRemotePath(a.path) === normRemotePath(b.path);
@@ -128,7 +128,7 @@ export function sameLoc(a, b) {
 // the same lineage, so navigating there should read as going backward and
 // keep Forward alive? Walks the parent chain — the buckets view above any
 // listing of the source and every crumb-segment hop up qualify equally.
-export function isAncestorLoc(up, loc) {
+function isAncestorLoc(up, loc) {
   if (!up || !loc) return false;
   let cur = loc;
   for (let i = 0; i < 128 && cur; i += 1) {

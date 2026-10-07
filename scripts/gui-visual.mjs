@@ -10386,6 +10386,32 @@ await step('toasts-cleanup', async () => {
   await shot('final');
 });
 
+// ---------- the last-resort error net ----------
+await step('error-net', async () => {
+  // An unhandled rejection and an uncaught sync error each surface as
+  // exactly one error toast (deduped on repeat) instead of dying
+  // silently in the webview — the console record is devtools' business,
+  // the toast is the production user's only sign.
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await evalPage(() => { Promise.reject(new Error('net-probe-unhandled')); });
+  await evalPage(() => { setTimeout(() => { throw new Error('net-probe-sync'); }, 0); });
+  await waitFor(() => evalPage(() =>
+    document.getElementById('toasts').textContent.includes('net-probe-unhandled')
+    && document.getElementById('toasts').textContent.includes('net-probe-sync')), 3000, 'net toasts land');
+  await ok('unhandled rejection surfaces as a toast', evalPage(() =>
+    Array.from(document.querySelectorAll('#toasts .toast.error'))
+      .some((x) => x.textContent.includes('net-probe-unhandled'))));
+  await ok('uncaught sync error surfaces as a toast', evalPage(() =>
+    Array.from(document.querySelectorAll('#toasts .toast.error'))
+      .some((x) => x.textContent.includes('net-probe-sync'))));
+  await evalPage(() => { Promise.reject(new Error('net-probe-unhandled')); });
+  await sleep(150);
+  await ok('a repeat is deduped, not flooded', evalPage(() =>
+    Array.from(document.querySelectorAll('#toasts .toast.error'))
+      .filter((x) => x.textContent.includes('net-probe-unhandled')).length === 1));
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+});
+
 await step('theme-prepaint', async () => {
   // The theme must resolve BEFORE the first paint: the palettes live on
   // [data-theme], set by a head script while the body is still unparsed
@@ -10807,10 +10833,14 @@ server.close();
 await browser.close();
 
 const failed = results.filter((r) => !r.pass);
+// the error-net step fires deliberate probe errors (sentinel-tagged
+// "net-probe-") to prove the app's last-resort net catches them; they
+// are the instrument, not regressions — reported, never gating
+const gateErrors = pageErrors.filter((e) => !e.includes('net-probe-'));
 const report = {
   ran: new Date().toISOString(),
   base: BASE,
-  totals: { checks: results.length, failed: failed.length, pageErrors: pageErrors.length },
+  totals: { checks: results.length, failed: failed.length, pageErrors: gateErrors.length, probes: pageErrors.length - gateErrors.length },
   failures: failed,
   pageErrors,
   results,
@@ -10819,8 +10849,8 @@ await mkdir(OUT, { recursive: true });
 await writeFile(path.join(OUT, 'report.json'), JSON.stringify(report, null, 2));
 
 console.log(`\ngui-visual: ${results.length - failed.length}/${results.length} checks passed` +
-  (pageErrors.length ? `, ${pageErrors.length} page error(s)` : '') +
+  (gateErrors.length ? `, ${gateErrors.length} page error(s)` : '') +
   ` — artifacts in testartifacts/gui/`);
 for (const f of failed) console.log(`  FAIL  [${f.step}] ${f.check}`);
-for (const e of pageErrors) console.log(`  ERR   ${e.split('\n')[0]}`);
-process.exit(failed.length || pageErrors.length ? 1 : 0);
+for (const e of gateErrors) console.log(`  ERR   ${e.split('\n')[0]}`);
+process.exit(failed.length || gateErrors.length ? 1 : 0);

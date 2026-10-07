@@ -277,6 +277,27 @@ function applyColumnPrefs() {
 async function boot() {
   setLang(detectLang());
   initTheme();
+  // The last-resort net: an async failure nobody caught — a bare api
+  // call, a timer callback, a render pass — would otherwise die
+  // silently inside the webview; production users see nothing at all.
+  // One toast per distinct message (a retry loop must not flood the
+  // corner), plus the console record devtools expects. Runs before the
+  // popout branch so floating windows get the same net.
+  const reported = new Set();
+  const reportErr = (msg) => {
+    if (reported.has(msg)) return;
+    reported.add(msg);
+    console.error(msg);
+    toast(msg, 'error');
+  };
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    reportErr(`Unhandled: ${r?.message || String(r)}`);
+    e.preventDefault();
+  });
+  window.addEventListener('error', (e) => {
+    if (e.message) reportErr(`${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`);
+  });
   // A native popout window (Wails v3 multi-window): the main window opened
   // this page with ?popout=<kind> to float exactly one view as a real OS
   // window — render just that view, none of the app chrome.

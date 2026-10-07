@@ -927,7 +927,7 @@ function markersHiddenGate(status, list, redraw) {
 // version; removing the last marker closes the window, its job done).
 // The marker-setting opt-in notice behaves exactly like the list
 // window's.
-export function markerDialog(bucket, key, onChanged) {
+function markerDialog(bucket, key, onChanged) {
   const status = el('div', { class: 'dlg-status', text: t('loading') });
   const list = el('div', { class: 'ver-list' });
   let listed = [];
@@ -1127,7 +1127,7 @@ export function markersDialog(bucket, items, prefix, onChanged) {
 // escalation mechanisms and always apply.
 export const delTypedOn = () => localStorage.getItem('s3b-del-typeconfirm') === '1';
 
-export function typedConfirm({ title, message, typeWord, okLabel = 'Delete', danger = true }) {
+function typedConfirm({ title, message, typeWord, okLabel = 'Delete', danger = true }) {
   let settled = false;
   return new Promise((resolve) => {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
@@ -1239,7 +1239,7 @@ const FILE_TYPES = [
 
 // composeFileName mirrors the Go rule (pkg/api browse.go) for the live
 // preview only — the backend composes the authoritative name.
-export function composeFileName(name, ext) {
+function composeFileName(name, ext) {
   name = String(name || '').trim().replace(/^[/\s]+|[/\s]+$/g, '');
   ext = String(ext || '').trim().replace(/^[.\s]+|[.\s]+$/g, '');
   if (!ext) return name;
@@ -4441,6 +4441,9 @@ function lockDialogOne(bucket, row, onChanged) {
 // ---------- toasts ----------
 export function toast(message, type = '') {
   const box = document.getElementById('toasts');
+  // a view that replaced the whole body has no toast corner — say it
+  // on the console rather than turn a toast into its own TypeError
+  if (!box) { console.error(message); return; }
   // the message rides its own span so a close X can sit beside it: the
   // toast corner floats over the pane's bottom info bar, and a toast
   // must be dismissible on the spot — never only by its timer
@@ -4464,7 +4467,7 @@ export function toast(message, type = '') {
 // scopeBucket pins a bucket-scoped S3 source to its ONE bucket: the
 // crumb renders Name/prefix (the bucket is the source's identity, not
 // content) and Up never climbs out to the account's bucket list.
-export function browseDirDialog({ title, kind, source = '', name = '', draft = null, start = '/', startBucket = '', scopeBucket = '', startPrefix = '' }) {
+function browseDirDialog({ title, kind, source = '', name = '', draft = null, start = '/', startBucket = '', scopeBucket = '', startPrefix = '' }) {
   return new Promise((resolve) => {
     let cur = kind === 's3'
       ? { bucket: startBucket || scopeBucket || '', prefix: startPrefix || '' }

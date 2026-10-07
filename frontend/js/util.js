@@ -157,7 +157,7 @@ const SRC_TYPE_LABEL = {
   local: 'Local',
 };
 
-export function srcIcon(stype) {
+function srcIcon(stype) {
   return SRC_TYPE_LABEL[stype] || 'Other';
 }
 

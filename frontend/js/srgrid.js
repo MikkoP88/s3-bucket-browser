@@ -4,18 +4,17 @@
 // funnels (content the Search window must not grow), and its setColumns
 // drops ids outside the catalog (the search-only Source column would
 // vanish) — so this module reuses what grid.js exports (the column
-// catalog, the per-key persistence writer) and mirrors the rest of its
-// mechanics: boundary-handle resize (pointer and keyboard, floor and
-// ceiling clamped), header drag-to-reorder, and the right-click column
-// picker. The rows stay the window's own contract — a plain streaming
-// list, single select, Enter/arrows — untouched.
+// catalog, the persistence writer AND loader, the Type-column text, the
+// sizing floors) and mirrors the rest of its mechanics: boundary-handle
+// resize (pointer and keyboard, floor and ceiling clamped), header
+// drag-to-reorder, and the right-click column picker. The rows stay the
+// window's own contract — a plain streaming list, single select,
+// Enter/arrows — untouched.
 import { el, fmtBytes, fmtDate, fileIcon, srcIconEl } from './util.js';
 import { resizeDrag, resizeKeys, reorderDrag } from './coldrag.js';
-import { t, has } from './i18n.js';
-import { COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
+import { t } from './i18n.js';
+import { COLUMNS, DEFAULT_COLS, saveColState, loadColState, typeOf, MIN_COL_W, RZ_HIT_W } from './grid.js';
 
-const MIN_COL_W = 48;           // resize floor for fixed columns (grid.js's)
-const RZ_HIT_W = 10;            // handle hit width — keep in step with .gh-resize
 const STORE_KEY = 's3b-cols-sr'; // beside 's3b-cols' / 's3b-cols-local'
 
 // The search catalog: the app's global column set plus one search-only
@@ -34,32 +33,6 @@ const byId = new Map(CATALOG.map((c) => [c.id, c]));
 // (s3b-cols-sr) always wins.
 export const SR_DEFAULT_COLS = [...DEFAULT_COLS];
 
-// loadColState mirrors grid.js's loader for the search store: same shape,
-// same tolerance (a corrupt or unknown read is simply "no preference"),
-// but the known-id set includes Source — the shared loader filters against
-// the main catalog only and would drop a persisted Source width. The cols
-// list stays catalog-only: Source's presence is the run's shape, never a
-// saved choice.
-function loadColState(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    if (!raw.startsWith('{')) {
-      return { cols: raw.split(',').map((s) => s.trim()).filter((id) => COLUMNS.some((c) => c.id === id)), widths: {} };
-    }
-    const v = JSON.parse(raw);
-    const cols = Array.isArray(v?.cols)
-      ? v.cols.filter((id) => COLUMNS.some((c) => c.id === id)) : [];
-    const widths = {};
-    for (const [id, w] of Object.entries(v?.widths || {})) {
-      if (byId.has(id) && Number.isFinite(w) && w >= MIN_COL_W && w <= 4000) widths[id] = Math.round(w);
-    }
-    return { cols, widths };
-  } catch {
-    return null;
-  }
-}
-
 // cleanCols normalizes an incoming id list the way the live list applies
 // it: catalog-only, deduped, name always present — the Settings apply
 // path writes the store without an instance at hand, so the rule lives
@@ -77,30 +50,17 @@ function cleanCols(ids) {
 // storedSearchCols reads the persisted set (or the out-of-box one) for
 // the Settings draft; applyStoredCols writes a new set, keeping any
 // saved widths — the dialog's Save path, which may run while no search
-// window exists at all.
+// window exists at all. Both go through grid.js's shared loader with the
+// search catalog (byId) as the width set, so a persisted Source width
+// survives — see loadColState there.
 export function storedSearchCols() {
-  const st = loadColState(STORE_KEY);
+  const st = loadColState(STORE_KEY, byId);
   return st && st.cols.length ? [...st.cols] : [...SR_DEFAULT_COLS];
 }
 
 export function applyStoredCols(ids) {
-  const st = loadColState(STORE_KEY);
+  const st = loadColState(STORE_KEY, byId);
   saveColState(STORE_KEY, cleanCols(ids), (st && st.widths) || {});
-}
-
-// typeOf mirrors grid.js's Type-column text (not exported there): Folder,
-// the friendly name of a common extension, or "<EXT> file" — taken from
-// the basename so keys ("docs/notes.md") read like names.
-function typeOf(name, isDir) {
-  if (isDir) return t('type.folder');
-  const s = String(name || '');
-  const i = s.lastIndexOf('.');
-  if (i > 0 && i < s.length - 1) {
-    const ext = s.slice(i + 1).toLowerCase();
-    if (has(`type.${ext}`)) return t(`type.${ext}`);
-    return t('type.extFile', { ext: ext.toUpperCase() });
-  }
-  return t('type.file');
 }
 
 // makeSearchGrid builds the Search window's results area — head inside
@@ -493,7 +453,7 @@ export function makeSearchGrid(opts = {}) {
   new ResizeObserver(() => { syncHeadWidth(); positionHandles(); updateHandleAria(); }).observe(headClip);
 
   // restore the persisted layout (or the window's default) and build
-  const stored = loadColState(STORE_KEY);
+  const stored = loadColState(STORE_KEY, byId);
   widths = (stored && stored.widths) || {};
   setColumns(stored && stored.cols.length ? stored.cols : SR_DEFAULT_COLS);
 
