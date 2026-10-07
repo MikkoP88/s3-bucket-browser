@@ -30,9 +30,9 @@ type editSession struct {
 	origMod  int64
 	lastSize int64
 	lastMod  int64
-	dirty    bool       // changed since last upload
-	fails    int        // consecutive push failures (drives the backoff)
-	nextTry  time.Time  // earliest retry after a failure
+	dirty    bool      // changed since last upload
+	fails    int       // consecutive push failures (drives the backoff)
+	nextTry  time.Time // earliest retry after a failure
 	done     bool
 }
 

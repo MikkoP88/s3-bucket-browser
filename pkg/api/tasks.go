@@ -76,7 +76,7 @@ type taskRegistry struct {
 	mu      sync.Mutex
 	all     []*taskHandle
 	seq     int
-	notify  func() // fires EventTasksUpdate (App installs the closure)
+	notify  func()       // fires EventTasksUpdate (App installs the closure)
 	onPanic func(string) // heartbeat panic net (guard.go); App installs the hook
 }
 

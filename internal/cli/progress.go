@@ -31,23 +31,23 @@ const (
 	progressInterval = 100 * time.Millisecond // redraw throttle (10 Hz)
 	progressMinBytes = 1 << 20                // draw only past this much data…
 	progressMinDelay = time.Second            // …or after this long (slow links)
-	progressNameW   = 40                      // display width of the file name
+	progressNameW    = 40                     // display width of the file name
 )
 
 // progressLine is one transfer's live line. Construct per item; fn() feeds
 // the engine, done() cleans up. A zero gate (non-TTY, --json) makes fn()
 // return nil — the engine skips the wrapper entirely.
 type progressLine struct {
-	w       io.Writer
-	name    string
-	on      bool
-	now     func() time.Time
-	start   time.Time
-	lastAt  time.Time
-	lastLen int
+	w        io.Writer
+	name     string
+	on       bool
+	now      func() time.Time
+	start    time.Time
+	lastAt   time.Time
+	lastLen  int
 	lastSent int64
-	speed   float64 // exponential moving average, bytes/sec
-	drawn   bool
+	speed    float64 // exponential moving average, bytes/sec
+	drawn    bool
 }
 
 // newProgressLine builds the printer for a named transfer against the
