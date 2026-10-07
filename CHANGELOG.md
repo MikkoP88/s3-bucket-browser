@@ -153,6 +153,22 @@ follow [Semantic Versioning](https://semver.org/).
   dirty-session gate has already confirmed. The tasks window names
   the verb properly (“Opening”, pencil glyph) in all 15 languages
   instead of the raw-kind fallback.
+
+- **A failing editor push gets a voice** — the keep-remote-up-to-date
+  watcher retried a failed upload silently every poll (1.2s), so
+  the user kept editing a file whose changes had stopped reaching
+  the bucket: nothing toasted, the indicator said nothing, and the
+  first hint of trouble was the exit gate refusing a quit. A
+  failing push now announces itself exactly once per streak (an
+  error toast naming the file and the cause), every attempt writes
+  an error line to the log drawer, the status-bar editor pill
+  escalates — ⚠ glyph, danger color — while any session is failing,
+  and the Files-open-in-editor dialog flags the session on its row;
+  retries back off exponentially (2.4s doubling to a ~19s cap)
+  instead of hammering a dead endpoint, and a landing upload
+  clears every mark (the existing “Uploaded” toast already voices
+  the recovery). The session stays dirty the whole time, so the
+  exit gate's confirmation keeps guarding the un-pushed edits.
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed

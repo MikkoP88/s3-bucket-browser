@@ -3058,7 +3058,12 @@ function updateEditingStatus() {
   api.EditingFiles().then((files) => {
     const sp = $('status-editing');
     sp.classList.toggle('hidden', !files.length);
-    sp.textContent = `\u270E ${files.length} in editor`;
+    // a failing push escalates the pill: the warn color is the resting
+    // state, danger plus the warning glyph say the edits are NOT
+    // reaching the bucket (they stay pending until a push lands)
+    const failing = files.some((f) => f.pushFailed);
+    sp.textContent = `\u270E ${files.length} in editor` + (failing ? ' \u26A0' : '');
+    sp.classList.toggle('failing', failing);
   }).catch(() => {});
 }
 
@@ -5120,6 +5125,12 @@ function wireEvents() {
   });
   onEvent('editor:saved', (d) => {
     toast(`Uploaded ${d?.key ? basename(d.key) : 'edited file'}`, 'ok');
+    updateEditingStatus();
+  });
+  // the backend fires this once per failing streak (retries back off);
+  // the session stays visibly dirty until a push lands
+  onEvent('editor:push-failed', (d) => {
+    toast(`Upload of ${d?.key ? basename(d.key) : 'edited file'} failed: ${d?.error || 'unknown error'}`, 'error');
     updateEditingStatus();
   });
   onEvent('log:line', (l) => logArea.append(l));

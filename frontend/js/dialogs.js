@@ -3796,7 +3796,7 @@ export function editingDialog(onChanged) {
     }
     list.replaceChildren(...(files.length ? files.map((f) => el('div', { class: 'tr-job' },
       el('div', { class: 'tr-top' },
-        el('span', { class: 'tr-name', text: `${f.bucket}/${f.key}${f.dirty ? ' \u270E' : ''}` }),
+        el('span', { class: 'tr-name', text: `${f.bucket}/${f.key}${f.dirty ? ' \u270E' : ''}${f.pushFailed ? ' \u26A0 upload failed (retrying)' : ''}` }),
         el('span', { class: 'tr-status mono', text: f.local }),
         el('button', { class: 'btn', text: 'Stop & upload', onclick: () => stop(f, true) }),
         el('button', { class: 'btn', text: 'Stop & discard', onclick: () => stop(f, false) }),

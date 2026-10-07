@@ -1425,6 +1425,7 @@ kbd {
 
 /* Editor status in the status bar */
 .sb-editing { color: var(--warn); cursor: pointer; }
+.sb-editing.failing { color: var(--danger); font-weight: 700; }
 
 /* Settings dialog — VS 2026-style two-pane shell: category nav + search on
    the left, the active category page (or the flattened search results) on

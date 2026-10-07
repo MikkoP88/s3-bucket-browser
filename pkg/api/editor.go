@@ -16,6 +16,12 @@ import (
 // {bucket, key}).
 const EventEditorSaved = "editor:saved"
 
+// EventEditorPushFailed fires when a watched edit could not be uploaded
+// back — once per failing streak, not per attempt (payload:
+// {bucket, key, error}). The session stays dirty and retries with backoff
+// until a push lands.
+const EventEditorPushFailed = "editor:push-failed"
+
 // editSession tracks one file opened in an external editor.
 type editSession struct {
 	Bucket   string
@@ -26,16 +32,19 @@ type editSession struct {
 	origMod  int64
 	lastSize int64
 	lastMod  int64
-	dirty    bool // changed since last upload
+	dirty    bool       // changed since last upload
+	fails    int        // consecutive push failures (drives the backoff)
+	nextTry  time.Time  // earliest retry after a failure
 	done     bool
 }
 
 // EditInfo is the status view of an edit session.
 type EditInfo struct {
-	Bucket string `json:"bucket"`
-	Key    string `json:"key"`
-	Local  string `json:"local"`
-	Dirty  bool   `json:"dirty"`
+	Bucket     string `json:"bucket"`
+	Key        string `json:"key"`
+	Local      string `json:"local"`
+	Dirty      bool   `json:"dirty"`
+	PushFailed bool   `json:"pushFailed"` // last push failed; retrying with backoff
 }
 
 // editDir is the temp workspace for edited objects: the config dir
@@ -45,8 +54,23 @@ func editDir(bucket string) string {
 }
 
 // watcherPoll is the file-watch interval; a change is uploaded after it
-// stays stable for two consecutive polls (editor save jitters).
-const watcherPoll = 1200 * time.Millisecond
+// stays stable for two consecutive polls (editor save jitters). A var so
+// tests can shorten the cadence.
+var watcherPoll = 1200 * time.Millisecond
+
+// editPushBackoff spaces out retries of a failing push: one poll's grace
+// at first, doubling per consecutive failure and capped at sixteen — a
+// dead endpoint is retried forever, but gently (~19s at the cap with the
+// shipped cadence).
+func editPushBackoff(fails int) time.Duration {
+	if fails < 1 {
+		fails = 1
+	}
+	if fails > 4 {
+		fails = 4
+	}
+	return watcherPoll * time.Duration(1<<fails)
+}
 
 // openInEditor launches the OS editor for the staged file (or, chooseApp,
 // the OS "Open with…" picker). A var so tests can pin the pull's task
@@ -154,12 +178,41 @@ func (a *App) watchEditor(s *editSession) {
 		s.mu.Unlock()
 
 		if stableUpload {
+			now := time.Now()
+			s.mu.Lock()
+			ready := s.fails == 0 || !now.Before(s.nextTry)
+			s.mu.Unlock()
+			if !ready {
+				continue // a failing push waits out its backoff
+			}
 			if err := a.uploadEdit(s); err == nil {
 				s.mu.Lock()
 				s.dirty = false
+				s.fails = 0
+				s.nextTry = time.Time{}
 				s.mu.Unlock()
 				a.emit(EventEditorSaved, map[string]string{"bucket": s.Bucket, "key": s.Key})
 				a.emit(EventS3Changed, map[string]string{"bucket": s.Bucket})
+			} else {
+				// A failing push gets a voice and a gentler cadence: every
+				// attempt logs, the first of a streak toasts (the session
+				// stays visibly dirty — indicator and dialog carry the
+				// failure — until a push lands), and the retries back off
+				// instead of hammering a dead endpoint every poll.
+				s.mu.Lock()
+				first := s.fails == 0
+				s.fails++
+				wait := editPushBackoff(s.fails)
+				s.nextTry = now.Add(wait)
+				s.mu.Unlock()
+				a.emitLog(LogError, "edit", fmt.Sprintf(
+					"upload of %s/%s failed (retry in %s; edits stay pending): %v",
+					s.Bucket, s.Key, wait, err))
+				if first {
+					a.emit(EventEditorPushFailed, map[string]string{
+						"bucket": s.Bucket, "key": s.Key, "error": err.Error(),
+					})
+				}
 			}
 		}
 	}
@@ -198,7 +251,10 @@ func (a *App) done() <-chan struct{} {
 func (s *editSession) info() EditInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return EditInfo{Bucket: s.Bucket, Key: s.Key, Local: s.Local, Dirty: s.dirty}
+	return EditInfo{
+		Bucket: s.Bucket, Key: s.Key, Local: s.Local,
+		Dirty: s.dirty, PushFailed: s.fails > 0,
+	}
 }
 
 // EditingFiles lists open edit sessions (status bar indicator).

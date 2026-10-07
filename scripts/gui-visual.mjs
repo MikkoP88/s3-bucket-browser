@@ -1166,7 +1166,8 @@ function shim() {
     RemoteStat: (source, key) => ({ key, isDir: false, size: 4096, lastModified: daysAgo(3) }),
     CopySelection: (src, keys, dst, prefix, move) => ({ copied: keys.length, errors: [] }),
     CopySelectionVersions: (srcS, srcB, keys, dstS, dstB, prefix, move) => 'vcopy-1',
-    EditingFiles: () => [{ bucket: 'team-files', key: 'docs/notes.md' }],
+    // world.editing lets a step stage sessions with flags (pushFailed)
+    EditingFiles: () => JSON.parse(JSON.stringify(world.editing || [{ bucket: 'team-files', key: 'docs/notes.md' }])),
     GetLogSettings: () => JSON.parse(JSON.stringify(world.logSettings)),
     SetLogSettings: (mode, dir, levels, scopes, sources) => {
       world.logSettings = { ...world.logSettings, mode, dir, levels: levels || [], scopes: scopes || [], sources: sources || [] };
@@ -9847,6 +9848,30 @@ await step('editors-manager', async () => {
   await ok('manager lists the open file', waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent)).includes('notes.md'), 4000, 'file row'));
   await shot('editors');
   await closeModal();
+  // a failing push escalates the pill, flags the manager row and toasts once
+  await evalPage(() => {
+    window.__shim.world.editing = [{ bucket: 'team-files', key: 'docs/notes.md', pushFailed: true }];
+    window.dispatchEvent(new Event('focus'));
+  });
+  await ok('failing session escalates the editor pill', waitFor(async () => evalPage(() =>
+    document.getElementById('status-editing').classList.contains('failing')
+    && document.getElementById('status-editing').textContent.includes('\u26A0')), 4000, 'failing pill'));
+  await evalPage(() => window.__shim.emit('editor:push-failed', {
+    bucket: 'team-files', key: 'docs/notes.md', error: 'dial tcp: connection refused',
+  }));
+  await ok('failed push toasts once', waitFor(async () =>
+    (await txt('#toasts')).includes('Upload of notes.md failed'), 4000, 'push-failed toast'));
+  await page.click('#status-editing');
+  await waitFor(modalVisible, 4000, 'editing modal (failing)');
+  await ok('manager flags the failing session', waitFor(async () =>
+    (await evalPage(() => document.getElementById('modal-root').textContent)).includes('upload failed'), 4000, 'failed row'));
+  await closeModal();
+  await evalPage(() => {
+    window.__shim.world.editing = null;
+    window.dispatchEvent(new Event('focus'));
+  });
+  await ok('pill settles back once uploads land again', waitFor(async () => evalPage(() =>
+    !document.getElementById('status-editing').classList.contains('failing')), 4000, 'settled pill'));
 });
 
 await step('download-selection', async () => {

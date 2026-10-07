@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -123,5 +124,103 @@ func TestEditObjectPullSettlesAndRegistersSession(t *testing.T) {
 		if tk.Kind == "edit" {
 			t.Fatal("edit row survived a landed pull")
 		}
+	}
+}
+
+// editPushBackoff doubles per consecutive failure and caps at sixteen
+// polls (a dead endpoint is retried forever, but gently).
+func TestEditPushBackoff(t *testing.T) {
+	old := watcherPoll
+	defer func() { watcherPoll = old }()
+	watcherPoll = time.Second
+	for _, tc := range []struct{ fails, polls int }{
+		{0, 2}, {1, 2}, {2, 4}, {3, 8}, {4, 16}, {9, 16},
+	} {
+		if got := editPushBackoff(tc.fails); got != watcherPoll*time.Duration(tc.polls) {
+			t.Errorf("editPushBackoff(%d) = %s, want %d poll(s)", tc.fails, got, tc.polls)
+		}
+	}
+}
+
+// A push that keeps failing gets a voice and a gentler cadence: the
+// session turns dirty AND pushFailed in the status view (the indicator's
+// failing state and the dialog's warning ride it), and once the endpoint
+// recovers the retry lands the edit and clears both flags.
+func TestWatchEditorVoicesAndRetriesFailingPush(t *testing.T) {
+	oldPoll := watcherPoll
+	watcherPoll = 10 * time.Millisecond
+	defer func() { watcherPoll = oldPoll }()
+	oldOpen := openInEditor
+	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
+	defer func() { openInEditor = oldOpen }()
+
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("docs")
+	f.seed("docs", "notes.md", "v1")
+	var fault atomic.Bool
+	fault.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bucket, key := splitS3Path(r.URL.Path)
+		if fault.Load() && r.Method == http.MethodPut && bucket == "docs" && key == "notes.md" {
+			// 403, not 5xx: the SDK retries server errors, and the test
+			// wants the attempt to fail fast, not ride the retry ladder
+			http.Error(w, "injected fault", http.StatusForbidden)
+			return
+		}
+		f.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	f.mu.Lock()
+	f.url = srv.URL
+	f.mu.Unlock()
+	if err := a.SaveSource(fakeS3Source("editf", srv.URL)); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := a.EditObject("docs", "notes.md", false)
+	if err == nil || !strings.Contains(err.Error(), "could not open editor") {
+		t.Fatalf("EditObject err = %v, want the could-not-open-editor error", err)
+	}
+	// start the watcher the successful editor launch would have started
+	a.editorsMu.Lock()
+	s := a.editors["docs\x00notes.md"]
+	a.editorsMu.Unlock()
+	go a.watchEditor(s)
+
+	// an edit lands on disk
+	if err := os.WriteFile(info.Local, []byte("v2 edited content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor := func(what string, ok func(EditInfo) bool) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			sv := a.EditingFiles()
+			if len(sv) == 1 && ok(sv[0]) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("session never %s: %+v", what, sv)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// the push fails: dirty and pushFailed, visibly
+	waitFor("turned dirty+pushFailed", func(e EditInfo) bool { return e.Dirty && e.PushFailed })
+	// the endpoint recovers: the retry lands and clears both flags
+	fault.Store(false)
+	waitFor("recovered", func(e EditInfo) bool { return !e.Dirty && !e.PushFailed })
+	f.mu.Lock()
+	got := f.objects["docs"]["notes.md"]
+	f.mu.Unlock()
+	if got != "v2 edited content" {
+		t.Fatalf("object content = %q, want the edited bytes", got)
+	}
+	// end the session (the watcher exits)
+	if err := a.StopEdit("docs", "notes.md", false); err != nil {
+		t.Fatal(err)
 	}
 }
