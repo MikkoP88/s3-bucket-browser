@@ -119,7 +119,8 @@ func xferDestStat(ctx context.Context, dst xferDestSide, p string) (int64, time.
 		}
 		return e.Size, aws.ToTime(e.LastModified), true
 	default:
-		st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
+		stat := localStat // captured before the step spawns (seam discipline)
+		st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return stat(p) })
 		if err != nil || st.IsDir() {
 			return 0, time.Time{}, false
 		}

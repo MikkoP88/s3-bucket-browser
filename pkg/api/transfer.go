@@ -771,8 +771,9 @@ func (a *App) logTransfer(entry any) {
 // parking the binding goroutine forever.
 func expandUploadPaths(ctx context.Context, paths []string, prefix string) ([]uploadPair, error) {
 	var out []uploadPair
+	stat := localStat // captured before any step spawns (seam discipline)
 	for item, p := range paths {
-		st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
+		st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return stat(p) })
 		if err != nil {
 			return nil, err
 		}
@@ -829,7 +830,8 @@ func uniqueRemoteKey(ctx context.Context, c *s3client.Client, bucket, key string
 // caller fails the item rather than guessing skip-or-overwrite onto a
 // volume it cannot see; any other probe miss is simply not-taken.
 func destTaken(ctx context.Context, p string) (bool, error) {
-	_, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	_, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return stat(p) })
 	if err != nil {
 		if errors.Is(err, remotefs.ErrLocalDeadline) {
 			return false, err
@@ -872,7 +874,8 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	if err != nil {
 		return "", err
 	}
-	if st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(destDir) }); err != nil || !st.IsDir() {
+	stat := localStat // captured before the step spawns (seam discipline)
+	if st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(destDir) }); err != nil || !st.IsDir() {
 		return "", fmt.Errorf("destination folder not found: %s", destDir)
 	}
 	if len(items) == 0 {

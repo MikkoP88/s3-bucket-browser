@@ -18,7 +18,11 @@ import (
 )
 
 // localReadDir and localStat are the point primitives this engine rides;
-// vars so the wedge tests can park one (the openInEditor discipline).
+// vars so the wedge tests can park one (the openInEditor discipline). Each
+// caller captures its seam into a local BEFORE the step goroutine spawns:
+// an abandoned step can outlive its caller until the OS itself gives up,
+// and the only reads of these vars live on the spawning goroutine — the
+// retire-grace discipline LocalOpBudget already follows.
 var (
 	localReadDir = os.ReadDir
 	localStat    = os.Stat
@@ -41,7 +45,8 @@ func NewLocal(ctx context.Context, root string) (*Local, error) {
 	if err != nil {
 		return nil, err
 	}
-	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return localStat(abs) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return stat(abs) })
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +87,9 @@ func (l *Local) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 	parent := CleanPath(dir)
 	// One bounded step covers the whole directory view — the read AND the
 	// per-entry info calls — so a wedge anywhere in it is one verdict.
+	readDir := localReadDir // captured before the step spawns (seam discipline)
 	entries, err := LocalStep(ctx, func() ([]listing.Entry, error) {
-		dirInfos, err := localReadDir(full)
+		dirInfos, err := readDir(full)
 		if err != nil {
 			return nil, err
 		}
@@ -106,7 +112,8 @@ func (l *Local) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 
 func (l *Local) Stat(ctx context.Context, p string) (listing.Entry, error) {
 	cleaned := CleanPath(p)
-	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return localStat(l.join(cleaned)) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return stat(l.join(cleaned)) })
 	if err != nil {
 		return listing.Entry{}, err
 	}
@@ -161,7 +168,8 @@ func (l *Local) Remove(ctx context.Context, p string) error {
 		return fmt.Errorf("refusing to remove the source root")
 	}
 	full := l.join(cleaned)
-	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return localStat(full) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return stat(full) })
 	if err != nil {
 		return err
 	}

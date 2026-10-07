@@ -264,7 +264,8 @@ func (a *App) resolveXferDest(dest XferDest) (xferDestSide, error) {
 		}
 		return xferDestSide{kind: "remote", lockID: src.ID, fs: fs, dir: remotefs.CleanPath(dest.Dir)}, nil
 	case "local":
-		st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(dest.Dir) })
+		stat := localStat // captured before the step spawns (seam discipline)
+		st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(dest.Dir) })
 		if err != nil || !st.IsDir() {
 			return xferDestSide{}, fmt.Errorf("destination folder not found: %s", dest.Dir)
 		}
@@ -389,9 +390,10 @@ func (a *App) xferCycleRefusal(items []XferItem, localPaths []string, dest XferD
 			}
 		}
 	default: // local destination: only local-pane sources can nest inside it
+		stat := localStat // captured before any step spawns (seam discipline)
 		for _, lp := range localPaths {
 			landing := filepath.Join(dst.dir, filepath.Base(lp))
-			st, serr := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(lp) })
+			st, serr := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(lp) })
 			isDir := serr == nil && st.IsDir()
 			if !isDir {
 				if strings.EqualFold(landing, lp) {
@@ -631,7 +633,8 @@ func (a *App) planRemoteItem(ctx context.Context, p *xferPlan, addDir func(int, 
 // fails the transfer promise in bounded time instead of parking the
 // binding goroutine forever.
 func (a *App) planLocalItem(ctx context.Context, p *xferPlan, addDir func(int, string, string), nonEmpty map[string]bool, idx int, lp string, dst xferDestSide) error {
-	st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(lp) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return stat(lp) })
 	if err != nil {
 		return err
 	}
@@ -1027,7 +1030,8 @@ func (a *App) xferDestExists(ctx context.Context, dst xferDestSide, p string) bo
 		_, err := dst.fs.Stat(ctx, p)
 		return err == nil
 	default:
-		_, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
+		stat := localStat // captured before the step spawns (seam discipline)
+		_, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return stat(p) })
 		return err == nil
 	}
 }

@@ -185,7 +185,8 @@ func (a *App) LocalUsage(paths []string) ([]UsageStat, error) {
 // its siblings.
 func localUsageOne(ctx context.Context, p string) UsageStat {
 	u := UsageStat{Key: p}
-	st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return stat(p) })
 	if err != nil {
 		u.Partial = true
 		u.Error = err.Error()

@@ -32,7 +32,11 @@ type LocalEntry struct {
 // of the silent-death cure: a root whose backing vanished (dead UNC path,
 // disconnected mapped drive) parks the syscall until the OS gives up, and
 // no caller context can reach inside a syscall to stop it, so the wait is
-// bounded by abandonment instead (see remotefs/localbudget.go).
+// bounded by abandonment instead (see remotefs/localbudget.go). Each
+// caller captures its seam into a local BEFORE the step goroutine spawns:
+// an abandoned step can outlive its caller until the OS itself gives up,
+// and the only reads of these vars live on the spawning goroutine — the
+// retire-grace discipline remotefs.LocalOpBudget already follows.
 var (
 	localStat    = os.Stat
 	localReadDir = os.ReadDir
@@ -74,13 +78,14 @@ func walkLocal(ctx context.Context, root string, fn func(localEntryInfo), abort 
 		abs string
 		rel string // "" for the root itself
 	}
+	readDir := localReadDir // captured before any step spawns (seam discipline)
 	stack := []dirRef{{abs: root}}
 	var firstErr error
 	for len(stack) > 0 {
 		d := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		infos, err := remotefs.LocalStep(ctx, func() ([]localEntryInfo, error) {
-			dirEntries, err := localReadDir(d.abs)
+			dirEntries, err := readDir(d.abs)
 			if err != nil {
 				return nil, err
 			}
@@ -134,11 +139,15 @@ func walkLocal(ctx context.Context, root string, fn func(localEntryInfo), abort 
 // not park the pane's roots view either.
 func (a *App) LocalRoots() []string {
 	if runtime.GOOS == "windows" {
-		var drives []string
-		remotefs.LocalStep(a.ctx, func() ([]string, error) {
+		stat := localStat // captured before the step spawns (seam discipline)
+		// The slice is BUILT inside the step and returned as the verdict: an
+		// abandoned step owns only its own locals, so the caller's return can
+		// never race a still-running probe appending to shared state.
+		drives, _ := remotefs.LocalStep(a.ctx, func() ([]string, error) {
+			var drives []string
 			for c := 'A'; c <= 'Z'; c++ {
 				p := string(c) + `:\`
-				if st, err := localStat(p); err == nil && st.IsDir() {
+				if st, err := stat(p); err == nil && st.IsDir() {
 					drives = append(drives, p)
 				}
 			}
@@ -170,8 +179,9 @@ func (a *App) ListLocal(dir string) ([]LocalEntry, error) {
 		dir = home
 	}
 	dir = filepath.Clean(dir)
+	readDir := localReadDir // captured before the step spawns (seam discipline)
 	out, err := remotefs.LocalStep(a.ctx, func() ([]LocalEntry, error) {
-		ents, err := localReadDir(dir)
+		ents, err := readDir(dir)
 		if err != nil {
 			return nil, err
 		}
@@ -222,7 +232,8 @@ func (a *App) LocalParent(dir string) string {
 // OpenLocal opens a file or folder with the OS default application
 // (reveal in Explorer when a folder).
 func (a *App) OpenLocal(path string) error {
-	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(path) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(path) })
 	if err != nil {
 		return err
 	}
@@ -252,7 +263,8 @@ func (a *App) OpenLocal(path string) error {
 // application); Linux has no standard chooser, so the default app opens
 // there instead.
 func (a *App) OpenLocalWith(path string) error {
-	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(path) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(path) })
 	if err != nil {
 		return err
 	}
@@ -291,7 +303,8 @@ func openWithChoose(path string) error {
 // menu). The GUI process has no console of its own (Windows: detached at
 // startup), so a console child gets a fresh window of its own.
 func (a *App) OpenTerminal(dir string) error {
-	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(dir) })
+	stat := localStat // captured before the step spawns (seam discipline)
+	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(dir) })
 	if err != nil {
 		return err
 	}
@@ -339,11 +352,12 @@ func linuxTerminal(dir string) *exec.Cmd {
 // fails the preview in bounded time instead of parking the window.
 func (a *App) LocalDeletePreview(paths []string) (DeletePreview, error) {
 	var p DeletePreview
+	stat := localStat // captured before any step spawns (seam discipline)
 	for _, root := range paths {
 		if isFsRoot(root) {
 			return DeletePreview{}, errors.New("refusing to delete a filesystem root")
 		}
-		st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(root) })
+		st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(root) })
 		if err != nil {
 			return DeletePreview{}, err
 		}
@@ -382,6 +396,7 @@ func (a *App) LocalDeletePreview(paths []string) (DeletePreview, error) {
 // backing.
 func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, error) {
 	var out transfer.DeleteResult
+	stat := localStat // captured before any step spawns (seam discipline)
 	// Server-side re-count (the preview may be stale by the time the user
 	// confirms), mirroring RemoteRemove: skipped entirely once force is
 	// presented, and refused roots are never walked — a root operand must
@@ -392,7 +407,7 @@ func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, er
 			if isFsRoot(root) {
 				continue // the act loop below reports the root refusal
 			}
-			st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(root) })
+			st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(root) })
 			if err != nil {
 				continue // the act loop below reports missing paths honestly
 			}
@@ -416,7 +431,7 @@ func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, er
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: refusing to delete a filesystem root", root))
 			continue
 		}
-		st, serr := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(root) })
+		st, serr := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return stat(root) })
 		var err error
 		switch {
 		case serr == nil && st.IsDir():
