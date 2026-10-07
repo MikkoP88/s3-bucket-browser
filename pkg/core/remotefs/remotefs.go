@@ -116,7 +116,7 @@ func boundErr(ctx context.Context, c forceBreaker, d time.Duration, fn func() er
 func Dial(ctx context.Context, src profile.Source) (FS, error) {
 	switch src.Type {
 	case profile.TypeLocal:
-		return NewLocal(src.LocalRoot)
+		return NewLocal(ctx, src.LocalRoot)
 	case profile.TypeSFTP, profile.TypeSCP:
 		return DialSFTP(ctx, src)
 	case profile.TypeFTP, profile.TypeFTPS:

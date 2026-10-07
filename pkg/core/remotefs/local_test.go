@@ -84,7 +84,7 @@ func newLocalTestBed(t *testing.T) *Local {
 	if err := os.WriteFile(filepath.Join(root, "docs", "spec.txt"), []byte("spec v2"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	l, err := NewLocal(root)
+	l, err := NewLocal(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,14 +297,14 @@ func TestLocalListModesAndCreation(t *testing.T) {
 }
 
 func TestNewLocalRejectsBadRoots(t *testing.T) {
-	if _, err := NewLocal(filepath.Join(t.TempDir(), "missing")); err == nil {
+	if _, err := NewLocal(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("missing root must error")
 	}
 	f := filepath.Join(t.TempDir(), "file.txt")
 	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewLocal(f); err == nil {
+	if _, err := NewLocal(context.Background(), f); err == nil {
 		t.Error("file root must error")
 	}
 }
@@ -322,5 +322,137 @@ func TestDialLocalAndUnknown(t *testing.T) {
 	}
 	if _, err := Dial(context.Background(), srcType("s3")); err == nil {
 		t.Error("s3 has no remotefs engine (dedicated pipeline)")
+	}
+}
+
+// stepCloser counts its own release, proving the abandon contract's
+// resource discipline: a verdict nobody collects is released, not leaked.
+type stepCloser struct{ done chan struct{} }
+
+func (c *stepCloser) Close() error { close(c.done); return nil }
+
+// TestLocalStepVerdicts pins the abandon contract itself: a step that
+// never returns costs the caller one budget (never a park), the caller's
+// own patience ends the wait even sooner, an abandoned verdict releases
+// what it holds, and a fast step's verdict passes through verbatim — nil
+// context included.
+func TestLocalStepVerdicts(t *testing.T) {
+	old := LocalOpBudget
+	LocalOpBudget = 50 * time.Millisecond
+	defer func() { LocalOpBudget = old }()
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	// The budget breaks the silent wedge.
+	start := time.Now()
+	_, err := LocalStep(context.Background(), func() (struct{}, error) {
+		<-release
+		return struct{}{}, nil
+	})
+	if !errors.Is(err, ErrLocalDeadline) {
+		t.Fatalf("parked step = %v, want ErrLocalDeadline", err)
+	}
+	if el := time.Since(start); el > 5*time.Second {
+		t.Fatalf("the break took %v — the budget never fired", el)
+	}
+
+	// The caller's patience is honored first when it is shorter.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = LocalStep(ctx, func() (struct{}, error) {
+		<-release
+		return struct{}{}, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shorter caller patience = %v, want the caller's deadline", err)
+	}
+
+	// An abandoned verdict releases what it holds.
+	c := &stepCloser{done: make(chan struct{})}
+	_, err = LocalStep(context.Background(), func() (*stepCloser, error) {
+		time.Sleep(80 * time.Millisecond) // outlasts the budget
+		return c, nil
+	})
+	if !errors.Is(err, ErrLocalDeadline) {
+		t.Fatalf("slow-closer step = %v, want ErrLocalDeadline", err)
+	}
+	select {
+	case <-c.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the abandoned verdict's closer was never released")
+	}
+
+	// A fast step's own verdict passes through verbatim.
+	sentinel := errors.New("step's own error")
+	if _, err := LocalStep(context.Background(), func() (struct{}, error) {
+		return struct{}{}, sentinel
+	}); !errors.Is(err, sentinel) {
+		t.Fatalf("fast step error = %v, want the step's own", err)
+	}
+	if v, err := LocalStep(nil, func() (int, error) { return 7, nil }); err != nil || v != 7 {
+		t.Fatalf("fast step = %d, %v; want 7, nil (nil context tolerated)", v, err)
+	}
+}
+
+// TestLocalListWedgeBreaksSilentDeath pins the engine leg: a directory
+// read whose backing vanished (dead UNC root — the read parks inside the
+// kernel until the redirector gives up) must cost one budget and leave
+// the engine unpoisoned — the very next listing works once the wire is
+// back.
+func TestLocalListWedgeBreaksSilentDeath(t *testing.T) {
+	l := newLocalTestBed(t)
+	oldBudget, oldReadDir := LocalOpBudget, localReadDir
+	defer func() { LocalOpBudget, localReadDir = oldBudget, oldReadDir }()
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	LocalOpBudget = 50 * time.Millisecond
+	localReadDir = func(string) ([]os.DirEntry, error) {
+		<-release // the wedge: take the request, answer nothing
+		return nil, nil
+	}
+	start := time.Now()
+	_, err := l.List(context.Background(), "/")
+	if !errors.Is(err, ErrLocalDeadline) {
+		t.Fatalf("wedged List = %v, want the local deadline verdict", err)
+	}
+	if el := time.Since(start); el > 5*time.Second {
+		t.Fatalf("the break took %v — the budget never fired", el)
+	}
+
+	// Restored wire, same engine: the verdict is a verdict, not a scar.
+	LocalOpBudget, localReadDir = oldBudget, oldReadDir
+	entries, err := l.List(context.Background(), "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("post-heal List = %d entries, want 3", len(entries))
+	}
+}
+
+// TestNewLocalWedgeBreaksSilentDeath pins the dial leg: the root's stat
+// is a bounded step, so in the GUI (where the dial runs under the
+// engine-cache lock) a wedged local root costs one budget instead of
+// freezing every source's engine resolution.
+func TestNewLocalWedgeBreaksSilentDeath(t *testing.T) {
+	oldBudget, oldStat := LocalOpBudget, localStat
+	defer func() { LocalOpBudget, localStat = oldBudget, oldStat }()
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	LocalOpBudget = 50 * time.Millisecond
+	localStat = func(string) (os.FileInfo, error) {
+		<-release
+		return nil, nil
+	}
+	start := time.Now()
+	_, err := NewLocal(context.Background(), t.TempDir())
+	if !errors.Is(err, ErrLocalDeadline) {
+		t.Fatalf("wedged dial = %v, want the local deadline verdict", err)
+	}
+	if el := time.Since(start); el > 5*time.Second {
+		t.Fatalf("the break took %v — the budget never fired", el)
 	}
 }

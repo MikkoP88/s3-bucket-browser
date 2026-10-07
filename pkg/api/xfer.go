@@ -2,10 +2,11 @@
 // sources: S3 (the view source or a named S3 source), the remote
 // engines (sftp/scp/ftp/ftps/local-dir sources) and the local pane. One
 // synchronous planner expands the items (remote dirs via remotefs.Walk,
-// S3 dirs via listing.Walk, local dirs via WalkDir, collecting empty
-// directories as it goes); the background job then streams each file
-// read-side → write-side under the per-source operation locks, acquired
-// in sorted-ID order so multi-source transfers can never deadlock.
+// S3 dirs via listing.Walk, local dirs via the bounded strict local
+// walk, collecting empty directories as it goes); the background job
+// then streams each file read-side → write-side under the per-source
+// operation locks, acquired in sorted-ID order so multi-source
+// transfers can never deadlock.
 //
 // move = copy then delete, and a source item is only deleted when every
 // one of its files verifiably transferred: a skipped file (conflict
@@ -263,7 +264,7 @@ func (a *App) resolveXferDest(dest XferDest) (xferDestSide, error) {
 		}
 		return xferDestSide{kind: "remote", lockID: src.ID, fs: fs, dir: remotefs.CleanPath(dest.Dir)}, nil
 	case "local":
-		st, err := os.Stat(dest.Dir)
+		st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(dest.Dir) })
 		if err != nil || !st.IsDir() {
 			return xferDestSide{}, fmt.Errorf("destination folder not found: %s", dest.Dir)
 		}
@@ -390,7 +391,7 @@ func (a *App) xferCycleRefusal(items []XferItem, localPaths []string, dest XferD
 	default: // local destination: only local-pane sources can nest inside it
 		for _, lp := range localPaths {
 			landing := filepath.Join(dst.dir, filepath.Base(lp))
-			st, serr := os.Stat(lp)
+			st, serr := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(lp) })
 			isDir := serr == nil && st.IsDir()
 			if !isDir {
 				if strings.EqualFold(landing, lp) {
@@ -470,7 +471,7 @@ func (a *App) planXfer(ctx context.Context, items []XferItem, localPaths []strin
 		}
 	}
 	for _, lp := range localPaths {
-		if err := a.planLocalItem(p, addDir, nonEmpty, len(items), lp, dst); err != nil {
+		if err := a.planLocalItem(ctx, p, addDir, nonEmpty, len(items), lp, dst); err != nil {
 			return nil, err
 		}
 	}
@@ -623,9 +624,14 @@ func (a *App) planRemoteItem(ctx context.Context, p *xferPlan, addDir func(int, 
 	return nil
 }
 
-// planLocalItem expands one local-pane file or directory.
-func (a *App) planLocalItem(p *xferPlan, addDir func(int, string, string), nonEmpty map[string]bool, idx int, lp string, dst xferDestSide) error {
-	st, err := os.Stat(lp)
+// planLocalItem expands one local-pane file or directory. The stat and
+// every directory read are bounded steps, and the walk is the STRICT
+// variant — an unreadable directory aborts the plan (a silently skipped
+// file would be a silently missing transfer), so a wedged local source
+// fails the transfer promise in bounded time instead of parking the
+// binding goroutine forever.
+func (a *App) planLocalItem(ctx context.Context, p *xferPlan, addDir func(int, string, string), nonEmpty map[string]bool, idx int, lp string, dst xferDestSide) error {
+	st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(lp) })
 	if err != nil {
 		return err
 	}
@@ -645,31 +651,20 @@ func (a *App) planLocalItem(p *xferPlan, addDir func(int, string, string), nonEm
 	// plan no files); MkdirAll is idempotent when content follows.
 	p.emptyDirs = append(p.emptyDirs, xferDstJoin(dst, base, ""))
 	del := xferItemDel{item: idx, kind: "local", isDir: true, root: root}
-	err = filepath.WalkDir(root, func(fp string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if fp == root {
-			return nil
-		}
-		rel := filepath.ToSlash(strings.TrimPrefix(strings.TrimPrefix(fp, root), string(filepath.Separator)))
-		if d.IsDir() {
-			addDir(idx, base, rel)
+	err = walkLocalStrict(ctx, root, func(e localEntryInfo) {
+		fp := filepath.Join(root, filepath.FromSlash(e.rel))
+		if e.isDir {
+			addDir(idx, base, e.rel)
 			del.dirs = append(del.dirs, fp)
-			return nil
+			return
 		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		markNonEmpty(nonEmpty, idx, rel)
+		markNonEmpty(nonEmpty, idx, e.rel)
 		del.files = append(del.files, fp)
 		p.files = append(p.files, xferFile{
 			item: idx, srcKind: "local", srcPath: fp,
-			dstPath: xferDstJoin(dst, base, rel), size: info.Size(), mtime: info.ModTime(),
+			dstPath: xferDstJoin(dst, base, e.rel), size: e.size, mtime: time.UnixMilli(e.mtime),
 		})
-		p.total += info.Size()
-		return nil
+		p.total += e.size
 	})
 	if err != nil {
 		return err
@@ -855,11 +850,15 @@ func (a *App) xferOne(ctx context.Context, f *xferFile, dst xferDestSide, policy
 		}
 		r, size = rc, sz
 	default:
-		fh, err := os.Open(f.srcPath)
+		// The open and the stat are bounded steps: a source volume that
+		// wedged mid-job fails the file honestly (an abandoned open's
+		// handle is released by the step itself); the stream that follows
+		// keeps its own duration, as every stream here does.
+		fh, err := remotefs.LocalStep(ctx, func() (*os.File, error) { return os.Open(f.srcPath) })
 		if err != nil {
 			return "", err
 		}
-		st, serr := fh.Stat()
+		st, serr := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return fh.Stat() })
 		if serr != nil {
 			fh.Close()
 			return "", serr
@@ -1016,7 +1015,10 @@ func xferLocalCreate(p string, r io.Reader, size int64, fn transfer.ProgressFn, 
 	})
 }
 
-// xferDestExists reports whether a destination path is taken.
+// xferDestExists reports whether a destination path is taken. The local
+// probe is a bounded step and advisory, like every destination probe: a
+// wedged destination volume reads as not-taken, and the write behind it
+// then fails honestly on the same volume.
 func (a *App) xferDestExists(ctx context.Context, dst xferDestSide, p string) bool {
 	switch dst.kind {
 	case "s3":
@@ -1025,7 +1027,7 @@ func (a *App) xferDestExists(ctx context.Context, dst xferDestSide, p string) bo
 		_, err := dst.fs.Stat(ctx, p)
 		return err == nil
 	default:
-		_, err := os.Stat(p)
+		_, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
 		return err == nil
 	}
 }

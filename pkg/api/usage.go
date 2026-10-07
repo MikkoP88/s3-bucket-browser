@@ -10,9 +10,7 @@ package api
 
 import (
 	"context"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
@@ -171,10 +169,13 @@ func (a *App) RemoteUsage(idOrName, path string, children []string) ([]UsageStat
 // best-effort: a failed descent marks Partial and skips that subtree, and
 // the root's own directory entry is never counted as content — a folder
 // row's size is what is inside it, exactly like every other walk here.
+// The stat and every directory read are bounded steps (the local wire's
+// silent-death cure): a wedged volume costs one budget per step and
+// reports Partial instead of parking the binding goroutine forever.
 func (a *App) LocalUsage(paths []string) ([]UsageStat, error) {
 	out := make([]UsageStat, 0, len(paths))
 	for _, p := range paths {
-		out = append(out, localUsageOne(p))
+		out = append(out, localUsageOne(a.ctx, p))
 	}
 	return out, nil
 }
@@ -182,9 +183,9 @@ func (a *App) LocalUsage(paths []string) ([]UsageStat, error) {
 // localUsageOne walks one absolute path. A vanished path reports Partial
 // with zero totals rather than an error, so one stale row never blanks
 // its siblings.
-func localUsageOne(p string) UsageStat {
+func localUsageOne(ctx context.Context, p string) UsageStat {
 	u := UsageStat{Key: p}
-	st, err := os.Stat(p)
+	st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
 	if err != nil {
 		u.Partial = true
 		u.Error = err.Error()
@@ -195,36 +196,14 @@ func localUsageOne(p string) UsageStat {
 		u.CurrentBytes = st.Size()
 		return u
 	}
-	werr := filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			u.Partial = true
-			if u.Error == "" {
-				u.Error = err.Error()
-			}
-			// a failed directory descent skips that subtree; a failed
-			// file entry is simply not counted — either way the walk goes on
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if path == p {
-			return nil // the root is the folder itself, not content
-		}
-		if d.IsDir() {
+	if werr := walkLocalTree(ctx, p, func(e localEntryInfo) {
+		if e.isDir {
 			u.Dirs++
-			return nil
-		}
-		info, serr := d.Info()
-		if serr != nil {
-			u.Partial = true
-			return nil
+			return
 		}
 		u.Files++
-		u.CurrentBytes += info.Size()
-		return nil
-	})
-	if werr != nil {
+		u.CurrentBytes += e.size
+	}); werr != nil {
 		u.Partial = true
 		if u.Error == "" {
 			u.Error = werr.Error()

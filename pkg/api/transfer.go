@@ -3,8 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,6 +15,7 @@ import (
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/appsettings"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -546,7 +547,7 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 	if err != nil {
 		return "", err
 	}
-	pairs, err := expandUploadPaths(paths, dirPrefix(prefix))
+	pairs, err := expandUploadPaths(a.ctx, paths, dirPrefix(prefix))
 	if err != nil {
 		return "", err
 	}
@@ -762,11 +763,16 @@ func (a *App) logTransfer(entry any) {
 }
 
 // expandUploadPaths resolves files and directories into (item, local,
-// key, size); item is the dropped path each file descends from.
-func expandUploadPaths(paths []string, prefix string) ([]uploadPair, error) {
+// key, size); item is the dropped path each file descends from. The
+// per-path stat and every directory read are bounded steps, and the walk
+// is the STRICT variant — an unreadable directory aborts the expansion
+// (a silently skipped file here would be a silently missing upload), so
+// a wedged drop root fails the upload promise in bounded time instead of
+// parking the binding goroutine forever.
+func expandUploadPaths(ctx context.Context, paths []string, prefix string) ([]uploadPair, error) {
 	var out []uploadPair
 	for item, p := range paths {
-		st, err := os.Stat(p)
+		st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
 		if err != nil {
 			return nil, err
 		}
@@ -776,28 +782,16 @@ func expandUploadPaths(paths []string, prefix string) ([]uploadPair, error) {
 		}
 		root := p
 		base := filepath.Base(filepath.Clean(p)) // dropped folder keeps its name
-		err = filepath.WalkDir(root, func(fp string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() {
-				return nil
-			}
-			rel, err := filepath.Rel(root, fp)
-			if err != nil {
-				return err
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
+		err = walkLocalStrict(ctx, root, func(e localEntryInfo) {
+			if e.isDir {
+				return
 			}
 			out = append(out, uploadPair{
 				item:  item,
-				local: fp,
-				key:   joinKeyNoSlash(prefix, base, filepath.ToSlash(rel)),
-				size:  info.Size(),
+				local: filepath.Join(root, filepath.FromSlash(e.rel)),
+				key:   joinKeyNoSlash(prefix, base, e.rel),
+				size:  e.size,
 			})
-			return nil
 		})
 		if err != nil {
 			return nil, err
@@ -830,20 +824,43 @@ func uniqueRemoteKey(ctx context.Context, c *s3client.Client, bucket, key string
 	return "", fmt.Errorf("no free name for %s", key)
 }
 
+// destTaken reports whether a destination path is taken (anything the OS
+// can stat there). A wedged probe returns the deadline verdict — the
+// caller fails the item rather than guessing skip-or-overwrite onto a
+// volume it cannot see; any other probe miss is simply not-taken.
+func destTaken(ctx context.Context, p string) (bool, error) {
+	_, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
+	if err != nil {
+		if errors.Is(err, remotefs.ErrLocalDeadline) {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
 // uniqueLocalPath returns p, or a "name (n).ext" variant, that is free.
-func uniqueLocalPath(p string) string {
-	if _, err := os.Stat(p); err != nil {
-		return p
+// Each probe is a bounded step — a wedged destination volume fails the
+// rename honestly instead of parking the download job mid-item.
+func uniqueLocalPath(ctx context.Context, p string) (string, error) {
+	taken, err := destTaken(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	if !taken {
+		return p, nil
 	}
 	ext := filepath.Ext(p)
 	stem := strings.TrimSuffix(p, ext)
 	for n := 1; n < 1000; n++ {
 		cand := fmt.Sprintf("%s (%d)%s", stem, n, ext)
-		if _, err := os.Stat(cand); err != nil {
-			return cand
+		if taken, err := destTaken(ctx, cand); err != nil {
+			return "", err
+		} else if !taken {
+			return cand, nil
 		}
 	}
-	return p + ".new"
+	return "", fmt.Errorf("no free name for %s", p)
 }
 
 // Download starts a background download job and returns its ID. policy is
@@ -855,7 +872,7 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	if err != nil {
 		return "", err
 	}
-	if st, err := os.Stat(destDir); err != nil || !st.IsDir() {
+	if st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(destDir) }); err != nil || !st.IsDir() {
 		return "", fmt.Errorf("destination folder not found: %s", destDir)
 	}
 	if len(items) == 0 {
@@ -896,6 +913,16 @@ func downloadTitle(items []DownloadItem) string {
 func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items []DownloadItem, destDir, policy string, decisions map[string]string, maxBPS int64) {
 	defer a.guardJob("download", j) // the worker panic net (guard.go)
 	ctx := j.ctx
+	// failItem records one item's verdict without stopping the job (the
+	// DownloadFile error path below reports the same way).
+	failItem := func(i int, key string, err error) {
+		j.mu.Lock()
+		j.info.Error = fmt.Sprintf("%s: %v", key, err)
+		j.info.ErrorKind = timeoutKind(err.Error())
+		j.mu.Unlock()
+		j.fileDone(i, 0, ItemFailed)
+		j.emit(true)
+	}
 	for i, it := range items {
 		if ctx.Err() != nil {
 			a.finishJob(j, JobCanceled, "canceled")
@@ -910,17 +937,38 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 		}
 		local := transfer.SafeLocalJoin(destDir, rel)
 		pol := filePolicy(decisions, local, policy)
+		// The destination probes are bounded steps: a destination volume
+		// that wedged mid-job fails the item honestly — a parked probe
+		// would park the whole job in "running" forever, and a verdict of
+		// unknown must never guess skip-or-overwrite onto an unseen volume.
+		proceed := true
 		switch pol {
 		case PolicySkip:
-			if _, err := os.Stat(local); err == nil {
+			taken, perr := destTaken(ctx, local)
+			switch {
+			case perr != nil:
+				failItem(i, it.Key, perr)
+				proceed = false
+			case taken:
 				j.fileDone(i, 0, ItemSkipped)
 				j.emit(true)
-				continue
+				proceed = false
 			}
 		case PolicyRename:
-			if _, err := os.Stat(local); err == nil {
-				local = uniqueLocalPath(local)
+			taken, perr := destTaken(ctx, local)
+			switch {
+			case perr != nil:
+				failItem(i, it.Key, perr)
+				proceed = false
+			case taken:
+				if local, perr = uniqueLocalPath(ctx, local); perr != nil {
+					failItem(i, it.Key, perr)
+					proceed = false
+				}
 			}
+		}
+		if !proceed {
+			continue
 		}
 
 		partSize, conc := a.partTunables() // Settings → Transfers engine tuning

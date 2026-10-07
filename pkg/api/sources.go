@@ -20,6 +20,7 @@ import (
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 )
 
@@ -434,6 +435,9 @@ func (a *App) NewProfileFile(name, password string) error {
 // OpenProfileFile decrypts a *.s3bprofile into a session. A wrong password
 // and a corrupted file are indistinguishable by design. Refuses while the
 // open file is dirty or unsaved session sources exist (no silent merges).
+// The read is a bounded step — a container on a volume that wedged after
+// the picker fails the open in bounded time instead of parking the
+// binding goroutine forever.
 func (a *App) OpenProfileFile(path, password string) error {
 	a.pfMu.Lock()
 	if a.pf != nil && a.pf.dirty {
@@ -446,7 +450,7 @@ func (a *App) OpenProfileFile(path, password string) error {
 	}
 	a.pfMu.Unlock()
 
-	data, err := os.ReadFile(path)
+	data, err := remotefs.LocalStep(a.ctx, func() ([]byte, error) { return os.ReadFile(path) })
 	if err != nil {
 		return err
 	}

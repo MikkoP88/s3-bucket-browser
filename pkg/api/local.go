@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -25,17 +26,124 @@ type LocalEntry struct {
 	Mode    string `json:"mode"`    // unix-style mode string, e.g. "drwxr-xr-x"
 }
 
+// The dual-pane side's point primitives; vars so the wedge tests can park
+// one (the openInEditor discipline). Every local syscall this file makes
+// rides one of them through remotefs.LocalStep — the local wire's share
+// of the silent-death cure: a root whose backing vanished (dead UNC path,
+// disconnected mapped drive) parks the syscall until the OS gives up, and
+// no caller context can reach inside a syscall to stop it, so the wait is
+// bounded by abandonment instead (see remotefs/localbudget.go).
+var (
+	localStat    = os.Stat
+	localReadDir = os.ReadDir
+)
+
+// localEntryInfo is one row of a bounded local walk: everything the walk
+// callers need, materialized INSIDE the step so no per-entry syscall can
+// park the walker after the budget was paid.
+type localEntryInfo struct {
+	rel   string // slash-separated, relative to the walk root
+	isDir bool
+	size  int64
+	mtime int64 // unix millis
+}
+
+// walkLocalTree walks root's contents depth-first (lexical order within
+// each directory, WalkDir's order), calling fn for every entry below
+// root, never for root itself. Each directory is one bounded step — the
+// read plus the per-entry info calls — so a vanished backing costs one
+// budget instead of the life of the process; an unreadable directory is
+// skipped with its whole subtree (the first such error is returned, not
+// swallowed — callers that don't care ignore it, usage's Partial
+// marking does), WalkDir's contract with this code's count-and-compare
+// callers.
+func walkLocalTree(ctx context.Context, root string, fn func(localEntryInfo)) error {
+	return walkLocal(ctx, root, fn, false)
+}
+
+// walkLocalStrict is walkLocalTree with WalkDir's other contract: the
+// first unreadable directory aborts the walk with its error — for
+// callers whose output must be complete or nothing (upload and transfer
+// expansion: a silently skipped file is a silently missing upload).
+func walkLocalStrict(ctx context.Context, root string, fn func(localEntryInfo)) error {
+	return walkLocal(ctx, root, fn, true)
+}
+
+func walkLocal(ctx context.Context, root string, fn func(localEntryInfo), abort bool) error {
+	type dirRef struct {
+		abs string
+		rel string // "" for the root itself
+	}
+	stack := []dirRef{{abs: root}}
+	var firstErr error
+	for len(stack) > 0 {
+		d := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		infos, err := remotefs.LocalStep(ctx, func() ([]localEntryInfo, error) {
+			dirEntries, err := localReadDir(d.abs)
+			if err != nil {
+				return nil, err
+			}
+			infos := make([]localEntryInfo, 0, len(dirEntries))
+			for _, e := range dirEntries {
+				info, err := e.Info()
+				if err != nil {
+					continue // raced with a delete; not worth failing the walk
+				}
+				rel := e.Name()
+				if d.rel != "" {
+					rel = d.rel + "/" + e.Name()
+				}
+				infos = append(infos, localEntryInfo{
+					rel:   rel,
+					isDir: e.IsDir(),
+					size:  info.Size(),
+					mtime: info.ModTime().UnixMilli(),
+				})
+			}
+			return infos, nil
+		})
+		if err != nil {
+			if abort {
+				return err
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue // unreadable directory: skip it and its subtree
+		}
+		// push subdirectories in reverse so they pop in lexical order
+		for i := len(infos) - 1; i >= 0; i-- {
+			if infos[i].isDir {
+				stack = append(stack, dirRef{
+					abs: filepath.Join(d.abs, filepath.Base(infos[i].rel)),
+					rel: infos[i].rel,
+				})
+			}
+		}
+		for _, e := range infos {
+			fn(e)
+		}
+	}
+	return firstErr
+}
+
 // LocalRoots lists the roots of the local filesystem: drive letters on
 // Windows, "/" elsewhere. The local pane starts at the home directory.
+// The drive probe is one bounded step — a stalled removable drive must
+// not park the pane's roots view either.
 func (a *App) LocalRoots() []string {
 	if runtime.GOOS == "windows" {
 		var drives []string
-		for c := 'A'; c <= 'Z'; c++ {
-			p := string(c) + `:\`
-			if st, err := os.Stat(p); err == nil && st.IsDir() {
-				drives = append(drives, p)
+		remotefs.LocalStep(a.ctx, func() ([]string, error) {
+			for c := 'A'; c <= 'Z'; c++ {
+				p := string(c) + `:\`
+				if st, err := localStat(p); err == nil && st.IsDir() {
+					drives = append(drives, p)
+				}
 			}
-		}
+			return drives, nil
+		})
 		return drives
 	}
 	return []string{"/"}
@@ -51,7 +159,8 @@ func (a *App) LocalHome() (string, error) {
 }
 
 // ListLocal lists one local directory: folders first, then files, by name.
-// dir "" lists the home directory.
+// dir "" lists the home directory. The read and the per-entry info calls
+// are one bounded step — the pane navigates by verdict, never by park.
 func (a *App) ListLocal(dir string) ([]LocalEntry, error) {
 	if dir == "" || dir == "~" {
 		home, err := a.LocalHome()
@@ -61,29 +170,35 @@ func (a *App) ListLocal(dir string) ([]LocalEntry, error) {
 		dir = home
 	}
 	dir = filepath.Clean(dir)
-	ents, err := os.ReadDir(dir)
+	out, err := remotefs.LocalStep(a.ctx, func() ([]LocalEntry, error) {
+		ents, err := localReadDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]LocalEntry, 0, len(ents))
+		for _, e := range ents {
+			full := filepath.Join(dir, e.Name())
+			info, err := e.Info()
+			if err != nil {
+				continue // racing delete: skip
+			}
+			le := LocalEntry{
+				Name:    e.Name(),
+				Path:    full,
+				IsDir:   e.IsDir(),
+				Size:    info.Size(),
+				ModTime: info.ModTime().UnixMilli(),
+				Mode:    info.Mode().String(),
+			}
+			if t, ok := remotefs.CreationTimeOf(info); ok {
+				le.Created = t.UnixMilli()
+			}
+			out = append(out, le)
+		}
+		return out, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	out := make([]LocalEntry, 0, len(ents))
-	for _, e := range ents {
-		full := filepath.Join(dir, e.Name())
-		info, err := e.Info()
-		if err != nil {
-			continue // racing delete: skip
-		}
-		le := LocalEntry{
-			Name:    e.Name(),
-			Path:    full,
-			IsDir:   e.IsDir(),
-			Size:    info.Size(),
-			ModTime: info.ModTime().UnixMilli(),
-			Mode:    info.Mode().String(),
-		}
-		if t, ok := remotefs.CreationTimeOf(info); ok {
-			le.Created = t.UnixMilli()
-		}
-		out = append(out, le)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].IsDir != out[j].IsDir {
@@ -107,7 +222,7 @@ func (a *App) LocalParent(dir string) string {
 // OpenLocal opens a file or folder with the OS default application
 // (reveal in Explorer when a folder).
 func (a *App) OpenLocal(path string) error {
-	st, err := os.Stat(path)
+	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(path) })
 	if err != nil {
 		return err
 	}
@@ -137,7 +252,7 @@ func (a *App) OpenLocal(path string) error {
 // application); Linux has no standard chooser, so the default app opens
 // there instead.
 func (a *App) OpenLocalWith(path string) error {
-	st, err := os.Stat(path)
+	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(path) })
 	if err != nil {
 		return err
 	}
@@ -176,7 +291,7 @@ func openWithChoose(path string) error {
 // menu). The GUI process has no console of its own (Windows: detached at
 // startup), so a console child gets a fresh window of its own.
 func (a *App) OpenTerminal(dir string) error {
-	st, err := os.Stat(dir)
+	st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(dir) })
 	if err != nil {
 		return err
 	}
@@ -220,13 +335,15 @@ func linuxTerminal(dir string) *exec.Cmd {
 // LocalDeletePreview expands a local selection (files and whole directory
 // trees) and reports what a delete would remove — the local half of the
 // Delete Window's count-then-act contract. Roots are refused outright.
+// Every step is bounded (one budget per directory), so a vanished backing
+// fails the preview in bounded time instead of parking the window.
 func (a *App) LocalDeletePreview(paths []string) (DeletePreview, error) {
 	var p DeletePreview
 	for _, root := range paths {
 		if isFsRoot(root) {
 			return DeletePreview{}, errors.New("refusing to delete a filesystem root")
 		}
-		st, err := os.Stat(root)
+		st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(root) })
 		if err != nil {
 			return DeletePreview{}, err
 		}
@@ -237,26 +354,15 @@ func (a *App) LocalDeletePreview(paths []string) (DeletePreview, error) {
 			continue
 		}
 		p.Folders++
-		err = filepath.WalkDir(root, func(sub string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil // unreadable entries are skipped, not fatal
-			}
-			info, err := d.Info()
-			if err != nil {
-				return nil
-			}
-			if d.IsDir() {
+		_ = walkLocalTree(a.ctx, root, func(e localEntryInfo) {
+			if e.isDir {
 				p.Folders++
 			} else {
 				p.Objects++
 				p.Count++
-				p.Bytes += info.Size()
+				p.Bytes += e.size
 			}
-			return nil
 		})
-		if err != nil {
-			return DeletePreview{}, err
-		}
 	}
 	p.RequiresL1 = p.Count > 0
 	p.RequiresL2 = p.Count > deleteForceThreshold
@@ -269,7 +375,11 @@ func (a *App) LocalDeletePreview(paths []string) (DeletePreview, error) {
 // above the L2 threshold, same ladder as S3). Like the S3 delete path, the
 // count is re-taken HERE at act time and gated server-side: more than
 // deleteForceThreshold files refuses without force, so a stale preview (or
-// any caller that skipped it) can never silently wipe a large tree.
+// any caller that skipped it) can never silently wipe a large tree. The
+// re-count is per-step bounded; the act itself rides the OS's own budget —
+// a tree's delete time is real work, not a dead peer, and its preview (the
+// gate in front of it) already failed in bounded time on a vanished
+// backing.
 func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, error) {
 	var out transfer.DeleteResult
 	// Server-side re-count (the preview may be stale by the time the user
@@ -282,7 +392,7 @@ func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, er
 			if isFsRoot(root) {
 				continue // the act loop below reports the root refusal
 			}
-			st, err := os.Stat(root)
+			st, err := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(root) })
 			if err != nil {
 				continue // the act loop below reports missing paths honestly
 			}
@@ -290,11 +400,10 @@ func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, er
 				count++
 				continue
 			}
-			_ = filepath.WalkDir(root, func(_ string, d os.DirEntry, err error) error {
-				if err == nil && !d.IsDir() {
+			_ = walkLocalTree(a.ctx, root, func(e localEntryInfo) {
+				if !e.isDir {
 					count++
 				}
-				return nil // unreadable entries still count as not-deleted below
 			})
 		}
 		if count > deleteForceThreshold {
@@ -307,11 +416,21 @@ func (a *App) LocalRemove(paths []string, force bool) (transfer.DeleteResult, er
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: refusing to delete a filesystem root", root))
 			continue
 		}
+		st, serr := remotefs.LocalStep(a.ctx, func() (os.FileInfo, error) { return localStat(root) })
 		var err error
-		if st, serr := os.Stat(root); serr == nil && st.IsDir() {
-			err = os.RemoveAll(root)
-		} else {
-			err = os.Remove(root)
+		switch {
+		case serr == nil && st.IsDir():
+			err = os.RemoveAll(root) // real work, uncapped by design (comment above)
+		case errors.Is(serr, remotefs.ErrLocalDeadline):
+			// a wedged root reports the wedge — falling through to a
+			// remove of the same path would just park inside it
+			err = serr
+		default:
+			// a file, or a stat that missed — os.Remove reports the same
+			// truth the stat did, bounded like every point act
+			_, err = remotefs.LocalStep(a.ctx, func() (struct{}, error) {
+				return struct{}{}, os.Remove(root)
+			})
 		}
 		if err != nil {
 			out.Errors = append(out.Errors, fmt.Sprintf("%s: %v", root, err))
@@ -377,28 +496,17 @@ type localFile struct {
 	mtime int64
 }
 
-// walkLocalFiles collects files under dir recursively (relative keys).
-func walkLocalFiles(dir string) (map[string]localFile, error) {
+// walkLocalFiles collects files under dir recursively (relative keys),
+// one bounded step per directory — the compare walk navigates by verdict
+// too.
+func walkLocalFiles(ctx context.Context, dir string) (map[string]localFile, error) {
 	out := map[string]localFile{}
-	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil // unreadable entries are skipped, not fatal
+	_ = walkLocalTree(ctx, dir, func(e localEntryInfo) {
+		if !e.isDir {
+			out[e.rel] = localFile{size: e.size, mtime: e.mtime}
 		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(dir, p)
-		if err != nil {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		out[filepath.ToSlash(rel)] = localFile{size: info.Size(), mtime: info.ModTime().UnixMilli()}
-		return nil
 	})
-	return out, err
+	return out, nil
 }
 
 // CompareDir compares a local directory against a bucket prefix — the

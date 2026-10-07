@@ -62,8 +62,47 @@ follow [Semantic Versioning](https://semver.org/).
   voiced, backed off, retried — the contract everything downstream
   already knows, and shutdown still stops an in-flight push through the
   app context. Covered by a server that takes the PUT and never answers:
-  the push must return the budget’s deadline verdict in bounded time
-  instead of parking.
+
+- **Local filesystem: the fifth wire gets the same verdict** — a
+  local syscall has neither a socket to tear nor a context the kernel
+  honors, so the wedge class the four network engines were cured of
+  survived here untouched: a root whose backing vanished (a dead UNC
+  path, a disconnected mapped drive — no FIN, no RST, the same shape
+  on a different wire) parks os.ReadDir and os.Stat inside the kernel
+  until the redirector gives up, which can be effectively never, and
+  no caller context can reach inside a syscall to stop it — the GUI’s
+  dual-pane navigation promised and never settled, and the delete
+  preview and compare walk parked with it; worst was the dial, which
+  runs under the engine-cache lock and froze every source’s engine
+  resolution along with its own wedged root. The cure cannot be
+  interruption, so it is abandonment: every point operation now runs
+  as a bounded step (LocalStep, 15 seconds) on its own goroutine while
+  the caller waits only as long as the budget or its own patience
+  allows — the caller’s context is honored for the first time on this
+  wire — and the abandoned step finishes alone with whatever it
+  produced released rather than leaked (an abandoned Open’s file
+  handle closes; ownership decided by one compare-and-swap so neither
+  side can touch a verdict the other owns). The verdict is its own
+  sentinel, deliberately not the engines’ redial-me deadline: local
+  has no connection to tear and nothing to redial, so it surfaces as
+  an ordinary failure to voice, never as a death to heal. Streams keep
+  their own duration (a transfer’s reads and writes, a recursive
+  delete’s real work — its gate, the preview, is bounded instead),
+  and the sweep covers the engine ops (list, stat, open, mkdir,
+  rename, remove), the dial, the pane bindings (navigation, roots,
+  open-with, terminal, delete preview and act), the bounded walkers
+  behind preview, compare, usage, and upload and transfer expansion
+  (the strict one aborts on an unreadable directory — a silently
+  skipped file would be a silently missing upload), the conflict
+  dialog’s destination probes, the download job’s skip/rename probes
+  (a wedged destination volume fails the item honestly instead of
+  parking the job in running forever), the transfer planner’s local
+  legs (destination resolution, the cycle guard, item expansion,
+  the local-source open mid-job), and the container/credential file
+  reads. Covered by rigs that park the read and stat seams — the
+  pane’s listing, the engine’s listing, the dial, the drop expansion
+  — each returning the verdict in bounded time and working again the
+  moment the wire is back.
 
 ## [1.2.0-beta.3] — 2026-10-07
 

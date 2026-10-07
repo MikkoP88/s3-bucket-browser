@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -93,7 +94,7 @@ func TestExpandUploadPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pairs, err := expandUploadPaths([]string{filepath.Join(dir, "root.txt"), sub}, "photos/")
+	pairs, err := expandUploadPaths(context.Background(), []string{filepath.Join(dir, "root.txt"), sub}, "photos/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +109,7 @@ func TestExpandUploadPaths(t *testing.T) {
 		t.Errorf("keys = %v", got)
 	}
 
-	if _, err := expandUploadPaths([]string{filepath.Join(dir, "missing")}, ""); err == nil {
+	if _, err := expandUploadPaths(context.Background(), []string{filepath.Join(dir, "missing")}, ""); err == nil {
 		t.Error("missing path accepted")
 	}
 }
@@ -116,16 +117,17 @@ func TestExpandUploadPaths(t *testing.T) {
 func TestUniqueLocalPath(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "file.txt")
-	if got := uniqueLocalPath(p); got != p {
-		t.Errorf("first = %q, want %q", got, p)
+	got, err := uniqueLocalPath(context.Background(), p)
+	if err != nil || got != p {
+		t.Errorf("first = %q, %v; want %q, nil", got, err, p)
 	}
 	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := uniqueLocalPath(p)
+	got, err = uniqueLocalPath(context.Background(), p)
 	want := filepath.Join(dir, "file (1).txt")
-	if got != want {
-		t.Errorf("second = %q, want %q", got, want)
+	if err != nil || got != want {
+		t.Errorf("second = %q, %v; want %q, nil", got, err, want)
 	}
 }
 

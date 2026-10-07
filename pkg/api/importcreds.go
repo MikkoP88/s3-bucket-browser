@@ -35,6 +35,7 @@ import (
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
@@ -76,8 +77,11 @@ func (a *App) PickCredentialFiles() ([]string, error) {
 
 // ParseCredentialFile reads one local credential file and returns its
 // importable connections. password is used only for .s3bprofile containers.
+// The read is a bounded step — a picked file on a volume that wedged after
+// the dialog fails the import in bounded time instead of parking the
+// binding goroutine forever.
 func (a *App) ParseCredentialFile(path, password string) ([]CredCandidate, error) {
-	data, err := os.ReadFile(path)
+	data, err := remotefs.LocalStep(a.ctx, func() ([]byte, error) { return os.ReadFile(path) })
 	if err != nil {
 		return nil, err
 	}

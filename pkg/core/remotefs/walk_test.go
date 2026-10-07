@@ -31,7 +31,7 @@ func TestWalkLocal(t *testing.T) {
 		}
 	}
 
-	fs, err := NewLocal(root)
+	fs, err := NewLocal(context.Background(), root)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
@@ -98,7 +99,9 @@ func (a *App) CheckConflicts(items []XferItem, localPaths []string, dest XferDes
 
 // xferDestStat returns the destination file's size and mtime when the path
 // is taken. An unreadable destination reports not-taken: a failed probe
-// must never fake a conflict (or block one).
+// must never fake a conflict (or block one). The local probe is a bounded
+// step — the dialog's preview is advisory, so a wedged destination volume
+// costs one budget and reads as not-taken, never a parked conflict check.
 func xferDestStat(ctx context.Context, dst xferDestSide, p string) (int64, time.Time, bool) {
 	switch dst.kind {
 	case "s3":
@@ -116,7 +119,7 @@ func xferDestStat(ctx context.Context, dst xferDestSide, p string) (int64, time.
 		}
 		return e.Size, aws.ToTime(e.LastModified), true
 	default:
-		st, err := os.Stat(p)
+		st, err := remotefs.LocalStep(ctx, func() (os.FileInfo, error) { return localStat(p) })
 		if err != nil || st.IsDir() {
 			return 0, time.Time{}, false
 		}

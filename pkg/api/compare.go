@@ -74,7 +74,7 @@ func compareRefLabel(r CompareRef) string {
 func (a *App) walkCompareSide(ctx context.Context, r CompareRef) (map[string]localFile, error) {
 	switch r.Kind {
 	case "local":
-		return walkLocalFiles(filepath.Clean(r.Dir))
+		return walkLocalFiles(ctx, filepath.Clean(r.Dir))
 	case "remote":
 		src, fs, err := a.remoteSource(r.Source)
 		if err != nil {

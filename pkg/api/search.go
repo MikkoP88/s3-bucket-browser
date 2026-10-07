@@ -305,7 +305,7 @@ func (a *App) Search(scope SearchScope, opts SearchOptions) (string, error) {
 				// navigates by (no trailing separator — IsDir carries
 				// dirness, matching ListLocal row paths). Not a data
 				// source: hits carry no Source.
-				fs, err := remotefs.NewLocal(j.prefix)
+				fs, err := remotefs.NewLocal(ctx, j.prefix)
 				if err != nil {
 					srcErrs = append(srcErrs, fmt.Sprintf("%s: %v", j.prefix, err))
 					continue

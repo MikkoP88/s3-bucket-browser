@@ -17,6 +17,13 @@ import (
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 )
 
+// localReadDir and localStat are the point primitives this engine rides;
+// vars so the wedge tests can park one (the openInEditor discipline).
+var (
+	localReadDir = os.ReadDir
+	localStat    = os.Stat
+)
+
 // Local is an FS rooted at a directory on the local machine. Paths are
 // anchored at the root; escaping above it is impossible by construction
 // (CleanPath collapses leading ".." segments before the join).
@@ -24,13 +31,17 @@ type Local struct {
 	root string // absolute, cleaned
 }
 
-// NewLocal returns an FS over root (which must exist).
-func NewLocal(root string) (*Local, error) {
+// NewLocal returns an FS over root (which must exist). The root's stat is
+// a point step under the local budget and the caller's patience: in the
+// GUI this dial runs under the engine-cache lock, and a wedged root (dead
+// UNC path) must never freeze every source's engine resolution — the same
+// lock discipline the SFTP handshake round bought its bound for.
+func NewLocal(ctx context.Context, root string) (*Local, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(abs)
+	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return localStat(abs) })
 	if err != nil {
 		return nil, err
 	}
@@ -68,18 +79,26 @@ func entryFromInfo(dir, name string, info fs.FileInfo) listing.Entry {
 
 func (l *Local) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 	full := l.join(dir)
-	dirInfos, err := os.ReadDir(full)
+	parent := CleanPath(dir)
+	// One bounded step covers the whole directory view — the read AND the
+	// per-entry info calls — so a wedge anywhere in it is one verdict.
+	entries, err := LocalStep(ctx, func() ([]listing.Entry, error) {
+		dirInfos, err := localReadDir(full)
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]listing.Entry, 0, len(dirInfos))
+		for _, d := range dirInfos {
+			info, err := d.Info()
+			if err != nil {
+				continue // raced with a delete; not worth failing the listing
+			}
+			entries = append(entries, entryFromInfo(parent, d.Name(), info))
+		}
+		return entries, nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	parent := CleanPath(dir)
-	entries := make([]listing.Entry, 0, len(dirInfos))
-	for _, d := range dirInfos {
-		info, err := d.Info()
-		if err != nil {
-			continue // raced with a delete; not worth failing the listing
-		}
-		entries = append(entries, entryFromInfo(parent, d.Name(), info))
 	}
 	listing.SortEntries(entries)
 	return entries, nil
@@ -87,7 +106,7 @@ func (l *Local) List(ctx context.Context, dir string) ([]listing.Entry, error) {
 
 func (l *Local) Stat(ctx context.Context, p string) (listing.Entry, error) {
 	cleaned := CleanPath(p)
-	info, err := os.Stat(l.join(cleaned))
+	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return localStat(l.join(cleaned)) })
 	if err != nil {
 		return listing.Entry{}, err
 	}
@@ -97,11 +116,15 @@ func (l *Local) Stat(ctx context.Context, p string) (listing.Entry, error) {
 
 func (l *Local) Open(ctx context.Context, p string) (io.ReadCloser, int64, error) {
 	full := l.join(p)
-	f, err := os.Open(full)
+	// The open handshake is a point step (bounded, and an abandoned open
+	// releases its handle); the stream it returns rides the caller alone —
+	// a read's legitimate duration is not the engine's to guess, the same
+	// exemption every wire engine gives its streams.
+	f, err := LocalStep(ctx, func() (*os.File, error) { return os.Open(full) })
 	if err != nil {
 		return nil, 0, err
 	}
-	info, err := f.Stat()
+	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return f.Stat() })
 	if err != nil {
 		f.Close()
 		return nil, 0, err
@@ -116,7 +139,9 @@ func (l *Local) Open(ctx context.Context, p string) (io.ReadCloser, int64, error
 // Create writes a file from a stream — staged and committed, never
 // truncated in place: a transfer that fails mid-stream (network drop,
 // cancel) must leave the previous local bytes untouched, the same
-// critical-data contract the download path established.
+// critical-data contract the download path established. The copy is a
+// stream and rides the caller's context alone (no engine cap — the same
+// exemption class as every other engine's Create).
 func (l *Local) Create(ctx context.Context, p string, r io.Reader) error {
 	return transfer.StageAndCommit(l.join(p), func(f *os.File) error {
 		_, err := io.Copy(f, r)
@@ -125,7 +150,9 @@ func (l *Local) Create(ctx context.Context, p string, r io.Reader) error {
 }
 
 func (l *Local) MkdirAll(ctx context.Context, dir string) error {
-	return os.MkdirAll(l.join(dir), 0o755)
+	full := l.join(dir)
+	_, err := LocalStep(ctx, func() (struct{}, error) { return struct{}{}, os.MkdirAll(full, 0o755) })
+	return err
 }
 
 func (l *Local) Remove(ctx context.Context, p string) error {
@@ -134,21 +161,28 @@ func (l *Local) Remove(ctx context.Context, p string) error {
 		return fmt.Errorf("refusing to remove the source root")
 	}
 	full := l.join(cleaned)
-	info, err := os.Stat(full)
+	info, err := LocalStep(ctx, func() (fs.FileInfo, error) { return localStat(full) })
 	if err != nil {
 		return err
 	}
 	if info.IsDir() {
+		// A tree's delete time is real work, not a dead peer — capping it
+		// would report a failure while the delete kept running. The gate in
+		// front of it (the delete preview) is per-step bounded, so a wedged
+		// root never gets this far.
 		return os.RemoveAll(full)
 	}
-	return os.Remove(full)
+	_, err = LocalStep(ctx, func() (struct{}, error) { return struct{}{}, os.Remove(full) })
+	return err
 }
 
 func (l *Local) Rename(ctx context.Context, oldp, newp string) error {
+	oldFull, newFull := l.join(oldp), l.join(newp)
 	if CleanPath(newp) == "/" {
 		return fmt.Errorf("invalid target")
 	}
-	return os.Rename(l.join(oldp), l.join(newp))
+	_, err := LocalStep(ctx, func() (struct{}, error) { return struct{}{}, os.Rename(oldFull, newFull) })
+	return err
 }
 
 func (l *Local) Close() error { return nil }
