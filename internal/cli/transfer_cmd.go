@@ -7,11 +7,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/syncplan"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -726,23 +726,11 @@ func syncUpload(ctx context.Context, c *s3client.Client, localDir, dst string, d
 		return res, err
 	}
 
-	var uploads, deletes []string
-	for rel, size := range local {
-		if rs, ok := remote[rel]; ok && rs == size {
-			res.Skipped++
-			continue
-		}
-		uploads = append(uploads, rel)
-	}
-	if del {
-		for rel := range remote {
-			if _, ok := local[rel]; !ok {
-				deletes = append(deletes, rel)
-			}
-		}
-	}
-	sort.Strings(uploads)
-	sort.Strings(deletes)
+	// The one shared predicate: copies = missing or size-diff, deletes =
+	// target files absent at the source (the GUI's Synchronize dialog rides
+	// this same core, so the semantics can never drift between faces).
+	uploads, deletes, skipped := syncplan.Plan(local, remote, del)
+	res.Skipped = skipped
 
 	if dryRun {
 		printSyncPlan("upload", uploads, prefix, u.Bucket, deletes)
@@ -799,23 +787,9 @@ func syncDownload(ctx context.Context, c *s3client.Client, src, localDir string,
 		return res, err
 	}
 
-	var downloads, deletes []string
-	for rel, size := range remote {
-		if ls, ok := local[rel]; ok && ls == size {
-			res.Skipped++
-			continue
-		}
-		downloads = append(downloads, rel)
-	}
-	if del {
-		for rel := range local {
-			if _, ok := remote[rel]; !ok {
-				deletes = append(deletes, rel)
-			}
-		}
-	}
-	sort.Strings(downloads)
-	sort.Strings(deletes)
+	// The mirror direction rides the same shared predicate as the upload.
+	downloads, deletes, skipped := syncplan.Plan(remote, local, del)
+	res.Skipped = skipped
 
 	if dryRun {
 		printSyncPlan("download", downloads, prefix, u.Bucket, deletes)

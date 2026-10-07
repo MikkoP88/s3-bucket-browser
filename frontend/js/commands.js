@@ -92,6 +92,9 @@ export function commandState(pane = null) {
     canPaste: (hasClipboard || ctx.osClipFiles()) && ((inObjects && hasProfile) || inRemote || inLocal || paneTarget()),
     // Compare needs the secondary pane to be open on something
     canCompare: ctx.localPaneOpen() && !!ctx.paneAdapter?.()?.bound,
+    // Synchronize rides the same seating — the local↔s3 kind check is
+    // the click's own honest refusal, one step later
+    canSync: ctx.localPaneOpen() && !!ctx.paneAdapter?.()?.bound,
     hasSelection: sel >= 1,
     selectionCount: sel,
     // a local view searches itself (the pane's find scopes the same way)
@@ -110,6 +113,7 @@ const BUTTONS = {
   'btn-newfolder': 'canNewFolder',
   'btn-find': 'canFind',
   'btn-compare': 'canCompare',
+  'btn-sync': 'canSync',
 };
 
 // The secondary pane's mirror set — its own back/forward/upload/download/

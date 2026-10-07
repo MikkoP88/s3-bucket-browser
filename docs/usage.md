@@ -285,8 +285,9 @@ directory compare) with S3 and the secondary pane.
   *partial — at least this much* with the error on hover.
 - **Global bar** — the slim bar under the menubar carries the
   controls that act on the app as a whole, not on one view:
-  **Dual-pane** (F9), **Compare** (it needs both panes by
-  definition), the light/dark theme toggle and **?** (the keyboard
+  **Dual-pane** (F9), **Compare** and **Synchronize** (both need
+  both panes by definition), the light/dark theme toggle and **?**
+  (the keyboard
   map, F1). Each pane's own toolbar keeps only what acts on that
   pane — back, forward, refresh, Home, upload, download, new
   folder, new file, Search — the same set in the same order on both
@@ -491,6 +492,21 @@ directory compare) with S3 and the secondary pane.
   form on both sides.
 
 ![Dual pane with directory compare](screenshots/dual-pane-compare.png)
+
+- **Synchronize** — the ⟳ **Synchronize** button on the global bar
+  (View → Synchronize; it needs the dual pane open, one side a local
+  folder and the other an S3 bucket folder) plans a sync between the
+  two and runs it: missing and size-differing files copy each way —
+  mtimes never matter, and the run rides *skip* semantics, so
+  whatever landed at the target in the meantime stays put. The plan
+  dialog shows each direction as its own capped section (file, size),
+  a direction picker narrows the run to uploads-only or
+  downloads-only, and *remove files that are not at the source* —
+  off by default — adds the delete legs, which run one direction at
+  a time through the same confirmation windows as every delete. Any
+  other pane pairing (two remotes, two local folders) gets the
+  honest refusal pointing at Compare + copy; the same predicate the
+  CLI's `s3b sync` rides computes the plan, so the faces agree.
 
 - **Floating windows** — the views you keep an eye on — File transfers,
   Running tasks, Search, the User guide, the keyboard map, the sources overview,

@@ -8,6 +8,21 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Synchronize — the CLI's sync grown its GUI face** — the ⟳
+  **Synchronize** button (global bar, View → Synchronize; needs the
+  dual pane open) plans a sync between a local folder and an S3
+  prefix and runs it: missing and size-differing files copy each way
+  under *skip* semantics (mtimes never matter — clocks lie; whatever
+  landed in the meantime stays), a direction picker narrows the run
+  to uploads or downloads only, and the CLI `--delete`'s shape rides
+  an explicit opt-in — *remove files that are not at the source* —
+  whose legs route, one direction at a time, through the same
+  confirmation windows as every delete, each with its own preview
+  and typed confirmation. The plan comes from the same shared
+  predicate the CLI rides (`pkg/core/syncplan`), so the two faces can
+  never drift, and any other pane pairing gets the honest pointer at
+  Compare + copy instead of a broken plan. Localized in all fifteen
+  languages.
 - **The editor's lost-update guard — pushes are conditional** — a file
   open for edit now records the object's ETag when it is pulled, and
   every push that follows — the auto-save and *Stop & upload* — rides

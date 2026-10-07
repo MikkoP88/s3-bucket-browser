@@ -12,6 +12,7 @@ import {
   renderPopoutView, licenseGate,
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile, applySearchCols,
   bucketSourceDialog, setXferGoto,
+  synchronizeDialog, setSyncRunners, syncLocalPath,
 } from './dialogs.js';
 import { SR_DEFAULT_COLS, storedSearchCols } from './srgrid.js';
 import { LICENSE, licenseLine } from './license.js';
@@ -3064,6 +3065,29 @@ async function compareDirs() {
   }
 }
 
+// synchronizePair opens the Synchronize dialog for the side pane ↔ main
+// view pair — the CLI's sync grown its GUI face. v1 serves exactly the
+// CLI's own contract: one local folder, one S3 prefix. Anything else
+// gets the honest pointer at Compare + copy instead of a broken plan.
+function synchronizePair() {
+  const x = sidePaneRef();
+  const y = mainCompareRef();
+  if (!x) {
+    toast(localPane.binding.kind === 'local'
+      ? 'Side pane is at filesystem roots — open a folder first'
+      : 'Open a folder (or bucket folder) on the source first');
+    return;
+  }
+  if (!y) { toast('Open a bucket folder or remote directory to compare against'); return; }
+  const local = x.kind === 'local' ? x : (y.kind === 'local' ? y : null);
+  const s3 = x.kind === 's3' ? x : (y.kind === 's3' ? y : null);
+  if (!local || !s3) {
+    toast(t('sync.notSupported', { pair: cmpRefLabel(x) + ' ↔ ' + cmpRefLabel(y) }), 'error');
+    return;
+  }
+  synchronizeDialog(local, s3);
+}
+
 // updateEditingStatus refreshes the status-bar editor indicator.
 function updateEditingStatus() {
   api.EditingFiles().then((files) => {
@@ -4304,6 +4328,7 @@ function wireToolbar() {
   $('btn-download').onclick = () => downloadSelection();
   $('btn-panes').onclick = () => paneDestPop($('btn-panes'));
   $('btn-compare').onclick = compareDirs;
+  $('btn-sync').onclick = synchronizePair;
   $('btn-find').onclick = openSearch;
   $('btn-newfolder').onclick = newFolder;
   $('btn-newfile').onclick = newFile;
@@ -4719,6 +4744,7 @@ function mountMenubar() {
         null,
         { label: t('menu.theme'), action: toggleTheme },
         { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
+        { label: t('menu.synchronize'), action: synchronizePair },
         { label: t('menu.log'), kbd: 'Ctrl+L', action: toggleLogArea },
         { label: t('menu.search'), action: () => openSearch() },
         { label: t('menu.transfers'), action: () => transferManager() },
@@ -5176,6 +5202,19 @@ function wireEvents() {
   // the window floats (xfer:dest from the backend bus); the docked one
   // calls gotoDest directly through the hook installed here.
   setXferGoto(gotoDest);
+
+  // The Synchronize dialog's delete legs route through the main window's
+  // existing gated delete windows (dialogs.js cannot import the shell —
+  // the same hook shape as setXferGoto above).
+  setSyncRunners({
+    deleteRemote: (info) => deleteS3Keys(info.source, info.bucket,
+      info.delRemote.map((f) => info.prefix + f.rel), '',
+      's3://' + info.bucket + '/' + info.prefix, () => refreshCurrent()),
+    deleteLocal: (info) => {
+      const after = nav.current?.kind === 'local' ? () => refreshCurrent() : null;
+      deleteLocalSelection(info.delLocal.map((f) => syncLocalPath(info.localDir, f.rel)), after);
+    },
+  });
   onEvent('xfer:dest', (d) => gotoDest(d));
   // Guarded exit: the backend refused an exit that would lose work (the X
   // button or File → Exit while transfers run / the profile is dirty) and

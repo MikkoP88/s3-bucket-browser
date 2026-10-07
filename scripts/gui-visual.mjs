@@ -1145,6 +1145,18 @@ function shim() {
     GetBucketAdmin: () => JSON.parse(JSON.stringify(world.admin)),
     BucketVersionStats: () => ({ currentObjects: 7, versions: 12, deleteMarkers: 2, noncurrent: 5, noncurrentBytes: 1048576 }),
     CompareAny: (x, y) => JSON.parse(JSON.stringify(world.compareRows)),
+
+    // the Synchronize dialog's planner — a canned local↔s3 plan (both copy
+    // vectors, both delete vectors, sizes from the from-side, skipped
+    // count); world.syncPlan overrides when a step wants its own shape
+    SyncPreview: () => JSON.parse(JSON.stringify(world.syncPlan || {
+      bucket: 'team-files', prefix: '', localDir: 'C:\\Users\\demo\\Documents', source: '',
+      uploads: [{ rel: 'new.txt', size: 5 }, { rel: 'grew.txt', size: 20 }],
+      downloads: [{ rel: 'gone.txt', size: 12 }, { rel: 'stale.txt', size: 7 }],
+      delRemote: [{ rel: 'gone.txt', size: 12 }, { rel: 'stale.txt', size: 7 }],
+      delLocal: [{ rel: 'new.txt', size: 5 }],
+      skipped: 3,
+    })),
     PreviewDelete: (bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
     // bucket-grade destructive flows (all route through the unified
     // Delete Window — see the delete-window-uniform step)
@@ -7096,21 +7108,22 @@ await step('dual-pane', async () => {
   await ok('the pane canvas matches the primary pane (background and bottom strip)', evalPage(() =>
     getComputedStyle(document.getElementById('local-pane')).backgroundColor
     === getComputedStyle(document.body).backgroundColor));
-  // the app-scope quartet now lives on the global bar between the menubar
-  // and the content — Dual-pane, Compare, theme, help — and neither
-  // content toolbar carries them anymore (each pane keeps only its own)
-  await ok('the global bar carries the app-scope quartet between menubar and content', evalPage(() => {
+  // the app-scope quintet now lives on the global bar between the menubar
+  // and the content — Dual-pane, Compare, Synchronize, theme, help — and
+  // neither content toolbar carries them anymore (each pane keeps only
+  // its own)
+  await ok('the global bar carries the app-scope quintet between menubar and content', evalPage(() => {
     const g = document.getElementById('gbar');
     if (!g) return false;
     const ids = Array.from(g.querySelectorAll('button[id]')).map((b) => b.id);
     return g.classList.contains('gbar')
-      && ids.join(',') === 'btn-panes,btn-compare,btn-theme,btn-help'
+      && ids.join(',') === 'btn-panes,btn-compare,btn-sync,btn-theme,btn-help'
       && document.getElementById('menubar').nextElementSibling === g
       && !!g.nextElementSibling && g.nextElementSibling.tagName === 'MAIN';
   }));
   await ok('neither content toolbar carries the app-scope controls anymore', evalPage(() =>
-    ['btn-panes', 'btn-compare', 'btn-theme', 'btn-help',
-      'local-btn-panes', 'local-compare', 'local-btn-theme', 'local-btn-help']
+    ['btn-panes', 'btn-compare', 'btn-sync', 'btn-theme', 'btn-help',
+      'local-btn-panes', 'local-compare', 'local-btn-sync', 'local-btn-theme', 'local-btn-help']
       .every((id) => !document.querySelector('#toolbar #' + id)
         && !document.querySelector('#local-toolbar #' + id))));
   // the onboarding picker is one way in — the workstation first (a
@@ -7992,6 +8005,88 @@ await step('compare', async () => {
     .some((r) => ['newer-remote', 'size-diff', 'only-remote', 'diff-below', 'same'].includes(r.dataset.cmp))));
   await ok('CompareAny called with both sides', (await findCall('CompareAny')) !== null);
   await shotOf('compare', '#grid-wrap');
+});
+
+await step('synchronize', async () => {
+  // the CLI's sync grown its GUI face: stage the pair — main view on the
+  // bucket's objects, pane on a local folder — then walk the dialog's own
+  // grammar: the plan on open, direction filtering, the delete opt-in,
+  // the run legs through the job entry points under skip semantics, and
+  // the gated delete legs routing through the existing windows
+  await navObjects('team-files');
+  await evalPage(() => window.__s3bSidePane.go({ kind: 'local', dir: 'C:\\Users\\demo\\Documents' }));
+  await waitFor(async () => !!(await sideRow('tax-2025.pdf')), 6000, 'pane on Documents');
+  await waitFor(async () => evalPage(() => !document.getElementById('btn-sync').disabled), 4000, 'btn-sync armed');
+  await ok('btn-sync arms exactly when Compare does', evalPage(() =>
+    document.getElementById('btn-sync').disabled === document.getElementById('btn-compare').disabled));
+  await page.click('#btn-sync');
+  await waitFor(() => modalVisible(), 4000, 'sync dialog open');
+  await waitFor(async () => evalPage(() => document.querySelectorAll('#modal-root .sync-sec').length >= 2), 4000, 'plan sections');
+  await ok('the plan shows both copy vectors and never the delete legs unasked', evalPage(() => {
+    const secs = Array.from(document.querySelectorAll('#modal-root .sync-sec'));
+    const hd = secs.map((s) => s.querySelector('.sync-sec-hd').textContent);
+    return secs.length === 2 && hd[0].includes('Upload to s3://team-files/')
+      && hd[1].includes('Download to C:\\Users\\demo\\Documents')
+      && document.querySelectorAll('#modal-root .sync-sec.del').length === 0
+      && document.querySelectorAll('#modal-root .sync-row').length === 4;
+  }));
+  await ok('the summary counts both directions and the unchanged', evalPage(() => {
+    const s = document.querySelector('#modal-root .dlg-status').textContent;
+    return s.includes('2 to upload') && s.includes('2 to download') && s.includes('3 unchanged');
+  }));
+  // direction: download-only drops the upload vector and re-counts
+  await evalPage(() => document.querySelector('#modal-root input[name="sync-dir"][value="down"]').click());
+  await ok('download-only keeps only the download vector', evalPage(() => {
+    const secs = Array.from(document.querySelectorAll('#modal-root .sync-sec'));
+    return secs.length === 1 && secs[0].querySelector('.sync-sec-hd').textContent.includes('Download to');
+  }));
+  // the delete opt-in surfaces both gated legs in danger colors
+  await evalPage(() => document.querySelector('#modal-root input[name="sync-dir"][value="both"]').click());
+  await evalPage(() => document.querySelector('#modal-root .sync-del input').click());
+  await ok('the delete opt-in surfaces both gated legs', evalPage(() => {
+    const dels = Array.from(document.querySelectorAll('#modal-root .sync-sec.del'));
+    return dels.length === 2 && dels.every((s) => s.querySelector('.sync-sec-hd').textContent.includes('Delete'));
+  }));
+  await shot('sync-dialog');
+  // run: the transfer legs ride the job entry points under skip semantics
+  await resetCalls();
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  // gap-free close check: the delete window re-unhides #modal-root within
+  // milliseconds of the sync dialog's close, so a modalVisible() poll can
+  // never catch the gap — the sync dialog's own marker vanishing is the
+  // monotonic signal
+  await waitFor(async () => evalPage(() => !document.querySelector('#modal-root .sync-dir')), 4000, 'dialog closed on run');
+  const up = await findCall('Upload'), down = await findCall('DownloadRefs');
+  const wantUp = ['C:\\Users\\demo\\Documents/new.txt', 'C:\\Users\\demo\\Documents/grew.txt'];
+  await ok('the legs ride Upload and DownloadRefs under skip semantics', !!up && !!down
+    && JSON.stringify(up.args[0]) === JSON.stringify(wantUp)
+    && up.args[1] === 'team-files' && up.args[2] === '' && up.args[3] === 'skip'
+    && down.args[0] === 'team-files' && down.args[2] === 'C:\\Users\\demo\\Documents' && down.args[3] === 'skip'
+    && JSON.stringify(down.args[1].map((r) => r.key)) === JSON.stringify(['gone.txt', 'stale.txt']));
+  // the delete legs route through the existing gated windows, one at a time
+  await waitFor(() => modalVisible(), 4000, 'remote delete window');
+  const pv = await findCall('PreviewDelete');
+  await ok('the remote delete leg reaches its preview with its keys', !!pv
+    && pv.args[0] === 'team-files'
+    && JSON.stringify(pv.args[1]) === JSON.stringify(['gone.txt', 'stale.txt']));
+  await closeModal();
+  await waitFor(async () => !!(await findCall('LocalDeletePreview')), 4000, 'local delete window');
+  const lp = await findCall('LocalDeletePreview');
+  await ok('the local delete leg follows with its own preview', !!lp
+    && JSON.stringify(lp.args[0]) === JSON.stringify(['C:\\Users\\demo\\Documents/new.txt']));
+  await closeModal();
+  await sleep(150);
+  await ok('cancelled legs delete nothing anywhere', (await findCall('DeleteSelection')) === null
+    && (await findCall('LocalRemove')) === null);
+  // the View menu carries the leaf beside Dual-pane
+  await page.locator('#menubar .mb-title', { hasText: /^view$/i }).first().click();
+  await sleep(80);
+  await ok('View menu carries the Synchronize leaf beside Dual-pane', evalPage(() => {
+    const items = Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'));
+    const i = items.findIndex((x) => /synchronize/i.test(x.textContent));
+    return i > 0 && /dual-pane|panes/i.test(items[i - 1].textContent);
+  }));
+  await page.locator('#menubar .mb-title', { hasText: /^view$/i }).first().click();
 });
 
 await step('pane-search', async () => {
