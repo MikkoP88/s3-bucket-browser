@@ -21,6 +21,24 @@ follow [Semantic Versioning](https://semver.org/).
   troubleshooting table. README, build.md and the usage guide carry
   the pointers.
 
+- **Retry failed transfers — one click, only what failed** — a settled
+  job with failed items now carries its own way back: the transfer
+  manager row grows a *Retry failed* button that resubmits exactly
+  the failed items (a canceled job's unfinished ones) as a fresh
+  running job under skip semantics — what already landed stays
+  untouched and counts as skipped, never re-copied; a failed file
+  (which the integrity round guarantees committed nothing) gets
+  another chance with nothing duplicated. No re-dropping, no
+  re-picking, no overwrite roulette over a mixed folder: the retry
+  replays none of the original per-file decisions, so a rename that
+  already landed can never mint a `file (2)` twin. Jobs past the
+  per-item row cap (50 items) have no failure map and say so
+  honestly instead of retrying blind; internal staging jobs are
+  refused; still-running jobs are refused; a clean job answers
+  "nothing failed to retry". Every retry goes through the same
+  entry points, so its own failures can be retried in turn, and the
+  original row keeps its verdict — retry never rewrites history.
+
 ### Fixed
 
 - **WebDAV: the same verdict, closed the HTTP way** — the engine

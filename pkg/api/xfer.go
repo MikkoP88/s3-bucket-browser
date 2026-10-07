@@ -174,6 +174,31 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 		its[plan.files[i].item].Total += plan.files[i].size
 	}
 	j.setItems(its)
+	// Retry rides the same skip-semantics contract as the upload entry,
+	// with move kept intact: a failed item's source still stands (an item
+	// is deleted only when every file under it verifiably transferred),
+	// and a mixed folder's already-landed files skip — the existing
+	// skip-taint rule then keeps that source folder in place, safe over
+	// complete. The keep vector spans items then localPaths, exactly as
+	// the rows do.
+	j.setRetry(func(keep []bool) (string, error) {
+		subItems := make([]XferItem, 0, len(items))
+		for i, it := range items {
+			if i < len(keep) && keep[i] {
+				subItems = append(subItems, it)
+			}
+		}
+		subLocal := make([]string, 0, len(localPaths))
+		for i, lp := range localPaths {
+			if len(items)+i < len(keep) && keep[len(items)+i] {
+				subLocal = append(subLocal, lp)
+			}
+		}
+		if len(subItems) == 0 && len(subLocal) == 0 {
+			return "", fmt.Errorf("nothing to retry")
+		}
+		return a.TransferCross(subItems, subLocal, dest, PolicySkip, maxBPS, move, nil, false)
+	})
 	if hidden {
 		j.mu.Lock()
 		j.info.Hidden = true

@@ -1108,6 +1108,32 @@ function shim() {
       world.transfers = (world.transfers || []).filter((x) => !(x.status !== 'running' && (ids == null || ids.includes(x.id))));
       return {};
     },
+    // RetryTransfer mirrors the Go contract: a settled job's failed rows
+    // (a canceled job's unfinished ones) resubmit as a NEW job under skip
+    // semantics — the fresh row runs, the original keeps its verdict, and
+    // the refusals throw the way the bridge would.
+    RetryTransfer: (id) => {
+      const j = (world.transfers || []).find((x) => x.id === id);
+      if (!j) throw new Error('no such transfer job ' + id);
+      if (j.status === 'running') throw new Error('job ' + id + ' is still running');
+      if (j.hidden) throw new Error('job ' + id + ' is internal staging and cannot be retried');
+      const rows = j.itemRows || [];
+      if (!rows.length) throw new Error('job ' + id + ' has no per-item rows to retry');
+      const keep = rows.filter((r) => (r.failed || 0) > 0 || (j.status === 'canceled' && (r.done || 0) < (r.files || 0)));
+      if (!keep.length) throw new Error('job ' + id + ' has nothing failed to retry');
+      world.retrySeq = (world.retrySeq || 0) + 1;
+      const nid = 'tr-' + world.retrySeq;
+      world.transfers = [...(world.transfers || []), {
+        id: nid, op: j.op, status: 'running',
+        currentFile: keep[0].name, fileIndex: 1, currentSent: 0, currentTotal: keep[0].total || 0,
+        totalFiles: keep.reduce((n, r) => n + (r.files || 0), 0), doneFiles: 0, failedFiles: 0, skippedFiles: 0,
+        totalBytes: keep.reduce((n, r) => n + (r.total || 0), 0), sentBytes: 0, speedBps: 0,
+        name: keep[0].name, items: keep.length, from: j.from, to: j.to,
+        itemRows: keep.map((r) => ({ ...r, state: 'pending', done: 0, failed: 0, skipped: 0, sent: 0 })),
+      }];
+      emit('transfer:update', {});
+      return nid;
+    },
     // conflict pre-check (M12): whatever the step seeded, the dialog gets
     CheckConflicts: () => JSON.parse(JSON.stringify(world.conflicts || [])),
     ObjectVersions: () => JSON.parse(JSON.stringify(world.versions)),
@@ -6135,6 +6161,58 @@ await step('transfers', async () => {
     const t = document.querySelector(s).textContent;
     return /1 failed/.test(t) && /2 skipped/.test(t);
   }, trSel));
+  // tr-retry leg: the settled row with failures offers one-click retry of
+  // exactly those items — a fresh running job appears, the original keeps
+  // its verdict, running rows offer cancel instead, and a rows-less
+  // settled row offers nothing
+  await evalPage(() => {
+    const t2 = window.__shim.world.transfers.find((x) => x.id === 't2');
+    t2.itemRows = [
+      { name: 'full-backup.tar', state: 'done', files: 5, done: 5, sent: 20971520, total: 20971520 },
+      { name: 'week.tar', state: 'failed', files: 3, done: 3, failed: 1, sent: 10485760, total: 11534336 },
+      { name: 'docs.zip', state: 'skipped', files: 2, done: 2, skipped: 2 },
+      { name: 'media/', state: 'done', files: 2, done: 2, sent: 20971520, total: 20971520 },
+    ];
+    window.__shim.emit('transfer:update', {});
+  });
+  await resetCalls();
+  await ok('failed settled row shows Retry', waitFor(async () => evalPage((s) => {
+    const btns = Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t2"] .tr-top .btn`)).map((b) => b.textContent);
+    return btns.some((x) => /retry/i.test(x));
+  }, trSel), 4000, 'retry shown'));
+  await ok('running row offers cancel, never retry', evalPage((s) => {
+    const btns = Array.from(document.querySelectorAll(`${s} .tr-job.running .tr-top .btn`)).map((b) => b.textContent);
+    return btns.some((x) => /cancel/i.test(x)) && !btns.some((x) => /retry/i.test(x));
+  }, trSel));
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t2"] .tr-top .btn`)).find((b) => /retry/i.test(b.textContent))?.click();
+  }, trSel);
+  await waitFor(async () => (await findCall('RetryTransfer')) !== null, 4000, 'RetryTransfer call');
+  const rc = await findCall('RetryTransfer');
+  await ok('Retry sends the settled job id', rc && rc.args[0] === 't2');
+  await ok('retry spawns a running job of exactly the failed item', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="tr-1"]`);
+    const jr = window.__shim.world.transfers.find((x) => x.id === 'tr-1');
+    return !!row && row.className.includes('running') && !!jr
+      && jr.itemRows.length === 1 && jr.itemRows[0].name === 'week.tar' && jr.totalFiles === 3;
+  }, trSel), 4000, 'retry job row'));
+  await ok('original row keeps its verdict', evalPage(() => {
+    const t2 = window.__shim.world.transfers.find((x) => x.id === 't2');
+    return t2.status === 'done' && t2.failedFiles === 1 && t2.skippedFiles === 2;
+  }));
+  // back to the pre-retry world: the retry job leaves, t2 loses its rows,
+  // and the Retry affordance leaves with them
+  await evalPage(() => {
+    const w = window.__shim.world;
+    w.transfers = w.transfers.filter((x) => x.id !== 'tr-1');
+    delete w.transfers.find((x) => x.id === 't2').itemRows;
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('rows-less settled row offers no Retry', waitFor(async () => evalPage((s) => {
+    const btns = Array.from(document.querySelectorAll(`${s} .tr-job[data-id="t2"] .tr-top .btn`)).map((b) => b.textContent);
+    return !btns.some((x) => /retry/i.test(x));
+  }, trSel), 4000, 'retry gone'));
+  await resetCalls();
   // a zero-byte finished job (server-side copy shape) reads 100%, never 0%
   await evalPage(() => {
     window.__shim.world.transfers = [

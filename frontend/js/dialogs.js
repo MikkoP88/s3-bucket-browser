@@ -1755,6 +1755,15 @@ function openTransferManagerDom(onClose) {
     return `${v.label} ${jobName(j)}`;
   }
 
+  // retryable: a settled row whose per-item state can name what failed
+  // (jobs past the row cap carry none) — failed items, or a canceled
+  // job with unfinished ones.
+  function retryable(j) {
+    if (j.status === 'running' || !j.itemRows || !j.itemRows.length) return false;
+    if (j.failedFiles > 0) return true;
+    return j.status === 'canceled' && (j.doneFiles + j.failedFiles + j.skippedFiles) < j.totalFiles;
+  }
+
   function renderJob(j) {
     const pct = jobPct(j);
     const running = j.status === 'running';
@@ -1826,7 +1835,13 @@ function openTransferManagerDom(onClose) {
         (j.items > 1) ? moreLink(j.id, j.items, expanded.has(j.id), toggle) : null,
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
-        running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } }) : null,
+        running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } })
+          : retryable(j) ? el('button', { class: 'btn', text: t('transfer.retryFailed'), onclick: async () => {
+            // One click, only what failed: the backend resubmits the failed
+            // (or, when canceled, unfinished) items under skip semantics —
+            // what landed stays, what failed goes again.
+            try { await api.RetryTransfer(j.id); } catch (e) { toast(String(e), 'error'); }
+          } }) : null,
         trMoreBtn(j.id, expanded.has(j.id), toggle),
       ),
       bar,
@@ -2542,7 +2557,7 @@ const GUIDE_SECTIONS = [
     ['Copy & move', 'Ctrl+C / Ctrl+X / Ctrl+V, or drag rows onto folders, the tree, or the other pane. Same-source S3 copies run server-side; hold Shift while dragging to force a move. Need the text instead? The context menu (or Edit → Copy as) copies names, normalized paths (Name/contents — the typed form the path line takes, minus its scheme) or real URLs to the OS clipboard.'],
     ['Two-way Explorer clipboard', 'Ctrl+C in File Explorer, Ctrl+V here: the copied files upload into the open folder. The other direction works too — Ctrl+C here quietly stages small selections onto the OS clipboard (a hidden download that never shows in File transfers) so Ctrl+V in Explorer pastes them; pasting inside the app still uses the reference copy and runs the real transfer then. Cut never mirrors — an Explorer paste of a cut would move. Last copy wins; the bridge can be turned off in Settings → File transfers.'],
     ['Conflicts & speed', 'Before anything moves the destination is checked live: a clean destination starts right away, and only real collisions open the conflict dialog — listing exactly which files collide — with overwrite / skip / rename choices. A default policy can be pinned in Settings → File transfers; speed can be capped per transfer (256 kB/s … 1000 MB/s).'],
-    ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle.'],
+    ['Transfer manager', 'View → File transfers (or the status-bar counter) shows every job with per-file and byte-level progress, speed and cancel — in a floating window you can keep browsing beside. It opens itself when a transfer starts and closes itself on a clean end; failed or canceled work keeps it on screen, and finished rows hide behind a Show history toggle. A row that settled with failures offers Retry failed — one click resubmits exactly the failed items (or the ones a canceled job left unfinished) as a fresh job under skip semantics: what landed stays, only what failed goes again.'],
     ['Running tasks', 'The status-bar ⚙ count opens the everything-monitor: transfer jobs, searches, bulk deletes, version purges, folder and file creation, bucket deletes, pane compares, doctor runs — each with progress and a Cancel button. Destructive tasks count before they act, so canceling during the count destroys nothing.'],
   ]],
   ['Versions & safety', [

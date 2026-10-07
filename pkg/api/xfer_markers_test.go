@@ -38,6 +38,33 @@ type fakeS3 struct {
 	objects         map[string]map[string]string // bucket → key → content
 	deleted         []string
 	sawChecksumMode bool // some GET asked for response checksums
+	// faults injects transient failures: "PUT bucket/key" / "GET bucket/key"
+	// → how many requests to fail with a 500 before serving honestly
+	// again (the retry rigs' lever).
+	faults map[string]int
+}
+
+// fault fails the next n requests for one verb+key, then heals.
+func (f *fakeS3) fault(verb, bucket, key string, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.faults == nil {
+		f.faults = map[string]int{}
+	}
+	f.faults[verb+" "+bucket+"/"+key] = n
+}
+
+// tripped consumes one fault for verb+key, reporting whether the request
+// must fail.
+func (f *fakeS3) tripped(verb, bucket, key string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := verb + " " + bucket + "/" + key
+	if f.faults[k] > 0 {
+		f.faults[k]--
+		return true
+	}
+	return false
 }
 
 func newFakeS3(buckets ...string) *fakeS3 {
@@ -119,12 +146,20 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.sawChecksumMode = true
 			f.mu.Unlock()
 		}
+		if f.tripped("GET", bucket, key) {
+			http.Error(w, "fakeS3: injected fault", http.StatusInternalServerError)
+			return
+		}
 		f.getObject(w, bucket, key)
 	case r.Method == http.MethodHead:
 		f.headObject(w, bucket, key)
 	case r.Method == http.MethodPut && r.Header.Get("x-amz-copy-source") != "":
 		f.copyObject(w, r, bucket, key)
 	case r.Method == http.MethodPut:
+		if f.tripped("PUT", bucket, key) {
+			http.Error(w, "fakeS3: injected fault", http.StatusInternalServerError)
+			return
+		}
 		f.putObject(w, r, bucket, key)
 	case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
 		f.deleteObjects(w, r, bucket)

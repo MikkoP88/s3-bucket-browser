@@ -144,6 +144,10 @@ type jobHandle struct {
 	lastEmAt   time.Time // when that was
 	stallAfter time.Duration
 	itemNames  []string // item display names (TransferItems — the >itemRowCap fallback)
+	// retry resubmits only the kept rows of the original request under
+	// skip semantics; set once at entry before the worker spawns, read
+	// only by RetryTransfer after the job settles.
+	retry func(keep []bool) (string, error)
 }
 
 // jobManager owns all jobs in insertion order.
@@ -447,6 +451,14 @@ func (j *jobHandle) setItems(items []TransferItem) {
 	j.mu.Unlock()
 }
 
+// setRetry records the entry point's resubmission closure (RetryTransfer
+// explains the skip-semantics contract); nil keeps the job unretryable.
+func (j *jobHandle) setRetry(fn func(keep []bool) (string, error)) {
+	j.mu.Lock()
+	j.retry = fn
+	j.mu.Unlock()
+}
+
 // touchItemLocked mutates one item row copy-on-write: emitted snapshots
 // share the backing array with a marshal riding outside the lock, so the
 // worker never edits a slice a consumer may still be reading — it swaps
@@ -525,6 +537,62 @@ func (a *App) ClearFinishedTransfers(ids []string) { a.jobs.clearFinished(ids) }
 // CancelTransfer cancels a running job by ID.
 func (a *App) CancelTransfer(id string) bool { return a.jobs.cancel(id) }
 
+// RetryTransfer resubmits only a settled job's failed items (a canceled
+// job's unfinished ones) as a fresh job under skip semantics — what
+// already landed stays untouched, what failed gets another chance. The
+// rows are index-aligned with the entry point's request, so keep marks
+// exactly the rows worth resubmitting: failed rows always, and — when
+// the job was canceled, leaving the in-flight file unsettled and later
+// ones never started — every row that never finished. Jobs past
+// itemRowCap carry no rows and cannot be retried item-by-item.
+func (a *App) RetryTransfer(id string) (string, error) {
+	a.jobs.mu.Lock()
+	var j *jobHandle
+	for _, cand := range a.jobs.all {
+		cand.mu.Lock()
+		match := cand.info.ID == id
+		cand.mu.Unlock()
+		if match {
+			j = cand
+			break
+		}
+	}
+	a.jobs.mu.Unlock()
+	if j == nil {
+		return "", fmt.Errorf("no such transfer job %s", id)
+	}
+	j.mu.Lock()
+	status, hidden := j.info.Status, j.info.Hidden
+	rows := j.info.ItemRows
+	fn := j.retry
+	j.mu.Unlock()
+	if status == JobRunning {
+		return "", fmt.Errorf("job %s is still running", id)
+	}
+	if hidden {
+		return "", fmt.Errorf("job %s is internal staging and cannot be retried", id)
+	}
+	if fn == nil || len(rows) == 0 {
+		return "", fmt.Errorf("job %s has no per-item rows to retry", id)
+	}
+	keep := make([]bool, len(rows))
+	kept := 0
+	for i, r := range rows {
+		// A canceled job's in-flight file never settles (Done < Files)
+		// and its unstarted items never began — both resume; an errored
+		// job settles every row, so failures are the complete signal.
+		keep[i] = r.Failed > 0 || (status == JobCanceled && r.Done < r.Files)
+		if keep[i] {
+			kept++
+		}
+	}
+	if kept == 0 {
+		return "", fmt.Errorf("job %s has nothing failed to retry", id)
+	}
+	a.emitLog(LogInfo, "transfer", fmt.Sprintf("retrying %d item(s) from job %s under skip semantics", kept, id))
+	return fn(keep)
+}
+
 // TransferItems lists the top-level items of a job by ID — the expanded
 // panel's contents list ("photos +2" finally says who the other two are).
 func (a *App) TransferItems(id string) []string { return a.jobs.itemsOf(id) }
@@ -570,6 +638,25 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 		its[pr.item].Total += pr.size
 	}
 	j.setItems(its)
+	// Retry resubmits only the kept rows under skip semantics: a file
+	// that landed exists at its key and skips (counted honestly), a file
+	// that failed committed nothing (the integrity contract) and copies
+	// again. The per-file decisions are dropped on purpose — replaying a
+	// "rename" against files that already landed would mint "(2)"
+	// duplicates in mixed folders; a rename-that-failed retries against
+	// the original key and skips visibly if the old conflict remains.
+	j.setRetry(func(keep []bool) (string, error) {
+		sub := make([]string, 0, len(paths))
+		for i, p := range paths {
+			if i < len(keep) && keep[i] {
+				sub = append(sub, p)
+			}
+		}
+		if len(sub) == 0 {
+			return "", fmt.Errorf("nothing to retry")
+		}
+		return a.Upload(sub, bucket, prefix, PolicySkip, maxBPS, nil)
+	})
 	id := j.info.ID
 	a.emitLogSrc(LogInfo, "upload", bucket, fmt.Sprintf("job %s: uploading %d file(s) (%d bytes) to %s/%s", id, len(pairs), total, bucket, dirPrefix(prefix)))
 	logDecisions(a, "upload", decisions)
@@ -897,6 +984,19 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 		its[i] = TransferItem{Name: nm, Files: 1, Total: it.Size}
 	}
 	j.setItems(its)
+	// Retry rides the same skip-semantics contract as the upload entry.
+	j.setRetry(func(keep []bool) (string, error) {
+		sub := make([]DownloadItem, 0, len(items))
+		for i, it := range items {
+			if i < len(keep) && keep[i] {
+				sub = append(sub, it)
+			}
+		}
+		if len(sub) == 0 {
+			return "", fmt.Errorf("nothing to retry")
+		}
+		return a.Download(bucket, sub, destDir, PolicySkip, maxBPS, nil)
+	})
 	id := j.info.ID
 	a.emitLogSrc(LogInfo, "download", bucket, fmt.Sprintf("job %s: downloading %d object(s) (%d bytes) from %s to %s", id, len(items), total, bucket, destDir))
 	logDecisions(a, "download", decisions)

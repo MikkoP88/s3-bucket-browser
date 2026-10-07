@@ -601,7 +601,11 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   collapses all finished rows on demand — including jobs that finished
   inside the open view — leaving just the live work. **Clear** removes
   the finished rows you can see (all of them once history is shown);
-  running jobs always stay.
+  running jobs always stay. A row that settled with failures offers
+  **Retry failed** — one click resubmits exactly the failed items
+  (a canceled job's unfinished ones) as a fresh job under skip
+  semantics: what landed stays untouched, only what failed goes
+  again, and the original row keeps its verdict.
 - **Running tasks** — View → Running tasks (or the status-bar ⚙
   indicator) is the everything-monitor. The ⚙ indicator always shows
   a live count of active tasks (e.g. "⚙ 2 tasks — search 3/10") and
