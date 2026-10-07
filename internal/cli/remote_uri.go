@@ -670,9 +670,18 @@ func copyRemoteDispatch(ctx context.Context, c *s3client.Client, src, dst string
 					continue
 				}
 			}
-			rc, _, err := f.open(ctx)
+			rc, size, err := f.open(ctx)
 			if err != nil {
 				return n, err
+			}
+			if size > 0 {
+				// Integrity wrap, the other legs' twin: a source ending
+				// clean short of the size its wire promised fails the
+				// copy instead of landing short at the remote
+				// destination. copyFile.open spans local stats (always
+				// authoritative, zero included) and FTP/WebDAV engines
+				// (zero = unknown), so the gate is positive size only.
+				rc = transfer.VerifiedStream(rc, size)
 			}
 			if sameEngine {
 				err = copyViaTemp(ctx, rc, dstRef, dstPath)

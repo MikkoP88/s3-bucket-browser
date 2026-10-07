@@ -121,8 +121,8 @@ follow [Semantic Versioning](https://semver.org/).
   local handle's stat are authoritative; FTP and WebDAV report 0
   for a size they could not learn, and an unknown size streams
   unverified exactly as before), and drag-out, the version-diff
-  fetch, versioned cross-client copies and the CLI's cp in both
-  directions ride the same wrap; S3 reads ask for checksum mode
+  fetch, versioned cross-client copies and the CLI's cp on every
+  leg — local, S3 and remote destinations alike — ride the same wrap; S3 reads ask for checksum mode
   (ChecksumMode on every direct GetObject — the SDK validates the
   payload whenever the server sends one), and the download path —
   where the manager sizes a download from what the wire serves,
