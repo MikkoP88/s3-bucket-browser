@@ -30,6 +30,23 @@ follow [Semantic Versioning](https://semver.org/).
   rejection and sync throw each land as exactly one toast, repeats
   deduped).
 
+- **Live transfer progress in the CLI** — the transfer engine has
+  always reported bytes as they move; the CLI face never listened,
+  so a multi-gigabyte cp printed one announce line and then silence.
+  cp/mv/sync uploads and downloads (plain s3:// and NAME:// source
+  URIs alike) now render one rewriting line on stderr while a file
+  streams — "name  1.2 GB / 4.7 GB (26%)  9.8 MB/s" — under three
+  politeness gates: stderr must be a terminal (piped output stays
+  byte-clean for scripts and redirections), --json must be off, and
+  nothing renders until a transfer has moved 1 MB or run a second,
+  so a folder of small files never flickers. The line redraws at
+  10 Hz, smooths its speed readout over the window, pads over its
+  own residue when the readout shrinks, cuts long names on rune
+  boundaries (the file name survives the ellipsis), and erases
+  itself when the transfer settles so history keeps only the
+  command's own record. Seven unit tests pin the gates, the throttle,
+  the format and the erase.
+
 ### Changed
 
 - **The last grid mirror folds** — the search pane's column

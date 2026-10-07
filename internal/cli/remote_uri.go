@@ -765,8 +765,10 @@ func copyFilesToS3(ctx context.Context, c *s3client.Client, files []copyFile, is
 		if size <= 0 {
 			size = f.size
 		}
-		err = transfer.UploadReader(ctx, c.S3, rc, size, du.Bucket, key, opts.uploadOptions())
+		pr := newProgressLine(f.rel)
+		err = transfer.UploadReader(ctx, c.S3, rc, size, du.Bucket, key, opts.uploadOptions(pr.fn()))
 		rc.Close()
+		pr.done()
 		if err != nil {
 			return n, fmt.Errorf("%s: %w", f.rel, err)
 		}

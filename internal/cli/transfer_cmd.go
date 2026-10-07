@@ -35,11 +35,12 @@ type copyOptions struct {
 	Force        bool // mv --versions: allow purging >50 source versions
 }
 
-func (o copyOptions) uploadOptions() transfer.UploadOptions {
+func (o copyOptions) uploadOptions(progress transfer.ProgressFn) transfer.UploadOptions {
 	return transfer.UploadOptions{
 		StorageClass: o.StorageClass,
 		SSE:          o.SSE,
 		NoClobber:    o.NoClobber,
+		Progress:     progress,
 	}
 }
 
@@ -200,7 +201,10 @@ func uploadPath(ctx context.Context, c *s3client.Client, localPath, dst string, 
 			}
 			return false, nil
 		}
-		if err := transfer.UploadFile(ctx, c.S3, local, u.Bucket, key, opts.uploadOptions()); err != nil {
+		pr := newProgressLine(local)
+		err = transfer.UploadFile(ctx, c.S3, local, u.Bucket, key, opts.uploadOptions(pr.fn()))
+		pr.done()
+		if err != nil {
 			return false, fmt.Errorf("%s: %w", local, err)
 		}
 		if opts.Move {
@@ -283,7 +287,10 @@ func downloadPath(ctx context.Context, c *s3client.Client, src, dst string, opts
 				return false, nil
 			}
 		}
-		if err := transfer.DownloadFile(ctx, c.S3, u.Bucket, key, local, transfer.DownloadOptions{}); err != nil {
+		pr := newProgressLine(local)
+		err = transfer.DownloadFile(ctx, c.S3, u.Bucket, key, local, transfer.DownloadOptions{Progress: pr.fn()})
+		pr.done()
+		if err != nil {
 			return false, fmt.Errorf("%s: %w", key, err)
 		}
 		if flagVerbose {
@@ -753,8 +760,11 @@ func syncUpload(ctx context.Context, c *s3client.Client, localDir, dst string, d
 	}
 	for _, rel := range uploads {
 		key := joinKeyNoSlash(prefix, rel)
-		if err := transfer.UploadFile(ctx, c.S3, filepath.Join(localDir, filepath.FromSlash(rel)),
-			u.Bucket, key, transfer.UploadOptions{}); err != nil {
+		pr := newProgressLine(rel)
+		err := transfer.UploadFile(ctx, c.S3, filepath.Join(localDir, filepath.FromSlash(rel)),
+			u.Bucket, key, transfer.UploadOptions{Progress: pr.fn()})
+		pr.done()
+		if err != nil {
 			return res, fmt.Errorf("%s: %w", rel, err)
 		}
 		res.Uploaded++
@@ -822,7 +832,10 @@ func syncDownload(ctx context.Context, c *s3client.Client, src, localDir string,
 	}
 	for _, rel := range downloads {
 		localPath := filepath.Join(localDir, filepath.FromSlash(rel))
-		if err := transfer.DownloadFile(ctx, c.S3, u.Bucket, prefix+rel, localPath, transfer.DownloadOptions{}); err != nil {
+		pr := newProgressLine(rel)
+		err := transfer.DownloadFile(ctx, c.S3, u.Bucket, prefix+rel, localPath, transfer.DownloadOptions{Progress: pr.fn()})
+		pr.done()
+		if err != nil {
 			return res, fmt.Errorf("%s: %w", rel, err)
 		}
 		res.Uploaded++
