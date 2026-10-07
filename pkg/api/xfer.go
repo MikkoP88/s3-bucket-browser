@@ -836,7 +836,15 @@ func (a *App) xferOne(ctx context.Context, f *xferFile, dst xferDestSide, policy
 		return "copied", nil
 	}
 
-	// Everything else streams reader → writer.
+	// Everything else streams reader → writer. The integrity contract
+	// rides at this convergence: every leg wraps its source in a reader
+	// that knows the size its own wire promised and refuses to end clean
+	// short of it — io.Copy would return nil for a truncated stream and
+	// the destination half would commit the partial as though it were the
+	// whole file. The wire's own size is the authority (S3's
+	// Content-Length, the open handle's stat on local); FTP and WebDAV
+	// report 0 for a size they could not learn, and an unknown size
+	// cannot be verified — those stream unverified, exactly as before.
 	var r io.ReadCloser
 	var size int64
 	switch f.srcKind {
@@ -845,11 +853,14 @@ func (a *App) xferOne(ctx context.Context, f *xferFile, dst xferDestSide, policy
 		if err != nil {
 			return "", err
 		}
-		r, size = body, sz
+		r, size = transfer.VerifiedStream(body, sz), sz
 	case "remote":
 		rc, sz, err := f.fs.Open(ctx, f.srcPath)
 		if err != nil {
 			return "", err
+		}
+		if sz > 0 {
+			rc = transfer.VerifiedStream(rc, sz)
 		}
 		r, size = rc, sz
 	default:
@@ -866,7 +877,7 @@ func (a *App) xferOne(ctx context.Context, f *xferFile, dst xferDestSide, policy
 			fh.Close()
 			return "", serr
 		}
-		r, size = fh, st.Size()
+		r, size = transfer.VerifiedStream(fh, st.Size()), st.Size()
 	}
 	if size <= 0 {
 		size = f.size
@@ -897,10 +908,15 @@ func (a *App) xferOne(ctx context.Context, f *xferFile, dst xferDestSide, policy
 	return "copied", nil
 }
 
-// s3Open returns a stream over one object and its content length.
+// s3Open returns a stream over one object and its content length. The
+// response asks for checksum mode: the SDK then validates the payload
+// against the checksum the server returns (a server that sends none
+// validates nothing — benign), on top of the length verification every
+// caller wraps this stream in.
 func s3Open(ctx context.Context, c *s3client.Client, bucket, key string) (io.ReadCloser, int64, error) {
 	resp, err := c.S3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket), Key: aws.String(key),
+		ChecksumMode: s3types.ChecksumModeEnabled,
 	})
 	if err != nil {
 		return nil, 0, err

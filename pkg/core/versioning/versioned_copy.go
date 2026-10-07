@@ -174,9 +174,13 @@ func CopyOneVersion(ctx context.Context, src *s3.Client, srcBucket, srcKey, vers
 		return err
 	}
 	defer resp.Body.Close()
+	size := aws.ToInt64(resp.ContentLength)
 	opts := transfer.UploadOptions{
 		ContentType: aws.ToString(resp.ContentType),
 		Metadata:    resp.Metadata,
 	}
-	return transfer.UploadReader(ctx, dst, resp.Body, aws.ToInt64(resp.ContentLength), dstBucket, dstKey, opts)
+	// The integrity wrap: a source that ends clean short of its
+	// Content-Length would upload a partial version as a complete object
+	// (io.Copy cannot tell) — VerifiedStream fails the copy instead.
+	return transfer.UploadReader(ctx, dst, transfer.VerifiedStream(resp.Body, size), size, dstBucket, dstKey, opts)
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // ObjectVersions returns the version timeline of one key, newest first.
@@ -504,9 +505,10 @@ func shortVersion(id string) string {
 // is comparable text.
 func fetchVersionText(ctx context.Context, cl *s3.Client, bucket, key, versionID string) (string, bool, string, error) {
 	out, err := cl.GetObject(ctx, &s3.GetObjectInput{
-		Bucket:    aws.String(bucket),
-		Key:       aws.String(key),
-		VersionId: aws.String(versionID),
+		Bucket:       aws.String(bucket),
+		Key:          aws.String(key),
+		VersionId:    aws.String(versionID),
+		ChecksumMode: s3types.ChecksumModeEnabled,
 	})
 	if err != nil {
 		var rerr *awshttp.ResponseError
@@ -516,12 +518,21 @@ func fetchVersionText(ctx context.Context, cl *s3.Client, bucket, key, versionID
 		return "", false, "", err
 	}
 	defer out.Body.Close()
-	if n := aws.ToInt64(out.ContentLength); n > versionDiffCap {
+	n := aws.ToInt64(out.ContentLength)
+	if n > versionDiffCap {
 		return "", false, fmt.Sprintf("size %s exceeds the %d KB text cap", fmtSize(n), versionDiffCap/1024), nil
 	}
 	b, err := io.ReadAll(io.LimitReader(out.Body, versionDiffCap+1))
 	if err != nil {
 		return "", false, "", err
+	}
+	// A body that ended short of its announced length would diff a
+	// truncated version against its peer and present a wrong diff as the
+	// truth — fail the fetch instead (the same integrity contract every
+	// streaming leg enforces).
+	if int64(len(b)) < n {
+		return "", false, "", fmt.Errorf("%w: version body: got %d of %d bytes",
+			transfer.ErrShortStream, len(b), n)
 	}
 	trunc := int64(len(b)) > versionDiffCap
 	if trunc {

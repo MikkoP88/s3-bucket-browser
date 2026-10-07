@@ -33,10 +33,11 @@ import (
 // TransferCross to run hermetically (no network, no real bucket). Keys are
 // stored per bucket; a key ending in "/" is an explicit folder marker.
 type fakeS3 struct {
-	mu      sync.Mutex
-	url     string
-	objects map[string]map[string]string // bucket → key → content
-	deleted []string
+	mu              sync.Mutex
+	url             string
+	objects         map[string]map[string]string // bucket → key → content
+	deleted         []string
+	sawChecksumMode bool // some GET asked for response checksums
 }
 
 func newFakeS3(buckets ...string) *fakeS3 {
@@ -71,6 +72,14 @@ func (f *fakeS3) deletedKeys() []string {
 	return slices.Clone(f.deleted)
 }
 
+// checksumModeSeen reports whether any object GET asked for response
+// checksums — the integrity round's request-side assert.
+func (f *fakeS3) checksumModeSeen() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sawChecksumMode
+}
+
 // splitS3Path splits a path-style URL path into bucket and key.
 func splitS3Path(p string) (bucket, key string) {
 	p = strings.TrimPrefix(p, "/")
@@ -103,6 +112,13 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// GET / is ListBuckets — the account-level call the split dials.
 		f.listBuckets(w)
 	case r.Method == http.MethodGet:
+		// The SDK serializes the enum verbatim ("ENABLED"); EqualFold
+		// tolerates the casing without blessing a wrong one.
+		if strings.EqualFold(r.Header.Get("X-Amz-Checksum-Mode"), "ENABLED") {
+			f.mu.Lock()
+			f.sawChecksumMode = true
+			f.mu.Unlock()
+		}
 		f.getObject(w, bucket, key)
 	case r.Method == http.MethodHead:
 		f.headObject(w, bucket, key)

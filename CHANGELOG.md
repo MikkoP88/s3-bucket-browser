@@ -104,6 +104,37 @@ follow [Semantic Versioning](https://semver.org/).
   — each returning the verdict in bounded time and working again the
   moment the wire is back.
 
+- **Transfer integrity: a transfer lands whole or fails loud** —
+  io.Copy returns nil when a stream ends in a clean EOF short of the
+  size its wire promised, so a source that truncated mid-transfer
+  committed silently — a file rewritten shorter while the upload
+  streamed it, an FTP data connection that delivered fewer bytes
+  than SIZE announced, a WebDAV body short of its Content-Length —
+  and a short object or file landed as though it were whole,
+  byte-level corruption with no error anywhere. Every streaming
+  convergence now wraps its source in a length-verifying reader
+  (VerifiedStream, with the ErrShortStream sentinel naming both
+  counts — "got 40 of 100 bytes"): uploads read the file against
+  its open-time stat (a file that grew past the stat is capped at
+  the size the transfer planned), cross-transfers verify against
+  the WIRE's own size on every leg (S3's Content-Length and the
+  local handle's stat are authoritative; FTP and WebDAV report 0
+  for a size they could not learn, and an unknown size streams
+  unverified exactly as before), and drag-out, the version-diff
+  fetch, versioned cross-client copies and the CLI's cp in both
+  directions ride the same wrap; S3 reads ask for checksum mode
+  (ChecksumMode on every direct GetObject — the SDK validates the
+  payload whenever the server sends one), and the download path —
+  where the manager sizes a download from what the wire serves,
+  not what the planning HEAD promised — gains a written-count
+  guard against the planned total. A truncated source fails the
+  file with nothing committed: no partial at the final name, no
+  staging leftovers. Covered by the wrapper's contract tests
+  (both directions, zero, unknown, hard-error passthrough), a
+  download rig whose HEAD and GET disagree, and the field shape
+  end to end — an engine whose Open lies exactly the way a
+  truncated FTP stream does fails the cross-transfer with the
+  verdict while the destination stays empty.
 ## [1.2.0-beta.3] — 2026-10-07
 
 ### Added

@@ -4,6 +4,7 @@ package transfer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -157,10 +158,16 @@ func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key s
 		return err
 	}
 
-	var body io.Reader = f
+	// The integrity wrap rides under the progress reader: a file rewritten
+	// shorter while the upload streams it ends in a clean EOF io.Copy
+	// would accept, and the upload would commit a short object believing
+	// it whole. VerifiedStream makes that clean short end fail the upload
+	// instead; a file that grew past its open-time stat is capped at the
+	// size the transfer planned.
+	var body io.Reader = VerifiedStream(f, st.Size())
 	if opts.Progress != nil || opts.MaxBPS > 0 {
 		body = &progressReader{
-			r: f, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
+			r: body, fn: opts.Progress, limiter: newRateLimiter(opts.MaxBPS),
 			total: st.Size(), reportOn: true,
 		}
 	}
@@ -230,6 +237,56 @@ func NewProgressReader(r io.Reader, fn ProgressFn, total, maxBPS int64) io.Reade
 	}
 }
 
+// ErrShortStream is the integrity verdict: a source whose wire promised a
+// size ended clean before delivering it. io.Copy cannot see this — a
+// truncated stream terminates in a perfectly ordinary EOF, and a nil
+// error would commit the partial as though it were the whole file: the
+// silent-corruption class. Every streaming leg wraps its source in
+// VerifiedStream so a clean short end becomes this error and the transfer
+// aborts with nothing committed at the final name.
+var ErrShortStream = errors.New("short stream")
+
+// VerifiedStream wraps a body whose promised size is known and enforces
+// the promise in both directions: a clean EOF while bytes remain turns
+// into ErrShortStream, and reads cap at the promised size so a source
+// that over-delivers cannot push past what its wire announced — the
+// transfer lands exactly what was planned, or it fails loud. size < 0
+// (unknown) returns the body unwrapped: an unknown size cannot be
+// verified and streams exactly as before. Zero is a real size (an empty
+// object or file) and verifies like any other: the first read must be
+// the EOF.
+func VerifiedStream(rc io.ReadCloser, size int64) io.ReadCloser {
+	if rc == nil || size < 0 {
+		return rc
+	}
+	return &verifiedStream{rc: rc, size: size, remaining: size}
+}
+
+// verifiedStream is VerifiedStream's reader: remaining counts down with
+// every byte delivered.
+type verifiedStream struct {
+	rc        io.ReadCloser
+	size      int64
+	remaining int64
+}
+
+func (v *verifiedStream) Read(p []byte) (int, error) {
+	if v.remaining <= 0 {
+		return 0, io.EOF // the promise is met: nothing past it exists
+	}
+	if int64(len(p)) > v.remaining {
+		p = p[:v.remaining]
+	}
+	n, err := v.rc.Read(p)
+	v.remaining -= int64(n)
+	if err == io.EOF && v.remaining > 0 {
+		return n, fmt.Errorf("%w: got %d of %d bytes", ErrShortStream, v.size-v.remaining, v.size)
+	}
+	return n, err
+}
+
+func (v *verifiedStream) Close() error { return v.rc.Close() }
+
 // DownloadOptions controls a download.
 type DownloadOptions struct {
 	PartSize    int64
@@ -262,10 +319,28 @@ func DownloadFile(ctx context.Context, client *s3.Client, bucket, key, localPath
 		}
 
 		//lint:ignore SA1019 deprecated in favor of the pre-GA transfermanager; see newUploader
-		_, err := downloader.Download(ctx, w, &s3.GetObjectInput{
+		n, err := downloader.Download(ctx, w, &s3.GetObjectInput{
 			Bucket: aws.String(bucket), Key: aws.String(key),
+			// Ask for response checksums: the SDK validates the payload
+			// against them when the server sends any (single-part
+			// downloads get the real check; ranged parts carry none and
+			// validate nothing — the count below is the guarantee that
+			// always runs).
+			ChecksumMode: s3types.ChecksumModeEnabled,
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		// The manager sizes the download from what the wire serves, not
+		// from the HEAD that planned it: an object replaced between the
+		// two (or a peer that under-delivers) downloads cleanly at the
+		// wrong length while the job believed the HEAD. The count is the
+		// integrity contract's last line — a download lands whole at the
+		// size it was planned, or it fails loud.
+		if n != total {
+			return fmt.Errorf("%w: downloaded %d of %d bytes", ErrShortStream, n, total)
+		}
+		return nil
 	})
 }
 

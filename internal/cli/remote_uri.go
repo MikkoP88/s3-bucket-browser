@@ -380,10 +380,13 @@ type copyFile struct {
 	remove func(ctx context.Context) error
 }
 
-// s3OpenCLI streams one object and its content length.
+// s3OpenCLI streams one object and its content length, asking for
+// checksum mode so the SDK validates the payload when the server sends a
+// checksum (the GUI's s3Open twin).
 func s3OpenCLI(ctx context.Context, c *s3client.Client, bucket, key string) (io.ReadCloser, int64, error) {
 	resp, err := c.S3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket), Key: aws.String(key),
+		ChecksumMode: s3types.ChecksumModeEnabled,
 	})
 	if err != nil {
 		return nil, 0, err
@@ -762,6 +765,14 @@ func copyFilesToS3(ctx context.Context, c *s3client.Client, files []copyFile, is
 		if err != nil {
 			return n, err
 		}
+		if size > 0 {
+			// Integrity wrap: a source ending clean short of the size its
+			// wire promised must fail the upload, not commit a short
+			// object as whole. copyFile.open spans local stats (always
+			// authoritative, zero included) and FTP/WebDAV engines (zero
+			// = unknown), so the gate is on a positive size only.
+			rc = transfer.VerifiedStream(rc, size)
+		}
 		if size <= 0 {
 			size = f.size
 		}
@@ -812,9 +823,12 @@ func copyFilesToLocal(ctx context.Context, files []copyFile, isDir bool, dst str
 				continue
 			}
 		}
-		rc, _, err := f.open(ctx)
+		rc, size, err := f.open(ctx)
 		if err != nil {
 			return n, err
+		}
+		if size > 0 {
+			rc = transfer.VerifiedStream(rc, size) // the upload leg's twin
 		}
 		if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
 			rc.Close()

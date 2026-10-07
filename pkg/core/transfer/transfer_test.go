@@ -3,10 +3,14 @@ package transfer
 import (
 	"context"
 	"errors"
+	"io"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -248,4 +252,133 @@ func TestStageAndCommitKeepsReplacedMode(t *testing.T) {
 	if perm := info.Mode().Perm(); perm != fs.FileMode(0o600) {
 		t.Fatalf("replaced file mode = %v, want the predecessor's 0600", perm)
 	}
+}
+
+// TestVerifiedStream pins the integrity wrapper's contract in both
+// directions: a clean end short of the promised size becomes
+// ErrShortStream (io.Copy's blind spot — the silent-truncation cure), a
+// met promise ends in an ordinary EOF, an over-delivering source is
+// capped at what it announced, an unknown size passes the body through
+// untouched, and hard transport errors keep their own identity.
+func TestVerifiedStream(t *testing.T) {
+	t.Run("short end carries the sentinel and both counts", func(t *testing.T) {
+		v := VerifiedStream(io.NopCloser(strings.NewReader("abcdef")), 10)
+		got, err := io.ReadAll(v)
+		if !errors.Is(err, ErrShortStream) {
+			t.Fatalf("err = %v, want ErrShortStream", err)
+		}
+		if string(got) != "abcdef" {
+			t.Fatalf("delivered %q before the failure, want the six real bytes", got)
+		}
+		if msg := err.Error(); !strings.Contains(msg, "6 of 10") {
+			t.Fatalf("err = %q, want got/want counts in the message", msg)
+		}
+	})
+	t.Run("exact end is an ordinary EOF", func(t *testing.T) {
+		v := VerifiedStream(io.NopCloser(strings.NewReader("abcdef")), 6)
+		got, err := io.ReadAll(v)
+		if err != nil || string(got) != "abcdef" {
+			t.Fatalf("got %q, %v — want the whole body and no error", got, err)
+		}
+	})
+	t.Run("zero size never touches the source and closes through", func(t *testing.T) {
+		inner := &failIfReadRC{}
+		v := VerifiedStream(inner, 0)
+		got, err := io.ReadAll(v)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("got %q, %v — want an immediate clean EOF", got, err)
+		}
+		if err := v.Close(); err != nil || !inner.closed {
+			t.Fatal("Close must pass through to the wrapped body")
+		}
+	})
+	t.Run("over-delivery is capped at the promise", func(t *testing.T) {
+		v := VerifiedStream(io.NopCloser(strings.NewReader("0123456789EXTRA")), 10)
+		got, err := io.ReadAll(v)
+		if err != nil || string(got) != "0123456789" {
+			t.Fatalf("got %q, %v — want exactly the promised ten bytes", got, err)
+		}
+	})
+	t.Run("unknown size passes the body through untouched", func(t *testing.T) {
+		rc := io.NopCloser(strings.NewReader("x"))
+		if VerifiedStream(rc, -1) != rc {
+			t.Fatal("size < 0 must return the body itself")
+		}
+		if VerifiedStream(nil, 5) != nil {
+			t.Fatal("a nil body must pass through as nil")
+		}
+	})
+	t.Run("hard transport errors keep their identity", func(t *testing.T) {
+		v := VerifiedStream(io.NopCloser(errReader{io.ErrUnexpectedEOF}), 5)
+		_, err := io.ReadAll(v)
+		if !errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrShortStream) {
+			t.Fatalf("err = %v, want the transport error unmasked", err)
+		}
+	})
+}
+
+// failIfReadRC fails any read: a met promise must never reach the source.
+type failIfReadRC struct{ closed bool }
+
+func (f *failIfReadRC) Read([]byte) (int, error) { return 0, errors.New("read past a met promise") }
+func (f *failIfReadRC) Close() error             { f.closed = true; return nil }
+
+// errReader always returns err.
+type errReader struct{ err error }
+
+func (e errReader) Read([]byte) (int, error) { return 0, e.err }
+
+// TestDownloadFileCountGuard pins the download's last integrity line:
+// the manager sizes a download from what the wire serves, so an object
+// that changed length between the HEAD that planned it and the GETs
+// that fetched it downloads cleanly at the wrong size — the
+// written-count check against the HEAD must fail the download with
+// nothing committed, and an honest server must never trip it.
+func TestDownloadFileCountGuard(t *testing.T) {
+	serve := func(headLen, getLen int) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodHead:
+				w.Header().Set("Content-Length", strconv.Itoa(headLen))
+			case http.MethodGet:
+				body := strings.Repeat("x", getLen)
+				w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+				io.WriteString(w, body)
+			default:
+				http.Error(w, "unsupported "+r.Method, http.StatusBadRequest)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	newClient := func(url string) *s3.Client {
+		return s3.New(s3.Options{
+			BaseEndpoint: aws.String(url), Region: "us-east-1",
+			Credentials: aws.AnonymousCredentials{}, UsePathStyle: true,
+		})
+	}
+
+	t.Run("replaced-short object fails with nothing committed", func(t *testing.T) {
+		dst := filepath.Join(t.TempDir(), "out.bin")
+		err := DownloadFile(context.Background(), newClient(serve(10, 6)), "b", "k", dst, DownloadOptions{})
+		if !errors.Is(err, ErrShortStream) {
+			t.Fatalf("err = %v, want ErrShortStream", err)
+		}
+		ents, derr := os.ReadDir(filepath.Dir(dst))
+		if derr != nil {
+			t.Fatal(derr)
+		}
+		if len(ents) != 0 {
+			t.Fatalf("staging leftovers after a failed download: %v", ents)
+		}
+	})
+	t.Run("honest object lands whole", func(t *testing.T) {
+		dst := filepath.Join(t.TempDir(), "out.bin")
+		if err := DownloadFile(context.Background(), newClient(serve(6, 6)), "b", "k", dst, DownloadOptions{}); err != nil {
+			t.Fatalf("honest download failed: %v", err)
+		}
+		if got, err := os.ReadFile(dst); err != nil || len(got) != 6 {
+			t.Fatalf("file = %d bytes (%v), want 6", len(got), err)
+		}
+	})
 }

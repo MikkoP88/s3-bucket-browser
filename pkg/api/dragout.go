@@ -12,8 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // Drag-out streaming: rows dragged from the grid to the OS are fetched by
@@ -130,7 +132,11 @@ func startDragServer(a *App) *dragServer {
 	return s
 }
 
-// streamDragItem copies one item from its source into w.
+// streamDragItem copies one item from its source into w. Both legs wrap
+// the body in the integrity reader: a source that ends short of the size
+// its own wire promised aborts the response mid-body (the browser then
+// fails the drop) instead of delivering a truncated file as though it
+// were whole — the drag-out share of the silent-corruption cure.
 func (a *App) streamDragItem(w io.Writer, it DragItem) error {
 	if it.Bucket != "" { // S3 object
 		c, err := a.s3ClientFor(it.Source)
@@ -141,12 +147,13 @@ func (a *App) streamDragItem(w io.Writer, it DragItem) error {
 		defer cancel()
 		out, err := c.S3.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(it.Bucket), Key: aws.String(it.Key),
+			ChecksumMode: s3types.ChecksumModeEnabled,
 		})
 		if err != nil {
 			return err
 		}
 		defer out.Body.Close()
-		_, err = io.Copy(w, out.Body)
+		_, err = io.Copy(w, transfer.VerifiedStream(out.Body, aws.ToInt64(out.ContentLength)))
 		return err
 	}
 	src, fs, err := a.remoteSource(it.Source)
@@ -161,11 +168,14 @@ func (a *App) streamDragItem(w io.Writer, it DragItem) error {
 	// stay cancellable when the app shuts down.
 	ctx, cancel := context.WithTimeout(a.ctx, 30*time.Minute)
 	defer cancel()
-	rc, _, err := fs.Open(ctx, it.Key)
+	rc, sz, err := fs.Open(ctx, it.Key)
 	if err != nil {
 		return err
 	}
 	defer rc.Close()
+	if sz > 0 { // FTP/WebDAV report 0 for unknown — those stream as before
+		rc = transfer.VerifiedStream(rc, sz)
+	}
 	_, err = io.Copy(w, rc)
 	return err
 }
