@@ -792,9 +792,9 @@ func copyFilesToLocal(ctx context.Context, files []copyFile, isDir bool, dst str
 	for _, f := range files {
 		local := dst
 		if isDir || len(files) > 1 {
-			local = filepath.Join(dst, filepath.FromSlash(f.rel))
+			local = transfer.SafeLocalJoin(dst, f.rel)
 		} else if isDirPath(dst) || strings.HasSuffix(dst, "/") || strings.HasSuffix(dst, string(os.PathSeparator)) {
-			local = filepath.Join(dst, path.Base(f.rel))
+			local = transfer.SafeLocalJoin(dst, path.Base(f.rel))
 		}
 		if opts.DryRun {
 			rprintf("copy -> %s (%s)\n", local, humanSize(f.size))

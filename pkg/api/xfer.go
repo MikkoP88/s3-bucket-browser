@@ -318,7 +318,7 @@ func xferDstJoin(dst xferDestSide, base, rel string) string {
 	case "remote":
 		return "/" + path.Join(strings.TrimPrefix(dst.dir, "/"), base, rel)
 	default:
-		return filepath.Join(dst.dir, base, filepath.FromSlash(rel))
+		return transfer.SafeLocalJoin(dst.dir, base, rel)
 	}
 }
 

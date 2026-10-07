@@ -309,7 +309,7 @@ func downloadPath(ctx context.Context, c *s3client.Client, src, dst string, opts
 				return nil // folder markers
 			}
 			rel := strings.TrimPrefix(key, prefix)
-			ok, err := downloadOne(key, filepath.Join(dst, filepath.FromSlash(rel)))
+			ok, err := downloadOne(key, transfer.SafeLocalJoin(dst, rel))
 			if err != nil {
 				return err
 			}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -462,5 +463,46 @@ func TestWatcherEndsSessionWhenStagedFileRemoved(t *testing.T) {
 			t.Fatalf("zombie session survived its staged file's removal: %+v", a.EditingFiles())
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// A traversal-shaped key (legal in S3, hostile from a bad endpoint)
+// downloads INSIDE the edit workspace — the pull must never resolve
+// ".." out of it.
+func TestEditObjectContainsTraversalKeys(t *testing.T) {
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("docs")
+	const key = "../../escape.txt"
+	f.seed("docs", key, "payload")
+	url := f.serve(t)
+	if err := a.SaveSource(fakeS3Source("editesc", url)); err != nil {
+		t.Fatal(err)
+	}
+	oldOpen := openInEditor
+	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
+	defer func() { openInEditor = oldOpen }()
+
+	info, err := a.EditObject("docs", key, false)
+	if err == nil || !strings.Contains(err.Error(), "could not open editor") {
+		t.Fatalf("EditObject err = %v, want the could-not-open-editor error", err)
+	}
+	base := editDir("docs")
+	rel, rerr := filepath.Rel(base, info.Local)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		t.Fatalf("staged path %s (rel %q) escaped the edit workspace %s", info.Local, rel, base)
+	}
+	b, rerr := os.ReadFile(info.Local)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(b) != "payload" {
+		t.Fatalf("staged content = %q, want the object bytes", b)
+	}
+	if err := a.StopEdit("docs", key, false); err != nil {
+		t.Fatal(err)
 	}
 }

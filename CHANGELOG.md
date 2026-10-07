@@ -206,6 +206,26 @@ follow [Semantic Versioning](https://semver.org/).
   failure — an editor’s atomic save (write temp, rename over) can
   briefly hide the file — no longer kills the watcher: auto-upload
   silently stopping forever was the cost; the next poll retries.
+
+- **Server-supplied paths can no longer write outside their
+  destination** — every join of a listing-derived name onto a local
+  directory (the GUI’s downloads, cross-engine transfers with a local
+  side, the editor’s staged pull and its per-bucket workspace, the
+  CLI’s NAME:// and recursive copies) used raw filepath.Join, which
+  resolves “..” lexically: a hostile endpoint — or a merely exotic
+  object key, S3 legally allows “..”, backslashes and names Windows
+  reserves — turned a download into an arbitrary-path write, and a
+  key literally named NUL silently discarded its bytes. All of those
+  joins now ride SafeLocalJoin (pkg/core/transfer, one policy shared
+  by both faces): traversal is neutralized in place — the object
+  still downloads, under a contained name, instead of being refused
+  — drive and UNC shapes and Windows-invalid characters become
+  literal contained segments, reserved device names are pushed past
+  their device meaning, and both slash kinds count as separators.
+  Ordinary names map to themselves byte for byte (the identity every
+  existing transfer rides on), pinned by a table test that also
+  walks a hostile corpus, and an editor integration test downloads a
+  traversal-shaped key strictly inside the workspace.
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed

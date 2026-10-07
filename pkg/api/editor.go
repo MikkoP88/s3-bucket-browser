@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -49,8 +47,10 @@ type EditInfo struct {
 
 // editDir is the temp workspace for edited objects: the config dir
 // (0700, secure.go) under secure storage, else the system temp dir.
+// The bucket names the subdirectory — server-supplied, so it rides the
+// containment join like every other listing-derived path segment.
 func editDir(bucket string) string {
-	return filepath.Join(workspaceBase("edit"), bucket)
+	return transfer.SafeLocalJoin(workspaceBase("edit"), bucket)
 }
 
 // watcherPoll is the file-watch interval; a change is uploaded after it
@@ -137,7 +137,7 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil { // owner-only even on shared /tmp
 		return EditInfo{}, err
 	}
-	local := filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(key, "/")))
+	local := transfer.SafeLocalJoin(dir, key)
 	if st, err := os.Stat(local); err == nil && st.IsDir() {
 		return EditInfo{}, fmt.Errorf("%s is a folder", key)
 	}

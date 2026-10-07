@@ -908,7 +908,7 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 		if rel == "" {
 			rel = strings.TrimPrefix(it.Key, "/")
 		}
-		local := filepath.Join(destDir, filepath.FromSlash(rel))
+		local := transfer.SafeLocalJoin(destDir, rel)
 		pol := filePolicy(decisions, local, policy)
 		switch pol {
 		case PolicySkip:
