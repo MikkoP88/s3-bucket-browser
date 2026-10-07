@@ -2,12 +2,18 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
+	awshttp "github.com/aws/smithy-go/transport/http"
 )
 
 // EventEditorSaved fires when an edited file was uploaded back (payload:
@@ -20,6 +26,31 @@ const EventEditorSaved = "editor:saved"
 // until a push lands.
 const EventEditorPushFailed = "editor:push-failed"
 
+// EventEditorConflict fires when an edit push was refused because the
+// object changed on the server since the session pulled it — the
+// lost-update guard speaking (payload: {bucket, key}; once per stale
+// transition). The session stays dirty until the user decides: push
+// anyway, reload from the server, or stop and discard.
+const EventEditorConflict = "editor:conflict"
+
+// errEditConflict names the editor's lost-update refusal: the push met a
+// remote object that is no longer the version this session pulled.
+var errEditConflict = errors.New("the object changed on the server since editing began")
+
+// isPreconditionFailed reports whether err is the S3 conditional-write
+// refusal: an API error carrying the PreconditionFailed code AWS and
+// well-behaved S3-compatible servers answer with (this SDK vintage ships
+// no typed error for it — the wire code is the identity), or a bare 412
+// from a server that skips the XML body.
+func isPreconditionFailed(err error) bool {
+	var api smithy.APIError
+	if errors.As(err, &api) && api.ErrorCode() == "PreconditionFailed" {
+		return true
+	}
+	var re *awshttp.ResponseError
+	return errors.As(err, &re) && re.HTTPStatusCode() == http.StatusPreconditionFailed
+}
+
 // editSession tracks one file opened in an external editor.
 type editSession struct {
 	Bucket   string
@@ -30,7 +61,9 @@ type editSession struct {
 	origMod  int64
 	lastSize int64
 	lastMod  int64
+	etag     string    // the remote identity at pull — the push guard's baseline
 	dirty    bool      // changed since last upload
+	stale    bool      // the guard refused a push: the remote changed underneath
 	fails    int       // consecutive push failures (drives the backoff)
 	nextTry  time.Time // earliest retry after a failure
 	done     bool
@@ -43,6 +76,7 @@ type EditInfo struct {
 	Local      string `json:"local"`
 	Dirty      bool   `json:"dirty"`
 	PushFailed bool   `json:"pushFailed"` // last push failed; retrying with backoff
+	Stale      bool   `json:"stale"`      // the object changed on the server; waiting for a decision
 }
 
 // editDir is the temp workspace for edited objects: the config dir
@@ -182,11 +216,25 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 	if err != nil {
 		return EditInfo{}, err
 	}
+	// The push guard's baseline: the remote identity this session pulled,
+	// verbatim in the wire's own grammar (ETags travel quoted — "abc" — on
+	// the wire and inside If-Match; storing and sending the same shape
+	// keeps the comparison honest against every S3-compatible server). A
+	// head that fails — or serves no ETag — degrades honestly: no
+	// identity, no guard, exactly the pre-guard behavior. Never a false
+	// alarm over an identity the wire never gave.
+	etag := ""
+	if ho, herr := c.S3.HeadObject(task.ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(key),
+	}); herr == nil && ho.ETag != nil {
+		etag = *ho.ETag
+	}
 
 	s := &editSession{
 		Bucket: bucket, Key: key, Local: local,
 		origSize: st.Size(), origMod: st.ModTime().UnixMilli(),
 		lastSize: st.Size(), lastMod: st.ModTime().UnixMilli(),
+		etag: etag,
 	}
 	a.editorsMu.Lock()
 	if prev := a.editors[s.Bucket+"\x00"+s.Key]; prev != nil {
@@ -261,12 +309,12 @@ func (a *App) watchEditor(s *editSession) {
 		if stableUpload {
 			now := time.Now()
 			s.mu.Lock()
-			ready := s.fails == 0 || !now.Before(s.nextTry)
+			ready := (s.fails == 0 || !now.Before(s.nextTry)) && !s.stale
 			s.mu.Unlock()
 			if !ready {
-				continue // a failing push waits out its backoff
+				continue // a failing push waits out its backoff; a stale one waits for its user
 			}
-			if err := a.uploadEdit(s); err == nil {
+			if err := a.uploadEdit(s, false); err == nil {
 				s.mu.Lock()
 				s.dirty = false
 				s.fails = 0
@@ -274,6 +322,13 @@ func (a *App) watchEditor(s *editSession) {
 				s.mu.Unlock()
 				a.emit(EventEditorSaved, map[string]string{"bucket": s.Bucket, "key": s.Key})
 				a.emit(EventS3Changed, map[string]string{"bucket": s.Bucket})
+			} else if errors.Is(err, errEditConflict) {
+				// The guard refused: the remote is no longer the version
+				// this session pulled. Sticky — the condition cannot heal
+				// on a timer, so no backoff ladder — voiced once, and the
+				// session stays dirty until the user decides (push anyway,
+				// reload from the server, or stop and discard).
+				a.markEditStale(s, err)
 			} else {
 				// A failing push gets a voice and a gentler cadence: every
 				// attempt logs, the first of a streak toasts (the session
@@ -286,8 +341,18 @@ func (a *App) watchEditor(s *editSession) {
 	}
 }
 
-// uploadEdit pushes the current file content back to the object.
-func (a *App) uploadEdit(s *editSession) error {
+// uploadEdit pushes the current file content back to the object. The
+// push is conditional while the session knows the remote's identity (the
+// ETag it pulled): a remote change in flight fails with errEditConflict
+// instead of silently overwriting it — the lost-update cure. force is the
+// explicit informed consent the dialog's Push anyway carries, the one
+// writer allowed past the guard. A landed push rebases the guard on the
+// ETag it just wrote, so the next save guards against the new baseline.
+// One direct conditional PUT, not the multipart manager: past its part
+// size the manager rides CreateMultipartUpload, a wire that does not
+// carry the condition — the guard would silently vanish exactly on the
+// biggest files (UploadFileIfMatch owns the reasoning).
+func (a *App) uploadEdit(s *editSession, force bool) error {
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -305,10 +370,91 @@ func (a *App) uploadEdit(s *editSession) error {
 	}
 	ctx, cancel := context.WithTimeout(base, budget)
 	defer cancel()
-	// engine tuning (Settings → Transfers) applies to editor pushes too
-	partSize, conc := a.partTunables()
-	return transfer.UploadFile(ctx, c.S3, s.Local, s.Bucket, s.Key,
-		transfer.UploadOptions{PartSize: partSize, Concurrency: conc})
+	s.mu.Lock()
+	guard := s.etag
+	s.mu.Unlock()
+	if force {
+		guard = "" // the explicit informed consent writes past the guard
+	}
+	newEtag, err := transfer.UploadFileIfMatch(ctx, c.S3, s.Local, s.Bucket, s.Key, guard)
+	if err != nil {
+		if isPreconditionFailed(err) {
+			return fmt.Errorf("%w: %v", errEditConflict, err)
+		}
+		return err
+	}
+	if newEtag != "" {
+		s.mu.Lock()
+		s.etag = newEtag // verbatim, the wire's own quoted grammar
+		s.mu.Unlock()
+	}
+	return nil
+}
+
+// markEditStale flags a session whose guard refused a push — the remote
+// is no longer the version this session pulled. Sticky by design: the
+// condition cannot heal on a timer, so it never rides the backoff ladder.
+// Every refusal logs; the event fires once per transition (the escalation
+// the status pill and dialog carry from there).
+func (a *App) markEditStale(s *editSession, err error) {
+	s.mu.Lock()
+	was := s.stale
+	s.stale = true
+	s.mu.Unlock()
+	a.emitLog(LogError, "edit", fmt.Sprintf(
+		"push of %s/%s refused: %v (edits stay pending — push anyway or reload)",
+		s.Bucket, s.Key, err))
+	if !was {
+		a.emit(EventEditorConflict, map[string]string{"bucket": s.Bucket, "key": s.Key})
+	}
+}
+
+// PushEdit pushes a session's pending edits now — the stale session's way
+// out. force=true writes over the remotely changed object (the dialog's
+// Push anyway — the informed consent); force=false retries the guard, for
+// after the remote side was put back. A clean session has nothing
+// pending and costs no upload (the same economy as StopEdit). The
+// session survives every outcome: a landed push settles the dirty state
+// and rebases the guard on what it wrote, a conflict re-marks it stale,
+// an ordinary failure enters the same backoff voice the watcher rides.
+func (a *App) PushEdit(bucket, key string, force bool) error {
+	a.editorsMu.Lock()
+	s := a.editors[bucket+"\x00"+key]
+	a.editorsMu.Unlock()
+	if s == nil {
+		return fmt.Errorf("not being edited: %s", key)
+	}
+	// Like StopEdit's explicit save: the watcher only notices changes on
+	// its poll — an explicit push right after an edit must not depend on
+	// that timing. What is on disk is the verdict.
+	s.mu.Lock()
+	if st, err := os.Stat(s.Local); err == nil {
+		if st.Size() != s.lastSize || st.ModTime().UnixMilli() != s.lastMod {
+			s.dirty = true
+		}
+	}
+	dirty := s.dirty
+	s.mu.Unlock()
+	if !dirty {
+		return nil
+	}
+	if err := a.uploadEdit(s, force); err != nil {
+		if errors.Is(err, errEditConflict) {
+			a.markEditStale(s, err)
+		} else {
+			a.notePushFailed(s, err)
+		}
+		return err
+	}
+	s.mu.Lock()
+	s.dirty = false
+	s.fails = 0
+	s.nextTry = time.Time{}
+	s.stale = false
+	s.mu.Unlock()
+	a.emit(EventEditorSaved, map[string]string{"bucket": s.Bucket, "key": s.Key})
+	a.emit(EventS3Changed, map[string]string{"bucket": s.Bucket})
+	return nil
 }
 
 // done signals app shutdown (nil ctx before Startup = never).
@@ -327,7 +473,7 @@ func (s *editSession) info() EditInfo {
 	defer s.mu.Unlock()
 	return EditInfo{
 		Bucket: s.Bucket, Key: s.Key, Local: s.Local,
-		Dirty: s.dirty, PushFailed: s.fails > 0,
+		Dirty: s.dirty, PushFailed: s.fails > 0, Stale: s.stale,
 	}
 }
 
@@ -373,8 +519,16 @@ func (a *App) StopEdit(bucket, key string, upload bool) error {
 	dirty := s.dirty
 	s.mu.Unlock()
 	if upload && dirty {
-		if err := a.uploadEdit(s); err != nil {
-			a.notePushFailed(s, err)
+		// The explicit save keeps the guard — never a side-door clobber
+		// past the very condition the auto-push refuses. On a stale
+		// session the push fails with the conflict and the session
+		// survives (the dialog's Push anyway is the informed consent).
+		if err := a.uploadEdit(s, false); err != nil {
+			if errors.Is(err, errEditConflict) {
+				a.markEditStale(s, err)
+			} else {
+				a.notePushFailed(s, err)
+			}
 			return err
 		}
 		a.emit(EventS3Changed, map[string]string{"bucket": bucket})

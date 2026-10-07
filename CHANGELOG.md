@@ -8,6 +8,24 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The editor's lost-update guard — pushes are conditional** — a file
+  open for edit now records the object's ETag when it is pulled, and
+  every push that follows — the auto-save and *Stop & upload* — rides
+  `If-Match`: if the object changed on the server while you edited (a
+  teammate, another tool), the push refuses with *Precondition failed*
+  instead of silently overwriting the newer version. The session turns
+  sticky-stale (⟳ *changed on server* — the condition cannot heal on a
+  timer, so the watcher stops pushing until you decide), the editor
+  pill escalates like a failing push, and the editor manager offers
+  the two ways out: *Push anyway* (the informed consent that writes
+  past the guard and rebases the session on the new version, so the
+  next save guards against the fresh baseline) or *Reload from server*
+  (asks first — it discards the edits pending on this machine — then
+  pulls fresh). A server whose HEAD cannot be read degrades honestly
+  to today's unconditional push, and the push body rides a seekable
+  length-pinned section reader so the SDK's header checksum and the
+  transport's own length accounting keep torn staged writes from
+  landing short. Localized in all fifteen languages.
 - **Show destination — one click from a transfer row to where the
   bytes land** — every job now carries its destination typed (the
   bucket and prefix it uploaded into, the remote directory it copied

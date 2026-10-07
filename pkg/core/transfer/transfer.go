@@ -190,6 +190,48 @@ func UploadFile(ctx context.Context, client *s3.Client, localPath, bucket, key s
 	return err
 }
 
+// UploadFileIfMatch uploads one local file with a conditional guard: the
+// PUT carries If-Match, so it lands only while the object still is the
+// version the ETag named — a remote change in flight fails the push with
+// the server's PreconditionFailed instead of silently overwriting it (the
+// lost-update cure). The single direct PUT, not the multipart manager, is
+// deliberate: the manager swaps PutObject for CreateMultipartUpload past
+// its part size, and that wire does not carry the condition — riding it
+// would let the guard silently vanish exactly on the biggest files. The
+// body is the file pinned to its open-time stat as a seekable section:
+// seekability is what lets the SDK compute its header checksum over plain
+// HTTP, and the section's fixed length carries the whole-file contract —
+// a staged file rewritten shorter fails the request at the transport's
+// own length accounting (never lands short), one grown past the stat
+// delivers exactly the planned prefix. An empty ifMatch writes
+// unconditionally — today's shape. Returns the response ETag so the
+// caller can rebase its guard without a second round-trip.
+func UploadFileIfMatch(ctx context.Context, client *s3.Client, localPath, bucket, key, ifMatch string) (string, error) {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	input := &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   io.NewSectionReader(f, 0, st.Size()),
+	}
+	if ifMatch != "" {
+		input.IfMatch = aws.String(ifMatch)
+	}
+	out, err := client.PutObject(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	return aws.ToString(out.ETag), nil
+}
+
 // UploadReader uploads size bytes from r to bucket/key — the streaming
 // counterpart of UploadFile, used by cross-source transfers where the
 // body is an open remote/S3 stream rather than a local file.

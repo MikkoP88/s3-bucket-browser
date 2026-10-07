@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,12 +37,22 @@ type fakeS3 struct {
 	mu              sync.Mutex
 	url             string
 	objects         map[string]map[string]string // bucket → key → content
+	etags           map[string]map[string]string // bucket → key → etag (content-derived)
 	deleted         []string
 	sawChecksumMode bool // some GET asked for response checksums
 	// faults injects transient failures: "PUT bucket/key" / "GET bucket/key"
 	// → how many requests to fail with a 500 before serving honestly
 	// again (the retry rigs' lever).
 	faults map[string]int
+}
+
+// etagOf mints the store's content-addressed identity: same bytes, same
+// etag — the grammar S3's MD5 etags follow, so a re-seeded overwrite is a
+// new identity exactly the way a teammate's PUT would be.
+func etagOf(content string) string {
+	h := fnv.New32a()
+	io.WriteString(h, content)
+	return fmt.Sprintf("\"%08x\"", h.Sum32())
 }
 
 // fault fails the next n requests for one verb+key, then heals.
@@ -78,7 +89,19 @@ func newFakeS3(buckets ...string) *fakeS3 {
 func (f *fakeS3) seed(bucket, key, content string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.setLocked(bucket, key, content)
+}
+
+// setLocked writes content and its derived identity. Callers hold mu.
+func (f *fakeS3) setLocked(bucket, key, content string) {
+	if f.etags == nil {
+		f.etags = map[string]map[string]string{}
+	}
+	if f.etags[bucket] == nil {
+		f.etags[bucket] = map[string]string{}
+	}
 	f.objects[bucket][key] = content
+	f.etags[bucket][key] = etagOf(content)
 }
 
 // keys returns the live (non-deleted) keys of one bucket, sorted.
@@ -185,8 +208,8 @@ func (f *fakeS3) list(w http.ResponseWriter, bucket, prefix string) {
 	fmt.Fprintf(&b, "<KeyCount>%d</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>", len(keys))
 	for _, k := range keys {
 		fmt.Fprintf(&b,
-			"<Contents><Key>%s</Key><LastModified>2026-01-01T00:00:00.000Z</LastModified><ETag>&quot;e&quot;</ETag><Size>%d</Size><StorageClass>STANDARD</StorageClass></Contents>",
-			k, len(f.objects[bucket][k]))
+			"<Contents><Key>%s</Key><LastModified>2026-01-01T00:00:00.000Z</LastModified><ETag>%s</ETag><Size>%d</Size><StorageClass>STANDARD</StorageClass></Contents>",
+			k, xmlEscape(f.etags[bucket][k]), len(f.objects[bucket][k]))
 	}
 	b.WriteString("</ListBucketResult>")
 	w.Header().Set("Content-Type", "application/xml")
@@ -219,12 +242,14 @@ func (f *fakeS3) listBuckets(w http.ResponseWriter) {
 func (f *fakeS3) getObject(w http.ResponseWriter, bucket, key string) {
 	f.mu.Lock()
 	content, ok := f.objects[bucket][key]
+	etag := f.etags[bucket][key]
 	f.mu.Unlock()
 	if !ok {
 		http.Error(w, "fakeS3: no such key", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("ETag", etag)
 	io.WriteString(w, content)
 }
 
@@ -233,24 +258,52 @@ func (f *fakeS3) getObject(w http.ResponseWriter, bucket, key string) {
 func (f *fakeS3) headObject(w http.ResponseWriter, bucket, key string) {
 	f.mu.Lock()
 	content, ok := f.objects[bucket][key]
+	etag := f.etags[bucket][key]
 	f.mu.Unlock()
 	if !ok {
 		http.Error(w, "fakeS3: no such key", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("ETag", etag)
 	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 }
 
+// xmlEscape hides an etag's quotes from the XML bodies (an etag without
+// quotes stays bare — the honest shape of an unknown identity).
+func xmlEscape(s string) string {
+	var b strings.Builder
+	xml.EscapeText(&b, []byte(s))
+	return b.String()
+}
+
 func (f *fakeS3) putObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	// The conditional-write grammar: If-Match lands only while the stored
+	// identity still is the one the writer named — the editor guard's
+	// verdict wire. Mismatch (or naming a missing key) answers the S3
+	// PreconditionFailed shape the SDK deserializes and the guard classifies.
+	if m := r.Header.Get("If-Match"); m != "" {
+		f.mu.Lock()
+		cur, ok := f.etags[bucket][key]
+		f.mu.Unlock()
+		if !ok || (m != "*" && cur != m) {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			io.WriteString(w, xml.Header+
+				`<Error><Code>PreconditionFailed</Code><Message>The condition specified in the If-Match header was not met</Message></Error>`)
+			return
+		}
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	f.mu.Lock()
-	f.objects[bucket][key] = string(body)
+	f.setLocked(bucket, key, string(body))
+	etag := f.etags[bucket][key]
 	f.mu.Unlock()
+	w.Header().Set("ETag", etag)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -268,9 +321,9 @@ func (f *fakeS3) copyObject(w http.ResponseWriter, r *http.Request, dstBucket, d
 		http.Error(w, "fakeS3: no such key", http.StatusNotFound)
 		return
 	}
-	f.objects[dstBucket][dstKey] = content
+	f.setLocked(dstBucket, dstKey, content)
 	w.Header().Set("Content-Type", "application/xml")
-	fmt.Fprintf(w, xml.Header+`<CopyObjectResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ETag>&quot;e&quot;</ETag><LastModified>2026-01-01T00:00:00.000Z</LastModified></CopyObjectResult>`)
+	io.WriteString(w, xml.Header+`<CopyObjectResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><ETag>`+xmlEscape(f.etags[dstBucket][dstKey])+`</ETag><LastModified>2026-01-01T00:00:00.000Z</LastModified></CopyObjectResult>`)
 }
 
 func (f *fakeS3) deleteObjects(w http.ResponseWriter, r *http.Request, bucket string) {
@@ -293,6 +346,7 @@ func (f *fakeS3) deleteObjects(w http.ResponseWriter, r *http.Request, bucket st
 	b.WriteString(xml.Header + `<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`)
 	for _, o := range req.Object {
 		delete(f.objects[bucket], o.Key)
+		delete(f.etags[bucket], o.Key)
 		f.deleted = append(f.deleted, o.Key)
 		fmt.Fprintf(&b, "<Deleted><Key>%s</Key></Deleted>", o.Key)
 	}

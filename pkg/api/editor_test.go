@@ -202,7 +202,7 @@ func TestUploadEditDeadlineBreaksSilentWedge(t *testing.T) {
 	}
 
 	start := time.Now()
-	if err := a.uploadEdit(s); !errors.Is(err, context.DeadlineExceeded) {
+	if err := a.uploadEdit(s, false); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("uploadEdit under a wedged peer = %v, want the push budget's deadline", err)
 	}
 	el := time.Since(start)

@@ -424,6 +424,14 @@ directory compare) with S3 and the secondary pane.
 
 ![Search](screenshots/search.png)
 
+- **Edit in place** — right-click a file → *Edit* opens it in the
+  app you pick (the OS "Open with" chooser) or the system default;
+  every save uploads automatically, and on versioned buckets each
+  save becomes a new version, so nothing is ever lost. Uploads are
+  conditional: if the object changed on the server while you edited,
+  the push refuses instead of overwriting it — the row turns ⟳
+  *changed on server*, and you decide: *Push anyway*, *Reload from
+  server* (discarding your pending edits), or stop and discard.
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
   *New file…* in the context menu opens a small dialog for a file name
   and type (a dozen common extensions, or none). The empty object is

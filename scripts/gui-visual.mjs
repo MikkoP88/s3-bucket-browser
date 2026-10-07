@@ -1442,6 +1442,23 @@ function shim() {
       world.editing = (world.editing || []).filter((e) => !(e.bucket === bucket && e.key === key));
       return {};
     },
+    // PushEdit is the stale session's way out, mirroring the backend: force
+    // (the dialog's Push anyway — the informed consent) writes past the
+    // guard the auto-push refused and settles the row (stale, dirty and
+    // pushFailed all clear); a guarded retry against a still-changed remote
+    // re-refuses with the conflict verdict
+    PushEdit: async (bucket, key, force) => {
+      const row = (world.editing || []).find((e) => e.bucket === bucket && e.key === key);
+      if (!row) throw new Error('not being edited: ' + key);
+      if (force) {
+        row.dirty = false;
+        row.pushFailed = false;
+        row.stale = false;
+      } else if (row.stale) {
+        throw new Error('the object changed on the server since editing began');
+      }
+      return {};
+    },
     // ---- OS interop ----
     PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
     // local delete (side pane): count-then-act preview + permanent remove
@@ -10042,6 +10059,97 @@ await step('editors-manager', async () => {
   await closeModal();
   await ok('the pill clears with the last session', waitFor(async () => evalPage(() =>
     document.getElementById('status-editing').classList.contains('hidden')), 4000, 'cleared pill'));
+  // the lost-update guard: a remote change under a pending edit refuses
+  // the push, the row turns changed-on-server with its two ways out, and
+  // the pill escalates like a failing push (those edits are not reaching
+  // the bucket either)
+  await evalPage(() => {
+    window.__shim.world.editing = [{ bucket: 'team-files', key: 'docs/notes.md', dirty: true, stale: true }];
+    window.dispatchEvent(new Event('focus'));
+  });
+  await ok('a stale session escalates the editor pill', waitFor(async () => evalPage(() =>
+    document.getElementById('status-editing').classList.contains('failing')
+    && document.getElementById('status-editing').textContent.includes('\u26A0')), 4000, 'stale pill'));
+  await evalPage(() => {
+    document.getElementById('toasts').replaceChildren();
+    window.__shim.emit('editor:conflict', { bucket: 'team-files', key: 'docs/notes.md' });
+  });
+  await ok('the conflict toasts', waitFor(async () =>
+    (await txt('#toasts')).includes('changed on the server'), 4000, 'conflict toast'));
+  await page.click('#status-editing');
+  await waitFor(modalVisible, 4000, 'editing modal (stale)');
+  await ok('the stale row flags the conflict and offers both ways out', waitFor(async () => {
+    const mt = await evalPage(() => document.getElementById('modal-root').textContent);
+    return mt.includes('changed on server') && mt.includes('Push anyway') && mt.includes('Reload from server');
+  }, 4000, 'stale row'));
+  // Push anyway: the informed consent — a forced PushEdit that settles
+  // the row (the ⟳ flag leaves with the stale state)
+  await resetCalls();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /push anyway/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('push anyway sends the forced PushEdit', waitFor(async () => {
+    const c = await findCall('PushEdit');
+    return !!c && c.args[0] === 'team-files' && c.args[1] === 'docs/notes.md' && c.args[2] === true;
+  }, 4000, 'forced PushEdit'));
+  await ok('the consent settles the row', waitFor(async () => evalPage(() =>
+    !document.getElementById('modal-root').textContent.includes('\u21BB')), 4000, 'settled row'));
+  // Reload from server: the confirm guards the discard, then the honest
+  // fresh-pull composition — StopEdit without upload, EditObject again.
+  // The dialog draws on open and on its own actions, never on a bare world
+  // mutation, so the re-staged session needs a reopen to show its row
+  await closeModal();
+  await evalPage(() => {
+    window.__shim.world.editing = [{ bucket: 'team-files', key: 'docs/notes.md', dirty: true, stale: true }];
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.click('#status-editing');
+  await waitFor(modalVisible, 4000, 'editing modal (stale again)');
+  await waitFor(async () => evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('changed on server')), 4000, 'stale row again');
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /reload from server/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await waitFor(modalVisible, 4000, 'reload confirm');
+  await ok('the reload confirm warns about discarding', waitFor(async () =>
+    (await evalPage(() => document.getElementById('modal-root').textContent)).includes('discards'), 4000, 'reload body'));
+  // declining keeps the session exactly as it was — parked parent back,
+  // stale flag intact
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => x.textContent === 'Cancel');
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('declining keeps the stale row', waitFor(async () => {
+    const mt = await evalPage(() => document.getElementById('modal-root').textContent);
+    return mt.includes('changed on server') && !mt.includes('Reloading discards');
+  }, 4000, 'kept stale row'));
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /reload from server/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await waitFor(modalVisible, 4000, 'reload confirm (2)');
+  await resetCalls();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => x.textContent === 'Reload');
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('accepting reloads through StopEdit + EditObject', waitFor(async () => {
+    const stop = await findCall('StopEdit');
+    const edit = await findCall('EditObject');
+    return !!stop && stop.args[2] === false
+      && !!edit && edit.args[0] === 'team-files' && edit.args[1] === 'docs/notes.md';
+  }, 4000, 'reload composition'));
+  await closeModal();
   await evalPage(() => {
     window.__shim.world.editing = null;
     window.dispatchEvent(new Event('focus'));

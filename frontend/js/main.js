@@ -3071,9 +3071,12 @@ function updateEditingStatus() {
     sp.classList.toggle('hidden', !files.length);
     // a failing push escalates the pill: the warn color is the resting
     // state, danger plus the warning glyph say the edits are NOT
-    // reaching the bucket (they stay pending until a push lands)
-    const failing = files.some((f) => f.pushFailed);
-    sp.textContent = `\u270E ${files.length} in editor` + (failing ? ' \u26A0' : '');
+    // reaching the bucket (they stay pending until a push lands). A
+    // stale session escalates the same way — its pushes are refused
+    // until the conflict is decided, so those edits are not reaching
+    // the bucket either
+    const failing = files.some((f) => f.pushFailed || f.stale);
+    sp.textContent = '\u270E ' + t('edit.pill', { n: files.length }) + (failing ? ' \u26A0' : '');
     sp.classList.toggle('failing', failing);
   }).catch(() => {});
 }
@@ -5135,13 +5138,24 @@ function wireEvents() {
     }
   });
   onEvent('editor:saved', (d) => {
-    toast(`Uploaded ${d?.key ? basename(d.key) : 'edited file'}`, 'ok');
+    toast(t('edit.uploadedToast', { file: d?.key ? basename(d.key) : 'edited file' }), 'ok');
     updateEditingStatus();
   });
   // the backend fires this once per failing streak (retries back off);
   // the session stays visibly dirty until a push lands
   onEvent('editor:push-failed', (d) => {
-    toast(`Upload of ${d?.key ? basename(d.key) : 'edited file'} failed: ${d?.error || 'unknown error'}`, 'error');
+    toast(t('edit.pushFailedToast', {
+      file: d?.key ? basename(d.key) : 'edited file',
+      e: d?.error || 'unknown error',
+    }), 'error');
+    updateEditingStatus();
+  });
+  // the lost-update guard spoke: the object changed on the server since
+  // the session pulled it, the auto-push refused, and the session waits
+  // for a decision — push anyway or reload from server, in the editor
+  // manager dialog
+  onEvent('editor:conflict', (d) => {
+    toast(t('edit.conflictToast', { file: d?.key ? basename(d.key) : 'edited file' }), 'error');
     updateEditingStatus();
   });
   onEvent('log:line', (l) => logArea.append(l));

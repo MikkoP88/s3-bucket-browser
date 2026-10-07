@@ -2561,7 +2561,7 @@ const GUIDE_SECTIONS = [
     ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and the line turns editable holding the typed source address (s3://Name/contents — the scheme is the source type, visible only while editing; the workstation side stays a bare native path). Paste any address to jump straight there: that typed form, a plain Name/contents source path, an s3:// URI, a connection URL (sftp://user:pass@host:21/root — an unconfigured one is saved as a new source), a local folder (C:\Projects, \\server\share, ~) or a file:/// URL. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here. The Home button on each pane toolbar jumps to its side home: the main pane returns to the open data source start view, the secondary pane lands on the workstation home folder.'],
     ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size. Clicking any app window — main or popout — brings the whole group forward above other applications, with the clicked window on top.'],
-    ['Edit files in place', 'Right-click a file → Edit opens it in the app you pick (the OS "Open with" chooser) or the system default; every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost.'],
+    ['Edit files in place', 'Right-click a file → Edit opens it in the app you pick (the OS "Open with" chooser) or the system default; every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost. Uploads are conditional: if the object changed on the server while you edited, the push refuses instead of overwriting it — the row turns \u21BB changed on server, and you decide: Push anyway, Reload from server (discarding your pending edits), or stop and discard.'],
     ['New file', 'Shift+F4, the 📄+ toolbar button, or New file… in the context menu creates an empty object with the name and type you pick (the WinSCP flow), then opens it in your editor. Cancelling the app picker — or having no app at all — still leaves the created empty file behind.'],
   ]],
   ['File transfers', [
@@ -3797,10 +3797,19 @@ export function adminDialog(bucket, onChanged) {
 }
 
 // ---------- files open in external editor ----------
+// The manager for external-editor sessions: one row per open file with its
+// state — dirty (\u270E), a failing push (\u26A0 upload failed, retrying
+// with backoff) and the conflict flag (\u21BB changed on server) — and
+// the ways out. A stale row is the lost-update guard speaking: the object
+// changed on the server since this session pulled it, so pushes refuse
+// until the user decides. Push anyway is the informed consent that writes
+// over the changed remote; Reload from server discards the pending edits
+// and pulls fresh (it asks first — it throws away work); Stop & upload
+// stays guarded, so a stale save refuses and the session survives.
 export function editingDialog(onChanged) {
   const list = el('div', {});
   openModal({
-    title: 'Files open in editor',
+    title: t('edit.dlgTitle'),
     body: list,
     wide: true,
     buttons: [{ label: 'Close', onclick: (c) => { c(); onChanged?.(); } }],
@@ -3809,11 +3818,53 @@ export function editingDialog(onChanged) {
     try {
       await api.StopEdit(f.bucket, f.key, upload);
     } catch (e) {
-      toast(`Stop failed: ${e}`, 'error');
+      toast(t('edit.stopFailed', { e }), 'error');
     }
     // a failed save KEEPS the session — the watcher retries it with
     // backoff — so both paths refresh: the row regains its failing
     // flag and the status-bar pill escalates
+    onChanged?.();
+    draw();
+  };
+  // the stale session's way out, over the guard: force is the informed
+  // consent (Push anyway) writing past the condition the auto-push
+  // refused; a refusal or an endpoint failure keeps the session and
+  // voices it (the backend re-marks it stale / fails with backoff)
+  const pushAnyway = async (f) => {
+    try {
+      await api.PushEdit(f.bucket, f.key, true);
+    } catch (e) {
+      toast(t('edit.pushFailedNow', { e }), 'error');
+    }
+    onChanged?.();
+    draw();
+  };
+  // Reload from server — the honest fresh-pull composition: end the
+  // session without touching the object, then Edit it again (a new pull,
+  // a new guard baseline). It discards the edits pending on this machine,
+  // so it asks first.
+  const reload = async (f) => {
+    if (!(await confirm({
+      title: t('edit.reload'),
+      message: t('edit.reloadBody'),
+      okLabel: t('edit.reloadGo'),
+      danger: true,
+    }))) {
+      return;
+    }
+    try {
+      await api.StopEdit(f.bucket, f.key, false);
+    } catch (e) {
+      toast(t('edit.stopFailed', { e }), 'error');
+      onChanged?.();
+      draw();
+      return;
+    }
+    try {
+      await api.EditObject(f.bucket, f.key, false);
+    } catch (e) {
+      toast(t('edit.stopFailed', { e }), 'error');
+    }
     onChanged?.();
     draw();
   };
@@ -3827,12 +3878,16 @@ export function editingDialog(onChanged) {
     }
     list.replaceChildren(...(files.length ? files.map((f) => el('div', { class: 'tr-job' },
       el('div', { class: 'tr-top' },
-        el('span', { class: 'tr-name', text: `${f.bucket}/${f.key}${f.dirty ? ' \u270E' : ''}${f.pushFailed ? ' \u26A0 upload failed (retrying)' : ''}` }),
+        el('span', { class: 'tr-name', text: `${f.bucket}/${f.key}${f.dirty ? ' \u270E' : ''}${f.pushFailed ? ` \u26A0 ${t('edit.pushFailedFrag')}` : ''}${f.stale ? ` \u21BB ${t('edit.staleFrag')}` : ''}` }),
         el('span', { class: 'tr-status mono', text: f.local }),
-        el('button', { class: 'btn', text: 'Stop & upload', onclick: () => stop(f, true) }),
-        el('button', { class: 'btn', text: 'Stop & discard', onclick: () => stop(f, false) }),
+        ...(f.stale ? [
+          el('button', { class: 'btn', text: t('edit.pushAnyway'), onclick: () => pushAnyway(f) }),
+          el('button', { class: 'btn', text: t('edit.reload'), onclick: () => reload(f) }),
+        ] : []),
+        el('button', { class: 'btn', text: t('edit.stopUpload'), onclick: () => stop(f, true) }),
+        el('button', { class: 'btn', text: t('edit.stopDiscard'), onclick: () => stop(f, false) }),
       ),
-    )) : [el('div', { text: 'No files are being edited.', style: 'color:var(--text-dim)' })]));
+    )) : [el('div', { text: t('edit.empty'), style: 'color:var(--text-dim)' })]));
   }
   draw();
 }
