@@ -48,6 +48,16 @@ func editDir(bucket string) string {
 // stays stable for two consecutive polls (editor save jitters).
 const watcherPoll = 1200 * time.Millisecond
 
+// openInEditor launches the OS editor for the staged file (or, chooseApp,
+// the OS "Open with…" picker). A var so tests can pin the pull's task
+// lifecycle without spawning real editors on the test machine.
+var openInEditor = func(a *App, path string, chooseApp bool) error {
+	if chooseApp {
+		return a.OpenLocalWith(path)
+	}
+	return a.OpenLocal(path)
+}
+
 // EditObject downloads bucket/key into a temp workspace, opens it with
 // the OS default editor (or, chooseApp=true, the OS "Open with…" picker
 // so the user selects the editing application per file) and keeps
@@ -69,10 +79,23 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 
 	// engine tuning (Settings → Transfers) applies to editor pulls too
 	partSize, conc := a.partTunables()
-	if err := transfer.DownloadFile(context.Background(), c.S3, bucket, key, local,
+	// The pull rides the task registry (kind "edit"): a transient row —
+	// visible with a Cancel in the Running tasks window while it runs,
+	// gone when it lands, the status-bar editor indicator being the
+	// session's lasting surface. Before this the pull was an invisible,
+	// uncancellable bound call: a multi-gigabyte object just spun, and
+	// the exit gate's task check now covers a quit mid-pull too.
+	task := a.tasks.add("edit", fmt.Sprintf("s3://%s/%s", bucket, key))
+	task.setTotal(1, "")
+	// Idempotent backstop: no-op when the explicit finishes below already
+	// ran — and it still settles the row if a panic unwinds through here.
+	defer task.finish(nil, true)
+	if err := transfer.DownloadFile(task.ctx, c.S3, bucket, key, local,
 		transfer.DownloadOptions{PartSize: partSize, Concurrency: conc}); err != nil {
+		task.finish(err, true)
 		return EditInfo{}, err
 	}
+	task.progress(1)
 	_ = os.Chmod(local, 0o600) // object contents: owner-only in every mode
 	st, err := os.Stat(local)
 	if err != nil {
@@ -88,11 +111,7 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 	a.editors[s.Bucket+"\x00"+s.Key] = s
 	a.editorsMu.Unlock()
 
-	open := a.OpenLocal
-	if chooseApp {
-		open = a.OpenLocalWith // OS "Open with…" picker
-	}
-	if err := open(local); err != nil {
+	if err := openInEditor(a, local, chooseApp); err != nil {
 		return s.info(), fmt.Errorf("downloaded but could not open editor: %w", err)
 	}
 	go a.watchEditor(s)
@@ -152,9 +171,16 @@ func (a *App) uploadEdit(s *editSession) error {
 	if err != nil {
 		return err
 	}
+	// Shutdown stops an in-flight push through the app context; the exit
+	// gate already refuses a quit while a session is dirty, so a push
+	// canceled here is an explicitly confirmed discard.
+	ctx := context.Background()
+	if a.ctx != nil {
+		ctx = a.ctx
+	}
 	// engine tuning (Settings → Transfers) applies to editor pushes too
 	partSize, conc := a.partTunables()
-	return transfer.UploadFile(context.Background(), c.S3, s.Local, s.Bucket, s.Key,
+	return transfer.UploadFile(ctx, c.S3, s.Local, s.Bucket, s.Key,
 		transfer.UploadOptions{PartSize: partSize, Concurrency: conc})
 }
 

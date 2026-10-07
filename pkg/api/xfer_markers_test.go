@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -82,31 +83,38 @@ func splitS3Path(p string) (bucket, key string) {
 // serve wires the endpoint and returns its URL.
 func (f *fakeS3) serve(t *testing.T) string {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		bucket, key := splitS3Path(r.URL.Path)
-		switch {
-		case r.URL.Query().Get("list-type") == "2":
-			f.list(w, bucket, r.URL.Query().Get("prefix"))
-		case r.Method == http.MethodGet && bucket == "":
-			// GET / is ListBuckets — the account-level call the split dials.
-			f.listBuckets(w)
-		case r.Method == http.MethodGet:
-			f.getObject(w, bucket, key)
-		case r.Method == http.MethodPut && r.Header.Get("x-amz-copy-source") != "":
-			f.copyObject(w, r, bucket, key)
-		case r.Method == http.MethodPut:
-			f.putObject(w, r, bucket, key)
-		case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
-			f.deleteObjects(w, r, bucket)
-		default:
-			http.Error(w, "fakeS3: unsupported "+r.Method, http.StatusBadRequest)
-		}
-	}))
+	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	f.mu.Lock()
 	f.url = srv.URL
 	f.mu.Unlock()
 	return srv.URL
+}
+
+// ServeHTTP is fakeS3's request dispatch, split out of serve so a test can
+// wrap it (hold one key's requests, inject faults) while every other call
+// answers with the ordinary fake.
+func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	bucket, key := splitS3Path(r.URL.Path)
+	switch {
+	case r.URL.Query().Get("list-type") == "2":
+		f.list(w, bucket, r.URL.Query().Get("prefix"))
+	case r.Method == http.MethodGet && bucket == "":
+		// GET / is ListBuckets — the account-level call the split dials.
+		f.listBuckets(w)
+	case r.Method == http.MethodGet:
+		f.getObject(w, bucket, key)
+	case r.Method == http.MethodHead:
+		f.headObject(w, bucket, key)
+	case r.Method == http.MethodPut && r.Header.Get("x-amz-copy-source") != "":
+		f.copyObject(w, r, bucket, key)
+	case r.Method == http.MethodPut:
+		f.putObject(w, r, bucket, key)
+	case r.Method == http.MethodPost && r.URL.Query().Has("delete"):
+		f.deleteObjects(w, r, bucket)
+	default:
+		http.Error(w, "fakeS3: unsupported "+r.Method, http.StatusBadRequest)
+	}
 }
 
 func (f *fakeS3) list(w http.ResponseWriter, bucket, prefix string) {
@@ -167,6 +175,20 @@ func (f *fakeS3) getObject(w http.ResponseWriter, bucket, key string) {
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	io.WriteString(w, content)
+}
+
+// headObject answers HeadObject (DownloadFile sizes the pull with it):
+// same lookup as getObject, headers only.
+func (f *fakeS3) headObject(w http.ResponseWriter, bucket, key string) {
+	f.mu.Lock()
+	content, ok := f.objects[bucket][key]
+	f.mu.Unlock()
+	if !ok {
+		http.Error(w, "fakeS3: no such key", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(content)))
 }
 
 func (f *fakeS3) putObject(w http.ResponseWriter, r *http.Request, bucket, key string) {

@@ -137,6 +137,22 @@ follow [Semantic Versioning](https://semver.org/).
   uploaded (e.g. notes.md)” — on both the window’s close
   button and the menu’s Exit; exiting anyway is then an explicit
   discard, exactly like Stop Edit without upload.
+
+- **The editor's pull joins the task registry** — opening a file
+  for editing downloaded it through the transfer engine on an
+  invisible, uncancellable bound call: a multi-gigabyte object just
+  spun with no row anywhere, and the only way out was waiting. The
+  pull now rides the Running tasks window as a transient “edit”
+  row — visible while it runs with its Cancel, gone when it lands
+  (the status-bar editor indicator is the session's lasting
+  surface), engine tuning applied as before, and an idempotent
+  defer settles the row even if a panic unwinds through the pull;
+  the exit gate's running-task check covers a quit mid-pull
+  automatically. The push side honors shutdown through the app
+  context — an in-flight upload is stopped by a quit the
+  dirty-session gate has already confirmed. The tasks window names
+  the verb properly (“Opening”, pencil glyph) in all 15 languages
+  instead of the raw-kind fallback.
 ## [1.2.0-beta.2] — 2026-10-06
 
 ### Changed

@@ -1955,6 +1955,7 @@ export function taskKindVerb(j) {
   if (j.kind === 'convert') return { icon: '\u21BB', label: t('tasks.verbConvert') };
   if (j.kind === 'search') return { icon: '\uD83D\uDD0D', label: t('tasks.verbSearch') };
   if (j.kind === 'list') return { icon: '\u2261', label: t('tasks.verbListing') };
+  if (j.kind === 'edit') return { icon: '\u270E', label: t('tasks.verbEdit') };
   if (j.kind === 'mkdir') return { icon: '\u2795', label: t('tasks.verbMkdir') };
   if (j.kind === 'mkfile') return { icon: '\u{1F4C4}', label: t('tasks.verbMkdir') };
   if (j.kind === 'compare') return { icon: '\u2194', label: t('tasks.verbCompare') };
