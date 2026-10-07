@@ -20,6 +20,14 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **One speed-limit shelf everywhere** — the transfer dialog's limit
+  picker and Settings → Transfers edit the same remembered value, but
+  offered two different option lists: a limit picked on one surface
+  (256 KB/s, 512 kB/s) rendered as no-limit on the other. Both now
+  share one canonical list — same steps, same localized "None" — from
+  a single definition, so what one surface sets the other always
+  shows.
+
 - **Per-item detail in File transfers** — a multi-item job’s "+N
   more" disclosure now lists every top-level item with its live
   state (waiting → transferring → done / failed / skipped), a

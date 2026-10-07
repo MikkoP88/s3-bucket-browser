@@ -2269,6 +2269,30 @@ async function folderProperties() {
   ]);
 }
 
+// removeSourceEntry builds the Remove-source menu item both tree menus
+// (plain source roots and bucket-scoped S3 sources) share: confirm,
+// remove, refresh — and the one-root rule's re-home when the source
+// owned the view.
+function removeSourceEntry(src, node) {
+  return ['Remove source\u2026', '', async () => {
+    if (await confirm({
+      title: `Remove source ${node.source}?`,
+      message: 'The connection is removed from the workspace.\nStored credentials will be deleted.',
+      danger: true, okLabel: 'Remove',
+    })) {
+      try {
+        const wasView = nav.current?.source === src.name;
+        await api.RemoveSource(src.id || src.name);
+        await refreshSources();
+        refreshPfState();
+        // one-root rule: a source that owned the view takes the view
+        // with it — re-home so the next view-source binding resolves
+        // a live source (an S3 heir keeps the engine pointer live)
+        if (wasView) reHomeView();
+      } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
+    }
+  }];
+}
 // showTreeMenu gives sidebar nodes (sources, buckets and folders)
 // context-menu parity with grid rows. node = {kind:'source',…} source root,
 // {kind:'source', bucket, …} bucket-scoped S3 source (the node IS the
@@ -2306,24 +2330,7 @@ function showTreeMenu(e, node) {
       }],
       null,
       ['Edit source\u2026', '', () => sourceEditor(src, afterSourceSaved)],
-      ['Remove source\u2026', '', async () => {
-        if (await confirm({
-          title: `Remove source ${node.source}?`,
-          message: 'The connection is removed from the workspace.\nStored credentials will be deleted.',
-          danger: true, okLabel: 'Remove',
-        })) {
-          try {
-            const wasView = nav.current?.source === src.name;
-            await api.RemoveSource(src.id || src.name);
-            await refreshSources();
-            refreshPfState();
-            // one-root rule: a source that owned the view takes the view
-            // with it — re-home so the next view-source binding resolves
-            // a live source (an S3 heir keeps the engine pointer live)
-            if (wasView) reHomeView();
-          } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
-        }
-      }],
+      removeSourceEntry(src, node),
     ]);
     return;
   }
@@ -2364,24 +2371,7 @@ function showTreeMenu(e, node) {
       }],
       null,
       ['Edit source\u2026', '', () => sourceEditor(src, afterSourceSaved)],
-      ['Remove source\u2026', '', async () => {
-        if (await confirm({
-          title: `Remove source ${node.source}?`,
-          message: 'The connection is removed from the workspace.\nStored credentials will be deleted.',
-          danger: true, okLabel: 'Remove',
-        })) {
-          try {
-            const wasView = nav.current?.source === src.name;
-            await api.RemoveSource(src.id || src.name);
-            await refreshSources();
-            refreshPfState();
-            // one-root rule: a source that owned the view takes the view
-            // with it — re-home so the next view-source binding resolves
-            // a live source (an S3 heir keeps the engine pointer live)
-            if (wasView) reHomeView();
-          } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
-        }
-      }],
+      removeSourceEntry(src, node),
     ]);
     return;
   }

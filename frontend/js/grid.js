@@ -7,6 +7,7 @@
 // that also resizes from the keyboard — and reorder by dragging the header
 // itself; order and widths persist per pane (loadColState/saveColState below).
 import { el, fmtBytes, fmtDate, fileIcon } from './util.js';
+import { resizeDrag, resizeKeys, reorderDrag } from './coldrag.js';
 import { t, has } from './i18n.js';
 
 const ROW_H = 28;
@@ -55,7 +56,6 @@ export const DEFAULT_COLS = ['name', 'type', 'size', 'lastModified'];
 
 const MIN_COL_W = 48;      // resize floor for fixed-width columns
 const RZ_HIT_W = 10;       // boundary-handle hit width (keep in step with .gh-resize)
-const DRAG_THRESHOLD = 6;  // px before a header press becomes a reorder drag
 
 // Column-layout persistence, one key per pane ('s3b-cols' remote,
 // 's3b-cols-local' side pane). The value is JSON { cols: [ordered ids],
@@ -478,66 +478,39 @@ export class Grid {
 
   // ---------- column drag: resize + reorder ----------
 
-  // startResize tracks a boundary-handle drag: the column width follows the
-  // pointer live (head + pooled rows restyle per move — a pool is ~40 rows,
-  // one inline style each), clamped to the column's own floor below and the
-  // rows pane's width above. Whatever the drag adds or removes lands in the
-  // template's trailing filler first; only past that does the grid scroll.
-  // Pointerup persists via on.colsChanged.
+  // resizeAdapter hands the shared drag/keyboard choreography (coldrag.js)
+  // this grid's width model: the dragged column's head cell, its
+  // floor/ceiling, the user-width store behind current/setWidth (head +
+  // pooled rows restyle per move — a pool is ~40 rows, one inline style
+  // each), and the on.colsChanged persist.
+  resizeAdapter(c) {
+    return {
+      cell: this.headCols[this.cols.indexOf(c)],
+      floor: this.resizeFloor(c),
+      ceiling: (w) => this.resizeCeiling(w),
+      current: () => this.widths[c.id],
+      setWidth: (w) => { this.widths[c.id] = w; this.applyTemplate(); },
+      finish: () => this.on.colsChanged?.(),
+    };
+  }
+
+  // startResize: pin the stretch column (the edge must follow the
+  // pointer), then hand the boundary-handle drag to the shared
+  // choreography.
   startResize(e, c, rz) {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     if (!c.flex) this.freezeStretch(); // pin the stretch column: the edge must follow the pointer
-    const startW = this.headCols[this.cols.indexOf(c)].getBoundingClientRect().width;
-    const startX = e.clientX;
-    const floor = this.resizeFloor(c);
-    const maxW = this.resizeCeiling(startW);
-    rz.setPointerCapture?.(e.pointerId); // keep the drag alive past the window edge
-    rz.classList.add('dragging');
-    document.body.classList.add('col-resize-active');
-    const move = (ev) => {
-      const w = Math.round(Math.min(Math.max(startW + ev.clientX - startX, floor), maxW));
-      if (w !== this.widths[c.id]) {
-        this.widths[c.id] = w;
-        this.applyTemplate();
-      }
-    };
-    const done = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', done);
-      window.removeEventListener('pointercancel', done);
-      rz.classList.remove('dragging');
-      document.body.classList.remove('col-resize-active');
-      this.on.colsChanged?.();
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', done);
-    window.addEventListener('pointercancel', done);
+    resizeDrag(e, rz, this.resizeAdapter(c));
   }
 
-  // keyResize is the keyboard path on a focused handle: ArrowLeft/Right
-  // nudge by 8px (Shift ×4), Home/End jump to the bounds — all clamped to
-  // the same floor/ceiling a pointer drag respects.
+  // keyResize: the shared keyboard ladder over the same floor/ceiling a
+  // pointer drag respects — ArrowLeft/Right nudge by 8px (Shift ×4),
+  // Home/End jump to the bounds.
   keyResize(e, c) {
     if (!c.flex) this.freezeStretch(); // same edge-follows-pointer contract as a drag
-    const cell = this.headCols[this.cols.indexOf(c)];
-    const cur = Math.round(cell.getBoundingClientRect().width);
-    const floor = this.resizeFloor(c);
-    const max = this.resizeCeiling(cur);
-    let w;
-    if (e.key === 'ArrowLeft') w = cur - (e.shiftKey ? 32 : 8);
-    else if (e.key === 'ArrowRight') w = cur + (e.shiftKey ? 32 : 8);
-    else if (e.key === 'Home') w = floor;
-    else if (e.key === 'End') w = max;
-    else return;
-    e.preventDefault();
-    e.stopPropagation();
-    w = Math.round(Math.min(Math.max(w, floor), max));
-    if (w === cur) return;
-    this.widths[c.id] = w;
-    this.applyTemplate();
-    this.on.colsChanged?.();
+    resizeKeys(e, this.resizeAdapter(c));
   }
 
   // resetWidth clears a user-set width — double-click on the handle. The
@@ -550,70 +523,27 @@ export class Grid {
     this.on.colsChanged?.();
   }
 
-  // startColDrag arms header drag-to-reorder: a press anywhere on a header
-  // cell (outside the funnel, the inline filter input and the resize
-  // handle) becomes a reorder once the pointer moves past DRAG_THRESHOLD —
-  // a plain click still sorts. The dragged header dims, a 2px indicator
-  // tracks the nearest slot boundary, and pointerup applies the move.
+  // startColDrag arms header drag-to-reorder over the shared
+  // choreography — a plain click still sorts; the apply step rebuilds
+  // this grid's column order (setColumns rebuilds head + pool; widths
+  // ride along).
   startColDrag(e, c, cell) {
-    if (e.button !== 0 || e.target.closest('.gh-resize, .gh-filter, .gh-cfilter')) return;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const head = this.head;
-    let dragging = false;
-    let indicator = null;
-    let target = null;
-    // the synthetic click after a drag would flip the sort — swallow it on
-    // the head (capture fires before the cell's listener); removed again
-    // in cleanup so nothing lingers when no click follows
-    const swallow = (ev) => ev.stopPropagation();
-    const boundaryX = (i) => {
-      const cells = this.headCols;
-      if (i >= cells.length) return cells[cells.length - 1].getBoundingClientRect().right;
-      return cells[i].getBoundingClientRect().left;
-    };
-    const move = (ev) => {
-      if (!dragging) {
-        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
-        dragging = true;
-        cell.classList.add('drag-src');
-        indicator = el('div', { class: 'gh-insert' });
-        head.appendChild(indicator);
-        head.addEventListener('click', swallow, { capture: true });
-        document.body.classList.add('col-dragging');
-      }
-      let best = 0;
-      let bd = Infinity;
-      for (let i = 0; i <= this.cols.length; i++) {
-        const d = Math.abs(ev.clientX - boundaryX(i));
-        if (d < bd) { bd = d; best = i; }
-      }
-      target = best;
-      indicator.style.left = `${boundaryX(best) - head.getBoundingClientRect().left}px`;
-    };
-    const done = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', done);
-      window.removeEventListener('pointercancel', done);
-      head.removeEventListener('click', swallow, { capture: true });
-      document.body.classList.remove('col-dragging');
-      cell.classList.remove('drag-src');
-      if (indicator) indicator.remove();
-      if (dragging && target !== null) {
-        const from = this.cols.indexOf(c);
+    reorderDrag(e, c, cell, {
+      skip: '.gh-resize, .gh-filter, .gh-cfilter',
+      head: this.head,
+      cells: () => this.headCols,
+      apply: (col, target) => {
+        const from = this.cols.indexOf(col);
         // dropping immediately before/after the source cell is a no-op
         if (target !== from && target !== from + 1) {
           const ids = this.cols.map((x) => x.id);
           ids.splice(from, 1);
-          ids.splice(target > from ? target - 1 : target, 0, c.id);
-          this.setColumns(ids); // rebuilds head + pool; widths ride along
+          ids.splice(target > from ? target - 1 : target, 0, col.id);
+          this.setColumns(ids);
           this.on.colsChanged?.();
         }
-      }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', done);
-    window.addEventListener('pointercancel', done);
+      },
+    });
   }
 
   // ---------- data ----------

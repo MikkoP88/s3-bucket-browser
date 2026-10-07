@@ -632,69 +632,42 @@ export class Tree {
 
     // S3 nodes and remote directory nodes are both drop targets and carry
     // full context menus (the cross-source matrix treats them uniformly).
+    // wireMenu wires the full context menu; wireDrop additionally makes
+    // the row a drop target for internal s3b drags, handing the decoded
+    // payload to onDropTo with the row's target descriptor (an S3
+    // bucket/prefix, a remote directory, or a remote source root).
+    const wireMenu = () => row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.onContext?.(e, n);
+    });
+    const wireDrop = (target) => {
+      row.addEventListener('dragover', (e) => {
+        if (!e.dataTransfer.types.includes('application/x-s3b')) return;
+        e.preventDefault();
+        row.classList.add('drop-target');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
+      row.addEventListener('drop', (e) => {
+        row.classList.remove('drop-target');
+        const data = e.dataTransfer.getData('application/x-s3b');
+        if (!data) return;
+        e.preventDefault();
+        this.onDropTo(target, JSON.parse(data), e);
+      });
+      wireMenu();
+    };
     if (n.bucket !== undefined) {
-      row.addEventListener('dragover', (e) => {
-        if (!e.dataTransfer.types.includes('application/x-s3b')) return;
-        e.preventDefault();
-        row.classList.add('drop-target');
-      });
-      row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
-      row.addEventListener('drop', (e) => {
-        row.classList.remove('drop-target');
-        const data = e.dataTransfer.getData('application/x-s3b');
-        if (!data) return;
-        e.preventDefault();
-        this.onDropTo({ kind: 's3', source: n.source, bucket: n.bucket, dir: n.prefix }, JSON.parse(data), e);
-      });
-      row.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.onContext?.(e, n);
-      });
+      wireDrop({ kind: 's3', source: n.source, bucket: n.bucket, dir: n.prefix });
     } else if (n.kind === 'rdir') {
-      row.addEventListener('dragover', (e) => {
-        if (!e.dataTransfer.types.includes('application/x-s3b')) return;
-        e.preventDefault();
-        row.classList.add('drop-target');
-      });
-      row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
-      row.addEventListener('drop', (e) => {
-        row.classList.remove('drop-target');
-        const data = e.dataTransfer.getData('application/x-s3b');
-        if (!data) return;
-        e.preventDefault();
-        this.onDropTo({ kind: 'remote', source: n.source, dir: n.path }, JSON.parse(data), e);
-      });
-      row.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.onContext?.(e, n);
-      });
+      wireDrop({ kind: 'remote', source: n.source, dir: n.path });
     } else if (n.kind === 'source') {
       // Source roots: full context menu; non-S3 roots also accept drops
       // into their root directory. Bucket-scoped S3 roots are drop targets
       // via the S3 branch above; legacy account-wide roots need a bucket
       // picked first — no drop.
-      if (n.stype !== 's3') {
-        row.addEventListener('dragover', (e) => {
-          if (!e.dataTransfer.types.includes('application/x-s3b')) return;
-          e.preventDefault();
-          row.classList.add('drop-target');
-        });
-        row.addEventListener('dragleave', () => row.classList.remove('drop-target'));
-        row.addEventListener('drop', (e) => {
-          row.classList.remove('drop-target');
-          const data = e.dataTransfer.getData('application/x-s3b');
-          if (!data) return;
-          e.preventDefault();
-          this.onDropTo({ kind: 'remote', source: n.source, dir: '/' }, JSON.parse(data), e);
-        });
-      }
-      row.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.onContext?.(e, n);
-      });
+      if (n.stype !== 's3') wireDrop({ kind: 'remote', source: n.source, dir: '/' });
+      else wireMenu();
     } else {
       row.addEventListener('contextmenu', (e) => e.preventDefault());
     }

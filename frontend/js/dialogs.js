@@ -896,6 +896,28 @@ export function contentVersionsDialog(bucket, prefix, onChanged) {
   draw();
 }
 
+// markersHiddenGate renders both marker windows' opt-in notice when the
+// marker setting is off (the default): no fetch, no rows — just the
+// notice plus the inline flip, which re-badges the grid in step with the
+// View menu via s3b-markers-changed. Returns true when the window is
+// gated (the caller draws nothing else).
+function markersHiddenGate(status, list, redraw) {
+  if (localStorage.getItem('s3b-show-markers') !== '1') {
+    status.style.color = 'var(--text-dim)';
+    status.textContent = t('markw.hiddenNotice');
+    list.replaceChildren(el('div', { class: 'ver-sub', style: 'margin:10px 0' },
+      el('button', {
+        class: 'btn', text: t('markw.show'),
+        onclick: () => {
+          localStorage.setItem('s3b-show-markers', '1');
+          window.dispatchEvent(new Event('s3b-markers-changed'));
+          redraw();
+        },
+      })));
+    return true;
+  }
+  return false;
+}
 // markerDialog is the single-object Delete marker view: one key's marker
 // history as plain rows — no checkboxes or bulk buttons, which only ever
 // made sense for lists. The marker hiding the object is flagged and
@@ -926,20 +948,7 @@ export function markerDialog(bucket, key, onChanged) {
   async function draw() {
     // Hidden markers (the default): no fetch, no rows — the notice plus
     // the inline opt-in instead (the same flip the View menu makes).
-    if (localStorage.getItem('s3b-show-markers') !== '1') {
-      status.style.color = 'var(--text-dim)';
-      status.textContent = t('markw.hiddenNotice');
-      list.replaceChildren(el('div', { class: 'ver-sub', style: 'margin:10px 0' },
-        el('button', {
-          class: 'btn', text: t('markw.show'),
-          onclick: () => {
-            localStorage.setItem('s3b-show-markers', '1');
-            window.dispatchEvent(new Event('s3b-markers-changed'));
-            draw();
-          },
-        })));
-      return;
-    }
+    if (markersHiddenGate(status, list, draw)) return;
     status.style.color = 'var(--text-dim)';
     status.textContent = t('loading');
     list.replaceChildren();
@@ -1039,21 +1048,7 @@ export function markersDialog(bucket, items, prefix, onChanged) {
     // Hidden markers (the default): no fetch, no rows — the notice plus
     // the inline opt-in instead. s3b-markers-changed lets main.js re-
     // badge the grid in step with the same flip the View menu makes.
-    if (localStorage.getItem('s3b-show-markers') !== '1') {
-      listed = [];
-      status.style.color = 'var(--text-dim)';
-      status.textContent = t('markw.hiddenNotice');
-      list.replaceChildren(el('div', { class: 'ver-sub', style: 'margin:10px 0' },
-        el('button', {
-          class: 'btn', text: t('markw.show'),
-          onclick: () => {
-            localStorage.setItem('s3b-show-markers', '1');
-            window.dispatchEvent(new Event('s3b-markers-changed'));
-            draw();
-          },
-        })));
-      return;
-    }
+    if (markersHiddenGate(status, list, draw)) { listed = []; return; }
     status.style.color = 'var(--text-dim)';
     status.textContent = t('loading');
     list.replaceChildren();
@@ -1565,7 +1560,19 @@ const moreLink = (id, items, isOpen, onToggle) => el('button', {
   'aria-controls': `tr-det-${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}`,
   onclick: () => onToggle(id, 'morelink'),
 }, t('transfer.more', { n: items - 1 }));
-
+// disclosure: one task-list window's expansion state — keyed by job id
+// so the progress redraws (replaceChildren) never lose the user's
+// disclosure, with focus returned on toggle to whichever control opened
+// it (the "+N more" link or the row's disclosure button).
+const disclosure = (list, draw) => {
+  const expanded = new Set();
+  const toggle = (id, via) => {
+    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+    const cls = via === 'morelink' ? '.tr-morelink' : '.tr-more';
+    draw().then(() => list.querySelector(`${cls}[data-id="${CSS.escape(id)}"]`)?.focus());
+  };
+  return { expanded, toggle };
+};
 // itemsBlock: the contained-items panel for multi-item rows — "+2 more"
 // finally answers WHO the other two are, per item and live. Jobs within
 // the item-row cap carry each item's state on every transfer:update
@@ -1670,14 +1677,9 @@ function openTransferManagerDom(onClose) {
 
   let rows = [];
 
-  // which rows sit expanded — keyed by job id so the progress redraws
-  // (replaceChildren) never lose the user's disclosure state
-  const expanded = new Set();
-  const toggle = (id, via) => {
-    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
-    const cls = via === 'morelink' ? '.tr-morelink' : '.tr-more';
-    draw().then(() => list.querySelector(`${cls}[data-id="${CSS.escape(id)}"]`)?.focus());
-  };
+  // which rows sit expanded — the shared disclosure helper owns the
+  // state and the focus return
+  const { expanded, toggle } = disclosure(list, draw);
 
   // item names cache: one fetch per job per window life
   const itemCache = new Map();
@@ -1995,14 +1997,9 @@ function runningTasksDom() {
 
   let rows = [];
 
-  // which rows sit expanded — keyed by job id so the progress redraws
-  // (replaceChildren) never lose the user's disclosure state
-  const expanded = new Set();
-  const toggle = (id, via) => {
-    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
-    const cls = via === 'morelink' ? '.tr-morelink' : '.tr-more';
-    draw().then(() => list.querySelector(`${cls}[data-id="${CSS.escape(id)}"]`)?.focus());
-  };
+  // which rows sit expanded — the shared disclosure helper owns the
+  // state and the focus return
+  const { expanded, toggle } = disclosure(list, draw);
 
   // item names cache: one fetch per job per window life
   const itemCache = new Map();
@@ -2143,6 +2140,20 @@ const SOURCE_TYPES = [
   ['local', 'Local folder'],
 ];
 
+// s3FormDial reads the editor's connection fields into the exact shape
+// the backend's S3 dial expects — one definition for the three readers
+// (bucket Pick, Test, Save) so the field list can never drift between
+// them. name rides along because the dial is also the saved profile.
+const s3FormDial = (f, name) => ({
+  name,
+  endpoint: f.endpoint.value.trim(),
+  region: f.region.value.trim(),
+  accessKeyId: f.accessKey.value.trim(),
+  secretKey: f.secretKey.value,
+  sessionToken: f.token.value,
+  pathStyle: f.pathStyle.checked,
+  insecure: f.insecure.checked,
+});
 // sourceEditor edits one data source of any type. existing is a (masked)
 // Source from ListSources or null. Secret fields arrive empty with the
 // stored mask as placeholder; the backend re-attaches stored values.
@@ -2271,16 +2282,7 @@ export function sourceEditor(existing, onSaved) {
               id: existing?.id || '',
               name: f.name.value.trim() || 'draft',
               type: 's3',
-              s3: {
-                name: f.name.value.trim() || 'draft',
-                endpoint: f.endpoint.value.trim(),
-                region: f.region.value.trim(),
-                accessKeyId: f.accessKey.value.trim(),
-                secretKey: f.secretKey.value,
-                sessionToken: f.token.value,
-                pathStyle: f.pathStyle.checked,
-                insecure: f.insecure.checked,
-              },
+              s3: s3FormDial(f, f.name.value.trim() || 'draft'),
             });
             if (res.ok && res.buckets?.length) {
               fillBucketList(res.buckets);
@@ -2412,16 +2414,7 @@ export function sourceEditor(existing, onSaved) {
                 name: f.name.value.trim(),
                 type: 's3',
                 bucket: f.bucket.value.trim(),
-                s3: {
-                  name: f.name.value.trim(),
-                  endpoint: f.endpoint.value.trim(),
-                  region: f.region.value.trim(),
-                  accessKeyId: f.accessKey.value.trim(),
-                  secretKey: f.secretKey.value,
-                  sessionToken: f.token.value,
-                  pathStyle: f.pathStyle.checked,
-                  insecure: f.insecure.checked,
-                },
+                s3: s3FormDial(f, f.name.value.trim()),
               });
               if (res.ok && res.buckets?.length) fillBucketList(res.buckets);
             } else if (f.type.value === 'local') {
@@ -2461,16 +2454,7 @@ export function sourceEditor(existing, onSaved) {
               return;
             }
             src.bucket = f.bucket.value.trim();
-            src.s3 = {
-              name: src.name,
-              endpoint: f.endpoint.value.trim(),
-              region: f.region.value.trim(),
-              accessKeyId: f.accessKey.value.trim(),
-              secretKey: f.secretKey.value,
-              sessionToken: f.token.value,
-              pathStyle: f.pathStyle.checked,
-              insecure: f.insecure.checked,
-            };
+            src.s3 = s3FormDial(f, src.name);
           } else if (t === 'local') {
             src.localRoot = f.localRoot.value.trim();
           } else {
@@ -2810,9 +2794,16 @@ export function licenseGate() {
 }
 
 // ---------- conflict policy + transfer throttle ----------
-const RATE_LIMITS = [
-  [0, 'Unlimited'],
+// RATE_LIMITS is THE speed-limit shelf: every surface that edits the
+// same 's3b-throttle' key (the transfer-time select below and Settings
+// → Transfers, which imports this list) renders it verbatim. The zero
+// entry localizes ('None'); plain labels pass through t() untouched.
+// A shelf only one surface can render is a lie about the active limit,
+// so the two must never drift apart.
+export const RATE_LIMITS = [
+  [0, 'settings.rateNone'],
   [262144, '256 KB/s'],
+  [524288, '512 kB/s'],
   [1048576, '1 MB/s'],
   [2097152, '2 MB/s'],
   [5242880, '5 MB/s'],
@@ -2919,7 +2910,7 @@ function throttleSelect() {
     return { wrap: el('div'), value: () => savedThrottle(), save: false };
   }
   const sel = el('select', { class: 'input', style: 'width:auto' },
-    RATE_LIMITS.map(([v, label]) => el('option', { value: String(v) }, label)));
+    RATE_LIMITS.map(([v, label]) => el('option', { value: String(v) }, t(label))));
   sel.value = String(savedThrottle());
   const wrap = el('label', { class: 'field', style: 'display:flex;align-items:center;gap:8px;margin-top:10px' },
     t('transfer.speedLimit'), sel);

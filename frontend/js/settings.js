@@ -8,25 +8,10 @@
 // this module owns only presentation.
 import { el, multiSel } from './util.js';
 import { t, languages, LANG_NAMES } from './i18n.js';
-import { openModal, confirm } from './dialogs.js';
+import { openModal, confirm, RATE_LIMITS } from './dialogs.js';
 import { COLUMNS } from './grid.js';
 
 const AR_STEPS = [0, 5000, 10000, 30000, 60000];
-
-const RATE_STEPS = [
-  [0, 'settings.rateNone'],
-  [524288, '512 kB/s'],
-  [1048576, '1 MB/s'],
-  [2097152, '2 MB/s'],
-  [5242880, '5 MB/s'],
-  [10485760, '10 MB/s'],
-  [52428800, '50 MB/s'],
-  [104857600, '100 MB/s'],
-  [262144000, '250 MB/s'],
-  [524288000, '500 MB/s'],
-  [786432000, '750 MB/s'],
-  [1048576000, '1000 MB/s'],
-];
 
 // Engine-tuning steps (Settings → Network / Transfers; persisted Go-side
 // in appsettings.json). 0 = Default/Auto — the backend resolves it to the
@@ -586,7 +571,7 @@ export function settingsDialog(ctx) {
         // never close on their own.
         row(t('settings.xferWin'), checkbox(d.xferWin, (v) => set('xferWin', v)), t('settings.xferWinHint')),
         row(t('settings.throttle'), select(
-          RATE_STEPS.map(([v, label]) => [v, t(label)]),
+          RATE_LIMITS.map(([v, label]) => [v, t(label)]),
           d.throttle,
           (v) => set('throttle', parseInt(v, 10)),
         ), t('settings.throttleHint')),

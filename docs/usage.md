@@ -554,7 +554,7 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   path) or URLs to the OS clipboard.
 - **Conflicts & safety** — every transfer states a conflict policy
   (overwrite / skip / rename) with a live pre-check that lists exactly
-  which files collide, and can be throttled (256 kB/s … 1000 MB/s). A
+  which files collide, and can be throttled (256 KB/s … 1000 MB/s, the same shelf Settings → Transfers edits). A
   transfer can never feed itself: a destination that sits inside the
   source's own subtree (a folder pasted into itself, a bucket into its
   own prefix) is refused by the engine before a byte moves — a move

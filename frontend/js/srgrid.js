@@ -10,12 +10,12 @@
 // picker. The rows stay the window's own contract — a plain streaming
 // list, single select, Enter/arrows — untouched.
 import { el, fmtBytes, fmtDate, fileIcon, srcIconEl } from './util.js';
+import { resizeDrag, resizeKeys, reorderDrag } from './coldrag.js';
 import { t, has } from './i18n.js';
 import { COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
 
 const MIN_COL_W = 48;           // resize floor for fixed columns (grid.js's)
 const RZ_HIT_W = 10;            // handle hit width — keep in step with .gh-resize
-const DRAG_THRESHOLD = 6;       // px before a header press becomes a reorder drag
 const STORE_KEY = 's3b-cols-sr'; // beside 's3b-cols' / 's3b-cols-local'
 
 // The search catalog: the app's global column set plus one search-only
@@ -375,65 +375,40 @@ export function makeSearchGrid(opts = {}) {
     }
   });
 
+  // resizeAdapter hands the shared drag/keyboard choreography (coldrag.js)
+  // this pane's width model — the same shape grid.js builds for its own.
+  const resizeAdapter = (c) => {
+    const cell = headCells[cols().indexOf(c)];
+    if (!cell) return null;
+    return {
+      cell,
+      floor: resizeFloor(c),
+      ceiling: (w) => resizeCeiling(w),
+      current: () => widths[c.id],
+      setWidth: (w) => { widths[c.id] = w; applyTemplate(); },
+      finish: persist,
+    };
+  };
+
+  // pin the stretch column (the edge must follow the pointer), then hand
+  // the boundary-handle drag to the shared choreography
   const startResize = (e, c, rz) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     if (!c.flex) freezeStretch(); // pin the stretch column: the edge must follow the pointer
-    const cs = cols();
-    const cell = headCells[cs.indexOf(c)];
-    if (!cell) return;
-    const startW = cell.getBoundingClientRect().width;
-    const startX = e.clientX;
-    const floor = resizeFloor(c);
-    const maxW = resizeCeiling(startW);
-    rz.setPointerCapture?.(e.pointerId);
-    rz.classList.add('dragging');
-    document.body.classList.add('col-resize-active');
-    const move = (ev) => {
-      const w = Math.round(Math.min(Math.max(startW + ev.clientX - startX, floor), maxW));
-      if (w !== widths[c.id]) {
-        widths[c.id] = w;
-        applyTemplate();
-      }
-    };
-    const done = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', done);
-      window.removeEventListener('pointercancel', done);
-      rz.classList.remove('dragging');
-      document.body.classList.remove('col-resize-active');
-      persist();
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', done);
-    window.addEventListener('pointercancel', done);
+    const m = resizeAdapter(c);
+    if (m) resizeDrag(e, rz, m);
   };
 
-  // the keyboard ladder mirrors the pointer one: arrows nudge by 8
-  // (Shift: 32), Home/End snap to floor/ceiling — every handle is a
-  // focusable separator, so column widths never need a mouse
+  // the keyboard ladder mirrors the pointer one (the shared coldrag.js
+  // ladder over this pane's adapter): arrows nudge by 8 (Shift: 32),
+  // Home/End snap to floor/ceiling — every handle is a focusable
+  // separator, so column widths never need a mouse
   const keyResize = (e, c) => {
     if (!c.flex) freezeStretch();
-    const cs = cols();
-    const cell = headCells[cs.indexOf(c)];
-    if (!cell) return;
-    const cur = Math.round(cell.getBoundingClientRect().width);
-    const floor = resizeFloor(c);
-    const max = resizeCeiling(cur);
-    let w;
-    if (e.key === 'ArrowLeft') w = cur - (e.shiftKey ? 32 : 8);
-    else if (e.key === 'ArrowRight') w = cur + (e.shiftKey ? 32 : 8);
-    else if (e.key === 'Home') w = floor;
-    else if (e.key === 'End') w = max;
-    else return;
-    e.preventDefault();
-    e.stopPropagation();
-    w = Math.round(Math.min(Math.max(w, floor), max));
-    if (w === cur) return;
-    widths[c.id] = w;
-    applyTemplate();
-    persist();
+    const m = resizeAdapter(c);
+    if (m) resizeKeys(e, m);
   };
 
   // a double-click on a handle gives the column its catalog width back
@@ -444,63 +419,26 @@ export function makeSearchGrid(opts = {}) {
     persist();
   };
 
+  // header drag-to-reorder over the shared choreography — a plain click
+  // still sorts
   const startColDrag = (e, c, cell) => {
-    if (e.button !== 0 || e.target.closest('.gh-resize')) return;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    let dragging = false;
-    let indicator = null;
-    let target = null;
-    // the synthetic click after a drag would flip the sort — swallow it
-    // on the head (capture fires before the cell's own listener)
-    const swallow = (ev) => ev.stopPropagation();
-    const boundaryX = (i) => {
-      if (i >= headCells.length) return headCells[headCells.length - 1].getBoundingClientRect().right;
-      return headCells[i].getBoundingClientRect().left;
-    };
-    const move = (ev) => {
-      if (!dragging) {
-        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
-        dragging = true;
-        cell.classList.add('drag-src');
-        indicator = el('div', { class: 'gh-insert' });
-        head.appendChild(indicator);
-        head.addEventListener('click', swallow, { capture: true });
-        document.body.classList.add('col-dragging');
-      }
-      let best = 0;
-      let bd = Infinity;
-      for (let i = 0; i <= headCells.length; i++) {
-        const d = Math.abs(ev.clientX - boundaryX(i));
-        if (d < bd) { bd = d; best = i; }
-      }
-      target = best;
-      indicator.style.left = `${boundaryX(best) - head.getBoundingClientRect().left}px`;
-    };
-    const done = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', done);
-      window.removeEventListener('pointercancel', done);
-      head.removeEventListener('click', swallow, { capture: true });
-      document.body.classList.remove('col-dragging');
-      cell.classList.remove('drag-src');
-      if (indicator) indicator.remove();
-      if (dragging && target !== null) {
-        const from = userCols.indexOf(c.id);
+    reorderDrag(e, c, cell, {
+      skip: '.gh-resize',
+      head,
+      cells: () => headCells,
+      apply: (col, target) => {
+        const from = userCols.indexOf(col.id);
         // dropping straight back where it started is a no-op; Source is
         // never a drop target — it is not in userCols and stays last
         if (target !== from && target !== from + 1) {
           const ids = [...userCols];
           ids.splice(from, 1);
-          ids.splice(target > from ? target - 1 : target, 0, c.id);
+          ids.splice(target > from ? target - 1 : target, 0, col.id);
           setColumns(ids);
           persist();
         }
-      }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', done);
-    window.addEventListener('pointercancel', done);
+      },
+    });
   };
 
   // setColumns applies a visible-column id list (order IS display order;

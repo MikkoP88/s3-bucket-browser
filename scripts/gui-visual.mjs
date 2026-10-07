@@ -3514,6 +3514,21 @@ await step('settings-dialog', async () => {
       && rows.some((x) => /parts in flight/i.test(x))
       && rows.some((x) => /stall threshold/i.test(x));
   }));
+  // one shelf: Settings' Speed limit select seats the exact 13-step
+  // list the transfer-time picker renders from — including the two
+  // steps the old Settings-only list lacked (256 KB/s, 750 MB/s), so
+  // a limit set at transfer time can no longer land here as an
+  // unrenderable no-limit
+  await ok('speed limit select seats the shared 13-step shelf', evalPage(() => {
+    const p = document.querySelector('#modal-root .set-page[data-cat="transfers"]');
+    if (!p) return false;
+    const sel = Array.from(p.querySelectorAll('select'))
+      .find((s) => Array.from(s.options).some((o) => o.value === '262144'));
+    if (!sel) return false;
+    const vs = Array.from(sel.options).map((o) => o.value);
+    return vs.length === 13 && vs[0] === '0' && vs[12] === '1048576000'
+      && vs.includes('786432000') && /^none$/i.test(sel.options[0].textContent.trim());
+  }));
   await resetCalls();
   await evalPage(() => {
     const p = document.querySelector('#modal-root .set-page[data-cat="network"]');
@@ -3930,6 +3945,11 @@ await step('conflict-view', async () => {
   ];
   await evalPage((cs) => {
     localStorage.setItem('s3b-conflict', 'ask');
+    // the picker is opted in with a limit staged from the Settings
+    // side of the same shelf — the assert below proves the dialog
+    // reads it back
+    localStorage.setItem('s3b-show-throttle', '1');
+    localStorage.setItem('s3b-throttle', '262144');
     window.__shim.world.conflicts = cs;
   }, seeded);
   await navObjects('team-files');
@@ -3940,6 +3960,17 @@ await step('conflict-view', async () => {
   await ok('per-file conflict dialog opens', evalPage(() => !!document.querySelector('#modal-root .modal.cf-modal')));
   await ok('conflict dialog sits at the 880 tier', evalPage(() =>
     Math.abs(document.querySelector('#modal-root .modal.cf-modal').offsetWidth - 880) <= 1));
+  // cross-surface shelf: the transfer-time picker reads the limit the
+  // Settings side remembered — selected, labeled, never defaulted to
+  // None (the old divergent lists rendered a foreign limit as no
+  // limit here)
+  await ok('transfer-time picker reads the Settings-set limit', evalPage(() => {
+    const sel = Array.from(document.querySelectorAll('#modal-root .modal select'))
+      .find((s) => Array.from(s.options).some((o) => o.value === '262144'));
+    if (!sel) return false;
+    const on = Array.from(sel.options).find((o) => o.selected);
+    return sel.value === '262144' && on && on.textContent.trim() === '256 KB/s';
+  }));
   await ok('title counts the collisions', (await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')).includes('2 file(s)'));
   await ok('one row per conflicting file', evalPage(() => document.querySelectorAll('#modal-root .cf-list .cf-row').length === 2));
   await ok('rows show source vs destination', evalPage(() => {
@@ -3984,7 +4015,11 @@ await step('conflict-view', async () => {
   await ok('no dialog when nothing collides', evalPage(() => document.getElementById('modal-root').classList.contains('hidden')));
   const c2 = await findCall('Upload');
   await ok('clean start is overwrite, no decisions', c2 && c2.args[3] === 'overwrite' && c2.args[5] === null);
-  await evalPage(() => localStorage.setItem('s3b-conflict', 'overwrite'));
+  await evalPage(() => {
+    localStorage.setItem('s3b-conflict', 'overwrite');
+    localStorage.removeItem('s3b-show-throttle');
+    localStorage.removeItem('s3b-throttle');
+  });
 });
 
 await step('sources-in-tree', async () => {
