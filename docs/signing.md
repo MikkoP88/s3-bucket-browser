@@ -46,17 +46,65 @@ rejected fails the release rather than shipping mixed artifacts):
 | macOS | local ad-hoc | release artifacts for macOS are disabled; local builds self-sign ad-hoc ([Mac guide](macos-build.md)) |
 
 Current identity: a **self-signed "s3b Project" certificate** whose
-public key ships at [`scripts/certs/s3b-signing.cer`](../scripts/certs/s3b-signing.cer)
-— a fleet can pin or whitelist it (install the `.cer` into *Local
-Machine → Trusted People* to silence prompts fleet-wide). It proves
-tamper-proofing but no public trust: SmartScreen still says "Unknown
-publisher". The rest of this guide is what to acquire to change that.
+public key ships at [`scripts/certs/s3b-signing.cer`](../scripts/certs/s3b-signing.cer).
+A fleet can pin it — see [Trusting the self-signed certificate on a
+fleet machine](#trusting-the-self-signed-certificate-on-a-fleet-machine)
+below for the exact stores and the ready-made script; the store choice
+is not optional: only **Trusted Root Certification Authorities** makes
+the chain resolve, and only **Trusted Publisher** (added *on top*) then
+silences the publisher prompts. It proves tamper-proofing but no public
+trust: SmartScreen still says "Unknown publisher". The rest of this
+guide is what to acquire to change that.
 
 The order of operations matters and is already correct — keep it if you
 touch the workflow: binaries are signed **before** zipping, the
 installer is signed **after** `makensis`, and `SHA256SUMS` is computed
 in the release job from the downloaded (already signed) artifacts, so
 the checksums always cover the shipped bytes.
+
+## Trusting the self-signed certificate on a fleet machine
+
+The self-signed certificate is its own root, so Windows shows it as
+"Tämä päävarmenne ei ole luotettu" / "this root certificate is not
+trusted" until the root itself is trusted. **Which store does what** —
+this is where the confusion lives:
+
+| Store | Effect | Alone enough? |
+|---|---|---|
+| **Trusted Root Certification Authorities** (*Luotettujen päämyöntäjien varmenteet*) | resolves the chain — the *only* fix for "this root certificate is not trusted" | yes, for chain trust |
+| **Trusted Publisher** (*Luotettujen julkaisijoiden varmenteet*) | suppresses the "unknown publisher" UAC/SmartScreen prompt — **but only after the chain resolves**, i.e. added *on top of* the Root import | no |
+| Trusted People (*Luotettujen henkilöiden varmenteet*) | legacy direct-trust store; does **not** build the chain for Authenticode | no |
+
+Moving the certificate to *Trusted Publisher* alone — a natural guess —
+leaves the "not trusted" warning exactly where it was: the chain still
+cannot resolve. Import into **Trusted Root** first; *Trusted Publisher*
+second to also silence the prompts.
+
+[`scripts/trust-cert.ps1`](../scripts/trust-cert.ps1) does both,
+idempotently:
+
+```powershell
+# machine-wide (run PowerShell as Administrator)
+powershell -ExecutionPolicy Bypass -File scripts\trust-cert.ps1
+# this user only (Windows asks one confirmation dialog for a per-user Root import — by design)
+powershell -ExecutionPolicy Bypass -File scripts\trust-cert.ps1 -CurrentUser
+# undo either
+powershell -ExecutionPolicy Bypass -File scripts\trust-cert.ps1 -Remove            # machine-wide
+powershell -ExecutionPolicy Bypass -File scripts\trust-cert.ps1 -CurrentUser -Remove
+```
+
+Manual equivalent, for group policy or imaging pipelines:
+
+```powershell
+Import-Certificate -FilePath scripts\certs\s3b-signing.cer -CertStoreLocation Cert:\LocalMachine\Root
+Import-Certificate -FilePath scripts\certs\s3b-signing.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
+```
+
+Two caveats that are Windows, not us: already-open browser/process
+windows may need a restart before they pick up the new trust, and
+SmartScreen *reputation* is a separate mechanism from chain trust — a
+trusted self-signed root stops the certificate warnings but does not
+buy the download reputation a public CA or Trusted Signing starts with.
 
 ## Windows — choosing an identity
 

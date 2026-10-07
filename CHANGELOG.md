@@ -8,6 +8,32 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A launch that cannot work says so** — on Windows Server (and
+  stripped-down Windows installs) the app used to die before any window
+  existed: the Edge WebView2 Evergreen runtime those machines lack is
+  what the window is made of, and its absence failed fast inside webview
+  creation, where the only witness was a stderr no GUI build has — to
+  the user, nothing happened at all. The app now asks the loader’s own
+  registry question (the EdgeUpdate Clients registration, all three
+  locations: machine-wide 32-bit and 64-bit views plus the per-user
+  install) before anything window-shaped starts, and refuses loudly
+  instead — a message box carrying the fix (winget install
+  Microsoft.EdgeWebView2Runtime, or Microsoft’s standalone download)
+  plus an event-log row; an unreadable registry fails open, because a
+  broken probe may never block a launch. Every fast GUI failure gets the
+  same voice through guihealth.Announce — a Run error is announced,
+  not just printed to the invisible stream, and a second launch whose
+  stuck predecessor cannot be raised says so too instead of exiting into
+  the same silence. Alongside it, the self-signed certificate guidance
+  is fixed where it was wrong: chain trust lives only in Trusted Root
+  Certification Authorities (the store the “this root certificate is
+  not trusted” warning actually reads), Trusted Publisher suppresses
+  the publisher prompt only on top of it, and Trusted People never built
+  the chain at all — scripts/trust-cert.ps1 imports both stores
+  idempotently (machine-wide elevated, -CurrentUser, -Remove to undo),
+  and the signing guide, security notes and usage troubleshooting now
+  teach the split instead of the wrong store.
+
 - **The app remembers its windows** — the main window opened at a
   fixed 1280×800 every launch, and every popout forgot its
   placement when the app closed: the user resized, arranged on a

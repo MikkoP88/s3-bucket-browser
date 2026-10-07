@@ -93,13 +93,22 @@ func DisarmStartupWatchdog() {
 	}
 }
 
+// Announce records a message in the event log and shows it through the
+// platform-native channel (a desktop-owned message box on Windows, stderr
+// elsewhere). This is the loud voice for failures the watchdog never
+// guards — a webview that dies fast inside Run, a stuck previous
+// instance, a missing runtime — where the old behavior was an error that
+// only a console a GUI build does not have ever saw.
+func Announce(level, msg string) {
+	eventlog.Append(level, "app", "", msg)
+	notifyUser(msg)
+}
+
 // startupTimedOut is the real timeout handler: record why, tell the user
 // where they cannot miss it, and exit — a loud failure beats an invisible
 // hang, and the preflight sweep of the NEXT start clears the usual cause.
 func startupTimedOut() {
-	msg := TimeoutMessage(StartupBudget)
-	eventlog.Append("error", "app", "", msg)
-	notifyUser(msg)
+	Announce("error", TimeoutMessage(StartupBudget))
 	if windowUp.Load() {
 		return // the window came up while the message was being shown
 	}

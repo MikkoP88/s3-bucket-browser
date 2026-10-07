@@ -13,6 +13,7 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -155,6 +156,16 @@ func Run(version string) error {
 	// are desktop-only.
 	if !serverBuild {
 		guihealth.Preflight()
+		// Windows Server SKUs (and minimal Windows installs) ship without
+		// the WebView2 Evergreen runtime client SKUs carry; a launch there
+		// died fast inside webview creation, with stderr as the only
+		// witness — and a GUI build has no console, so the user saw
+		// nothing happen at all. Ask the loader's own registry question
+		// before anything window-shaped starts, and refuse loudly (message
+		// box + event log, with install instructions) when it is missing.
+		if err := guihealth.EnsureWebView2(); err != nil {
+			return err
+		}
 		guihealth.ArmStartupWatchdog()
 		defer guihealth.DisarmStartupWatchdog()
 	}
@@ -342,7 +353,17 @@ func Run(version string) error {
 		}()
 	}
 	installShell(app3, app)
-	return app3.Run()
+	if err := app3.Run(); err != nil {
+		// A fast Run failure (webview creation and friends) used to surface
+		// only on stderr — invisible in a GUI build, so the launch just
+		// vanished. The watchdog cannot speak for it either: its deferred
+		// disarm runs as this function returns. Say it out loud instead.
+		if !serverBuild {
+			guihealth.Announce("error", fmt.Sprintf("The app could not start: %v", err))
+		}
+		return err
+	}
+	return nil
 }
 
 // toFilters converts shell dialog filters to Wails file filters.

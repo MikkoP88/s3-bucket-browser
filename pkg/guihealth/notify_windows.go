@@ -14,8 +14,9 @@ var (
 )
 
 // notifyUser puts the message where a user with no app window cannot miss
-// it: a plain modal MessageBox owned by the desktop.
-func notifyUser(text string) {
+// it: a plain modal MessageBox owned by the desktop. A package var so
+// tests can capture announcements without raising real dialogs.
+var notifyUser = func(text string) {
 	title, _ := windows.UTF16PtrFromString("S3 Bucket Browser")
 	body, _ := windows.UTF16PtrFromString(text)
 	// MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST — be seen.

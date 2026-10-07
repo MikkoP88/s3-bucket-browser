@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/eventlog"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/guihealth"
 )
 
 // Single-instance guard (desktop Windows only): launching the GUI while
@@ -59,7 +60,14 @@ func guardSingleInstance() (focus <-chan struct{}, existing bool) {
 		if focused {
 			eventlog.Append("info", "app", "", "second launch: focused the running instance and exited")
 		} else {
-			eventlog.Append("warn", "app", "", "second launch: could not signal the running instance (focus event unreachable); exited without focusing")
+			// The winner holds the instance mutex yet its focus event stayed
+			// unreachable for the whole retry span — a process alive but
+			// wedged before it created the event. To the user this launch
+			// was a click that did nothing; say so out loud instead of
+			// exiting into the same silence.
+			guihealth.Announce("warn", "Another copy of the app is already running but could not "+
+				"be raised, so this launch exited. If no window appears, end the s3b process "+
+				"in Task Manager (or reboot) and start the app again.")
 		}
 	}
 	return focus, existing

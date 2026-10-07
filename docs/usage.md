@@ -102,6 +102,24 @@ invisible-hang shape above. Set S3B_MULTI_INSTANCE=1 before launching
 to opt out and run two copies side by side (separate profiles, test
 rigs).
 
+Windows Server needs one thing client Windows has by default: the app’s
+window is an Edge WebView2 view, and Server SKUs (and stripped-down
+Windows installs) ship without the WebView2 Evergreen runtime. A launch on
+such a machine used to die before any window existed — nothing happened
+at all, no error anywhere. The app now checks for the runtime before it
+tries to open a window and refuses loudly instead: a message box carrying
+the fix (`winget install Microsoft.EdgeWebView2Runtime`, or the standalone
+download from Microsoft’s WebView2 page). Install it once and the app
+starts normally.
+
+If that message box says another copy of the app is already running but
+could not be raised, the previous instance is wedged — end the s3b
+process in Task Manager (or reboot) and start again. And if Windows
+itself warns about the build’s publisher or certificate, that is the
+self-signed release identity: a one-time, per-machine import makes it
+trusted — see [signing.md](signing.md), “Trusting the self-signed
+certificate on a fleet machine”.
+
 ---
 
 ## 2. Supported data sources

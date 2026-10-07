@@ -278,8 +278,10 @@ Additional rules:
   the private key stays outside the repository. Because the certificate is
   not CA-issued, Microsoft Defender SmartScreen still shows "Unknown
   publisher" on first run — choose *More info → Run anyway* and verify the
-  download against `SHA256SUMS` (or install the `.cer` into *Local
-  Machine → Trusted People* to silence the prompt fleet-wide). SmartScreen
+  download against `SHA256SUMS` (or trust the certificate machine-wide:
+  a one-time import into *Trusted Root Certification Authorities* plus
+  *Trusted Publisher* — `scripts/trust-cert.ps1` does both, and the
+  [signing guide](signing.md) explains the store split). SmartScreen
   reputation accrues **per certificate**: an OV certificate needs a volume
   of clean downloads before the warning disappears, while an EV
   certificate or [Azure Trusted
