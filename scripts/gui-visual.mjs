@@ -6485,6 +6485,75 @@ await step('transfers', async () => {
   // default placement — lift it fully into view for the artifact shot
   // (same treatment as the running-tasks window)
   await evalPage((s) => { const p = document.querySelector(s); if (p) p.style.top = '72px'; }, trSel);
+  // pause/resume: a running row parks between files — the toggle rides
+  // beside Cancel, the parked row wears the paused chip and flips to
+  // Resume, and the settled row offers neither verb
+  await evalPage(() => {
+    window.__shim.world.transfers = [
+      ...window.__shim.world.transfers,
+      { id: 'tp', op: 'upload', status: 'running', currentFile: 'b-roll.mp4', totalFiles: 4, doneFiles: 1,
+        totalBytes: 524288000, sentBytes: 66060288, speedBps: 8388608, name: 'b-roll.mp4', items: 4,
+        from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 66060288, currentTotal: 104857600 },
+    ];
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('running row offers Pause beside Cancel, no chip yet', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="tp"]`);
+    if (!row) return false;
+    const btns = Array.from(row.querySelectorAll('.tr-top .btn')).map((b) => b.textContent.trim());
+    return btns.some((x) => /^pause$/i.test(x)) && btns.some((x) => /^cancel$/i.test(x))
+      && !row.querySelector('.tr-chip.st-phase');
+  }, trSel), 4000, 'pause button'));
+  await resetCalls();
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(`${s} .tr-job[data-id="tp"] .tr-top .btn`)).find((b) => /^pause$/i.test(b.textContent))?.click();
+  }, trSel);
+  await ok('Pause sends the running job id', waitFor(async () => {
+    const c = await findCall('PauseTransfer');
+    return !!c && c.args[0] === 'tp';
+  }, 4000, 'PauseTransfer call'));
+  await evalPage(() => {
+    const tp = window.__shim.world.transfers.find((x) => x.id === 'tp');
+    Object.assign(tp, { phase: 'paused', speedBps: 0 });
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('parked row wears the paused chip and flips to Resume', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="tp"]`);
+    if (!row) return false;
+    const btns = Array.from(row.querySelectorAll('.tr-top .btn')).map((b) => b.textContent.trim());
+    return /^paused$/i.test(row.querySelector('.tr-chip.st-phase')?.textContent || '')
+      && btns.some((x) => /^resume$/i.test(x)) && !btns.some((x) => /^pause$/i.test(x));
+  }, trSel), 4000, 'paused chip'));
+  await resetCalls();
+  await evalPage((s) => {
+    Array.from(document.querySelectorAll(`${s} .tr-job[data-id="tp"] .tr-top .btn`)).find((b) => /^resume$/i.test(b.textContent))?.click();
+  }, trSel);
+  await ok('Resume sends the same job id', waitFor(async () => {
+    const c = await findCall('ResumeTransfer');
+    return !!c && c.args[0] === 'tp';
+  }, 4000, 'ResumeTransfer call'));
+  await evalPage(() => {
+    const tp = window.__shim.world.transfers.find((x) => x.id === 'tp');
+    Object.assign(tp, { phase: 'transfer', speedBps: 8388608 });
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('resumed row drops the chip and offers Pause again', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="tp"]`);
+    if (!row) return false;
+    return !row.querySelector('.tr-chip.st-phase')
+      && Array.from(row.querySelectorAll('.tr-top .btn')).some((b) => /^pause$/i.test(b.textContent.trim()));
+  }, trSel), 4000, 'resumed'));
+  await evalPage(() => {
+    const tp = window.__shim.world.transfers.find((x) => x.id === 'tp');
+    Object.assign(tp, { status: 'done', phase: '', currentFile: '', sentBytes: 524288000 });
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('settled row offers neither verb', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="tp"]`);
+    if (!row) return false;
+    const btns = Array.from(row.querySelectorAll('.tr-top .btn')).map((b) => b.textContent.trim());
+    return !btns.some((x) => /pause|resume|cancel/i.test(x));
+  }, trSel), 4000, 'settled offers neither'));
   await shotOf('transfers-critical', trSel);
   // restore the default seeds for the steps that follow
   await evalPage(() => {
@@ -6604,6 +6673,7 @@ await step('running-tasks', async () => {
       && !!row.querySelector('.tr-bar.tr-indet')
       && /shoot\/raw\//.test(row.querySelector('.tr-cur')?.textContent || '');
   }, popSel));
+
   await ok('timed-out task shouts with a crit chip', evalPage((s) => {
     const row = document.querySelector(`${s} .tr-job[data-id="task-13"]`);
     return !!row && /timed out/i.test(row.querySelector('.tr-chip.st-crit')?.textContent || '')
@@ -6626,6 +6696,22 @@ await step('running-tasks', async () => {
     return rows.length === 3 && rows[1].className.includes('ti-active')
       && rows[1].querySelector('.ti-st')?.textContent === 'Transferring';
   }, popSel), 4000, 'tasks item rows'));
+  // a parked transfer joins the monitor with its phase spoken — the
+  // merged row wears the paused chip exactly like the manager's own
+  await evalPage(() => {
+    const t1 = window.__shim.world.transfers.find((x) => x.id === 't1');
+    Object.assign(t1, { phase: 'paused', speedBps: 0 });
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('merged parked transfer wears the paused chip', waitFor(async () => evalPage((s) =>
+    /^paused$/i.test(document.querySelector(`${s} .tr-job[data-id="t1"] .tr-chip.st-phase`)?.textContent || ''), popSel), 4000, 'tasks paused chip'));
+  await evalPage(() => {
+    const t1 = window.__shim.world.transfers.find((x) => x.id === 't1');
+    Object.assign(t1, { phase: 'transfer', speedBps: 8388608 });
+    window.__shim.emit('transfer:update', {});
+  });
+  await waitFor(async () => evalPage((s) =>
+    /@ 8\.0 MB\/s/.test(document.querySelector(`${s} .tr-job[data-id="t1"]`)?.textContent || ''), popSel), 4000, 'tasks pace back');
   // cancel dispatches with the row's id — target the search task (the
   // upload job is also running and sorts first)
   await evalPage((s) => {

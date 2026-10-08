@@ -638,7 +638,13 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
 - **Transfer manager** — View → File transfers (or the status-bar
   counter) shows every job with per-file and byte-level progress, speed
   and cancel — in a floating window, so you can keep browsing while it
-  runs. Multi-item jobs expand (the "+N more" link) into a per-item
+  runs. Multi-item jobs expand
+A running job can also be **paused** — the button sits beside
+  cancel, the in-flight file always settles first (a stream is never
+  abandoned mid-write), the parked row wears a *Paused* chip, and
+  **Resume** walks on at the very file that was next; cancel still
+  reaches a parked job, and the Running tasks window says *Paused*
+  on its merged row too. Multi-item jobs expand (the "+N more" link) into a per-item
   list that updates live — every top-level item’s state (waiting,
   transferring, done, failed, skipped) with its size, or its file
   count for a folder — held through to completion, so a finished

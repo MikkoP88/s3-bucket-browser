@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Transfers learn to pause** — every running job in the transfer
+  manager (uploads, downloads, copies, moves — the synchronize
+  auto-legs too, they ride the same walker) grows a **Pause**
+  button beside cancel: the park lands between files, the in-flight
+  file always settles first (a stream is never abandoned mid-write),
+  the row wears a *Paused* chip while it holds, and **Resume** walks
+  on at the very file that was next — the park is a decision, never
+  a stall (the stall clock restarts on wake, and a paused row is
+  never flagged Stalled). Cancel reaches a parked job, settled or
+  unknown rows accept neither verb, and the Running tasks window's
+  merged rows speak the same paused chip. Behind it one typed law:
+  `PauseTransfer`/`ResumeTransfer` on the between-files gate every
+  walker already passes.
 - **The editor's destructive decisions grow a diff view** — *Push
   anyway* and *Reload from server* were label-shaped consents: one
   force-fed a stale session past the guard on the strength of its own

@@ -40,7 +40,7 @@ type TaskInfo struct {
 	Status     string         `json:"status"`
 	DoneUnits  int            `json:"doneUnits"`
 	TotalUnits int            `json:"totalUnits"`          // 0 = unknown
-	Phase      string         `json:"phase"`               // "" (act) | count | cleanup
+	Phase      string         `json:"phase"`               // "" (act) | count | paused | cleanup (transfer jobs: transfer/paused/cleanup)
 	Current    string         `json:"current,omitempty"`   // item in flight
 	Speed      float64        `json:"speed"`               // units/sec, EMA over emits
 	EtaMs      int64          `json:"etaMs,omitempty"`     // while running, from Speed

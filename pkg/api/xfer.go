@@ -751,6 +751,10 @@ func (a *App) runXfer(j *jobHandle, plan *xferPlan, dst xferDestSide, policy str
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
+		if err := j.awaitPause(ctx); err != nil {
+			a.finishJob(j, JobCanceled, "canceled")
+			return
+		}
 		// A same-profile S3→S3 hop is a server-side CopyObject: no byte
 		// stream ever crosses the wire, so the per-file line gets no size
 		// to grind against — announcing it without one lights the row's

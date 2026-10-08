@@ -2144,6 +2144,7 @@ function openTransferManagerDom(onClose) {
     const chips = [];
     if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
     if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
+    if (running && j.phase === 'paused') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.pausedChip') }));
     if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
     if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));
     // byteless in-flight transfer = server-side copy: activity without
@@ -2193,6 +2194,7 @@ function openTransferManagerDom(onClose) {
         (j.items > 1) ? moreLink(j.id, j.items, expanded.has(j.id), toggle) : null,
         el('span', { class: 'tr-chips' }, ...chips),
         el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
+        running ? el('button', { class: 'btn', text: j.phase === 'paused' ? t('transfer.resumeJob') : t('transfer.pauseJob'), onclick: async () => { await (j.phase === 'paused' ? api.ResumeTransfer(j.id) : api.PauseTransfer(j.id)); } }) : null,
         running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } })
           : retryable(j) ? el('button', { class: 'btn', text: t('transfer.retryFailed'), onclick: async () => {
             // One click, only what failed: the backend resubmits the failed
@@ -2434,6 +2436,7 @@ function runningTasksDom() {
     const chips = [];
     if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
     if (running && j.phase === 'count') chips.push(el('span', { class: 'tr-chip st-phase', text: t('tasks.counting') }));
+    if (running && j.phase === 'paused') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.pausedChip') }));
     if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
     if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
     if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));

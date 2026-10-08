@@ -35,6 +35,7 @@ const (
 // running, the phase says why nothing moves yet).
 const (
 	PhaseTransfer = "transfer"
+	PhasePaused   = "paused"  // PauseTransfer: the between-files gate is held
 	PhaseCleanup  = "cleanup" // move: deleting fully-transferred sources
 )
 
@@ -106,7 +107,7 @@ type JobInfo struct {
 	From         string         `json:"from,omitempty"`      // human source label
 	To           string         `json:"to,omitempty"`        // human destination label
 	Dest         XferDest       `json:"dest"`                // where the bytes land, typed (XferDest reused — one wire grammar); Kind "" = unknown, the GUI hides the affordance
-	Phase        string         `json:"phase"`               // "transfer" | "cleanup"
+	Phase        string         `json:"phase"`               // "transfer" | "paused" | "cleanup"
 	FileIndex    int            `json:"fileIndex"`           // 1-based in-flight file ordinal
 	CurrentSent  int64          `json:"currentSent"`         // bytes of the in-flight file
 	CurrentTotal int64          `json:"currentTotal"`        // its size (0 = unknown/server-side)
@@ -145,6 +146,10 @@ type jobHandle struct {
 	lastEmAt   time.Time // when that was
 	stallAfter time.Duration
 	itemNames  []string // item display names (TransferItems — the >itemRowCap fallback)
+	// hold is the pause gate: nil while the job flows, a channel that
+	// stays open for exactly as long as the job is paused (closed and
+	// cleared by resume). Guarded by mu; awaited only between files.
+	hold chan struct{}
 	// retry resubmits only the kept rows of the original request under
 	// skip semantics; set once at entry before the worker spawns, read
 	// only by RetryTransfer after the job settles.
@@ -310,6 +315,40 @@ func (m *jobManager) cancel(id string) bool {
 		j.mu.Unlock()
 		if match {
 			j.cancel()
+			return true
+		}
+	}
+	return false
+}
+
+// pause parks a running, flowing job between files; resume releases one
+// that is parked. The booleans say which calls did something — pausing a
+// paused job or resuming a flowing one is a no-op, and a settled job
+// accepts neither.
+func (m *jobManager) pause(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, j := range m.all {
+		j.mu.Lock()
+		match := j.info.ID == id && j.info.Status == JobRunning && j.hold == nil
+		j.mu.Unlock()
+		if match {
+			j.pause()
+			return true
+		}
+	}
+	return false
+}
+
+func (m *jobManager) resume(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, j := range m.all {
+		j.mu.Lock()
+		match := j.info.ID == id && j.hold != nil
+		j.mu.Unlock()
+		if match {
+			j.resume()
 			return true
 		}
 	}
@@ -490,6 +529,56 @@ func (j *jobHandle) setPhase(p string) {
 	j.mu.Unlock()
 }
 
+// pause parks the job between files: the worker's next between-files
+// gate waits instead of starting the next file. An in-flight file (if
+// any) runs to its own settle first — a stream is never abandoned
+// mid-write. No-op on a settled or already-paused job.
+func (j *jobHandle) pause() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.info.Status == JobRunning && j.hold == nil {
+		j.hold = make(chan struct{})
+	}
+}
+
+// resume releases the pause; the close is the one wake signal, so a job
+// paused once resumes once no matter how often resume is clicked.
+func (j *jobHandle) resume() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.hold != nil {
+		close(j.hold)
+		j.hold = nil
+	}
+}
+
+// awaitPause is the between-files gate every walker passes: it blocks
+// while the job is paused, labels the wait as its own phase (the row
+// says why nothing moves, and Stalled stays off it), and hands back the
+// context error when the wait ended by cancellation instead of resume.
+func (j *jobHandle) awaitPause(ctx context.Context) error {
+	j.mu.Lock()
+	h := j.hold
+	if h == nil {
+		j.mu.Unlock()
+		return nil
+	}
+	j.info.Phase = PhasePaused
+	j.mu.Unlock()
+	j.emit(true)
+	select {
+	case <-h:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	j.mu.Lock()
+	j.info.Phase = PhaseTransfer
+	j.lastByteAt = time.Now() // the pause was not a stall — never inherit its age
+	j.mu.Unlock()
+	j.emit(true)
+	return nil
+}
+
 // fileDone settles the in-flight file: the job counters, the byte base
 // and the owning item's row all advance together. outcome is ItemDone,
 // ItemFailed or ItemSkipped — a skip settles nothing byte-wise (the
@@ -546,6 +635,15 @@ func (a *App) ClearFinishedTransfers(ids []string) { a.jobs.clearFinished(ids) }
 
 // CancelTransfer cancels a running job by ID.
 func (a *App) CancelTransfer(id string) bool { return a.jobs.cancel(id) }
+
+// PauseTransfer parks a running job at its next between-files gate —
+// the in-flight file (if any) settles first, the row says "paused", and
+// nothing new starts until ResumeTransfer (or cancel) releases the gate.
+func (a *App) PauseTransfer(id string) bool { return a.jobs.pause(id) }
+
+// ResumeTransfer releases a paused job; the walker continues at the very
+// file it stopped before.
+func (a *App) ResumeTransfer(id string) bool { return a.jobs.resume(id) }
 
 // RetryTransfer resubmits only a settled job's failed items (a canceled
 // job's unfinished ones) as a fresh job under skip semantics — what
@@ -730,6 +828,10 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 	ctx := j.ctx
 	for i, p := range pairs {
 		if ctx.Err() != nil {
+			a.finishJob(j, JobCanceled, "canceled")
+			return
+		}
+		if err := j.awaitPause(ctx); err != nil {
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
@@ -1049,6 +1151,10 @@ func (a *App) runDownload(j *jobHandle, c *s3client.Client, bucket string, items
 	}
 	for i, it := range items {
 		if ctx.Err() != nil {
+			a.finishJob(j, JobCanceled, "canceled")
+			return
+		}
+		if err := j.awaitPause(ctx); err != nil {
 			a.finishJob(j, JobCanceled, "canceled")
 			return
 		}
