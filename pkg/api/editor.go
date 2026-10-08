@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +37,11 @@ const EventEditorPushFailed = "editor:push-failed"
 // anyway, reload from the server, or stop and discard.
 const EventEditorConflict = "editor:conflict"
 
+// EventRemoteChanged fires when an edit push landed on a remote engine
+// source (payload: {source, dir}) — the remote twin of s3:changed: the
+// views seating that source's directory refresh on it.
+const EventRemoteChanged = "remote:changed"
+
 // errEditConflict names the editor's lost-update refusal: the push met a
 // remote object that is no longer the version this session pulled.
 var errEditConflict = errors.New("the object changed on the server since editing began")
@@ -53,15 +62,27 @@ func isPreconditionFailed(err error) bool {
 
 // editSession tracks one file opened in an external editor.
 type editSession struct {
-	Bucket   string
-	Key      string
-	Local    string
-	mu       sync.Mutex
+	Bucket string
+	Key    string
+	Source string // the engine leg's source NAME; S3: the source name, "" = the view source
+	remote bool   // the engine leg (FTP/SFTP/WebDAV/local-root sources)
+	Local  string
+	mu     sync.Mutex
+	// the S3 leg's push guard: the object's ETag at pull, "" = degraded off
+	etag string
+	// the engine leg's push guard: the file's size and mtime at pull. rMod 0
+	// = the engine reported no mtime (or Stat failed — rGuard off, the same
+	// honest degradation as a missing ETag); mtime is compared only when both
+	// the baseline and the engine's answer are nonzero, because engines
+	// differ in precision (FTP minutes, SFTP seconds, WebDAV sub-second).
+	rSize  int64
+	rMod   int64
+	rGuard bool
+	// the staged file's identity, driving change detection and the dirty flag
 	origSize int64
 	origMod  int64
 	lastSize int64
 	lastMod  int64
-	etag     string    // the remote identity at pull — the push guard's baseline
 	dirty    bool      // changed since last upload
 	stale    bool      // the guard refused a push: the remote changed underneath
 	fails    int       // consecutive push failures (drives the backoff)
@@ -69,22 +90,70 @@ type editSession struct {
 	done     bool
 }
 
+// editKey is the session's registry key, the target grammar the typed
+// family speaks: S3 sessions keep the historical bucket\x00key; engine
+// sessions sit in their own namespace — a NUL can occur in neither a
+// bucket name nor an engine path, so no S3 bucket (even one literally
+// named "remote") can ever collide with an engine session.
+func (s *editSession) editKey() string {
+	if s.remote {
+		return "remote\x00" + s.Source + "\x00" + s.Key
+	}
+	return s.Bucket + "\x00" + s.Key
+}
+
+// label is the session's human name in logs and the manager rows —
+// source:path for engine files (the crumb grammar), bucket/key for S3.
+func (s *editSession) label() string {
+	if s.remote {
+		return s.Source + ":" + s.Key
+	}
+	return s.Bucket + "/" + s.Key
+}
+
 // EditInfo is the status view of an edit session.
 type EditInfo struct {
 	Bucket     string `json:"bucket"`
 	Key        string `json:"key"`
+	Source     string `json:"source"` // engine leg: the source name; S3 rows: the named source, "" = the view source
+	Kind       string `json:"kind"`   // "s3" | "remote"; legacy shim rows without it read as s3
 	Local      string `json:"local"`
 	Dirty      bool   `json:"dirty"`
 	PushFailed bool   `json:"pushFailed"` // last push failed; retrying with backoff
 	Stale      bool   `json:"stale"`      // the object changed on the server; waiting for a decision
 }
 
-// editDir is the temp workspace for edited objects: the config dir
+// EditTarget names one editable file anywhere the app seats files — the
+// typed grammar the transfer matrix's dests already speak. Kind "s3" is
+// an object of the view source (Source "") or of a named source (the
+// dual pane's bindings); kind "remote" is a file of an engine source
+// (FTP/SFTP/WebDAV/local-root), Key the engine path anchored at "/".
+// Local files never cross the bridge — the frontend opens them in
+// place, so kind "local" is refused here.
+type EditTarget struct {
+	Kind   string `json:"kind"`
+	Source string `json:"source"`
+	Bucket string `json:"bucket"`
+	Key    string `json:"key"`
+}
+
+// id is the target's session-registry key — the session grammar above.
+func (t EditTarget) id() string {
+	if t.Kind == "remote" {
+		return "remote\x00" + t.Source + "\x00" + t.Key
+	}
+	return t.Bucket + "\x00" + t.Key
+}
+
+// editDir is the temp workspace for edited files: the config dir
 // (0700, secure.go) under secure storage, else the system temp dir.
-// The bucket names the subdirectory — server-supplied, so it rides the
-// containment join like every other listing-derived path segment.
-func editDir(bucket string) string {
-	return transfer.SafeLocalJoin(workspaceBase("edit"), bucket)
+// S3 objects stage under their bucket name, engine files under
+// "remote/<source name>" — a slash cannot occur in a bucket name, so
+// the two trees can never collide — and every segment is server-
+// supplied, riding the containment join like every other listing-
+// derived path segment.
+func editDir(parts ...string) string {
+	return transfer.SafeLocalJoin(workspaceBase("edit"), parts...)
 }
 
 // watcherPoll is the file-watch interval; a change is uploaded after it
@@ -134,11 +203,11 @@ func (a *App) notePushFailed(s *editSession, err error) {
 	s.nextTry = time.Now().Add(wait)
 	s.mu.Unlock()
 	a.emitLog(LogError, "edit", fmt.Sprintf(
-		"upload of %s/%s failed (retry in %s; edits stay pending): %v",
-		s.Bucket, s.Key, wait, err))
+		"upload of %s failed (retry in %s; edits stay pending): %v",
+		s.label(), wait, err))
 	if first {
 		a.emit(EventEditorPushFailed, map[string]string{
-			"bucket": s.Bucket, "key": s.Key, "error": err.Error(),
+			"bucket": s.Bucket, "key": s.Key, "source": s.Source, "error": err.Error(),
 		})
 	}
 }
@@ -164,12 +233,40 @@ func (a *App) refocus(s *editSession, chooseApp bool) (EditInfo, error) {
 	return s.info(), nil
 }
 
-// EditObject downloads bucket/key into a temp workspace, opens it with
-// the OS default editor (or, chooseApp=true, the OS "Open with…" picker
-// so the user selects the editing application per file) and keeps
-// watching: every saved change is uploaded back automatically
-// (WinSCP-style "keep remote up to date").
+// EditObject downloads bucket/key of the browsing view source into a
+// temp workspace, opens it with the OS default editor (or, chooseApp=
+// true, the OS "Open with…" picker so the user selects the editing
+// application per file) and keeps watching: every saved change is
+// uploaded back automatically (WinSCP-style "keep remote up to date").
+// The historical entry point; the typed EditFile grammar covers every
+// seat a file has in this app.
 func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
+	return a.editS3("", bucket, key, chooseApp)
+}
+
+// EditFile opens any file the app seats for editing — the typed target
+// grammar: an S3 object of the view source (Source "") or of any named
+// source (the dual pane's bindings), or a file of a remote engine
+// source (FTP/SFTP/WebDAV/local-root; the Key is the engine path
+// anchored at "/"). Local files are refused here on purpose: they
+// never stage and never push — the file IS the store, and the
+// frontend opens it in place with the OS.
+func (a *App) EditFile(t EditTarget, chooseApp bool) (EditInfo, error) {
+	switch t.Kind {
+	case "", "s3":
+		return a.editS3(t.Source, t.Bucket, t.Key, chooseApp)
+	case "remote":
+		return a.editRemote(t.Source, t.Key, chooseApp)
+	default:
+		return EditInfo{}, fmt.Errorf(
+			"cannot edit kind %q — S3 objects and remote source files edit in place; local files open directly", t.Kind)
+	}
+}
+
+// editS3 is the S3 leg: source "" is the browsing view source, any
+// other name the saved source the dual pane's bindings carry — the
+// same client grammar every transfer leg already speaks.
+func (a *App) editS3(source, bucket, key string, chooseApp bool) (EditInfo, error) {
 	a.editorsMu.Lock()
 	if s := a.editors[bucket+"\x00"+key]; s != nil {
 		a.editorsMu.Unlock()
@@ -179,7 +276,7 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 		return a.refocus(s, chooseApp)
 	}
 	a.editorsMu.Unlock()
-	c, err := a.client("")
+	c, err := a.client(source)
 	if err != nil {
 		return EditInfo{}, err
 	}
@@ -200,7 +297,11 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 	// session's lasting surface. Before this the pull was an invisible,
 	// uncancellable bound call: a multi-gigabyte object just spun, and
 	// the exit gate's task check now covers a quit mid-pull too.
-	task := a.tasks.add("edit", fmt.Sprintf("s3://%s/%s", bucket, key))
+	taskLabel := fmt.Sprintf("s3://%s/%s", bucket, key)
+	if source != "" {
+		taskLabel = fmt.Sprintf("s3://%s/%s/%s", source, bucket, key)
+	}
+	task := a.tasks.add("edit", taskLabel)
 	task.setTotal(1, "")
 	// Idempotent backstop: no-op when the explicit finishes below already
 	// ran — and it still settles the row if a panic unwinds through here.
@@ -231,13 +332,13 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 	}
 
 	s := &editSession{
-		Bucket: bucket, Key: key, Local: local,
+		Bucket: bucket, Key: key, Source: source, Local: local,
 		origSize: st.Size(), origMod: st.ModTime().UnixMilli(),
 		lastSize: st.Size(), lastMod: st.ModTime().UnixMilli(),
 		etag: etag,
 	}
 	a.editorsMu.Lock()
-	if prev := a.editors[s.Bucket+"\x00"+s.Key]; prev != nil {
+	if prev := a.editors[s.editKey()]; prev != nil {
 		// a concurrent Edit for the same object registered first (both
 		// pulls were in flight): keep its session — the staged file is
 		// the same path holding the same fresh bytes — and surface the
@@ -245,7 +346,125 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 		a.editorsMu.Unlock()
 		return a.refocus(prev, chooseApp)
 	}
-	a.editors[s.Bucket+"\x00"+s.Key] = s
+	a.editors[s.editKey()] = s
+	a.editorsMu.Unlock()
+
+	if err := openInEditor(a, local, chooseApp); err != nil {
+		return s.info(), fmt.Errorf("downloaded but could not open editor: %w", err)
+	}
+	go a.watchEditor(s)
+	return s.info(), nil
+}
+
+// editRemote is the engine leg of the editor: pull the file of a
+// remote source (FTP/SFTP/WebDAV/local-root; name or ID resolves the
+// same way every engine call does) into the edit workspace, open it,
+// and push every stable save back through the engine — the same
+// watcher, the same dirty/stale voice, with the guard the engine wire
+// can actually speak: FTP/SFTP/WebDAV carry no ETags, so the baseline
+// is the file's own size and mtime at pull, compared before every
+// push. Check-then-write, both legs under the source's engine lock —
+// the wire has no conditional store; the window is the milliseconds
+// between the guard's Stat and the Create, and no honest engine can
+// close it.
+func (a *App) editRemote(idOrName, keyPath string, chooseApp bool) (EditInfo, error) {
+	src, fs, err := a.remoteSource(idOrName)
+	if err != nil {
+		return EditInfo{}, err
+	}
+	if keyPath == "" || strings.HasSuffix(keyPath, "/") {
+		return EditInfo{}, fmt.Errorf("%s is a folder", keyPath)
+	}
+	sid := "remote\x00" + src.Name + "\x00" + keyPath
+	a.editorsMu.Lock()
+	if s := a.editors[sid]; s != nil {
+		a.editorsMu.Unlock()
+		return a.refocus(s, chooseApp) // the live session's staged edits win
+	}
+	a.editorsMu.Unlock()
+	dir := editDir("remote", src.Name)
+	if err := os.MkdirAll(dir, 0o700); err != nil { // owner-only even on shared /tmp
+		return EditInfo{}, err
+	}
+	local := transfer.SafeLocalJoin(dir, strings.TrimPrefix(keyPath, "/"))
+	if st, err := os.Stat(local); err == nil && st.IsDir() {
+		return EditInfo{}, fmt.Errorf("%s is a folder", keyPath)
+	}
+	// the pull rides the task registry like the S3 leg's, labeled in the
+	// source:path grammar the crumb uses
+	task := a.tasks.add("edit", fmt.Sprintf("%s:%s", src.Name, keyPath))
+	task.setTotal(1, "")
+	defer task.finish(nil, true)
+	// one engine data connection at a time (FTP allows exactly one) —
+	// the pull and the guard's Stat share the source's lock hold
+	unlock := a.lockSrcs(src.ID)
+	rc, _, err := fs.Open(task.ctx, keyPath)
+	if err != nil {
+		unlock()
+		task.finish(err, true)
+		return EditInfo{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(local), 0o700); err != nil {
+		rc.Close()
+		unlock()
+		task.finish(err, true)
+		return EditInfo{}, err
+	}
+	copyErr := func() error {
+		defer rc.Close()
+		f, err := os.OpenFile(local, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = io.Copy(f, rc)
+		return err
+	}()
+	if copyErr != nil {
+		unlock()
+		task.finish(copyErr, true)
+		return EditInfo{}, copyErr
+	}
+	// The push guard's baseline — the engine file's own identity at pull:
+	// size, and mtime when the engine reports one (rMod 0 = it did not,
+	// and the guard compares size only). A Stat that fails degrades
+	// honestly — no baseline, no guard — exactly the S3 leg's missing-ETag
+	// degradation; never a false alarm over an identity the wire never
+	// gave. A directory answer is the IsDir refusal, honestly late.
+	var rSize, rMod int64
+	rGuard := false
+	if st, serr := fs.Stat(task.ctx, keyPath); serr == nil {
+		if st.IsDir {
+			unlock()
+			err := fmt.Errorf("%s is a folder", keyPath)
+			task.finish(err, true)
+			return EditInfo{}, err
+		}
+		rGuard = true
+		rSize = st.Size
+		if st.LastModified != nil {
+			rMod = st.LastModified.UnixMilli()
+		}
+	}
+	unlock()
+	task.progress(1)
+	st, err := os.Stat(local)
+	if err != nil {
+		return EditInfo{}, err
+	}
+	s := &editSession{
+		remote: true, Source: src.Name, Key: keyPath, Local: local,
+		origSize: st.Size(), origMod: st.ModTime().UnixMilli(),
+		lastSize: st.Size(), lastMod: st.ModTime().UnixMilli(),
+		rSize: rSize, rMod: rMod, rGuard: rGuard,
+	}
+	a.editorsMu.Lock()
+	if prev := a.editors[s.editKey()]; prev != nil {
+		// the concurrent-edit double-check, same law as the S3 leg
+		a.editorsMu.Unlock()
+		return a.refocus(prev, chooseApp)
+	}
+	a.editors[s.editKey()] = s
 	a.editorsMu.Unlock()
 
 	if err := openInEditor(a, local, chooseApp); err != nil {
@@ -282,12 +501,12 @@ func (a *App) watchEditor(s *editSession) {
 			// or a zombie entry pins the indicator (and, when dirty,
 			// the exit gate) on a file that no longer exists
 			a.editorsMu.Lock()
-			if a.editors[s.Bucket+"\x00"+s.Key] == s {
-				delete(a.editors, s.Bucket+"\x00"+s.Key)
+			if a.editors[s.editKey()] == s {
+				delete(a.editors, s.editKey())
 			}
 			a.editorsMu.Unlock()
 			a.emitLog(LogInfo, "edit", fmt.Sprintf(
-				"session for %s/%s ended: staged file removed", s.Bucket, s.Key))
+				"session for %s ended: staged file removed", s.label()))
 			return
 		}
 		if err != nil {
@@ -314,14 +533,13 @@ func (a *App) watchEditor(s *editSession) {
 			if !ready {
 				continue // a failing push waits out its backoff; a stale one waits for its user
 			}
-			if err := a.uploadEdit(s, false); err == nil {
+			if err := a.pushSession(s, false); err == nil {
 				s.mu.Lock()
 				s.dirty = false
 				s.fails = 0
 				s.nextTry = time.Time{}
 				s.mu.Unlock()
-				a.emit(EventEditorSaved, map[string]string{"bucket": s.Bucket, "key": s.Key})
-				a.emit(EventS3Changed, map[string]string{"bucket": s.Bucket})
+				a.noteEditSaved(s)
 			} else if errors.Is(err, errEditConflict) {
 				// The guard refused: the remote is no longer the version
 				// this session pulled. Sticky — the condition cannot heal
@@ -341,19 +559,19 @@ func (a *App) watchEditor(s *editSession) {
 	}
 }
 
-// uploadEdit pushes the current file content back to the object. The
-// push is conditional while the session knows the remote's identity (the
-// ETag it pulled): a remote change in flight fails with errEditConflict
-// instead of silently overwriting it — the lost-update cure. force is the
-// explicit informed consent the dialog's Push anyway carries, the one
-// writer allowed past the guard. A landed push rebases the guard on the
-// ETag it just wrote, so the next save guards against the new baseline.
+// uploadEdit is the S3 push leg. The push is conditional while the
+// session knows the remote's identity (the ETag it pulled): a remote
+// change in flight fails with errEditConflict instead of silently
+// overwriting it — the lost-update cure. force is the explicit
+// informed consent the dialog's Push anyway carries, the one writer
+// allowed past the guard. A landed push rebases the guard on the ETag
+// it just wrote, so the next save guards against the new baseline.
 // One direct conditional PUT, not the multipart manager: past its part
 // size the manager rides CreateMultipartUpload, a wire that does not
 // carry the condition — the guard would silently vanish exactly on the
 // biggest files (UploadFileIfMatch owns the reasoning).
 func (a *App) uploadEdit(s *editSession, force bool) error {
-	c, err := a.client("")
+	c, err := a.client(s.Source)
 	if err != nil {
 		return err
 	}
@@ -391,6 +609,106 @@ func (a *App) uploadEdit(s *editSession, force bool) error {
 	return nil
 }
 
+// pushSession is the session's own push leg — the S3 conditional PUT
+// for object sessions, the guarded engine Create for engine sessions.
+// One law for every caller: the watcher's auto-saves, PushEdit's and
+// StopEditFile's explicit saves.
+func (a *App) pushSession(s *editSession, force bool) error {
+	if s.remote {
+		return a.uploadEditRemote(s, force)
+	}
+	return a.uploadEdit(s, force)
+}
+
+// uploadEditRemote pushes the staged file back through the engine,
+// guarded by the pull's baseline: the file's size, and its mtime when
+// both the baseline and the engine's current answer are nonzero
+// (engines differ in precision — FTP minutes, SFTP seconds, WebDAV
+// sub-second — and a baseline of 0 means the engine reported none).
+// Engines have no conditional store; the guard is a Stat compared and
+// the Create written under the same source lock, so only the wire
+// itself can slip a write between them — the honest limit, the
+// milliseconds a check-then-write cannot close. A Stat error is
+// endpoint trouble, not a green light: it fails the push into the
+// backoff voice, never past the guard. A landed push rebases the
+// baseline on what the engine now reports — the mtime twin of the
+// ETag rebase, so the next save guards against the new baseline.
+func (a *App) uploadEditRemote(s *editSession, force bool) error {
+	src, fs, err := a.remoteSource(s.Source)
+	if err != nil {
+		return err
+	}
+	// the same budget the S3 leg rides (editPushTimeout owns the
+	// reasoning): app shutdown cancels, and a peer that takes the body
+	// and goes silent must not park the watcher forever
+	budget := editPushTimeout
+	var base context.Context = context.Background()
+	if a.ctx != nil {
+		base = a.ctx
+	}
+	ctx, cancel := context.WithTimeout(base, budget)
+	defer cancel()
+	f, err := os.Open(s.Local)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	unlock := a.lockSrcs(src.ID)
+	defer unlock()
+	s.mu.Lock()
+	guard, wantSize, wantMod := s.rGuard, s.rSize, s.rMod
+	s.mu.Unlock()
+	if guard && !force {
+		cur, serr := fs.Stat(ctx, s.Key)
+		if serr != nil {
+			return serr
+		}
+		if cur.IsDir {
+			return fmt.Errorf("%s became a folder", s.Key)
+		}
+		if cur.Size != wantSize || (wantMod != 0 && cur.LastModified != nil && cur.LastModified.UnixMilli() != wantMod) {
+			return fmt.Errorf("%w: %s changed on the server since editing began", errEditConflict, s.Key)
+		}
+	}
+	if err := fs.Create(ctx, s.Key, f); err != nil {
+		return err
+	}
+	if cur, serr := fs.Stat(ctx, s.Key); serr == nil && !cur.IsDir {
+		s.mu.Lock()
+		s.rSize = cur.Size
+		s.rMod = 0
+		if cur.LastModified != nil {
+			s.rMod = cur.LastModified.UnixMilli()
+		}
+		s.mu.Unlock()
+	}
+	return nil
+}
+
+// noteEditLanded voices a landed push to the views seating the file's
+// location — the refresh nudge (s3:changed / remote:changed, the
+// remote twin). The saved event itself rides noteEditSaved.
+func (a *App) noteEditLanded(s *editSession) {
+	if s.remote {
+		a.emit(EventRemoteChanged, map[string]string{"source": s.Source, "dir": path.Dir(s.Key)})
+		return
+	}
+	a.emit(EventS3Changed, map[string]string{"bucket": s.Bucket, "source": s.Source})
+}
+
+// noteEditSaved voices a landed push in full: the saved event (payload
+// in the session's own identity grammar — bucket for objects, source
+// for engine files, key basename-friendly in both, so today's toasts
+// speak unchanged) and the refresh nudge (noteEditLanded).
+func (a *App) noteEditSaved(s *editSession) {
+	if s.remote {
+		a.emit(EventEditorSaved, map[string]string{"source": s.Source, "key": s.Key})
+	} else {
+		a.emit(EventEditorSaved, map[string]string{"bucket": s.Bucket, "key": s.Key})
+	}
+	a.noteEditLanded(s)
+}
+
 // markEditStale flags a session whose guard refused a push — the remote
 // is no longer the version this session pulled. Sticky by design: the
 // condition cannot heal on a timer, so it never rides the backoff ladder.
@@ -402,10 +720,10 @@ func (a *App) markEditStale(s *editSession, err error) {
 	s.stale = true
 	s.mu.Unlock()
 	a.emitLog(LogError, "edit", fmt.Sprintf(
-		"push of %s/%s refused: %v (edits stay pending — push anyway or reload)",
-		s.Bucket, s.Key, err))
+		"push of %s refused: %v (edits stay pending — push anyway or reload)",
+		s.label(), err))
 	if !was {
-		a.emit(EventEditorConflict, map[string]string{"bucket": s.Bucket, "key": s.Key})
+		a.emit(EventEditorConflict, map[string]string{"bucket": s.Bucket, "key": s.Key, "source": s.Source})
 	}
 }
 
@@ -417,12 +735,24 @@ func (a *App) markEditStale(s *editSession, err error) {
 // session survives every outcome: a landed push settles the dirty state
 // and rebases the guard on what it wrote, a conflict re-marks it stale,
 // an ordinary failure enters the same backoff voice the watcher rides.
+// The historical entry point (view-source objects); PushEditFile is the
+// typed grammar covering every seat.
 func (a *App) PushEdit(bucket, key string, force bool) error {
+	return a.pushEdit(bucket+"\x00"+key, key, force)
+}
+
+// PushEditFile pushes a typed target's pending edits now — the typed
+// grammar (see PushEdit).
+func (a *App) PushEditFile(t EditTarget, force bool) error {
+	return a.pushEdit(t.id(), t.Key, force)
+}
+
+func (a *App) pushEdit(sid, displayKey string, force bool) error {
 	a.editorsMu.Lock()
-	s := a.editors[bucket+"\x00"+key]
+	s := a.editors[sid]
 	a.editorsMu.Unlock()
 	if s == nil {
-		return fmt.Errorf("not being edited: %s", key)
+		return fmt.Errorf("not being edited: %s", displayKey)
 	}
 	// Like StopEdit's explicit save: the watcher only notices changes on
 	// its poll — an explicit push right after an edit must not depend on
@@ -438,7 +768,7 @@ func (a *App) PushEdit(bucket, key string, force bool) error {
 	if !dirty {
 		return nil
 	}
-	if err := a.uploadEdit(s, force); err != nil {
+	if err := a.pushSession(s, force); err != nil {
 		if errors.Is(err, errEditConflict) {
 			a.markEditStale(s, err)
 		} else {
@@ -452,8 +782,7 @@ func (a *App) PushEdit(bucket, key string, force bool) error {
 	s.nextTry = time.Time{}
 	s.stale = false
 	s.mu.Unlock()
-	a.emit(EventEditorSaved, map[string]string{"bucket": s.Bucket, "key": s.Key})
-	a.emit(EventS3Changed, map[string]string{"bucket": s.Bucket})
+	a.noteEditSaved(s)
 	return nil
 }
 
@@ -471,8 +800,12 @@ func (a *App) done() <-chan struct{} {
 func (s *editSession) info() EditInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	kind := "s3"
+	if s.remote {
+		kind = "remote"
+	}
 	return EditInfo{
-		Bucket: s.Bucket, Key: s.Key, Local: s.Local,
+		Bucket: s.Bucket, Key: s.Key, Source: s.Source, Kind: kind, Local: s.Local,
 		Dirty: s.dirty, PushFailed: s.fails > 0, Stale: s.stale,
 	}
 }
@@ -495,13 +828,24 @@ func (a *App) EditingFiles() []EditInfo {
 // workspace wipe deletes, with the indicator gone and the exit gate
 // no longer guarding. A failing explicit save keeps the session alive
 // (still dirty, flagged, retried by the watcher with backoff) and
-// returns the error.
+// returns the error. The historical entry point (view-source
+// objects); StopEditFile is the typed grammar covering every seat.
 func (a *App) StopEdit(bucket, key string, upload bool) error {
+	return a.stopEdit(bucket+"\x00"+key, key, upload)
+}
+
+// StopEditFile ends a typed target's session (the typed grammar; see
+// StopEdit).
+func (a *App) StopEditFile(t EditTarget, upload bool) error {
+	return a.stopEdit(t.id(), t.Key, upload)
+}
+
+func (a *App) stopEdit(sid, displayKey string, upload bool) error {
 	a.editorsMu.Lock()
-	s := a.editors[bucket+"\x00"+key]
+	s := a.editors[sid]
 	a.editorsMu.Unlock()
 	if s == nil {
-		return fmt.Errorf("not being edited: %s", key)
+		return fmt.Errorf("not being edited: %s", displayKey)
 	}
 	// The watcher only notices changes on its poll (1.2s cadence); an
 	// explicit save right after an edit must not depend on that timing.
@@ -523,7 +867,7 @@ func (a *App) StopEdit(bucket, key string, upload bool) error {
 		// past the very condition the auto-push refuses. On a stale
 		// session the push fails with the conflict and the session
 		// survives (the dialog's Push anyway is the informed consent).
-		if err := a.uploadEdit(s, false); err != nil {
+		if err := a.pushSession(s, false); err != nil {
 			if errors.Is(err, errEditConflict) {
 				a.markEditStale(s, err)
 			} else {
@@ -531,7 +875,7 @@ func (a *App) StopEdit(bucket, key string, upload bool) error {
 			}
 			return err
 		}
-		a.emit(EventS3Changed, map[string]string{"bucket": bucket})
+		a.noteEditLanded(s)
 	}
 	// settle — only now, with the push landed (or none wanted): the
 	// watcher stops, the session leaves the registry (by identity, so a
@@ -540,8 +884,8 @@ func (a *App) StopEdit(bucket, key string, upload bool) error {
 	s.done = true
 	s.mu.Unlock()
 	a.editorsMu.Lock()
-	if a.editors[bucket+"\x00"+key] == s {
-		delete(a.editors, bucket+"\x00"+key)
+	if a.editors[sid] == s {
+		delete(a.editors, sid)
 	}
 	a.editorsMu.Unlock()
 	a.retireEditFile(s.Local)

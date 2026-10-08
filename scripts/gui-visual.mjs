@@ -1471,6 +1471,39 @@ function shim() {
       }
       return {};
     },
+    // the typed editor family (edit-any): engine sessions ride
+    // EditFile/StopEditFile/PushEditFile with the same world.editing rows,
+    // matched by kind+source+key (kind falling back to s3 for legacy rows);
+    // editReject mirrors the EditObject cancelled-picker fault so the
+    // newFile handoff leg stays testable
+    EditFile: async (t) => {
+      if (world.editReject) throw new Error('cancelled');
+      return {};
+    },
+    StopEditFile: async (t) => {
+      const flt = (world.fault || {}).editStop;
+      if (flt) throw new Error(flt);
+      const kind = t.kind || 's3';
+      world.editing = (world.editing || []).filter((e) =>
+        !((e.kind || 's3') === kind && (e.source || '') === (t.source || '')
+          && (e.bucket || '') === (t.bucket || '') && e.key === t.key));
+      return {};
+    },
+    PushEditFile: async (t, force) => {
+      const kind = t.kind || 's3';
+      const row = (world.editing || []).find((e) =>
+        (e.kind || 's3') === kind && (e.source || '') === (t.source || '')
+          && (e.bucket || '') === (t.bucket || '') && e.key === t.key);
+      if (!row) throw new Error('not being edited: ' + t.key);
+      if (force) {
+        row.dirty = false;
+        row.pushFailed = false;
+        row.stale = false;
+      } else if (row.stale) {
+        throw new Error('the file changed on the server since editing began');
+      }
+      return {};
+    },
     // ---- OS interop ----
     PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
     // local delete (side pane): count-then-act preview + permanent remove
@@ -8549,7 +8582,7 @@ await step('edit-choose-app', async () => {
   await navObjects('team-files');
   await resetCalls();
   await openCtx('readme.md');
-  await ctxItem(/^edit$/i);
+  await ctxItem(/^editf4$/i);
   await waitFor(async () => (await findCall('EditObject')) !== null, 4000, 'EditObject (chooser on)');
   let c = await findCall('EditObject');
   await ok('Edit asks for the OS app by default (chooseApp=true)', c
@@ -8558,7 +8591,7 @@ await step('edit-choose-app', async () => {
   await evalPage(() => localStorage.setItem('s3b-edit-choose-app', '0'));
   await resetCalls();
   await openCtx('readme.md');
-  await ctxItem(/^edit$/i);
+  await ctxItem(/^editf4$/i);
   await waitFor(async () => (await findCall('EditObject')) !== null, 4000, 'EditObject (chooser off)');
   c = await findCall('EditObject');
   await ok('setting off edits with the default app (chooseApp=false)', c && c.args[2] === false);
@@ -10315,6 +10348,158 @@ await step('editors-manager', async () => {
     return !!stop && stop.args[2] === false
       && !!edit && edit.args[0] === 'team-files' && edit.args[1] === 'docs/notes.md';
   }, 4000, 'reload composition'));
+  await closeModal();
+  await evalPage(() => {
+    window.__shim.world.editing = null;
+    window.dispatchEvent(new Event('focus'));
+  });
+  await ok('world restored (default editor session back)', waitFor(async () => evalPage(() =>
+    !document.getElementById('status-editing').classList.contains('hidden')), 4000, 'restored pill'));
+});
+
+await step('edit-any', async () => {
+  // the editor seats any file the panes seat: a remote source file edits
+  // through the typed engine leg (source-scoped, F4 riding the main
+  // grid), a workstation file opens in place — the file itself is the
+  // store — and the manager speaks the crumb grammar for engine rows
+  // with the typed ways out
+  // -- remote main view: the context menu's Edit pins the typed args --
+  await clickTree('backup-box');
+  await waitFor(async () => (await rowKeys()).includes('/backup.sh'), 6000, 'backup-box rows');
+  await resetCalls();
+  await openCtx('backup.sh');
+  await ok('the remote menu carries Edit with its F4 hint', await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /^edit/i.test(i.textContent));
+    return !!it && /F4/.test(it.textContent);
+  }));
+  await ctxItem(/^edit/i);
+  await ok('remote Edit rides the typed EditFile', waitFor(async () => {
+    const c = await findCall('EditFile');
+    return !!c && c.args[0]?.kind === 'remote' && c.args[0]?.source === 'backup-box'
+      && c.args[0]?.bucket === '' && c.args[0]?.key === '/backup.sh' && c.args[1] === true;
+  }, 4000, 'typed EditFile'));
+  // -- F4 on the one selected file rides the same leg --
+  await resetCalls();
+  await clickRow('backup.sh');
+  await page.keyboard.press('F4');
+  await ok('F4 edits the selected file through the typed leg', waitFor(async () => {
+    const c = await findCall('EditFile');
+    return !!c && c.args[0]?.kind === 'remote' && c.args[0]?.key === '/backup.sh' && c.args[1] === true;
+  }, 4000, 'F4 EditFile'));
+  // -- New file on a remote source hands the created file to the editor
+  // (the creation-only clause dies) --
+  await resetCalls();
+  await page.keyboard.press('Shift+F4');
+  await waitFor(modalVisible, 4000, 'new-file prompt (remote)');
+  await evalPage((n) => {
+    const i = document.querySelector('#modal-root input.input');
+    i.value = n;
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  }, 'runbook');
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await ok('a created remote file opens for editing', waitFor(async () => {
+    const c = await findCall('EditFile');
+    return !!c && c.args[0]?.kind === 'remote' && c.args[0]?.source === 'backup-box'
+      && c.args[0]?.key === '/runbook.txt';
+  }, 4000, 'create handoff'));
+  await ok('the handoff toasts', waitFor(async () => (await txt('#toasts')).includes('Opening runbook.txt'), 4000, 'opening toast'));
+  // the cancelled picker leaves the empty file behind (best-effort by design)
+  await resetCalls();
+  await evalPage(() => { window.__shim.world.editReject = true; });
+  await page.keyboard.press('Shift+F4');
+  await waitFor(modalVisible, 4000, 'new-file prompt (remote, cancel)');
+  await evalPage((n) => {
+    const i = document.querySelector('#modal-root input.input');
+    i.value = n;
+    i.dispatchEvent(new Event('input', { bubbles: true }));
+  }, 'abandoned');
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await ok('a cancelled picker keeps the created empty file', waitFor(async () =>
+    (await rowKeys()).includes('/abandoned.txt')
+    && !(await txt('#toasts')).includes('Opening abandoned.txt'), 4000, 'abandoned file'));
+  await evalPage(() => { delete window.__shim.world.editReject; });
+  // -- a landed edit refreshes the views seating the source --
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 'remote', source: 'backup-box', path: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane on backup-box');
+  await resetCalls();
+  await evalPage(() => window.__shim.emit('remote:changed', { source: 'backup-box', dir: '/' }));
+  await ok('a landed edit refreshes the main view and the pane', waitFor(async () =>
+    (await evalPage(() => window.__shim.calls.filter((c) => c.m === 'RemoteList').length)) >= 2, 4000, 'refresh both'));
+  await evalPage(() => { window.__s3bSidePane.hide(); });
+  // -- the workstation: Edit opens in place — no session, no push --
+  const openEditor = () => evalPage(() => document.querySelector('#main-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await openEditor();
+  await waitFor(async () => evalPage(() => !!document.querySelector('#breadcrumb input.path-edit')), 4000, 'path editor');
+  await page.fill('#breadcrumb input.path-edit', 'C:\\Users\\demo');
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await rowKeys()).includes('C:\\Users\\demo\\notes.txt'), 6000, 'home rows');
+  await resetCalls();
+  await openCtx('notes.txt');
+  await ctxItem(/^edit/i);
+  await ok('a workstation file opens in place through OpenLocalWith', waitFor(async () => {
+    const c = await findCall('OpenLocalWith');
+    return !!c && c.args[0] === 'C:\\Users\\demo\\notes.txt';
+  }, 4000, 'OpenLocalWith'));
+  // -- the manager's engine row: the crumb label and the typed ways out --
+  await evalPage(() => {
+    window.__shim.world.editing = [{ kind: 'remote', source: 'backup-box', key: '/backup.sh', dirty: true, stale: true }];
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.click('#status-editing');
+  await waitFor(modalVisible, 4000, 'editing modal (remote stale)');
+  await ok('the remote row wears the crumb grammar', waitFor(async () =>
+    (await evalPage(() => document.getElementById('modal-root').textContent)).includes('backup-box:/backup.sh'), 4000, 'remote label'));
+  await resetCalls();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /push anyway/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('push anyway sends the typed forced PushEditFile', waitFor(async () => {
+    const c = await findCall('PushEditFile');
+    return !!c && c.args[0]?.kind === 'remote' && c.args[0]?.source === 'backup-box'
+      && c.args[0]?.key === '/backup.sh' && c.args[1] === true;
+  }, 4000, 'forced PushEditFile'));
+  await ok('the consent settles the row', waitFor(async () => evalPage(() =>
+    !document.getElementById('modal-root').textContent.includes('changed on server')), 4000, 'settled row'));
+  // Reload from server: the fresh-pull composition, typed end to end.
+  // The dialog draws on open and on its own actions — the re-staged row
+  // needs a reopen to show
+  await closeModal();
+  await evalPage(() => {
+    window.__shim.world.editing = [{ kind: 'remote', source: 'backup-box', key: '/backup.sh', dirty: true, stale: true }];
+    window.dispatchEvent(new Event('focus'));
+  });
+  await page.click('#status-editing');
+  await waitFor(modalVisible, 4000, 'editing modal (remote stale again)');
+  await waitFor(async () => evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('backup-box:/backup.sh')), 4000, 'stale row again');
+  await resetCalls();
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /reload from server/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
+  await waitFor(modalVisible, 4000, 'reload confirm (remote)');
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => x.textContent === 'Reload');
+    if (b) b.click();
+    return !!b;
+  });
+  await ok('reload composes the typed StopEditFile + EditFile', waitFor(async () => {
+    const stop = await findCall('StopEditFile');
+    const edit = await findCall('EditFile');
+    return !!stop && stop.args[0]?.kind === 'remote' && stop.args[0]?.source === 'backup-box'
+      && stop.args[0]?.key === '/backup.sh' && stop.args[1] === false
+      && !!edit && edit.args[0]?.kind === 'remote' && edit.args[0]?.source === 'backup-box'
+      && edit.args[0]?.key === '/backup.sh';
+  }, 4000, 'typed reload composition'));
   await closeModal();
   await evalPage(() => {
     window.__shim.world.editing = null;

@@ -2753,6 +2753,7 @@ export function helpSheet() {
   const rows = [
     ['Enter', 'Open bucket / folder / download object'],
     ['F2', 'Rename'],
+    ['F4', 'Edit the selected file'],
     ['Del', 'Delete selection — versioned buckets ask: marker (restorable) or permanent'],
     ['Shift+Del', 'Delete permanently (all versions)'],
     ['Ctrl+C / X / V', 'Copy / cut / paste'],
@@ -2800,8 +2801,8 @@ const GUIDE_SECTIONS = [
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here. The Home button on each pane toolbar jumps to its side home: the main pane returns to the open data source start view, the secondary pane lands on the workstation home folder.'],
     ['Synchronize', 'The ⟳ Synchronize button (View → Synchronize, dual pane open) plans a sync between any two sides the panes seat — a local folder, an S3 bucket folder, a remote source directory: missing and size-differing files copy each way — mtimes never matter — under skip semantics, so whatever landed in the meantime stays. The direction picker narrows the run to one side; the optional “remove files that are not at the source” leg runs each direction through the same confirmation windows as every delete.'],
     ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size. Clicking any app window — main or popout — brings the whole group forward above other applications, with the clicked window on top.'],
-    ['Edit files in place', 'Right-click a file → Edit opens it in the app you pick (the OS "Open with" chooser) or the system default; every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost. Uploads are conditional: if the object changed on the server while you edited, the push refuses instead of overwriting it — the row turns \u21BB changed on server, and you decide: Push anyway, Reload from server (discarding your pending edits), or stop and discard.'],
-    ['New file', 'Shift+F4, the 📄+ toolbar button, or New file… in the context menu creates an empty object with the name and type you pick (the WinSCP flow), then opens it in your editor. Cancelling the app picker — or having no app at all — still leaves the created empty file behind.'],
+    ['Edit files in place', 'Right-click a file → Edit (F4) opens it in the app you pick (the OS "Open with" chooser) or the system default — any file the panes seat: S3 objects, remote source files, the pane’s local files (those just open; the file itself is the store). Every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost. Uploads are conditional: if the file changed on the server while you edited, the push refuses instead of overwriting it — the row turns \u21BB changed on server, and you decide: Push anyway, Reload from server (discarding your pending edits), or stop and discard. Remote sources carry the same guard in the wire’s own grammar: the push checks the file’s size and modification time as they were when the session pulled it.'],
+    ['New file', 'Shift+F4, the 📄+ toolbar button, or New file… in the context menu creates an empty file with the name and type you pick (the WinSCP flow) — on S3 buckets and remote sources alike — then opens it in your editor. Cancelling the app picker — or having no app at all — still leaves the created empty file behind.'],
   ]],
   ['File transfers', [
     ['Upload', 'Toolbar ▲ and the context menus open one Upload menu: Files… (Ctrl+U) picks files, Folder… a whole directory tree — or just drag files/folders from the OS anywhere onto the window.'],
@@ -4053,9 +4054,14 @@ export function editingDialog(onChanged) {
     wide: true,
     buttons: [{ label: 'Close', onclick: (c) => { c(); onChanged?.(); } }],
   });
+  // remote sessions ride the typed EditFile family (the engine leg —
+  // source:path rows); S3 rows keep the historical positional calls
+  const tgt = (f) => ({ kind: f.kind || 's3', source: f.source || '', bucket: f.bucket || '', key: f.key });
+  const remote = (f) => f.kind === 'remote';
   const stop = async (f, upload) => {
     try {
-      await api.StopEdit(f.bucket, f.key, upload);
+      if (remote(f)) await api.StopEditFile(tgt(f), upload);
+      else await api.StopEdit(f.bucket, f.key, upload);
     } catch (e) {
       toast(t('edit.stopFailed', { e }), 'error');
     }
@@ -4071,7 +4077,8 @@ export function editingDialog(onChanged) {
   // voices it (the backend re-marks it stale / fails with backoff)
   const pushAnyway = async (f) => {
     try {
-      await api.PushEdit(f.bucket, f.key, true);
+      if (remote(f)) await api.PushEditFile(tgt(f), true);
+      else await api.PushEdit(f.bucket, f.key, true);
     } catch (e) {
       toast(t('edit.pushFailedNow', { e }), 'error');
     }
@@ -4092,7 +4099,8 @@ export function editingDialog(onChanged) {
       return;
     }
     try {
-      await api.StopEdit(f.bucket, f.key, false);
+      if (remote(f)) await api.StopEditFile(tgt(f), false);
+      else await api.StopEdit(f.bucket, f.key, false);
     } catch (e) {
       toast(t('edit.stopFailed', { e }), 'error');
       onChanged?.();
@@ -4100,7 +4108,8 @@ export function editingDialog(onChanged) {
       return;
     }
     try {
-      await api.EditObject(f.bucket, f.key, false);
+      if (remote(f)) await api.EditFile(tgt(f), false);
+      else await api.EditObject(f.bucket, f.key, false);
     } catch (e) {
       toast(t('edit.stopFailed', { e }), 'error');
     }
@@ -4117,7 +4126,7 @@ export function editingDialog(onChanged) {
     }
     list.replaceChildren(...(files.length ? files.map((f) => el('div', { class: 'tr-job' },
       el('div', { class: 'tr-top' },
-        el('span', { class: 'tr-name', text: `${f.bucket}/${f.key}${f.dirty ? ' \u270E' : ''}${f.pushFailed ? ` \u26A0 ${t('edit.pushFailedFrag')}` : ''}${f.stale ? ` \u21BB ${t('edit.staleFrag')}` : ''}` }),
+        el('span', { class: 'tr-name', text: `${f.kind === 'remote' ? `${f.source}:${f.key}` : `${f.bucket}/${f.key}`}${f.dirty ? ' \u270E' : ''}${f.pushFailed ? ` \u26A0 ${t('edit.pushFailedFrag')}` : ''}${f.stale ? ` \u21BB ${t('edit.staleFrag')}` : ''}` }),
         el('span', { class: 'tr-status mono', text: f.local }),
         ...(f.stale ? [
           el('button', { class: 'btn', text: t('edit.pushAnyway'), onclick: () => pushAnyway(f) }),

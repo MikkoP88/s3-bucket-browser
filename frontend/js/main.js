@@ -2124,6 +2124,9 @@ function showContextMenu(e, rows) {
     items.push(null);
     items.push(['New folder', 'Ctrl+Shift+N', () => newFolder()]);
     items.push(['New file\u2026', 'Shift+F4', () => newFile()]);
+    if (sel === 1 && !rows[0].isDir) {
+      items.push(['Edit', 'F4', () => editObject(rows[0])]);
+    }
     items.push(null);
     items.push(['Refresh', 'F5', () => refreshCurrent()]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties(), !sel]);
@@ -2143,6 +2146,9 @@ function showContextMenu(e, rows) {
     items.push(['Copy URL', '', () => copyAsText(rows, 'url'), !sel]);
     items.push(null);
     items.push(['Delete\u2026', 'Del', () => deleteSelection(), !sel]);
+    if (sel === 1 && !rows[0].isDir) {
+      items.push(['Edit', 'F4', () => editObject(rows[0])]);
+    }
     items.push(null);
     items.push(['Refresh', 'F5', () => refreshCurrent()]);
     items.push(['Properties', 'Alt+Enter', () => selectionProperties(), !sel]);
@@ -2165,7 +2171,7 @@ function showContextMenu(e, rows) {
     items.push(['New folder', 'Ctrl+Shift+N', () => newFolder()]);
     items.push(['New file\u2026', 'Shift+F4', () => newFile()]);
     if (sel === 1 && !rows[0].isDir) {
-      items.push(['Edit', '', () => editObject(rows[0])]);
+      items.push(['Edit', 'F4', () => editObject(rows[0])]);
     }
     if (sel && !rows.some((r) => r.isDir)) items.push(['Pre-sign URL\u2026', '', () => presign(rows)]);
     // Version-grade entries appear only where the bucket supports them:
@@ -2978,13 +2984,31 @@ async function deleteSelection(bucketOverride, keysOverride, sourceOverride, pre
   }
 }
 
-async function editObject(row) {
-  const loc = nav.current;
+async function editObject(row, ref) {
+  // ref seats the edit where the row lives (the side pane's bindings);
+  // the default is the main view's current location
+  const loc = ref || nav.current;
   try {
     // Settings → Editing: ask which app edits the file via the OS
     // "Open with" chooser (default on; off = OS default app).
     const chooseApp = localStorage.getItem('s3b-edit-choose-app') !== '0';
-    await api.EditObject(loc.bucket, row.key, chooseApp);
+    if (loc.kind === 'local') {
+      // the file IS the store: open in place, no session, no push
+      if (chooseApp) await api.OpenLocalWith(row.path);
+      else await api.OpenLocal(row.path);
+      return;
+    }
+    if (loc.kind === 'remote') {
+      await api.EditFile({ kind: 'remote', source: loc.source, bucket: '', key: row.key }, chooseApp);
+    } else if (ref || (loc.source && loc.source !== viewSource)) {
+      // an S3 file of a named source (the pane's binding, another
+      // source's objects view) — the typed grammar dials that source's
+      // own client; the view source keeps the historical entry point
+      await api.EditFile({ kind: 's3', source: loc.source, bucket: loc.bucket, key: row.key }, chooseApp);
+    } else {
+      // the view source: the historical entry point, unchanged
+      await api.EditObject(loc.bucket, row.key, chooseApp);
+    }
     toast(`Opening ${row.name} — saves upload automatically`, 'ok');
     updateEditingStatus();
   } catch (err) {
@@ -3218,6 +3242,15 @@ async function newFile() {
       const p = await api.RemoteCreateFile(loc.source, loc.path || '', r.name, r.ext);
       toast(`Created ${p}`, 'ok');
       refreshCurrent();
+      // the S3 flow's open-after-create, come to the engine side —
+      // best-effort: a cancelled picker (or no app) leaves the created
+      // empty file behind
+      try {
+        const chooseApp = localStorage.getItem('s3b-edit-choose-app') !== '0';
+        await api.EditFile({ kind: 'remote', source: loc.source, bucket: '', key: p }, chooseApp);
+        toast(`Opening ${String(p).split('/').pop()} — saves upload automatically`, 'ok');
+        updateEditingStatus();
+      } catch { /* cancelled picker / no app: the empty file stays */ }
     } catch (err) {
       toast(`Create file failed: ${err}`, 'error');
     }
@@ -4083,6 +4116,7 @@ function showSideRemoteRowMenu(e, rows) {
         toast(`Rename failed: ${err}`, 'error');
       }
     }, sel !== 1],
+    ['Edit', '', () => editObject(rows[0], { kind: 'remote', source: b.source }), sel !== 1 || !!rows[0].isDir],
     ['Delete\u2026', 'Del', () => deleteRemoteSelection(b.source, rows.map((r) => r.key)).then(() => localPane.refresh()), !sel],
     null,
     ['Properties', 'Alt+Enter', () => sideRemoteProperties(rows[0]), sel !== 1],
@@ -4192,6 +4226,7 @@ function showSideS3RowMenu(e, rows) {
         toast(`Rename failed: ${err}`, 'error');
       }
     }, !inBucket || sel !== 1 || rows[0].isBucket],
+    ['Edit', '', () => editObject(rows[0], { kind: 'objects', source: b.source, bucket: localPane.bucket }), !inBucket || sel !== 1 || rows[0].isBucket],
     ['Delete\u2026', 'Del', () => deleteSideS3Selection(b.source, localPane.bucket, rows.filter((r) => !r.isBucket).map((r) => r.key)), !inBucket || hasBucketRow],
     null,
     ['Properties', 'Alt+Enter', () => sideS3Properties(rows[0]), !inBucket || sel !== 1],
@@ -5129,6 +5164,12 @@ function wireKeys() {
     if (e.key === 'Backspace') { e.preventDefault(); const p = parentRowOn() ? parentUp(nav.current) : null; if (p) nav.to(p); return; }
     if (e.key === 'F5') { e.preventDefault(); refreshCurrent(); return; }
     if (e.key === 'F2') { e.preventDefault(); renameSelection(); return; }
+    if (e.key === 'F4' && !e.shiftKey) {
+      e.preventDefault();
+      const rows = grid.selectedRows().filter((r) => !r.isDir);
+      if (rows.length === 1) editObject(rows[0]);
+      return;
+    }
     if (e.key === 'Delete') { e.preventDefault(); if (e.shiftKey) deletePermanentSelection(); else deleteSelection(); return; }
     if (e.key === 'F9') { e.preventDefault(); togglePanes(); return; }
     if (ctrl && e.key.toLowerCase() === 'a') { e.preventDefault(); grid.selectAll(); return; }
@@ -5167,6 +5208,19 @@ function wireEvents() {
       usageDropPrefix(`${viewSource}|${data?.bucket}|`);
       usageDropPrefix(`${viewSource}||${data?.bucket}`);
       refreshCurrent(true);
+    }
+  });
+  // an editor push landed on an engine source: refresh the views seating
+  // it — the remote twin of s3:changed. The pane binding may name its
+  // source by id; resolve to the name the payload speaks (the crumb's
+  // own resolution).
+  onEvent('remote:changed', (data) => {
+    const loc = nav.current;
+    if (loc?.kind === 'remote' && loc.source === data?.source) refreshCurrent(true);
+    if (localPane.visible && localPane.binding.kind === 'remote') {
+      const bs = localPane.binding.source;
+      const nm = (sources.find((x) => x.id === bs && x.id !== x.name) || {}).name || bs;
+      if (nm === data?.source) localPane.refresh();
     }
   });
   onEvent('transfer:update', (j) => {

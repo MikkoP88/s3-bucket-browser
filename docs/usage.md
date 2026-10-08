@@ -425,25 +425,32 @@ directory compare) with S3 and the secondary pane.
 
 ![Search](screenshots/search.png)
 
-- **Edit in place** — right-click a file → *Edit* opens it in the
-  app you pick (the OS "Open with" chooser) or the system default;
-  every save uploads automatically, and on versioned buckets each
-  save becomes a new version, so nothing is ever lost. Uploads are
-  conditional: if the object changed on the server while you edited,
-  the push refuses instead of overwriting it — the row turns ⟳
-  *changed on server*, and you decide: *Push anyway*, *Reload from
-  server* (discarding your pending edits), or stop and discard.
+- **Edit in place** — right-click a file → *Edit* (F4) opens it in
+  the app you pick (the OS "Open with" chooser) or the system default
+  — any file the panes seat: S3 objects (the view source's or a named
+  source's, in the main view or the dual pane), remote source files
+  (FTP/SFTP/WebDAV/local-root), and workstation files (those just
+  open; the file itself is the store). Every save uploads
+  automatically, and on versioned buckets each save becomes a new
+  version, so nothing is ever lost. Uploads are conditional: if the
+  file changed on the server while you edited, the push refuses
+  instead of overwriting it — the row turns ⟳ *changed on server*,
+  and you decide: *Push anyway*, *Reload from server* (discarding
+  your pending edits), or stop and discard. Remote sources carry the
+  same guard in their own grammar: the push checks the file's size
+  and modification time as they were when the session pulled it.
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
   *New file…* in the context menu opens a small dialog for a file name
-  and type (a dozen common extensions, or none). The empty object is
+  and type (a dozen common extensions, or none). The empty file is
   created first, then handed to the editor you pick — the OS
   "Open with" chooser by default, respecting the Settings → Editing
   choice. Cancelling the picker, or having no app, still leaves the
   created empty file behind; nothing is lost. The dialog previews the
   exact object name live, and the name composes the way you expect
   (`notes` + `md` → `notes.md`; an extension already in the name is
-  not doubled). Works on S3 and on remote sources (creation only);
-  shows as a 📄 *Creating* task in Running tasks.
+  not doubled). Works the same on S3
+  and on remote sources — on both, the created file is handed to the
+  editor; shows as a 📄 *Creating* task in Running tasks.
 
 - **Dual pane** — F9 or the **Dual-pane** button on the global bar
   opens an optional secondary pane beside the main view: a full
@@ -808,6 +815,7 @@ you'll use daily:
 | Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste (in-app paste runs the real transfer; copy also mirrors small selections onto Explorer's clipboard) |
 | Ctrl+A / Ctrl+I | select all / invert selection |
 | Del / Shift+Del | delete window / permanent path |
+| F4 / Shift+F4 | edit the selected file / new file |
 | F9 | dual pane |
 | Ctrl+L | event log |
 | Ctrl+S | save workspace profile |

@@ -8,6 +8,27 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The editor grows the whole matrix — any file the panes seat** —
+  Edit existed only for the view source's S3 objects; now every seat a
+  file gets one. Remote source files (FTP/SFTP/WebDAV/local-root
+  engines) ride a typed EditFile/StopEditFile/PushEditFile family that
+  pulls through the engine into a per-source staging namespace (never
+  colliding with a bucket's tree), pushes every save back under the
+  push budget, and guards against a teammate's mid-edit overwrite in
+  the engines' own grammar — size plus modification time, the ETag-less
+  twin of the S3 If-Match law — with the same two ways out (Push anyway
+  writes past and rebases; Reload from server discards and re-pulls);
+  a named source's S3 objects edit through their own client in the
+  dual pane; workstation files open in place (the file itself is the
+  store — no session, no push); F4 joins the key map (Shift+F4 keeps
+  New file); New file on a remote source hands the created file to the
+  editor (the "creation only" clause dies); the editor manager's
+  engine rows speak the crumb grammar (source:path) and route the
+  typed calls; a landed save refreshes the views seating the source
+  (remote:changed, the s3:changed twin). Pinned Go-side by the
+  lab-engine rigs (watcher auto-save, guard refuse/force/rebase, stop
+  legs, refocus, typed parity, refusals) and GUI-side by the battery's
+  edit-any step.
 - **Synchronize grows the whole matrix — any two sides, both faces** —
   the one-wall rule ("one local folder, one S3 prefix") falls on both
   faces at once. The GUI dialog now takes any pair the dual pane can
