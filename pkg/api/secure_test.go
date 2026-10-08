@@ -6,6 +6,7 @@
 package api
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -311,5 +312,49 @@ func TestPresignScrubArmedOnlyUnderSecureStorage(t *testing.T) {
 	}
 	if p := pending(); p != url {
 		t.Fatalf("non-presign copy disturbed the pending scrub (%q)", p)
+	}
+}
+
+// The enable line's “file logging off” is a promise about the disk: when
+// the settings cannot be saved, enabling secure storage still succeeds
+// (the store sealed), but the log hears the error — never the claim the
+// disk refused to make.
+func TestSetSecureStorageFileLogOffFailureSpeaks(t *testing.T) {
+	mockKeyring(t)
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	cfg, err := profile.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a directory where logsettings.json must live: LoadSettings reads
+	// zero, SaveSettings cannot land — the settings' own refusal
+	if err := os.Mkdir(filepath.Join(cfg, "logsettings.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mu, lines := captureLogLines(t)
+	if _, err := a.SetSecureStorage(true); err != nil {
+		t.Fatalf("enable must still succeed — the store sealed, only the log promise broke: %v", err)
+	}
+	// settle back to plain so the rig leaves nothing sealed behind —
+	// BEFORE the capture lock: the settle emits its own line, and the
+	// sink takes the same mutex this test would be holding
+	if _, err := a.SetSecureStorage(false); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var spoke []string
+	for _, l := range *lines {
+		spoke = append(spoke, l.Level+" "+l.Message)
+	}
+	joined := strings.Join(spoke, "\n")
+	if !strings.Contains(joined, "turning file logging off failed") {
+		t.Fatalf("the broken file-log promise never spoke: %s", joined)
+	}
+	for _, l := range *lines {
+		if l.Level == LogInfo && strings.Contains(l.Message, "file logging off") {
+			t.Fatalf("info line still claims the promise the disk refused: %+v", l)
+		}
 	}
 }

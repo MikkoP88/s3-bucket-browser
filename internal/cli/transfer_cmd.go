@@ -200,11 +200,17 @@ func uploadPath(ctx context.Context, c *s3client.Client, localPath, dst string, 
 			fmt.Printf("upload %s -> s3://%s/%s\n", local, u.Bucket, key)
 			return true, nil
 		}
-		if opts.NoClobber && transfer.ObjectExists(ctx, c.S3, u.Bucket, key) {
-			if !flagJSON {
-				rprintf("skip s3://%s/%s — already exists\n", u.Bucket, key)
+		if opts.NoClobber {
+			exists, perr := transfer.ObjectExists(ctx, c.S3, u.Bucket, key)
+			if perr != nil {
+				return false, fmt.Errorf("%s: could not check whether s3://%s/%s exists: %w", local, u.Bucket, key, perr)
 			}
-			return false, nil
+			if exists {
+				if !flagJSON {
+					rprintf("skip s3://%s/%s — already exists\n", u.Bucket, key)
+				}
+				return false, nil
+			}
 		}
 		pr := newProgressLine(local)
 		err = transfer.UploadFile(ctx, c.S3, local, u.Bucket, key, opts.uploadOptions(pr.fn()))
@@ -379,11 +385,17 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 			fmt.Printf("copy s3://%s/%s -> s3://%s/%s\n", su.Bucket, srcKey, du.Bucket, dstKey)
 			return true, nil
 		}
-		if opts.NoClobber && transfer.ObjectExists(ctx, c.S3, du.Bucket, dstKey) {
-			if !flagJSON {
-				rprintf("skip s3://%s/%s — already exists\n", du.Bucket, dstKey)
+		if opts.NoClobber {
+			exists, perr := transfer.ObjectExists(ctx, c.S3, du.Bucket, dstKey)
+			if perr != nil {
+				return false, fmt.Errorf("%s: could not check whether s3://%s/%s exists: %w", srcKey, du.Bucket, dstKey, perr)
 			}
-			return false, nil
+			if exists {
+				if !flagJSON {
+					rprintf("skip s3://%s/%s — already exists\n", du.Bucket, dstKey)
+				}
+				return false, nil
+			}
 		}
 		if err := transfer.Copy(ctx, c.S3, su.Bucket, srcKey, du.Bucket, dstKey); err != nil {
 			return false, fmt.Errorf("%s: %w", srcKey, err)

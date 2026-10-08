@@ -8,6 +8,30 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Destructive decisions stop reading silence as permission** —
+  every existence probe that gates an overwrite now answers honestly
+  and fails closed: `transfer.ObjectExists` returns (found, error)
+  where `errhelp.IsNoSuchKey` — the typed NoSuchKey code or a bare
+  404, the shape a server that skips the XML body returns — is the
+  only answer a caller may read as “nothing lives there”, and a
+  403, a 500 or a dead socket stays an error. Every caller that
+  used to treat a failed probe as free space now refuses: an
+  upload or copy/move under the skip policy fails the file with
+  “could not check whether … is taken”, the rename policy
+  refuses to fall back to a key it cannot vouch for, a rename
+  whose destination cannot be probed leaves the original standing
+  (with its error line in the activity log), the CLI’s three
+  `--no-clobber` legs say so instead of skipping blindly, and the
+  compare walk’s local leg fails whole rather than hand sync a
+  partial map it would render as phantom remote-only rows — the
+  deletes built on those rows would destroy good data. The one
+  probe that stays deliberately advisory is the transfer
+  dialog’s live collision pre-check (a gray-out hint, not a
+  gate), now documented as such. Secure mode’s file-log promise
+  joins the honesty: when the settings file cannot be written the
+  store still seals, but the log carries the error instead of the
+  info line claiming “file logging off” the disk refused to
+  make.
 - **The activity log grows its missing voices** — every
   bucket-administration verb now lands a line in the log the app
   already keeps: the fourteen setters the Admin panel speaks each say
@@ -241,6 +265,14 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Root-level renames landed at “./name”** — path.Dir’s root
+  artifact rode into the destination key: renaming a file at a
+  bucket’s root computed “./new.txt”, a phantom “./” segment
+  that stores keep as a literal prefix — an object no clean
+  listing of the root shows and no path bar addresses. The
+  parent now normalizes to empty at the root: the destination
+  is the clean key, and the clobber guard probes exactly the
+  key the copy writes.
 - **WebDAV: the same verdict, closed the HTTP way** — the engine
   threads the caller's context into every request (net/http honors
   it end to end), so cancel always had teeth there, but no command

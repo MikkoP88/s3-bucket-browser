@@ -162,24 +162,37 @@ var errWalkDone = errors.New("walk done")
 // marker (MinIO omits markers from listings under their own prefix).
 // Renames must refuse rather than clobber: the underlying server-side
 // copy overwrites silently, and for critical data a wrong-name rename
-// must never destroy the object that already owns that name.
-func renameTargetOccupied(ctx context.Context, c *s3client.Client, bucket, key string) bool {
+// must never destroy the object that already owns that name. The probes
+// inherit that law: any wire error the guard cannot tell apart from
+// “taken” fails the rename — an unseen occupant is still an occupant.
+func renameTargetOccupied(ctx context.Context, c *s3client.Client, bucket, key string) (bool, error) {
 	base := strings.TrimSuffix(key, "/")
 	if base == "" {
-		return true // the bucket root is always occupied
+		return true, nil // the bucket root is always occupied
 	}
-	if remoteExists(ctx, c, bucket, base) { // file form
-		return true
+	taken, err := remoteExists(ctx, c, bucket, base) // file form
+	if err != nil {
+		return false, fmt.Errorf("could not check whether %s exists: %w", base, err)
 	}
-	if remoteExists(ctx, c, bucket, base+"/") { // folder-marker form
-		return true
+	if taken {
+		return true, nil
+	}
+	taken, err = remoteExists(ctx, c, bucket, base+"/") // folder-marker form
+	if err != nil {
+		return false, fmt.Errorf("could not check whether %s exists: %w", base+"/", err)
+	}
+	if taken {
+		return true, nil
 	}
 	occupied := false
-	_ = listing.Walk(ctx, c.S3, bucket, base+"/", func(o s3types.Object) error {
+	err = listing.Walk(ctx, c.S3, bucket, base+"/", func(o s3types.Object) error {
 		occupied = true
 		return errWalkDone
 	})
-	return occupied
+	if err != nil && !errors.Is(err, errWalkDone) {
+		return false, fmt.Errorf("could not check what lives under %s: %w", base+"/", err)
+	}
+	return occupied, nil
 }
 
 func expandSelection(ctx context.Context, c *s3client.Client, bucket string, keys []string) ([]string, error) {
@@ -248,7 +261,12 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 		}
 		// refuse rather than clobber: the server-side copies would silently
 		// overwrite anything already living at the destination
-		if renameTargetOccupied(ctx, c, bucket, newPrefix) {
+		occupied, err := renameTargetOccupied(ctx, c, bucket, newPrefix)
+		if err != nil {
+			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s failed: %v", key, err))
+			return err
+		}
+		if occupied {
 			err := fmt.Errorf("%s already exists", strings.TrimSuffix(newPrefix, "/"))
 			a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming folder %s refused: %v", key, err))
 			return err
@@ -267,11 +285,20 @@ func (a *App) renameObjectC(c *s3client.Client, bucket, key, newName string) err
 		return nil
 	}
 
-	dstKey := joinKeyNoSlash(path.Dir(key), newName)
+	parent := path.Dir(key)
+	if parent == "." { // path.Dir's root artifact: a root file renames to
+		parent = "" // "name", never "./name" — and the guard probes the
+	} // key the copy will actually write
+	dstKey := joinKeyNoSlash(parent, newName)
 	if dstKey == key {
 		return nil
 	}
-	if renameTargetOccupied(ctx, c, bucket, dstKey) {
+	occupied, err := renameTargetOccupied(ctx, c, bucket, dstKey)
+	if err != nil {
+		a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming %s to %q failed: %v", key, newName, err))
+		return err
+	}
+	if occupied {
 		err := fmt.Errorf("%s already exists", dstKey)
 		a.emitLogSrc(LogError, "rename", bucket, fmt.Sprintf("renaming %s to %q refused: %v", key, newName, err))
 		return err
@@ -453,13 +480,26 @@ func (a *App) copyMove(ctx context.Context, c *s3client.Client, bucket string, k
 			dst := p.dst
 			switch filePolicy(decisions, dst, policy) {
 			case PolicySkip:
-				if transfer.ObjectExists(ctx, c.S3, dstBucket, dst) {
+				taken, perr := transfer.ObjectExists(ctx, c.S3, dstBucket, dst)
+				if perr != nil {
+					// an illegible destination is not permission to overwrite:
+					// the item fails into the error list instead
+					res.Errors = append(res.Errors, fmt.Sprintf("%s: could not check whether s3://%s/%s is taken: %v", p.src, dstBucket, dst, perr))
+					groupMoved = false
+					continue
+				}
+				if taken {
 					res.Skipped++
 					groupMoved = false
 					continue
 				}
 			case PolicyRename:
-				if transfer.ObjectExists(ctx, c.S3, dstBucket, dst) {
+				taken, perr := transfer.ObjectExists(ctx, c.S3, dstBucket, dst)
+				if perr != nil {
+					res.Errors = append(res.Errors, fmt.Sprintf("%s: could not check whether s3://%s/%s is taken: %v", p.src, dstBucket, dst, perr))
+					continue
+				}
+				if taken {
 					alt, err := uniqueRemoteKey(ctx, c, dstBucket, dst)
 					if err != nil {
 						res.Errors = append(res.Errors, fmt.Sprintf("%s: %v", p.src, err))

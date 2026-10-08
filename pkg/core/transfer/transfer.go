@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -460,12 +461,23 @@ func (p *progressWriterAt) WriteAt(b []byte, off int64) (int, error) {
 
 // ObjectExists reports whether the object is already present — the
 // --no-clobber check for paths that do not go through UploadFile
-// (server-side copies, reader uploads from remote sources).
-func ObjectExists(ctx context.Context, client *s3.Client, bucket, key string) bool {
+// (server-side copies, reader uploads from remote sources). It refuses
+// to guess: (true, nil) is the server’s word that the key is taken,
+// (false, nil) its word that nothing lives there, and anything the wire
+// could not answer comes back as (false, err) — a caller gating a
+// destructive act on this must fail the act, not read the silence as
+// free space.
+func ObjectExists(ctx context.Context, client *s3.Client, bucket, key string) (bool, error) {
 	_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(bucket), Key: aws.String(key),
 	})
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errhelp.IsNoSuchKey(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // Copy performs a server-side copy (single request; objects > 5 GB need

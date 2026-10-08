@@ -3,10 +3,12 @@ package errhelp
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/aws/smithy-go"
+	awshttp "github.com/aws/smithy-go/transport/http"
 )
 
 type fakeAPIError struct {
@@ -109,5 +111,44 @@ func TestNormalize(t *testing.T) {
 	got := normalize("Signature-Does Not_Match")
 	if got != "signaturedoesnotmatch" {
 		t.Errorf("normalize = %q", got)
+	}
+}
+
+// The missing-object predicate is the one answer a caller may read as
+// “nothing lives there” — typed NoSuchKey, a bare 404, wrapped forms
+// included — and nothing else: a 403 or a dead socket must never
+// masquerade as free space.
+func TestIsNoSuchKey(t *testing.T) {
+	typed := &smithy.GenericAPIError{Code: "NoSuchKey"}
+	if !IsNoSuchKey(typed) {
+		t.Error("typed NoSuchKey must read as missing")
+	}
+	if !IsNoSuchKey(fmt.Errorf("wrapped: %w", typed)) {
+		t.Error("a wrapped typed NoSuchKey must still read as missing")
+	}
+	bare404 := &awshttp.ResponseError{ // the transport shape a bare-404 server returns
+		Response: &awshttp.Response{Response: &http.Response{StatusCode: http.StatusNotFound}},
+	}
+	if !IsNoSuchKey(bare404) {
+		t.Error("a bare 404 must read as missing")
+	}
+	if !IsNoSuchKey(fmt.Errorf("op: %w", bare404)) {
+		t.Error("a wrapped bare 404 must still read as missing")
+	}
+	for _, not := range []error{
+		nil,
+		&smithy.GenericAPIError{Code: "AccessDenied"},
+		&smithy.GenericAPIError{Code: "NoSuchBucket"},
+		&awshttp.ResponseError{
+			Response: &awshttp.Response{Response: &http.Response{StatusCode: http.StatusForbidden}},
+		},
+		&awshttp.ResponseError{
+			Response: &awshttp.Response{Response: &http.Response{StatusCode: http.StatusInternalServerError}},
+		},
+		fmt.Errorf("dial tcp: connection refused"),
+	} {
+		if IsNoSuchKey(not) {
+			t.Errorf("IsNoSuchKey(%v) = true, want false", not)
+		}
 	}
 }

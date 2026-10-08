@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -245,5 +246,34 @@ func TestExpandUploadPathsWedgeBreaksSilentDeath(t *testing.T) {
 	}
 	if len(pairs) != 1 || pairs[0].key != "up/dropped/a.txt" {
 		t.Fatalf("post-heal expansion = %+v, want the dropped file", pairs)
+	}
+}
+
+// The compare walk is complete or nothing: an unreadable directory
+// fails the walk instead of handing compare a partial map it would
+// render as phantom remote-only rows — the sync decisions built on
+// those rows delete data that is fine.
+func TestWalkLocalFilesFailsClosedOnUnreadableDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "locked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ok.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "locked", "hidden.txt"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldReadDir := localReadDir
+	localReadDir = func(p string) ([]os.DirEntry, error) {
+		if filepath.Base(p) == "locked" {
+			return nil, fmt.Errorf("access denied")
+		}
+		return os.ReadDir(p)
+	}
+	t.Cleanup(func() { localReadDir = oldReadDir })
+	_, err := walkLocalFiles(context.Background(), dir)
+	if err == nil || !strings.Contains(err.Error(), "walking") || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("walkLocalFiles = %v, want the honest walking error", err)
 	}
 }

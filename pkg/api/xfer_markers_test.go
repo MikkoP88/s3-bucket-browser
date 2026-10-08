@@ -41,9 +41,9 @@ type fakeS3 struct {
 	deleted         []string
 	adminOps        []string // admin subresource calls that landed, in order
 	sawChecksumMode bool     // some GET asked for response checksums
-	// faults injects transient failures: "PUT bucket/key" / "GET bucket/key"
-	// → how many requests to fail with a 500 before serving honestly
-	// again (the retry rigs' lever).
+	// faults injects transient failures: "PUT bucket/key", "GET bucket/key",
+	// "HEAD bucket/key", "LIST bucket/prefix" → how many requests to fail
+	// with a 500 before serving honestly again (the retry rigs' lever).
 	faults map[string]int
 }
 
@@ -181,6 +181,10 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bucket, key := splitS3Path(r.URL.Path)
 	switch {
 	case r.URL.Query().Get("list-type") == "2":
+		if f.tripped("LIST", bucket, r.URL.Query().Get("prefix")) {
+			http.Error(w, "fakeS3: injected fault", http.StatusInternalServerError)
+			return
+		}
 		f.list(w, bucket, r.URL.Query().Get("prefix"))
 	case r.Method == http.MethodGet && bucket == "":
 		// GET / is ListBuckets — the account-level call the split dials.
@@ -199,6 +203,10 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.getObject(w, bucket, key)
 	case r.Method == http.MethodHead:
+		if f.tripped("HEAD", bucket, key) {
+			http.Error(w, "fakeS3: injected fault", http.StatusInternalServerError)
+			return
+		}
 		f.headObject(w, bucket, key)
 	case r.Method == http.MethodPut && r.Header.Get("x-amz-copy-source") != "":
 		f.copyObject(w, r, bucket, key)

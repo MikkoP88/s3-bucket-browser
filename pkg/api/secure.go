@@ -10,6 +10,7 @@
 package api
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -83,11 +84,17 @@ func (a *App) SetSecureStorage(on bool) (SecureStatus, error) {
 			if err := s.EnableSecureStorage(); err != nil {
 				return a.GetSecureStorage(), err
 			}
+			loggingOff := true // the promise the info line makes below
 			if ls := eventlog.LoadSettings(); ls.Mode != "off" {
 				ls.Mode = "off" // Dir/Levels/Scopes kept for a conscious re-enable
-				_ = eventlog.SaveSettings(ls)
+				if err := eventlog.SaveSettings(ls); err != nil {
+					loggingOff = false
+					a.emitLog(LogError, "security", fmt.Sprintf("secure storage enabled, but turning file logging off failed: %v — turn it off in Settings before trusting this mode", err))
+				}
 			}
-			a.emitLog(LogInfo, "security", "secure storage enabled — profile store encrypted, temp workspaces moved into the config dir, file logging off")
+			if loggingOff {
+				a.emitLog(LogInfo, "security", "secure storage enabled — profile store encrypted, temp workspaces moved into the config dir, file logging off")
+			}
 		} else {
 			if err := s.DisableSecureStorage(); err != nil {
 				return a.GetSecureStorage(), err

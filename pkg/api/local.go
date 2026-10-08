@@ -513,14 +513,19 @@ type localFile struct {
 
 // walkLocalFiles collects files under dir recursively (relative keys),
 // one bounded step per directory — the compare walk navigates by verdict
-// too.
+// too. Complete or nothing, the upload-expansion law: a silently
+// skipped directory would hand compare a partial map it renders as
+// phantom remote-only rows, and the sync decisions built on those rows
+// delete data that is fine. The error names the walk it failed.
 func walkLocalFiles(ctx context.Context, dir string) (map[string]localFile, error) {
 	out := map[string]localFile{}
-	_ = walkLocalTree(ctx, dir, func(e localEntryInfo) {
+	if err := walkLocalStrict(ctx, dir, func(e localEntryInfo) {
 		if !e.isDir {
 			out[e.rel] = localFile{size: e.size, mtime: e.mtime}
 		}
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("walking %s: %w", dir, err)
+	}
 	return out, nil
 }
 

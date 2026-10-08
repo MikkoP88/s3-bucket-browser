@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -826,16 +827,12 @@ type EditDiffInfo struct {
 	CapBytes int64 `json:"capBytes"`
 }
 
-// isNoSuchKey reports whether err is the S3 missing-object refusal: the
-// typed NoSuchKey code, or a bare 404 from a server that skips the XML
-// body — the same dual read isPreconditionFailed carries.
+// isNoSuchKey reports whether err is the S3 missing-object refusal. The
+// dual read — typed NoSuchKey code, or a bare 404 from a server that
+// skips the XML body — lives in errhelp.IsNoSuchKey, so every
+// existence gate in the app carries one law.
 func isNoSuchKey(err error) bool {
-	var api smithy.APIError
-	if errors.As(err, &api) && api.ErrorCode() == "NoSuchKey" {
-		return true
-	}
-	var re *awshttp.ResponseError
-	return errors.As(err, &re) && re.HTTPStatusCode() == http.StatusNotFound
+	return errhelp.IsNoSuchKey(err)
 }
 
 // sampleEditDiff reads up to editDiffCap+1 bytes of one side (the +1 is

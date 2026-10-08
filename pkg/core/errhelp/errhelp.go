@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/aws/smithy-go"
+	awshttp "github.com/aws/smithy-go/transport/http"
 )
 
 // Advice is a user-facing explanation of an error.
@@ -20,6 +21,21 @@ type Advice struct {
 	Cause      string   `json:"cause"`
 	Suggestion string   `json:"suggestion"`
 	Commands   []string `json:"commands,omitempty"`
+}
+
+// IsNoSuchKey reports whether err is the S3 missing-object refusal: the
+// typed NoSuchKey code, or a bare 404 from a server that skips the XML
+// body on the wire. It is the one answer that lets a caller read a
+// failed probe as “nothing lives there” — every other error means the
+// question was never answered, and a caller that gates a destructive
+// act on existence must fail closed rather than read it as free space.
+func IsNoSuchKey(err error) bool {
+	var api smithy.APIError
+	if errors.As(err, &api) && api.ErrorCode() == "NoSuchKey" {
+		return true
+	}
+	var re *awshttp.ResponseError
+	return errors.As(err, &re) && re.HTTPStatusCode() == http.StatusNotFound
 }
 
 // adviceFor dispatches on an S3 error code (case-insensitive, no punctuation).

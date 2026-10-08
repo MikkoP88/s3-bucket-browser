@@ -763,12 +763,19 @@ func copyFilesToS3(ctx context.Context, c *s3client.Client, files []copyFile, is
 			continue
 		}
 		// --no-clobber: skip (and never remove the source) when the
-		// object already exists — UploadReader itself has no gate
-		if opts.NoClobber && transfer.ObjectExists(ctx, c.S3, du.Bucket, key) {
-			if !flagJSON {
-				rprintf("skip s3://%s/%s — already exists\n", du.Bucket, key)
+		// object already exists — UploadReader itself has no gate. A probe
+		// the wire could not answer is not permission to write.
+		if opts.NoClobber {
+			exists, perr := transfer.ObjectExists(ctx, c.S3, du.Bucket, key)
+			if perr != nil {
+				return n, fmt.Errorf("%s: could not check whether s3://%s/%s exists: %w", f.rel, du.Bucket, key, perr)
 			}
-			continue
+			if exists {
+				if !flagJSON {
+					rprintf("skip s3://%s/%s — already exists\n", du.Bucket, key)
+				}
+				continue
+			}
 		}
 		rc, size, err := f.open(ctx)
 		if err != nil {

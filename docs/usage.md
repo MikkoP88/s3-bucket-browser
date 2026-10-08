@@ -635,6 +635,12 @@ R2, MinIO → Wasabi — a drag or a `cp` away.
   source's own subtree (a folder pasted into itself, a bucket into its
   own prefix) is refused by the engine before a byte moves — a move
   beneath itself would delete the fresh copies with the originals.
+  And the gates themselves fail closed: a destination the server
+  cannot be asked about — a probe that errors rather than answers
+  — refuses the rename, fails the file under a skip or rename
+  policy, and stops a `--no-clobber` CLI run, rather than reading
+  the silence as free space; only the dialog’s gray-out pre-check
+  stays advisory.
 - **Transfer manager** — View → File transfers (or the status-bar
   counter) shows every job with per-file and byte-level progress, speed
   and cancel — in a floating window, so you can keep browsing while it

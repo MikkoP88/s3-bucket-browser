@@ -85,9 +85,13 @@ func waitJobPhase(t *testing.T, a *App, id, phase string) JobInfo {
 	}
 }
 
-func waitJobStatus(t *testing.T, a *App, id, status string) JobInfo {
+func waitJobStatus(t *testing.T, a *App, id, status string, patience ...time.Duration) JobInfo {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	wait := 5 * time.Second // the shipped patience; a faulted probe pays the SDK retryer’s own backoff and needs more
+	if len(patience) > 0 {
+		wait = patience[0]
+	}
+	deadline := time.Now().Add(wait)
 	for {
 		for _, ji := range a.ActiveTransfers() {
 			if ji.ID == id && ji.Status == status {

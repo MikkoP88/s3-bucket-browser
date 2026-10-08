@@ -1067,11 +1067,15 @@ func xferLocalCreate(p string, r io.Reader, size int64, fn transfer.ProgressFn, 
 // xferDestExists reports whether a destination path is taken. The local
 // probe is a bounded step and advisory, like every destination probe: a
 // wedged destination volume reads as not-taken, and the write behind it
-// then fails honestly on the same volume.
+// then fails honestly on the same volume. The s3 leg rides the same
+// law with the honest probe underneath: only a server’s “yes” reads as
+// taken — a probe the wire could not answer stays advisory here, and
+// the write behind it fails on its own wire.
 func (a *App) xferDestExists(ctx context.Context, dst xferDestSide, p string) bool {
 	switch dst.kind {
 	case "s3":
-		return remoteExists(ctx, dst.client, dst.bucket, p)
+		ex, err := remoteExists(ctx, dst.client, dst.bucket, p)
+		return err == nil && ex
 	case "remote":
 		_, err := dst.fs.Stat(ctx, p)
 		return err == nil

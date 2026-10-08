@@ -19,7 +19,6 @@ import (
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
@@ -854,13 +853,29 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 		j.emit(true)
 
 		pol := filePolicy(decisions, p.key, policy)
-		if pol == PolicySkip && remoteExists(ctx, c, bucket, p.key) {
-			// "skip" keeps an EXISTING destination file — with nothing at
-			// the key there is no conflict to resolve, and silently
-			// dropping a file the caller asked to transfer is data loss
-			j.fileDone(p.item, 0, ItemSkipped)
-			j.emit(true)
-			continue
+		if pol == PolicySkip {
+			taken, perr := remoteExists(ctx, c, bucket, p.key)
+			if perr != nil {
+				// a probe the wire could not answer is not permission to
+				// write: the file fails loudly rather than overwrite what
+				// may live at the key unseen
+				perr = fmt.Errorf("could not check whether s3://%s/%s is taken: %w", bucket, p.key, perr)
+				j.mu.Lock()
+				j.info.Error = fmt.Sprintf("%s: %v", filepath.Base(p.local), perr)
+				j.info.ErrorKind = timeoutKind(perr.Error())
+				j.mu.Unlock()
+				j.fileDone(p.item, p.size, ItemFailed)
+				j.emit(true)
+				continue
+			}
+			if taken {
+				// "skip" keeps an EXISTING destination file — with nothing at
+				// the key there is no conflict to resolve, and silently
+				// dropping a file the caller asked to transfer is data loss
+				j.fileDone(p.item, 0, ItemSkipped)
+				j.emit(true)
+				continue
+			}
 		}
 
 		key := p.key
@@ -870,6 +885,17 @@ func (a *App) runUpload(j *jobHandle, c *s3client.Client, bucket string, pairs [
 		case PolicyRename:
 			if alt, err := uniqueRemoteKey(ctx, c, bucket, key); err == nil {
 				key = alt
+			} else {
+				// the rename leg refuses to fall back to the original key
+				// when it cannot vouch for a free one: the file fails, it
+				// does not overwrite
+				j.mu.Lock()
+				j.info.Error = fmt.Sprintf("%s: %v", filepath.Base(p.local), err)
+				j.info.ErrorKind = timeoutKind(err.Error())
+				j.mu.Unlock()
+				j.fileDone(p.item, p.size, ItemFailed)
+				j.emit(true)
+				continue
 			}
 		}
 
@@ -1025,24 +1051,33 @@ func expandUploadPaths(ctx context.Context, paths []string, prefix string) ([]up
 	return out, nil
 }
 
-// remoteExists reports whether an object key exists (HeadObject probe).
-func remoteExists(ctx context.Context, c *s3client.Client, bucket, key string) bool {
-	_, err := c.S3.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(bucket), Key: aws.String(key),
-	})
-	return err == nil
+// remoteExists reports whether an object key exists (HeadObject probe) —
+// honest the way ObjectExists is: nil error only when the server
+// answered, (false, nil) for a key the server says is free.
+func remoteExists(ctx context.Context, c *s3client.Client, bucket, key string) (bool, error) {
+	return transfer.ObjectExists(ctx, c.S3, bucket, key)
 }
 
-// uniqueRemoteKey returns key, or a "name (n).ext" variant, that is free.
+// uniqueRemoteKey returns key, or a "name (n).ext" variant, that is free —
+// or the probe’s own refusal: a name the wire could not vouch for is not
+// a name to upload under.
 func uniqueRemoteKey(ctx context.Context, c *s3client.Client, bucket, key string) (string, error) {
-	if !remoteExists(ctx, c, bucket, key) {
+	taken, err := remoteExists(ctx, c, bucket, key)
+	if err != nil {
+		return "", fmt.Errorf("could not check whether %s is free: %w", key, err)
+	}
+	if !taken {
 		return key, nil
 	}
 	ext := filepath.Ext(key)
 	stem := strings.TrimSuffix(key, ext)
 	for n := 1; n < 1000; n++ {
 		cand := fmt.Sprintf("%s (%d)%s", stem, n, ext)
-		if !remoteExists(ctx, c, bucket, cand) {
+		taken, err := remoteExists(ctx, c, bucket, cand)
+		if err != nil {
+			return "", fmt.Errorf("could not check whether %s is free: %w", cand, err)
+		}
+		if !taken {
 			return cand, nil
 		}
 	}
