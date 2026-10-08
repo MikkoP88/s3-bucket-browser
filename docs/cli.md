@@ -64,6 +64,7 @@ described here. The same engine backs both.
 - [s3b cp](#s3b-cp) — Copy files (local↔S3, S3→S3 server-side)
 - [s3b doctor](#s3b-doctor) — Diagnose connectivity: DNS, TCP, TLS, auth, bucket policy, ACL
 - [s3b du](#s3b-du) — Count objects and total size under a prefix or source folder
+- [s3b edit](#s3b-edit) — Edit a file with $VISUAL/$EDITOR and push it back guarded
 - [s3b find](#s3b-find) — Search objects by name, size, age, kind or storage class
 - [s3b help](#s3b-help) — Help about any command
 - [s3b license](#s3b-license) — Show the software license and manage its acceptance
@@ -143,6 +144,7 @@ Documentation: https://github.com/MikkoP88/s3-bucket-browser
 * [s3b cp](#s3b-cp)
 * [s3b doctor](#s3b-doctor)
 * [s3b du](#s3b-du)
+* [s3b edit](#s3b-edit)
 * [s3b find](#s3b-find)
 * [s3b help](#s3b-help)
 * [s3b license](#s3b-license)
@@ -1535,6 +1537,55 @@ Count objects and total size under a prefix or source folder
 
 ```
 s3b du s3://bucket[/prefix] | NAME://dir
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b](#s3b)
+
+## s3b edit
+
+Edit a file with $VISUAL/$EDITOR and push it back guarded
+
+### Synopsis
+
+Pulls one file to a staging copy, opens it in your editor ($VISUAL,
+$EDITOR, or the platform default), and pushes the saved result back
+guarded: S3 legs carry the pulled object's ETag (If-Match), source legs
+compare size and mtime, so a teammate's overwrite mid-edit is refused
+and your edit is kept in the staging copy — pass --force to overwrite.
+Local paths edit in place. A file that does not exist yet is created
+on exit. Operands: ./file, s3://bucket/key, or NAME://path into any
+saved data source.
+
+```
+s3b edit PATH [flags]
+```
+
+### Options
+
+```
+      --editor string   editor command (default: $VISUAL, $EDITOR, then the platform default)
+      --force           push past a conflict refusal (overwrite the changed remote)
+
 ```
 
 ### Options inherited from parent commands

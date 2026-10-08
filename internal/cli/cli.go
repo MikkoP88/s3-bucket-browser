@@ -133,6 +133,7 @@ func NewRoot() *cobra.Command {
 		cpCmd(),
 		mvCmd(),
 		rmCmd(),
+		editCmd(),
 		syncCmd(),
 		presignCmd(),
 		doctorCmd(),

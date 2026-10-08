@@ -438,7 +438,10 @@ directory compare) with S3 and the secondary pane.
   and you decide: *Push anyway*, *Reload from server* (discarding
   your pending edits), or stop and discard. Remote sources carry the
   same guard in their own grammar: the push checks the file's size
-  and modification time as they were when the session pulled it.
+  and modification time as they were when the session pulled it. The
+  CLI twin is `s3b edit PATH` — one guarded round trip in the
+  terminal (`$VISUAL`/`$EDITOR`, a conflict refused with your edit
+  kept, `--force` to overwrite, a missing file created on exit).
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
   *New file…* in the context menu opens a small dialog for a file name
   and type (a dozen common extensions, or none). The empty file is
@@ -840,6 +843,8 @@ s3b cp ./site s3://b/site/ -r               # upload (or download, or copy)
 s3b cp s3://src-b/ sftp://host/dst/ -r      # cross-source migration
 s3b sync ./site s3://b/site/ --delete
 s3b sync vault://media ./mirror             # any two sides, same rule
+s3b edit s3://b/cfg/app.yml                # guarded edit in $EDITOR, ETag/If-Match
+s3b edit vault://media/notes.md            # same round trip for any source file
 s3b find s3://b --name 'backup*' --older 90d
 s3b find s3://b --ext pdf,csv --path docs --larger 1MB
 s3b doctor s3://my-bucket

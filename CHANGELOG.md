@@ -8,6 +8,25 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The editor grows its CLI face: `s3b edit`** — one guarded
+  round trip in the terminal, speaking `cp`’s operand grammar
+  (`./file`, `s3://bucket/key`, `NAME://path`): the file pulls to a
+  staging copy, `$VISUAL`/`$EDITOR` opens it (platform default
+  otherwise), and the saved result pushes back under the lost-update
+  cure — S3 legs carry the pulled object’s ETag (If-Match; a missing
+  ETag degrades the guard off), engine legs compare size and
+  modification time as they were at pull (mtime only when both sides
+  report a clock), so a teammate’s overwrite mid-edit refuses with
+  the edit kept in the staging copy and both ways out named (`--force`
+  to overwrite, or edit again from the fresh pull). An editor that
+  saves nothing pushes nothing; an operand that does not exist yet
+  opens an empty buffer and is created on exit; local paths edit in
+  place (the file itself is the store); folder-shaped operands refuse
+  as usage errors before any wire moves. Pinned by the internal/cli
+  rigs (engine round trip, both guard legs, force, the S3 If-Match law
+  against a stateful fake — the 412 refused, the forced landing, the
+  fresh create — local in place, the refusals, the editor-command
+  resolution).
 - **The editor grows the whole matrix — any file the panes seat** —
   Edit existed only for the view source's S3 objects; now every seat a
   file gets one. Remote source files (FTP/SFTP/WebDAV/local-root
