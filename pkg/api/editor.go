@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
@@ -158,9 +159,13 @@ func editDir(parts ...string) string {
 }
 
 // watcherPoll is the file-watch interval; a change is uploaded after it
-// stays stable for two consecutive polls (editor save jitters). A var so
-// tests can shorten the cadence.
-var watcherPoll = 1200 * time.Millisecond
+// stays stable for two consecutive polls (editor save jitters). Atomic
+// nanoseconds so tests can shrink the cadence with plain stores while
+// watchers from earlier tests are still mid-flight: the atomic pair is
+// the only ordering a test's write and a live watcher's read ever share.
+var watcherPoll atomic.Int64
+
+func init() { watcherPoll.Store(int64(1200 * time.Millisecond)) }
 
 // editPushBackoff spaces out retries of a failing push: one poll's grace
 // at first, doubling per consecutive failure and capped at sixteen — a
@@ -173,7 +178,7 @@ func editPushBackoff(fails int) time.Duration {
 	if fails > 4 {
 		fails = 4
 	}
-	return watcherPoll * time.Duration(1<<fails)
+	return time.Duration(watcherPoll.Load()) * time.Duration(1<<fails)
 }
 
 // editPushTimeout bounds one editor push. The push rides no transport
@@ -478,7 +483,7 @@ func (a *App) editRemote(idOrName, keyPath string, chooseApp bool) (EditInfo, er
 // watchEditor polls the file and uploads stable changes back.
 func (a *App) watchEditor(s *editSession) {
 	defer a.guardWorker("app", nil) // the worker panic net (guard.go)
-	t := time.NewTicker(watcherPoll)
+	t := time.NewTicker(time.Duration(watcherPoll.Load()))
 	defer t.Stop()
 	for {
 		select {

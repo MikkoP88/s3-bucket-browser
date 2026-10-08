@@ -66,9 +66,9 @@ func openLabEdit(t *testing.T, a *App, source, key string) *editSession {
 // and the watcher's auto-save pushes a stable edit back through the
 // engine — the file on the engine's own disk changes.
 func TestEditRemoteWatcherPushesStableSaves(t *testing.T) {
-	oldPoll := watcherPoll
-	watcherPoll = 10 * time.Millisecond
-	defer func() { watcherPoll = oldPoll }()
+	oldPoll := watcherPoll.Load()
+	watcherPoll.Store(int64(10 * time.Millisecond))
+	defer func() { watcherPoll.Store(oldPoll) }()
 
 	a, _, root := labEditorApp(t, "lab", "/notes.md", "engine v1")
 	s := openLabEdit(t, a, "lab", "/notes.md")

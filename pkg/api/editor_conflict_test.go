@@ -69,9 +69,9 @@ func remoteContent(t *testing.T, f *fakeS3, key string) string {
 // auto-push, keeps the teammate's bytes on the wire, and flags the
 // session stale — dirty, not lost, voiced.
 func TestEditorPushGuardsAgainstRemoteChange(t *testing.T) {
-	oldPoll := watcherPoll
-	watcherPoll = 10 * time.Millisecond
-	defer func() { watcherPoll = oldPoll }()
+	oldPoll := watcherPoll.Load()
+	watcherPoll.Store(int64(10 * time.Millisecond))
+	defer func() { watcherPoll.Store(oldPoll) }()
 	a, f, local := bootEditApp(t, "v1 pulled")
 
 	// the teammate overwrites while the edit is open (a new identity)
@@ -183,12 +183,15 @@ func TestEditorStopUploadRefusesStaleClobber(t *testing.T) {
 // The guard must not false-positive: with no remote change, the watched
 // auto-push lands clean and the session settles exactly as before.
 func TestEditorPushNoConflictLands(t *testing.T) {
-	oldPoll := watcherPoll
-	watcherPoll = 10 * time.Millisecond
-	defer func() { watcherPoll = oldPoll }()
+	oldPoll := watcherPoll.Load()
+	watcherPoll.Store(int64(10 * time.Millisecond))
+	defer func() { watcherPoll.Store(oldPoll) }()
 	a, f, local := bootEditApp(t, "v1 pulled")
 
-	if err := os.WriteFile(local, []byte("v2 edited"), 0o600); err != nil {
+	// size-differing on purpose: the pull staged 9 bytes, and a same-size
+	// write that lands inside the pull's own millisecond is invisible to
+	// the watcher's size-then-mtime change check on every filesystem
+	if err := os.WriteFile(local, []byte("v2 edited clean"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	a.editorsMu.Lock()
@@ -201,7 +204,7 @@ func TestEditorPushNoConflictLands(t *testing.T) {
 	// would match the pristine session before the watcher ever saw the save
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if got := remoteContent(t, f, "notes.md"); got == "v2 edited" {
+		if got := remoteContent(t, f, "notes.md"); got == "v2 edited clean" {
 			break
 		}
 		if time.Now().After(deadline) {

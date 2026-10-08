@@ -37,6 +37,10 @@ func TestEditDiffS3Leg(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// stop the session like every editor rig: no watcher goroutine and no
+	// registry entry outlives the test (the diff legs never shorten the
+	// poll, so a leaked watcher would sit on the shipped 1.2s cadence).
+	t.Cleanup(func() { _ = a.StopEdit("docs", "notes.md", false) })
 	// the user edited; the teammate landed something else
 	if err := os.WriteFile(info.Local, []byte("hello edited"), 0o600); err != nil {
 		t.Fatal(err)
@@ -119,6 +123,8 @@ func TestEditDiffS3Leg(t *testing.T) {
 func TestEditDiffRemoteLeg(t *testing.T) {
 	a, src, root := labEditorApp(t, "lab", "/cfg.conf", "base\n")
 	s := openLabEdit(t, a, src.Name, "/cfg.conf")
+	tgt := EditTarget{Kind: "remote", Source: src.Name, Key: "/cfg.conf"}
+	t.Cleanup(func() { _ = a.StopEditFile(tgt, false) })
 
 	// the user edited; the teammate landed something else
 	if err := os.WriteFile(s.Local, []byte("base\nlocal edit\n"), 0o600); err != nil {

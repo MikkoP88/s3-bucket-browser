@@ -131,13 +131,13 @@ func TestEditObjectPullSettlesAndRegistersSession(t *testing.T) {
 // editPushBackoff doubles per consecutive failure and caps at sixteen
 // polls (a dead endpoint is retried forever, but gently).
 func TestEditPushBackoff(t *testing.T) {
-	old := watcherPoll
-	defer func() { watcherPoll = old }()
-	watcherPoll = time.Second
+	old := watcherPoll.Load()
+	defer func() { watcherPoll.Store(old) }()
+	watcherPoll.Store(int64(time.Second))
 	for _, tc := range []struct{ fails, polls int }{
 		{0, 2}, {1, 2}, {2, 4}, {3, 8}, {4, 16}, {9, 16},
 	} {
-		if got := editPushBackoff(tc.fails); got != watcherPoll*time.Duration(tc.polls) {
+		if got := editPushBackoff(tc.fails); got != time.Duration(watcherPoll.Load())*time.Duration(tc.polls) {
 			t.Errorf("editPushBackoff(%d) = %s, want %d poll(s)", tc.fails, got, tc.polls)
 		}
 	}
@@ -222,9 +222,9 @@ func TestUploadEditDeadlineBreaksSilentWedge(t *testing.T) {
 // failing state and the dialog's warning ride it), and once the endpoint
 // recovers the retry lands the edit and clears both flags.
 func TestWatchEditorVoicesAndRetriesFailingPush(t *testing.T) {
-	oldPoll := watcherPoll
-	watcherPoll = 10 * time.Millisecond
-	defer func() { watcherPoll = oldPoll }()
+	oldPoll := watcherPoll.Load()
+	watcherPoll.Store(int64(10 * time.Millisecond))
+	defer func() { watcherPoll.Store(oldPoll) }()
 	oldOpen := openInEditor
 	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
 	defer func() { openInEditor = oldOpen }()
@@ -306,9 +306,9 @@ func TestWatchEditorVoicesAndRetriesFailingPush(t *testing.T) {
 // destroying it and stranding the edits on a staged file the next boot's
 // workspace wipe deletes. A clean second stop settles the session.
 func TestStopEditUploadFailureKeepsSession(t *testing.T) {
-	oldPoll := watcherPoll
-	watcherPoll = 10 * time.Millisecond
-	defer func() { watcherPoll = oldPoll }()
+	oldPoll := watcherPoll.Load()
+	watcherPoll.Store(int64(10 * time.Millisecond))
+	defer func() { watcherPoll.Store(oldPoll) }()
 	oldOpen := openInEditor
 	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
 	defer func() { openInEditor = oldOpen }()
@@ -500,9 +500,9 @@ func TestEditObjectRefocusesExistingSession(t *testing.T) {
 // registry too — a zombie entry would pin the indicator (and, when
 // dirty, the exit gate) on a file that no longer exists.
 func TestWatcherEndsSessionWhenStagedFileRemoved(t *testing.T) {
-	oldPoll := watcherPoll
-	watcherPoll = 10 * time.Millisecond
-	defer func() { watcherPoll = oldPoll }()
+	oldPoll := watcherPoll.Load()
+	watcherPoll.Store(int64(10 * time.Millisecond))
+	defer func() { watcherPoll.Store(oldPoll) }()
 	oldOpen := openInEditor
 	openInEditor = func(*App, string, bool) error { return errors.New("no editor in tests") }
 	defer func() { openInEditor = oldOpen }()
