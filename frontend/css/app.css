@@ -1654,3 +1654,14 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .sync-auto-secs { width: 64px; }
 .sync-auto-unit { color: var(--text-dim); }
 .sync-auto-hint { flex-basis: 100%; color: var(--text-dim); font-size: 12px; margin: 2px 0 0 22px; }
+
+/* the edit diff gate: both sides of a stale session shown before its
+   destructive ways out (Push anyway / Reload from server) */
+.diff-labels { display: flex; gap: 24px; margin: 6px 0 2px; }
+.diff-side { color: var(--text-dim); font-size: 12px; }
+.diff-view { margin-top: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); max-height: 46vh; overflow: auto; font-size: 12px; padding: 4px 0; }
+.diff-row { padding: 0 10px; white-space: pre; }
+.diff-row.diff-add { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.diff-row.diff-del { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.diff-row.diff-ctx { color: var(--text-dim); }
+.diff-ident { padding: 10px; color: var(--text-dim); white-space: pre-wrap; font-family: inherit; }

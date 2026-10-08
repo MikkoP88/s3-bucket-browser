@@ -2909,7 +2909,7 @@ const GUIDE_SECTIONS = [
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here. The Home button on each pane toolbar jumps to its side home: the main pane returns to the open data source start view, the secondary pane lands on the workstation home folder.'],
     ['Synchronize', 'The ⟳ Synchronize button (View → Synchronize, dual pane open) plans a sync between any two sides the panes seat — a local folder, an S3 bucket folder, a remote source directory: missing and size-differing files copy each way — mtimes never matter — under skip semantics, so whatever landed in the meantime stays. The direction picker narrows the run to one side; the optional “remove files that are not at the source” leg runs each direction through the same confirmation windows as every delete.'],
     ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size. Clicking any app window — main or popout — brings the whole group forward above other applications, with the clicked window on top.'],
-    ['Edit files in place', 'Right-click a file → Edit (F4) opens it in the app you pick (the OS "Open with" chooser) or the system default — any file the panes seat: S3 objects, remote source files, the pane’s local files (those just open; the file itself is the store). Every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost. Uploads are conditional: if the file changed on the server while you edited, the push refuses instead of overwriting it — the row turns \u21BB changed on server, and you decide: Push anyway, Reload from server (discarding your pending edits), or stop and discard. Remote sources carry the same guard in the wire’s own grammar: the push checks the file’s size and modification time as they were when the session pulled it.'],
+    ['Edit files in place', 'Right-click a file → Edit (F4) opens it in the app you pick (the OS "Open with" chooser) or the system default — any file the panes seat: S3 objects, remote source files, the pane’s local files (those just open; the file itself is the store). Every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost. Uploads are conditional: if the file changed on the server while you edited, the push refuses instead of overwriting it — the row turns \u21BB changed on server, and you decide: Push anyway, Reload from server (discarding your pending edits), or stop and discard. Both decisions seat a diff first — your staged edit against the server’s current bytes, red what leaves and green what lands — so the consent is content-shaped, not label-shaped (binary files show sizes; identical contents say only the server clock moved). Remote sources carry the same guard in the wire’s own grammar: the push checks the file’s size and modification time as they were when the session pulled it.'],
     ['New file', 'Shift+F4, the 📄+ toolbar button, or New file… in the context menu creates an empty file with the name and type you pick (the WinSCP flow) — on S3 buckets and remote sources alike — then opens it in your editor. Cancelling the app picker — or having no app at all — still leaves the created empty file behind.'],
   ]],
   ['File transfers', [
@@ -4154,6 +4154,124 @@ export function adminDialog(bucket, onChanged) {
 // over the changed remote; Reload from server discards the pending edits
 // and pulls fresh (it asks first — it throws away work); Stop & upload
 // stays guarded, so a stale save refuses and the session survives.
+// EDIT_DIFF_MAX_CELLS bounds the line-alignment work the diff view will
+// do: past it the changed middle renders as one whole-block change — an
+// honest shape, not a misaligned pretend-diff on a machine that moved
+// everything.
+const EDIT_DIFF_MAX_CELLS = 640000;
+
+// unifiedLineDiff aligns two texts line-wise and renders one bounded
+// unified diff: lines of oldText that leave (t 'del') and lines of
+// newText that arrive (t 'add'), context between them. Common head and
+// tail are trimmed first — the cheap case, an edit inside a big file —
+// and the changed middle rides a classic LCS alignment. The force gate
+// diffs server->staged (red = what a forced push overwrites); the
+// reload gate diffs staged->server (red = the edits a reload discards).
+function unifiedLineDiff(oldText, newText) {
+  const a = String(oldText).split('\n');
+  const b = String(newText).split('\n');
+  let h = 0;
+  while (h < a.length && h < b.length && a[h] === b[h]) h += 1;
+  let e = 0;
+  while (e < a.length - h && e < b.length - h && a[a.length - 1 - e] === b[b.length - 1 - e]) e += 1;
+  const am = a.slice(h, a.length - e);
+  const bm = b.slice(h, b.length - e);
+  const out = [];
+  for (let i = 0; i < h; i += 1) out.push({ t: 'ctx', s: a[i] });
+  if (am.length && bm.length && am.length * bm.length <= EDIT_DIFF_MAX_CELLS) {
+    const nn = am.length;
+    const mm = bm.length;
+    const W = mm + 1;
+    const dp = new Uint32Array((nn + 1) * (mm + 1));
+    for (let i = nn - 1; i >= 0; i -= 1) {
+      for (let j = mm - 1; j >= 0; j -= 1) {
+        dp[i * W + j] = am[i] === bm[j] ? dp[(i + 1) * W + j + 1] + 1
+          : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < nn && j < mm) {
+      if (am[i] === bm[j]) { out.push({ t: 'ctx', s: am[i] }); i += 1; j += 1; }
+      else if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) { out.push({ t: 'del', s: am[i] }); i += 1; }
+      else { out.push({ t: 'add', s: bm[j] }); j += 1; }
+    }
+    while (i < nn) { out.push({ t: 'del', s: am[i] }); i += 1; }
+    while (j < mm) { out.push({ t: 'add', s: bm[j] }); j += 1; }
+  } else {
+    // the whole middle is one block change: every old line leaves, every
+    // new line arrives — no alignment claimed that was not computed
+    am.forEach((s) => out.push({ t: 'del', s }));
+    bm.forEach((s) => out.push({ t: 'add', s }));
+  }
+  for (let i = a.length - e; i < a.length; i += 1) out.push({ t: 'ctx', s: a[i] });
+  return out;
+}
+
+// editDiffDialog is the content gate for the stale session's two
+// destructive ways out: both sides of the session — the staged edit on
+// this machine and the server's current bytes — shown as one unified
+// diff before the decision is taken. mode 'force' (Push anyway: lines
+// marked - are the server content the forced push overwrites, + the
+// staged edit that lands) or 'reload' (Reload from server: - the
+// pending edits thrown away, + the server content that arrives).
+// Resolves true when the action is confirmed against what was shown;
+// a fetch that fails toasts and resolves false — the gate never opens
+// on silence, and the row's ways out stay reachable by retry.
+function editDiffDialog(f, mode) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    api.EditDiff({ kind: f.kind || 's3', source: f.source || '', bucket: f.bucket || '', key: f.key })
+      .then((d) => {
+        const force = mode === 'force';
+        const label = f.kind === 'remote' ? f.source + ':' + f.key : f.bucket + '/' + f.key;
+        const rows = [];
+        rows.push(el('div', { class: 'set-hint', text: force ? t('edit.diffForceBody') : t('edit.diffReloadBody') }));
+        rows.push(el('div', { class: 'diff-labels' },
+          el('span', { class: 'diff-side', text: t('edit.diffLocal') }),
+          el('span', { class: 'diff-side', text: t('edit.diffRemote') })));
+        if (d.remoteMissing) {
+          rows.push(el('div', { class: 'set-hint', text: t('edit.diffMissing') }));
+        }
+        const notes = [];
+        if (d.localTrunc) notes.push(t('edit.diffTrunc', { n: fmtBytes(d.capBytes) }));
+        if (d.remoteTrunc) notes.push(t('edit.diffTrunc', { n: fmtBytes(d.capBytes) }));
+        if (notes.length) rows.push(el('div', { class: 'set-hint', text: notes.join(' · ') }));
+        if (d.binary) {
+          rows.push(el('div', { class: 'diff-view diff-ident', text: t('edit.diffBinary', { a: fmtBytes(d.localBytes), b: fmtBytes(d.remoteBytes) }) }));
+        } else if (!d.remoteMissing && d.local === d.remote) {
+          rows.push(el('div', { class: 'diff-view diff-ident', text: t('edit.diffIdentical') }));
+        } else {
+          const lines = force ? unifiedLineDiff(d.remote, d.local) : unifiedLineDiff(d.local, d.remote);
+          rows.push(el('div', { class: 'diff-view' },
+            lines.map((ln) => el('div', {
+              class: 'diff-row diff-' + ln.t,
+              text: (ln.t === 'add' ? '+ ' : ln.t === 'del' ? '- ' : '  ') + ln.s,
+            }))));
+        }
+        openModal({
+          title: force ? t('edit.diffForceTitle') : t('edit.diffReloadTitle'),
+          body: el('div', {}, el('div', { class: 'mono', text: label }), ...rows),
+          wide: true,
+          buttons: [
+            { label: 'Cancel', onclick: (c) => { done(false); c(); } },
+            {
+              label: force ? t('edit.pushAnyway') : t('edit.reloadGo'),
+              class: 'danger',
+              onclick: (c) => { done(true); c(); },
+            },
+          ],
+          onClose: () => done(false),
+        });
+      })
+      .catch((e) => {
+        toast(t('edit.diffFailed', { e }), 'error');
+        done(false);
+      });
+  });
+}
+
 export function editingDialog(onChanged) {
   const list = el('div', {});
   openModal({
@@ -4184,6 +4302,11 @@ export function editingDialog(onChanged) {
   // refused; a refusal or an endpoint failure keeps the session and
   // voices it (the backend re-marks it stale / fails with backoff)
   const pushAnyway = async (f) => {
+    // the content gate: what a forced push would overwrite is shown
+    // before it is taken — the informed consent is content-shaped
+    if (!(await editDiffDialog(f, 'force'))) {
+      return;
+    }
     try {
       if (remote(f)) await api.PushEditFile(tgt(f), true);
       else await api.PushEdit(f.bucket, f.key, true);
@@ -4198,12 +4321,9 @@ export function editingDialog(onChanged) {
   // a new guard baseline). It discards the edits pending on this machine,
   // so it asks first.
   const reload = async (f) => {
-    if (!(await confirm({
-      title: t('edit.reload'),
-      message: t('edit.reloadBody'),
-      okLabel: t('edit.reloadGo'),
-      danger: true,
-    }))) {
+    // the content gate: what a reload discards is shown before it is
+    // taken — the framing warns, the diff shows the exact lines lost
+    if (!(await editDiffDialog(f, 'reload'))) {
       return;
     }
     try {

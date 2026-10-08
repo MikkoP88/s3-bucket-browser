@@ -1504,6 +1504,26 @@ function shim() {
       }
       return {};
     },
+    // EditDiff (the diff gate): both sides of an open session, typed
+    // identity echoed back — world.editDiff stages the shape (the default
+    // is a one-line conflict); world.fault.editDiff fails the fetch so
+    // the never-open-on-silence leg stays testable
+    EditDiff: async (t) => {
+      const flt = (world.fault || {}).editDiff;
+      if (flt) throw new Error(flt);
+      const base = world.editDiff || {
+        local: 'line one\nline two edited\nline three\n',
+        remote: 'line one\nline two\nline three\n',
+        localBytes: 36, remoteBytes: 29,
+      };
+      const v = JSON.parse(JSON.stringify(base));
+      v.kind = t.kind || 's3';
+      v.source = t.source || '';
+      v.bucket = t.bucket || '';
+      v.key = t.key;
+      v.capBytes = base.capBytes || 262144;
+      return v;
+    },
     // ---- OS interop ----
     PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
     // local delete (side pane): count-then-act preview + permanent remove
@@ -10376,6 +10396,15 @@ await step('editors-manager', async () => {
     if (b) b.click();
     return !!b;
   });
+  // the consent is content-shaped now: the diff gate seats both sides
+  // first, and only its own confirm sends the forced push
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .diff-view')), 4000, 'force diff gate');
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /push anyway/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
   await ok('push anyway sends the forced PushEdit', waitFor(async () => {
     const c = await findCall('PushEdit');
     return !!c && c.args[0] === 'team-files' && c.args[1] === 'docs/notes.md' && c.args[2] === true;
@@ -10401,7 +10430,7 @@ await step('editors-manager', async () => {
     if (b) b.click();
     return !!b;
   });
-  await waitFor(modalVisible, 4000, 'reload confirm');
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .diff-view')), 4000, 'reload diff gate');
   await ok('the reload confirm warns about discarding', waitFor(async () =>
     (await evalPage(() => document.getElementById('modal-root').textContent)).includes('discards'), 4000, 'reload body'));
   // declining keeps the session exactly as it was — parked parent back,
@@ -10421,7 +10450,7 @@ await step('editors-manager', async () => {
     if (b) b.click();
     return !!b;
   });
-  await waitFor(modalVisible, 4000, 'reload confirm (2)');
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .diff-view')), 4000, 'reload diff gate (2)');
   await resetCalls();
   await evalPage(() => {
     const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => x.textContent === 'Reload');
@@ -10546,6 +10575,14 @@ await step('edit-any', async () => {
     if (b) b.click();
     return !!b;
   });
+  // the remote twin: the diff gate seats both sides before the force
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .diff-view')), 4000, 'force diff gate (remote)');
+  await evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => /push anyway/i.test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  });
   await ok('push anyway sends the typed forced PushEditFile', waitFor(async () => {
     const c = await findCall('PushEditFile');
     return !!c && c.args[0]?.kind === 'remote' && c.args[0]?.source === 'backup-box'
@@ -10572,7 +10609,7 @@ await step('edit-any', async () => {
     if (b) b.click();
     return !!b;
   });
-  await waitFor(modalVisible, 4000, 'reload confirm (remote)');
+  await waitFor(async () => evalPage(() => !!document.querySelector('#modal-root .diff-view')), 4000, 'reload diff gate (remote)');
   await evalPage(() => {
     const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => x.textContent === 'Reload');
     if (b) b.click();
@@ -10589,6 +10626,179 @@ await step('edit-any', async () => {
   await closeModal();
   await evalPage(() => {
     window.__shim.world.editing = null;
+    window.dispatchEvent(new Event('focus'));
+  });
+  await ok('world restored (default editor session back)', waitFor(async () => evalPage(() =>
+    !document.getElementById('status-editing').classList.contains('hidden')), 4000, 'restored pill'));
+});
+
+await step('edit-diff', async () => {
+  // The content gate: both destructive ways out of a stale session —
+  // Push anyway and Reload from server — seat a diff first, the staged
+  // edit against the current server bytes as one unified view (red what
+  // leaves, green what lands), with honest shapes for identical,
+  // binary, truncated, teammate-deleted and failed-fetch sessions
+  const stageS3 = () => evalPage(() => {
+    window.__shim.world.editing = [{ bucket: 'team-files', key: 'docs/notes.md', dirty: true, stale: true }];
+    window.dispatchEvent(new Event('focus'));
+  });
+  const openManager = async (tag) => {
+    await page.click('#status-editing');
+    await waitFor(modalVisible, 4000, 'editing modal (' + tag + ')');
+    await waitFor(async () => evalPage(() =>
+      document.getElementById('modal-root').textContent.includes('changed on server')), 4000, 'stale row ' + tag);
+  };
+  const clickRowBtn = (re) => evalPage((src2) => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn'))
+      .find((x) => new RegExp(src2, 'i').test(x.textContent));
+    if (b) b.click();
+    return !!b;
+  }, re.source);
+  const clickText = (label) => evalPage((l) => {
+    const b = Array.from(document.querySelectorAll('#modal-root .btn')).find((x) => x.textContent === l);
+    if (b) b.click();
+    return !!b;
+  }, label);
+  const diffUp = () => evalPage(() => !!document.querySelector('#modal-root .diff-view'));
+
+  // -- the force gate: red names the server line a forced push would
+  //    overwrite, green the staged edit that lands --
+  await evalPage(() => { window.__shim.world.editDiff = null; });
+  await stageS3();
+  await openManager('diff');
+  await resetCalls();
+  await clickRowBtn(/push anyway/i);
+  await waitFor(diffUp, 4000, 'force diff view');
+  await ok('the force diff paints both sides — red the server line, green the edit', evalPage(() => {
+    const del = Array.from(document.querySelectorAll('.diff-row.diff-del')).map((x) => x.textContent);
+    const add = Array.from(document.querySelectorAll('.diff-row.diff-add')).map((x) => x.textContent);
+    return del.length === 1 && del[0].includes('line two') && !del[0].includes('edited')
+      && add.length === 1 && add[0].includes('line two edited');
+  }));
+  await ok('the diff speaks the typed target grammar', waitFor(async () => {
+    const c = await findCall('EditDiff');
+    return !!c && c.args[0]?.kind === 's3' && c.args[0]?.source === ''
+      && c.args[0]?.bucket === 'team-files' && c.args[0]?.key === 'docs/notes.md';
+  }, 4000, 'typed EditDiff'));
+  await ok('the side labels name the two machines', evalPage(() => {
+    const mt = document.getElementById('modal-root').textContent;
+    return mt.includes('Your edit') && mt.includes('On the server now');
+  }));
+  // declining fires nothing — the parked manager returns exactly as it was
+  await resetCalls();
+  await clickText('Cancel');
+  await ok('declining the diff fires nothing and keeps the stale row', waitFor(async () =>
+    (await findCall('PushEdit')) === null
+    && (await evalPage(() => document.getElementById('modal-root').textContent)).includes('changed on server'), 4000, 'kept row'));
+  // confirming against what was shown sends the forced push
+  await clickRowBtn(/push anyway/i);
+  await waitFor(diffUp, 4000, 'force diff view (2)');
+  await resetCalls();
+  await clickRowBtn(/push anyway/i);
+  await ok('confirming the diff sends the forced PushEdit', waitFor(async () => {
+    const c = await findCall('PushEdit');
+    return !!c && c.args[0] === 'team-files' && c.args[1] === 'docs/notes.md' && c.args[2] === true;
+  }, 4000, 'forced PushEdit'));
+
+  // -- the honest shapes, each on the same stale row --
+  await closeModal();
+  await evalPage(() => {
+    window.__shim.world.editDiff = { local: 'same\nbytes\n', remote: 'same\nbytes\n', localBytes: 11, remoteBytes: 11 };
+  });
+  await stageS3();
+  await openManager('identical');
+  await clickRowBtn(/push anyway/i);
+  await ok('identical contents say so — no lines invented', waitFor(async () => evalPage(() =>
+    !document.querySelector('#modal-root .diff-row')
+    && document.getElementById('modal-root').textContent.includes('identical')), 4000, 'identical note'));
+  await clickText('Cancel');
+  await evalPage(() => {
+    window.__shim.world.editDiff = { local: 'a\x00b', remote: 'c\x00d', binary: true, localBytes: 3, remoteBytes: 3 };
+  });
+  await clickRowBtn(/push anyway/i);
+  await ok('binary shows sizes instead of a corrupted view', waitFor(async () => evalPage(() => {
+    const mt = document.getElementById('modal-root').textContent;
+    return !document.querySelector('#modal-root .diff-row') && mt.includes('Binary content') && mt.includes('3 B');
+  }), 4000, 'binary note'));
+  await clickText('Cancel');
+  await evalPage(() => {
+    window.__shim.world.editDiff = { local: 'kept\n', remote: '', localBytes: 5, remoteBytes: 0, remoteMissing: true };
+  });
+  await clickRowBtn(/push anyway/i);
+  await ok('the teammate-deleted miss is named', waitFor(async () => evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('no longer exists on the server')), 4000, 'missing note'));
+  await clickText('Cancel');
+  await evalPage(() => {
+    window.__shim.world.editDiff = { local: 'cut short\n', remote: 'cut\n', localBytes: 999999, remoteBytes: 999999, localTrunc: true, remoteTrunc: true, capBytes: 512 };
+  });
+  await clickRowBtn(/push anyway/i);
+  await ok('the truncation note bounds what is shown', waitFor(async () => evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('first 512 B shown')), 4000, 'truncation note'));
+  await clickText('Cancel');
+
+  // -- a remote row rides the typed family end to end --
+  await closeModal();
+  await evalPage(() => {
+    window.__shim.world.editing = [{ kind: 'remote', source: 'backup-box', key: '/backup.sh', dirty: true, stale: true }];
+    window.dispatchEvent(new Event('focus'));
+  });
+  await openManager('remote diff');
+  await resetCalls();
+  await clickRowBtn(/push anyway/i);
+  await waitFor(diffUp, 4000, 'remote diff view');
+  await ok('the remote row diffs through the typed family', waitFor(async () => {
+    const c = await findCall('EditDiff');
+    return !!c && c.args[0]?.kind === 'remote' && c.args[0]?.source === 'backup-box'
+      && c.args[0]?.key === '/backup.sh';
+  }, 4000, 'typed remote EditDiff'));
+  await ok('the diff wears the crumb grammar', waitFor(async () => evalPage(() =>
+    document.getElementById('modal-root').textContent.includes('backup-box:/backup.sh')), 4000, 'crumb label'));
+  await clickRowBtn(/push anyway/i);
+  await ok('confirming the remote diff lands the forced PushEditFile', waitFor(async () => {
+    const c = await findCall('PushEditFile');
+    return !!c && c.args[0]?.kind === 'remote' && c.args[0]?.source === 'backup-box'
+      && c.args[0]?.key === '/backup.sh' && c.args[1] === true;
+  }, 4000, 'forced PushEditFile'));
+
+  // -- the reload gate reverses the direction: red the edits lost --
+  await closeModal();
+  await evalPage(() => { window.__shim.world.editDiff = null; });
+  await stageS3();
+  await openManager('reload diff');
+  await clickRowBtn(/reload from server/i);
+  await waitFor(diffUp, 4000, 'reload diff view');
+  await ok('the reload diff reverses — red the edit lost, green the server line', evalPage(() => {
+    const del = Array.from(document.querySelectorAll('.diff-row.diff-del')).map((x) => x.textContent);
+    const add = Array.from(document.querySelectorAll('.diff-row.diff-add')).map((x) => x.textContent);
+    return del.length === 1 && del[0].includes('line two edited')
+      && add.length === 1 && add[0].includes('line two') && !add[0].includes('edited');
+  }));
+  await resetCalls();
+  await clickText('Reload');
+  await ok('confirming the reload diff composes StopEdit + EditObject', waitFor(async () => {
+    const stop = await findCall('StopEdit');
+    const edit = await findCall('EditObject');
+    return !!stop && stop.args[2] === false
+      && !!edit && edit.args[0] === 'team-files' && edit.args[1] === 'docs/notes.md';
+  }, 4000, 'reload composition'));
+
+  // -- a failed fetch never opens the gate: a toast, the row intact --
+  await closeModal();
+  await evalPage(() => { window.__shim.world.fault = { editDiff: 'dial tcp: connection refused' }; });
+  await stageS3();
+  await openManager('failed fetch');
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await clickRowBtn(/push anyway/i);
+  await ok('a failed fetch toasts and never opens the gate', waitFor(async () =>
+    (await txt('#toasts')).includes('Could not load the diff')
+    && (await evalPage(() => !document.querySelector('#modal-root .diff-view')
+      && document.getElementById('modal-root').textContent.includes('changed on server'))), 4000, 'failed fetch'));
+
+  await closeModal();
+  await evalPage(() => {
+    window.__shim.world.editing = null;
+    window.__shim.world.editDiff = null;
+    window.__shim.world.fault = null;
     window.dispatchEvent(new Event('focus'));
   });
   await ok('world restored (default editor session back)', waitFor(async () => evalPage(() =>

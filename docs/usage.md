@@ -436,7 +436,14 @@ directory compare) with S3 and the secondary pane.
   file changed on the server while you edited, the push refuses
   instead of overwriting it — the row turns ⟳ *changed on server*,
   and you decide: *Push anyway*, *Reload from server* (discarding
-  your pending edits), or stop and discard. Remote sources carry the
+  your pending edits), or stop and discard. Both decisions seat a diff
+first — your staged edit against the server's current bytes as one
+unified view, red what leaves and green what lands, so the consent is
+content-shaped rather than label-shaped (binary files show sizes;
+identical contents say only the server clock moved; the first 256 KB
+of each side is shown, noted when cut; a file the teammate deleted is
+named — a forced push recreates it, a reload fails honestly). Remote
+sources carry the
   same guard in their own grammar: the push checks the file's size
   and modification time as they were when the session pulled it. The
   CLI twin is `s3b edit PATH` — one guarded round trip in the

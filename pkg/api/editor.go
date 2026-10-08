@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -784,6 +785,188 @@ func (a *App) pushEdit(sid, displayKey string, force bool) error {
 	s.mu.Unlock()
 	a.noteEditSaved(s)
 	return nil
+}
+
+// editDiffCap bounds each side of an EditDiff sample: the manager's
+// destructive decisions (Push anyway, Reload from server) are gated by
+// content, but no gate may stream a multi-gigabyte object across the
+// bridge to draw one — the first editDiffCap bytes tell the user what
+// they are about to overwrite or discard, and a truncation flag says
+// honestly that there is more. A var so rigs can shrink it.
+var editDiffCap = 256 << 10
+
+// EditDiffInfo is the two-sided view of an open edit session: the staged
+// local edit versus the server's current bytes — the content the dialog's
+// destructive decisions are consented against. Local/Remote carry the
+// SAMPLED text (editDiffCap-bounded, trunc flags naming the cut); the
+// byte counts carry the full sizes; RemoteMissing is the teammate-deleted
+// case (the diff says so instead of failing — Push anyway then recreates,
+// a reload fails honestly); Binary marks NUL-carrying samples, where the
+// dialog shows sizes instead of pretending a line diff means anything.
+type EditDiffInfo struct {
+	Kind   string `json:"kind"`
+	Source string `json:"source"`
+	Bucket string `json:"bucket"`
+	Key    string `json:"key"`
+	Local  string `json:"local"`
+	Remote string `json:"remote"`
+	// full sizes even when the samples are cut (the framing's own honesty)
+	LocalBytes    int64 `json:"localBytes"`
+	RemoteBytes   int64 `json:"remoteBytes"`
+	LocalTrunc    bool  `json:"localTrunc"`
+	RemoteTrunc   bool  `json:"remoteTrunc"`
+	RemoteMissing bool  `json:"remoteMissing"`
+	Binary        bool  `json:"binary"`
+	// the sample bound itself, so the truncation note names the real cut
+	CapBytes int64 `json:"capBytes"`
+}
+
+// isNoSuchKey reports whether err is the S3 missing-object refusal: the
+// typed NoSuchKey code, or a bare 404 from a server that skips the XML
+// body — the same dual read isPreconditionFailed carries.
+func isNoSuchKey(err error) bool {
+	var api smithy.APIError
+	if errors.As(err, &api) && api.ErrorCode() == "NoSuchKey" {
+		return true
+	}
+	var re *awshttp.ResponseError
+	return errors.As(err, &re) && re.HTTPStatusCode() == http.StatusNotFound
+}
+
+// sampleEditDiff reads up to editDiffCap+1 bytes of one side (the +1 is
+// the truncation probe) and reports the sampled text and whether the cut
+// happened. A read error mid-sample is the caller's to voice.
+func sampleEditDiff(r io.Reader) (string, bool, error) {
+	buf := make([]byte, editDiffCap+1)
+	n, err := io.ReadFull(r, buf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return "", false, err
+	}
+	if n > editDiffCap {
+		n = editDiffCap
+		return string(buf[:n]), true, nil
+	}
+	return string(buf[:n]), false, nil
+}
+
+// hasNUL reports whether the sample's first 8 KiB carries a NUL byte —
+// the cheap binary verdict every text tool agrees on.
+func hasNUL(sample string) bool {
+	probe := sample
+	if len(probe) > 8192 {
+		probe = probe[:8192]
+	}
+	return strings.ContainsRune(probe, 0)
+}
+
+// EditDiff shows both sides of an open edit session — the staged edit on
+// this machine versus the server's current bytes — so the manager's
+// destructive decisions consent against content, not labels: Push anyway
+// means overwriting what the Remote side shows, Reload from server means
+// discarding what the Local side holds. One typed grammar for both legs
+// (the manager's rows already speak it); a session that is not open has
+// nothing to diff, and a fetch that fails says so instead of gating the
+// decision on silence — the caller toasts and the way out stays reachable
+// by retry. The samples are editDiffCap-bounded: a diff view must never
+// become a second full pull.
+func (a *App) EditDiff(t EditTarget) (EditDiffInfo, error) {
+	switch t.Kind {
+	case "", "s3", "remote":
+	default:
+		return EditDiffInfo{}, fmt.Errorf(
+			"cannot diff kind %q — S3 objects and remote source files diff in place; local files never cross the bridge", t.Kind)
+	}
+	a.editorsMu.Lock()
+	s := a.editors[t.id()]
+	a.editorsMu.Unlock()
+	if s == nil {
+		return EditDiffInfo{}, fmt.Errorf("not being edited: %s", t.Key)
+	}
+	kind := "s3"
+	if s.remote {
+		kind = "remote"
+	}
+	d := EditDiffInfo{Kind: kind, Source: s.Source, Bucket: s.Bucket, Key: s.Key}
+
+	// the local side: what the staged file holds right now — the edit the
+	// user would force onto the server, or throw away on a reload
+	if lst, err := os.Stat(s.Local); err == nil {
+		d.LocalBytes = lst.Size()
+	} else {
+		return EditDiffInfo{}, err
+	}
+	lf, err := os.Open(s.Local)
+	if err != nil {
+		return EditDiffInfo{}, err
+	}
+	d.Local, d.LocalTrunc, err = sampleEditDiff(lf)
+	lf.Close()
+	if err != nil {
+		return EditDiffInfo{}, err
+	}
+
+	// the sample budget: a wedge-class peer must not park the dialog —
+	// one bounded minute, the diff's own (a push rides the push budget)
+	var base context.Context = context.Background()
+	if a.ctx != nil {
+		base = a.ctx
+	}
+	ctx, cancel := context.WithTimeout(base, time.Minute)
+	defer cancel()
+
+	if s.remote {
+		src, fsx, err := a.remoteSource(s.Source)
+		if err != nil {
+			return EditDiffInfo{}, err
+		}
+		unlock := a.lockSrcs(src.ID)
+		rc, size, err := fsx.Open(ctx, s.Key)
+		if err != nil {
+			unlock()
+			if errors.Is(err, fs.ErrNotExist) {
+				d.RemoteMissing = true
+				return d, nil
+			}
+			return EditDiffInfo{}, err
+		}
+		d.Remote, d.RemoteTrunc, err = sampleEditDiff(rc)
+		rc.Close()
+		unlock()
+		if err != nil {
+			return EditDiffInfo{}, err
+		}
+		d.RemoteBytes = size
+		if size < 0 {
+			d.RemoteBytes = int64(len(d.Remote))
+		}
+	} else {
+		c, err := a.client(s.Source)
+		if err != nil {
+			return EditDiffInfo{}, err
+		}
+		out, err := c.S3.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(s.Bucket), Key: aws.String(s.Key),
+		})
+		if err != nil {
+			if isNoSuchKey(err) {
+				d.RemoteMissing = true
+				return d, nil
+			}
+			return EditDiffInfo{}, err
+		}
+		d.Remote, d.RemoteTrunc, err = sampleEditDiff(out.Body)
+		out.Body.Close()
+		if err != nil {
+			return EditDiffInfo{}, err
+		}
+		d.RemoteBytes = int64(len(d.Remote))
+		if out.ContentLength != nil && *out.ContentLength >= 0 {
+			d.RemoteBytes = *out.ContentLength
+		}
+	}
+	d.Binary = hasNUL(d.Local) || hasNUL(d.Remote)
+	d.CapBytes = int64(editDiffCap)
+	return d, nil
 }
 
 // done signals app shutdown (nil ctx before Startup = never).

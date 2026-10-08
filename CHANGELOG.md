@@ -8,6 +8,31 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The editor's destructive decisions grow a diff view** — *Push
+  anyway* and *Reload from server* were label-shaped consents: one
+  force-fed a stale session past the guard on the strength of its own
+  label, the other discarded pending edits on a bare text confirm, and
+  in neither case did the deciding eye see what was actually about to
+  be lost. Both ways out now seat a diff first: the row button opens a
+  modal carrying both sides of the session — the staged edit on this
+  machine and the server's current bytes — rendered as one unified
+  line diff, red for what leaves and green for what lands (the force
+  gate paints server→staged, the reload gate staged→server), with the
+  honest shapes beside it: binary content (a NUL in the first 8 KiB)
+  shows the two sizes instead of a corrupted view, identical contents
+  say only the server clock moved, samples are capped at 256 KiB with
+  the cut noted, and a file the teammate deleted is named — while a
+  diff that cannot be fetched toasts and never opens the gate (the
+  row's ways out stay reachable by retry). One typed api serves both
+  kinds and both legs (`EditDiff` on the EditTarget grammar — S3 GET
+  and engine Open under the source lock, a 60-second budget so a
+  wedged wire cannot hang the click), the renderer trims common head
+  and tail and bounds its alignment work (past 640k cells the changed
+  middle renders as one whole-block change — no false alignment), and
+  the old reload confirm is gone entirely: the discard warning rides
+  the diff's own framing. GUI-only round by design; the CLI twin keeps
+  its honest one-line refusal (the terminal already names what moved
+  and keeps the staging copy — its consent surface is content-shaped).
 - **Synchronize grows the standing mirror on both faces** — the
   one-shot pair becomes a kept pair. `s3b sync --watch` re-runs the
   sync until Ctrl+C (`--interval`, 30s default): every pass dials
