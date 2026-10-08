@@ -92,8 +92,8 @@ export function commandState(pane = null) {
     canPaste: (hasClipboard || ctx.osClipFiles()) && ((inObjects && hasProfile) || inRemote || inLocal || paneTarget()),
     // Compare needs the secondary pane to be open on something
     canCompare: ctx.localPaneOpen() && !!ctx.paneAdapter?.()?.bound,
-    // Synchronize rides the same seating — the local↔s3 kind check is
-    // the click's own honest refusal, one step later
+    // Synchronize rides the same seating — the same-side refusal is
+    // the click's own honest answer, one step later
     canSync: ctx.localPaneOpen() && !!ctx.paneAdapter?.()?.bound,
     hasSelection: sel >= 1,
     selectionCount: sel,

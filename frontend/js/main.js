@@ -12,7 +12,7 @@ import {
   renderPopoutView, licenseGate,
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile, applySearchCols,
   bucketSourceDialog, setXferGoto,
-  synchronizeDialog, setSyncRunners, syncLocalPath,
+  synchronizeDialog, setSyncRunners, syncLocalPath, syncRemoteKey, syncS3Prefix,
 } from './dialogs.js';
 import { SR_DEFAULT_COLS, storedSearchCols } from './srgrid.js';
 import { LICENSE, licenseLine } from './license.js';
@@ -3065,10 +3065,21 @@ async function compareDirs() {
   }
 }
 
+// sameSyncRef names the degenerate pair: both sides one location, the
+// honest refusal for a two-way plan against itself (it mirrors the Go
+// planner's own gate).
+function sameSyncRef(a, b) {
+  if (a.kind !== b.kind) return false;
+  const norm = (s) => (s || '').replace(/\/*$/, '');
+  if (a.kind === 's3') return norm(a.source) === norm(b.source) && a.bucket === b.bucket && norm(a.prefix) === norm(b.prefix);
+  if (a.kind === 'remote') return norm(a.source) === norm(b.source) && norm(a.dir) === norm(b.dir);
+  return norm(a.dir) === norm(b.dir);
+}
+
 // synchronizePair opens the Synchronize dialog for the side pane ↔ main
-// view pair — the CLI's sync grown its GUI face. v1 serves exactly the
-// CLI's own contract: one local folder, one S3 prefix. Anything else
-// gets the honest pointer at Compare + copy instead of a broken plan.
+// view pair — the CLI's sync grown its GUI face, any two sides the dual
+// pane can seat (the CompareAny grammar, one shared predicate). The one
+// refusal is the degenerate pair: both sides naming the same location.
 function synchronizePair() {
   const x = sidePaneRef();
   const y = mainCompareRef();
@@ -3079,13 +3090,24 @@ function synchronizePair() {
     return;
   }
   if (!y) { toast('Open a bucket folder or remote directory to compare against'); return; }
-  const local = x.kind === 'local' ? x : (y.kind === 'local' ? y : null);
-  const s3 = x.kind === 's3' ? x : (y.kind === 's3' ? y : null);
-  if (!local || !s3) {
-    toast(t('sync.notSupported', { pair: cmpRefLabel(x) + ' ↔ ' + cmpRefLabel(y) }), 'error');
+  if (sameSyncRef(x, y)) {
+    toast(t('sync.sameSide', { side: cmpRefLabel(x) }), 'error');
     return;
   }
-  synchronizeDialog(local, s3);
+  // an s3 side without its own source name rides the view source — the
+  // xferDestOf grammar, so the matrix legs route exactly like every other
+  // transfer surface. A remote side's binding names its source by id; the
+  // dialog — labels and legs alike — speaks the name, the crumb's own
+  // resolution and the form the transfer matrix already accepts
+  const fill = (r) => {
+    if (r.kind === 's3' && !r.source) return { ...r, source: viewSource };
+    if (r.kind === 'remote') {
+      const s = sources.find((x) => x.id === r.source && x.id !== x.name);
+      if (s) return { ...r, source: s.name };
+    }
+    return r;
+  };
+  synchronizeDialog(fill(x), fill(y));
 }
 
 // updateEditingStatus refreshes the status-bar editor indicator.
@@ -5207,12 +5229,17 @@ function wireEvents() {
   // existing gated delete windows (dialogs.js cannot import the shell —
   // the same hook shape as setXferGoto above).
   setSyncRunners({
-    deleteRemote: (info) => deleteS3Keys(info.source, info.bucket,
-      info.delRemote.map((f) => info.prefix + f.rel), '',
-      's3://' + info.bucket + '/' + info.prefix, () => refreshCurrent()),
-    deleteLocal: (info) => {
-      const after = nav.current?.kind === 'local' ? () => refreshCurrent() : null;
-      deleteLocalSelection(info.delLocal.map((f) => syncLocalPath(info.localDir, f.rel)), after);
+    deleteSide: (side, files) => {
+      if (side.kind === 's3') {
+        return deleteS3Keys(side.source || '', side.bucket,
+          files.map((f) => syncS3Prefix(side.prefix, f.rel)), '',
+          's3://' + side.bucket + '/' + (side.prefix || ''), () => refreshCurrent());
+      }
+      if (side.kind === 'local') {
+        const after = nav.current?.kind === 'local' ? () => refreshCurrent() : null;
+        return deleteLocalSelection(files.map((f) => syncLocalPath(side.dir, f.rel)), after);
+      }
+      return deleteRemoteSelection(side.source, files.map((f) => syncRemoteKey(side.dir, f.rel)));
     },
   });
   onEvent('xfer:dest', (d) => gotoDest(d));

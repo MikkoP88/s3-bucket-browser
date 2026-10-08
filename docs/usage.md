@@ -494,19 +494,22 @@ directory compare) with S3 and the secondary pane.
 ![Dual pane with directory compare](screenshots/dual-pane-compare.png)
 
 - **Synchronize** — the ⟳ **Synchronize** button on the global bar
-  (View → Synchronize; it needs the dual pane open, one side a local
-  folder and the other an S3 bucket folder) plans a sync between the
-  two and runs it: missing and size-differing files copy each way —
-  mtimes never matter, and the run rides *skip* semantics, so
-  whatever landed at the target in the meantime stays put. The plan
-  dialog shows each direction as its own capped section (file, size),
-  a direction picker narrows the run to uploads-only or
-  downloads-only, and *remove files that are not at the source* —
-  off by default — adds the delete legs, which run one direction at
-  a time through the same confirmation windows as every delete. Any
-  other pane pairing (two remotes, two local folders) gets the
-  honest refusal pointing at Compare + copy; the same predicate the
-  CLI's `s3b sync` rides computes the plan, so the faces agree.
+  (View → Synchronize; it needs the dual pane open) plans a sync
+  between any two sides the panes seat — a local folder, an S3 bucket
+  folder, a remote source directory — and runs it: missing and
+  size-differing files copy each way — mtimes never matter, and the
+  run rides *skip* semantics, so whatever landed at the target in the
+  meantime stays put. The plan dialog shows each direction as its own
+  capped section (file, size) — upload/download wording for the
+  local↔S3 pair, destination-worded "Copy to …" for every other
+  pairing — a direction picker narrows the run to one side only, and
+  *remove files that are not at the source* — off by default — adds
+  the delete legs, which run one direction at a time through the same
+  confirmation windows as every delete. The one refusal is the
+  degenerate pair: both sides naming the same location. The same
+  predicate the CLI's `s3b sync` rides computes the plan, and that
+  CLI now takes the same operand grammar `cp` speaks (`s3b sync
+  vault://media ./mirror`), so the faces agree on the whole matrix.
 
 - **Floating windows** — the views you keep an eye on — File transfers,
   Running tasks, Search, the User guide, the keyboard map, the sources overview,
@@ -828,6 +831,7 @@ s3b ls            s3b ls vault://media      # any source, same flags
 s3b cp ./site s3://b/site/ -r               # upload (or download, or copy)
 s3b cp s3://src-b/ sftp://host/dst/ -r      # cross-source migration
 s3b sync ./site s3://b/site/ --delete
+s3b sync vault://media ./mirror             # any two sides, same rule
 s3b find s3://b --name 'backup*' --older 90d
 s3b find s3://b --ext pdf,csv --path docs --larger 1MB
 s3b doctor s3://my-bucket

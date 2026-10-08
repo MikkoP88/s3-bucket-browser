@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/syncplan"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/transfer"
@@ -620,28 +622,39 @@ func syncCmd() *cobra.Command {
 	var del, dryRun, force bool
 	cmd := &cobra.Command{
 		Use:   "sync SRC DST",
-		Short: "Sync a local folder with an S3 prefix (either direction)",
-		Long: "One operand must be s3://bucket/prefix/, the other a local directory.\n" +
-			"Uploads/downloads files whose size differs or that are missing on the target;\n" +
+		Short: "Sync any two locations (local, S3, or a NAME:// source path)",
+		Long: "Each operand is a local directory, an s3://bucket/prefix/ URI, or a\n" +
+			"NAME:// path into any saved data source — the same operand grammar cp\n" +
+			"speaks. Copies files whose size differs or that are missing on the target;\n" +
 			"--delete also removes extra files on the target (--force required above the\n" +
 			fmt.Sprintf("safety threshold of %d files).", rmForceThreshold),
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := resolveClient(cmd.Context())
+			// The view client is only needed when an operand is s3:// —
+			// NAME:// operands dial their own engines (S3 sources too).
+			var c *s3client.Client
+			if strings.HasPrefix(args[0], "s3://") || strings.HasPrefix(args[1], "s3://") {
+				var err error
+				c, err = resolveClient(cmd.Context())
+				if err != nil {
+					return err
+				}
+			}
+			x, err := syncDialSide(cmd.Context(), c, args[0])
 			if err != nil {
 				return err
 			}
-			srcS3 := strings.HasPrefix(args[0], "s3://")
-			dstS3 := strings.HasPrefix(args[1], "s3://")
-			if srcS3 == dstS3 {
-				return usageErr("sync needs exactly one s3:// operand and one local directory")
+			y, err := syncDialSide(cmd.Context(), c, args[1])
+			if err != nil {
+				x.Close()
+				return err
 			}
-			var res syncResult
-			if srcS3 {
-				res, err = syncDownload(cmd.Context(), c, args[0], args[1], del, dryRun, force)
-			} else {
-				res, err = syncUpload(cmd.Context(), c, args[0], args[1], del, dryRun, force)
+			defer y.Close()
+			defer x.Close()
+			if sameSyncLocation(x, y) {
+				return usageErr("sync needs two different locations — both operands name %s", x.label)
 			}
+			res, err := syncRun(cmd.Context(), x, y, del, dryRun, force)
 			if err != nil {
 				return opErr(err)
 			}
@@ -710,117 +723,264 @@ func collectRemoteFiles(ctx context.Context, c *s3client.Client, bucket, prefix 
 	return out, err
 }
 
-func syncUpload(ctx context.Context, c *s3client.Client, localDir, dst string, del, dryRun, force bool) (syncResult, error) {
-	res := syncResult{Direction: "upload"}
-	u, err := parseS3URI(dst)
-	if err != nil {
-		return res, err
-	}
-	prefix := dirPrefix(u)
-	local, err := collectLocalFiles(localDir)
-	if err != nil {
-		return res, err
-	}
-	remote, err := collectRemoteFiles(ctx, c, u.Bucket, prefix)
-	if err != nil {
-		return res, err
-	}
+// ---- the sync matrix ----
 
-	// The one shared predicate: copies = missing or size-diff, deletes =
-	// target files absent at the source (the GUI's Synchronize dialog rides
-	// this same core, so the semantics can never drift between faces).
-	uploads, deletes, skipped := syncplan.Plan(local, remote, del)
+// syncSide is one dialed sync operand: a local directory, an S3 prefix
+// (the view client or a saved S3 source's own), or a directory on any
+// other saved source — the same operand grammar cp and mv speak. The
+// side knows how to census itself (rel → size), stream one relative file
+// off itself, name one relative file for the plan output, and delete one
+// relative file at itself (the S3 delete batches — see syncDeleteAt).
+type syncSide struct {
+	label  string // display form for plans, gates and results
+	srcID  string // source identity ("" = the view client); same-location and server-side-copy detection
+	local  bool
+	dir    string           // local: OS path
+	ref    *remoteRef       // remote engine side (holds the open FS)
+	client *s3client.Client // s3 side
+	bucket string           // s3 side
+	prefix string           // s3 side, dirPrefix form
+}
+
+func (s *syncSide) isS3() bool { return s.client != nil }
+
+// Close releases the engine side's open filesystem (no-op elsewhere).
+func (s *syncSide) Close() {
+	if s.ref != nil {
+		s.ref.Close()
+	}
+}
+
+// keyFor rebuilds the object key of one relative file (root prefix stays
+// empty, never a lone slash).
+func (s *syncSide) keyFor(rel string) string { return joinKeyNoSlash(s.prefix, rel) }
+
+// remotePath anchors one relative file under the engine side.
+func (s *syncSide) remotePath(rel string) string {
+	return remotefs.CleanPath(s.ref.path + "/" + rel)
+}
+
+// locate names one relative file at the side for the plan output.
+func (s *syncSide) locate(rel string) string {
+	switch {
+	case s.isS3():
+		return "s3://" + s.bucket + "/" + s.keyFor(rel)
+	case s.ref != nil:
+		return uri(s.ref.src.Name, s.remotePath(rel))
+	default:
+		return filepath.Join(s.dir, filepath.FromSlash(rel))
+	}
+}
+
+// walkCensus maps slash-relative paths to sizes under the side.
+func (s *syncSide) walkCensus(ctx context.Context) (map[string]int64, error) {
+	switch {
+	case s.local:
+		return collectLocalFiles(s.dir)
+	case s.ref != nil:
+		return collectEngineFiles(ctx, s.ref)
+	default:
+		return collectRemoteFiles(ctx, s.client, s.bucket, s.prefix)
+	}
+}
+
+// open streams one relative file off the side with its size (engines may
+// report unknown as zero — the caller falls back to the census size).
+func (s *syncSide) open(ctx context.Context, rel string) (io.ReadCloser, int64, error) {
+	switch {
+	case s.local:
+		f, err := os.Open(filepath.Join(s.dir, filepath.FromSlash(rel)))
+		if err != nil {
+			return nil, 0, err
+		}
+		st, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, 0, err
+		}
+		return f, st.Size(), nil
+	case s.ref != nil:
+		return s.ref.fs.Open(ctx, s.remotePath(rel))
+	default:
+		return s3OpenCLI(ctx, s.client, s.bucket, s.keyFor(rel))
+	}
+}
+
+// syncDialSide resolves one operand: NAME:// first (S3 sources dial
+// their own client, every other engine its filesystem), then plain
+// s3:// on the view client, then an existing local directory.
+func syncDialSide(ctx context.Context, c *s3client.Client, arg string) (*syncSide, error) {
+	if s3r, err := dialS3SourceURI(ctx, arg); err != nil {
+		return nil, err
+	} else if s3r != nil {
+		prefix := ""
+		if k := strings.TrimSuffix(s3r.key, "/"); k != "" {
+			prefix = k + "/"
+		}
+		return &syncSide{label: s3r.uriStr(), srcID: s3r.src.ID, client: s3r.c, bucket: s3r.bucket, prefix: prefix}, nil
+	}
+	if ref, err := dialSourceURI(ctx, arg); err != nil {
+		return nil, err
+	} else if ref != nil {
+		return &syncSide{label: uri(ref.src.Name, ref.path), srcID: ref.src.ID, ref: ref}, nil
+	}
+	if strings.HasPrefix(arg, "s3://") {
+		u, err := parseS3URI(arg)
+		if err != nil {
+			return nil, err
+		}
+		return &syncSide{label: arg, client: c, bucket: u.Bucket, prefix: dirPrefix(u)}, nil
+	}
+	st, err := os.Stat(arg)
+	if err != nil || !st.IsDir() {
+		return nil, usageErr("%s is neither a local directory, an s3:// URI nor a NAME:// source path", arg)
+	}
+	return &syncSide{label: arg, dir: arg, local: true}, nil
+}
+
+// sameSyncLocation reports whether both sides name one location — the
+// degenerate pair a two-way tool refuses honestly.
+func sameSyncLocation(x, y *syncSide) bool {
+	switch {
+	case x.local && y.local:
+		return filepath.Clean(x.dir) == filepath.Clean(y.dir)
+	case x.isS3() && y.isS3():
+		return x.srcID == y.srcID && x.bucket == y.bucket && x.prefix == y.prefix
+	case x.ref != nil && y.ref != nil:
+		return x.srcID == y.srcID && remotefs.CleanPath(x.ref.path) == remotefs.CleanPath(y.ref.path)
+	}
+	return false
+}
+
+// syncDirection keeps the historical labels for the local↔s3 pair and
+// names the pair for everything else the matrix seats.
+func syncDirection(x, y *syncSide) string {
+	if x.local && y.isS3() {
+		return "upload"
+	}
+	if x.isS3() && y.local {
+		return "download"
+	}
+	return x.label + " → " + y.label
+}
+
+// syncRun walks both sides, plans through the one shared predicate (the
+// GUI's Synchronize dialog computes with the same core, so the semantics
+// can never drift between faces) and executes: copies one direction,
+// then the opt-in deletes at the target under the same L1 gate as rm.
+func syncRun(ctx context.Context, x, y *syncSide, del, dryRun, force bool) (syncResult, error) {
+	res := syncResult{Direction: syncDirection(x, y)}
+	xm, err := x.walkCensus(ctx)
+	if err != nil {
+		return res, fmt.Errorf("%s: %w", x.label, err)
+	}
+	ym, err := y.walkCensus(ctx)
+	if err != nil {
+		return res, fmt.Errorf("%s: %w", y.label, err)
+	}
+	copies, deletes, skipped := syncplan.Plan(xm, ym, del)
 	res.Skipped = skipped
 
 	if dryRun {
-		printSyncPlan("upload", uploads, prefix, u.Bucket, deletes)
-		res.Uploaded, res.Deleted = len(uploads), len(deletes)
+		printSyncPlan(y, copies, deletes, xm)
+		res.Uploaded, res.Deleted = len(copies), len(deletes)
 		syncGateNote(len(deletes), force)
 		return res, nil
 	}
 	// The --delete half is gated exactly like rm: refuse above the L1
-	// threshold without --force, before any upload runs (fail fast — a
+	// threshold without --force, before any copy runs (fail fast — a
 	// scripted sync must not half-apply a plan it will then refuse).
 	if len(deletes) > rmForceThreshold && !force {
-		return res, fmt.Errorf(
-			"sync --delete would remove %d object(s) from s3://%s/%s — pass --force to proceed",
-			len(deletes), u.Bucket, prefix)
+		return res, fmt.Errorf("sync --delete would remove %d file(s) at %s — pass --force to proceed",
+			len(deletes), y.label)
 	}
-	for _, rel := range uploads {
-		key := joinKeyNoSlash(prefix, rel)
-		pr := newProgressLine(rel)
-		err := transfer.UploadFile(ctx, c.S3, filepath.Join(localDir, filepath.FromSlash(rel)),
-			u.Bucket, key, transfer.UploadOptions{Progress: pr.fn()})
-		pr.done()
-		if err != nil {
+	for _, rel := range copies {
+		if err := syncCopyOne(ctx, x, y, rel, xm[rel]); err != nil {
 			return res, fmt.Errorf("%s: %w", rel, err)
 		}
 		res.Uploaded++
 	}
-	if len(deletes) > 0 {
-		keys := make([]string, len(deletes))
-		for i, rel := range deletes {
-			keys[i] = prefix + rel
-		}
-		dr, err := transfer.DeleteKeys(ctx, c.S3, u.Bucket, keys)
-		if err != nil {
-			return res, err
-		}
-		res.Deleted = dr.Deleted
-	}
-	return res, nil
+	n, err := syncDeleteAt(ctx, y, deletes)
+	res.Deleted = n
+	return res, err
 }
 
-func syncDownload(ctx context.Context, c *s3client.Client, src, localDir string, del, dryRun, force bool) (syncResult, error) {
-	res := syncResult{Direction: "download"}
-	u, err := parseS3URI(src)
-	if err != nil {
-		return res, err
-	}
-	prefix := dirPrefix(u)
-	remote, err := collectRemoteFiles(ctx, c, u.Bucket, prefix)
-	if err != nil {
-		return res, err
-	}
-	local, err := collectLocalFiles(localDir)
-	if err != nil {
-		return res, err
-	}
-
-	// The mirror direction rides the same shared predicate as the upload.
-	downloads, deletes, skipped := syncplan.Plan(remote, local, del)
-	res.Skipped = skipped
-
-	if dryRun {
-		printSyncPlan("download", downloads, prefix, u.Bucket, deletes)
-		res.Uploaded, res.Deleted = len(downloads), len(deletes)
-		syncGateNote(len(deletes), force)
-		return res, nil
-	}
-	// Same L1 gate as the upload direction: local deletions above the
-	// threshold refuse without --force, before anything transfers.
-	if len(deletes) > rmForceThreshold && !force {
-		return res, fmt.Errorf(
-			"sync --delete would remove %d local file(s) under %s — pass --force to proceed",
-			len(deletes), localDir)
-	}
-	for _, rel := range downloads {
-		localPath := filepath.Join(localDir, filepath.FromSlash(rel))
+// syncCopyOne lands one planned file x → y. A same-source S3 pair copies
+// server-side (no bytes on the wire); every other pairing streams through
+// the cp machinery's own primitives — the integrity wrap on positive
+// sizes, staged local writes, and the temp spool for single-connection
+// engines copying onto themselves.
+func syncCopyOne(ctx context.Context, x, y *syncSide, rel string, size int64) error {
+	if x.isS3() && y.isS3() && x.srcID == y.srcID {
 		pr := newProgressLine(rel)
-		err := transfer.DownloadFile(ctx, c.S3, u.Bucket, prefix+rel, localPath, transfer.DownloadOptions{Progress: pr.fn()})
+		err := transfer.Copy(ctx, x.client.S3, x.bucket, x.keyFor(rel), y.bucket, y.keyFor(rel))
 		pr.done()
-		if err != nil {
-			return res, fmt.Errorf("%s: %w", rel, err)
-		}
-		res.Uploaded++
+		return err
 	}
+	rc, sz, err := x.open(ctx, rel)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	if sz <= 0 {
+		sz = size // engines report unknown as zero; the census knew
+	}
+	pr := newProgressLine(rel)
+	defer pr.done()
+	switch {
+	case y.local:
+		dst := transfer.SafeLocalJoin(y.dir, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if sz > 0 {
+			rc = transfer.VerifiedStream(rc, sz)
+		}
+		// Staged and committed, never truncated in place (StageAndCommit
+		// syncs and renames only on success) — the cp local leg's twin.
+		return transfer.StageAndCommit(dst, func(f *os.File) error {
+			_, err := io.Copy(f, rc)
+			return err
+		})
+	case y.ref != nil:
+		if x.ref != nil && x.srcID == y.srcID {
+			return copyViaTemp(ctx, rc, y.ref, y.remotePath(rel))
+		}
+		return writeRemoteFile(ctx, y.ref, y.remotePath(rel), rc)
+	default:
+		if sz > 0 {
+			rc = transfer.VerifiedStream(rc, sz)
+		}
+		return transfer.UploadReader(ctx, y.client.S3, rc, sz, y.bucket, y.keyFor(rel),
+			transfer.UploadOptions{Progress: pr.fn()})
+	}
+}
+
+// syncDeleteAt removes the plan's target-side extras. S3 batches through
+// DeleteKeys; local and engine sides delete one anchored file at a time.
+func syncDeleteAt(ctx context.Context, y *syncSide, deletes []string) (int, error) {
+	if y.isS3() {
+		keys := make([]string, len(deletes))
+		for i, rel := range deletes {
+			keys[i] = y.keyFor(rel)
+		}
+		dr, err := transfer.DeleteKeys(ctx, y.client.S3, y.bucket, keys)
+		return dr.Deleted, err
+	}
+	n := 0
 	for _, rel := range deletes {
-		if err := os.Remove(filepath.Join(localDir, filepath.FromSlash(rel))); err != nil {
-			return res, err
+		var err error
+		if y.local {
+			err = os.Remove(filepath.Join(y.dir, filepath.FromSlash(rel)))
+		} else {
+			err = y.ref.fs.Remove(ctx, y.remotePath(rel))
 		}
-		res.Deleted++
+		if err != nil {
+			return n, err
+		}
+		n++
 	}
-	return res, nil
+	return n, nil
 }
 
 // syncGateNote is the --dry-run half of the sync --delete L1 gate: it names
@@ -831,19 +991,38 @@ func syncGateNote(deletes int, force bool) {
 	}
 }
 
-func printSyncPlan(direction string, transfers []string, prefix, bucket string, deletes []string) {
-	for _, rel := range transfers {
-		if direction == "upload" {
-			fmt.Printf("would upload %s -> s3://%s/%s\n", rel, bucket, prefix+rel)
-		} else {
-			fmt.Printf("would download s3://%s/%s -> %s\n", bucket, prefix+rel, rel)
-		}
+// printSyncPlan is the --dry-run face: cp's own dry-run grammar ("copy
+// -> <destination> (size)", "delete <location>") over the planned
+// vectors, side-agnostic.
+func printSyncPlan(y *syncSide, copies, deletes []string, sizes map[string]int64) {
+	for _, rel := range copies {
+		rprintf("copy -> %s (%s)\n", y.locate(rel), humanSize(sizes[rel]))
 	}
 	for _, rel := range deletes {
-		if direction == "upload" {
-			fmt.Printf("would delete s3://%s/%s\n", bucket, prefix+rel)
-		} else {
-			fmt.Printf("would delete %s\n", rel)
-		}
+		rprintf("delete %s\n", y.locate(rel))
 	}
+}
+
+// collectEngineFiles maps slash-relative paths to sizes under a remote
+// source directory — the compare walker's own grammar.
+func collectEngineFiles(ctx context.Context, r *remoteRef) (map[string]int64, error) {
+	out := map[string]int64{}
+	root := r.path
+	prefix := strings.TrimSuffix(root, "/") + "/"
+	err := remotefs.Walk(ctx, r.fs, root, func(e listing.Entry) error {
+		if e.IsDir {
+			return nil
+		}
+		key := strings.TrimSuffix(e.Key, "/")
+		rel := strings.TrimPrefix(key, prefix)
+		if root == "/" {
+			rel = strings.TrimPrefix(key, "/")
+		}
+		if rel == "" {
+			return nil
+		}
+		out[rel] = e.Size
+		return nil
+	})
+	return out, err
 }

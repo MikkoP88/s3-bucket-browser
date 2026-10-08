@@ -95,7 +95,7 @@ described here. The same engine backs both.
   - [s3b source split](#s3b-source-split) — Split a legacy account-wide s3 source into one data source per bucket
   - [s3b source test](#s3b-source-test) — Test connectivity for a source
 - [s3b stat](#s3b-stat) — Show bucket, object or source-path metadata
-- [s3b sync](#s3b-sync) — Sync a local folder with an S3 prefix (either direction)
+- [s3b sync](#s3b-sync) — Sync any two locations (local, S3, or a NAME:// source path)
 - [s3b tree](#s3b-tree) — Show a bucket or source subtree as an ASCII tree
 - [s3b version](#s3b-version) — Print the s3b version
 - [s3b versions](#s3b-versions) — Object version management (versioned buckets)
@@ -2739,12 +2739,13 @@ s3b stat s3://bucket[/key] | NAME://path
 
 ## s3b sync
 
-Sync a local folder with an S3 prefix (either direction)
+Sync any two locations (local, S3, or a NAME:// source path)
 
 ### Synopsis
 
-One operand must be s3://bucket/prefix/, the other a local directory.
-Uploads/downloads files whose size differs or that are missing on the target;
+Each operand is a local directory, an s3://bucket/prefix/ URI, or a
+NAME:// path into any saved data source — the same operand grammar cp
+speaks. Copies files whose size differs or that are missing on the target;
 --delete also removes extra files on the target (--force required above the
 safety threshold of 50 files).
 

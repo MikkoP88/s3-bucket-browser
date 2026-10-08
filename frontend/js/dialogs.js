@@ -20,7 +20,7 @@ function xferGotoDest(d) {
   onXferGoto?.(d);
 }
 
-// ---------- synchronize: local folder ↔ S3 prefix ----------
+// ---------- synchronize: any two sides ----------
 
 // The Synchronize dialog — the CLI's sync grown its GUI face. SyncPreview
 // computes the plan on open through the same shared predicate the CLI
@@ -28,8 +28,12 @@ function xferGotoDest(d) {
 // at the target or its size differs (mtimes never matter — clocks lie),
 // and the delete vectors — target files absent at the source — run only
 // through the explicit opt-in checkbox, the CLI --delete's own shape.
-// The transfer legs ride the existing job entry points under skip
-// semantics (whatever landed in the meantime stays), and the delete legs
+// The pair is any two sides the dual pane can seat (the CompareAny
+// grammar): a local folder, a remote source directory, an S3 prefix. The
+// transfer legs ride the existing job entry points under skip semantics
+// (whatever landed in the meantime stays) — Upload and DownloadRefs for
+// the local↔s3 pair, the transfer matrix (TransferCross) for everything
+// else — and the delete legs
 // route through the main window's existing gated delete windows, each
 // with its own preview, count and typed confirmation: this dialog
 // routes, never re-gates.
@@ -42,9 +46,23 @@ export function syncLocalPath(dir, rel) {
   return dir.replace(/[\\/]+$/, '') + '/' + rel;
 }
 
+// syncS3Prefix prefixes a plan rel into an object key under the side's
+// prefix (the dirPrefix grammar: '' and 'docs' both seat 'docs/').
+export function syncS3Prefix(p, rel) {
+  return (p ? p.replace(/\/*$/, '/') : '') + rel;
+}
+
+// syncRemoteKey joins a remote dir and a plan rel into the anchored path
+// the engine legs name.
+export function syncRemoteKey(dir, rel) {
+  return (dir && dir !== '/' ? dir.replace(/\/*$/, '') + '/' : '/') + rel;
+}
+
 // syncSideLabel names one side of the pair for headers and titles.
 function syncSideLabel(r) {
-  return r.kind === 's3' ? 's3://' + r.bucket + '/' + (r.prefix || '') : r.dir;
+  if (r.kind === 's3') return 's3://' + r.bucket + '/' + (r.prefix || '');
+  if (r.kind === 'remote') return (r.source || '') + ':' + (r.dir || '/');
+  return r.dir;
 }
 
 // SYNC_ROW_CAP is the list honesty cap (the delete preview's own grammar):
@@ -75,9 +93,68 @@ function syncSection(hdr, files, cls) {
   return box;
 }
 
-// synchronizeDialog plans and runs one local↔s3 sync. localRef/s3Ref are
-// the pair's CompareRefs (either pane order — the callers seat them).
-export function synchronizeDialog(localRef, s3Ref) {
+// pairIsLocalS3 names the one pair with its own dedicated wording and job
+// entry points: local ↔ S3, the CLI sync's historical contract.
+function pairIsLocalS3(a, b) {
+  return (a.kind === 'local' && b.kind === 's3') || (a.kind === 's3' && b.kind === 'local');
+}
+
+// syncCopyHdr names one copy vector's header honestly: the local↔s3 pair
+// keeps its historical upload/download wording, every other pair says copy
+// with its destination.
+function syncCopyHdr(from, to) {
+  if (from.kind === 'local' && to.kind === 's3') {
+    return t('sync.uploadHdr', { dest: 's3://' + to.bucket + '/' + (to.prefix || '') });
+  }
+  if (from.kind === 's3' && to.kind === 'local') {
+    return t('sync.downloadHdr', { dest: to.dir });
+  }
+  return t('sync.copyHdr', { dest: syncSideLabel(to) });
+}
+
+// syncDelHdr names one delete vector the same way: the local↔s3 pair keeps
+// its historical headers, every other pair names the side.
+function syncDelHdr(from, to) {
+  if (from.kind === 'local' && to.kind === 's3') return t('sync.delRemoteHdr');
+  if (from.kind === 's3' && to.kind === 'local') return t('sync.delLocalHdr');
+  return t('sync.delHdr', { side: syncSideLabel(to) });
+}
+
+// submitVector submits one copy vector through the job entry points under
+// forced skip semantics (what landed in the meantime stays): the local↔s3
+// legs ride Upload / DownloadRefs, every other pair — the remote sides,
+// remote↔remote, s3↔s3 — rides the transfer matrix.
+async function submitVector(from, to, files, bps) {
+  if (from.kind === 'local' && to.kind === 's3') {
+    return api.Upload(files.map((f) => syncLocalPath(from.dir, f.rel)),
+      to.bucket, to.prefix || '', 'skip', bps, null);
+  }
+  if (from.kind === 's3' && to.kind === 'local') {
+    return api.DownloadRefs(from.bucket,
+      files.map((f) => ({ key: syncS3Prefix(from.prefix, f.rel), size: f.size, isDir: false })),
+      to.dir, 'skip', bps, null);
+  }
+  const dest = to.kind === 's3'
+    ? { kind: 's3', source: to.source || '', bucket: to.bucket, dir: to.prefix || '' }
+    : to.kind === 'remote'
+      ? { kind: 'remote', source: to.source || '', bucket: '', dir: to.dir || '/' }
+      : { kind: 'local', source: '', bucket: '', dir: to.dir };
+  const items = from.kind === 'local' ? [] : files.map((f) => (
+    from.kind === 's3'
+      ? { source: from.source || '', bucket: from.bucket, key: syncS3Prefix(from.prefix, f.rel), size: f.size, isDir: false }
+      : { source: from.source || '', bucket: '', key: syncRemoteKey(from.dir, f.rel), size: f.size, isDir: false }
+  ));
+  const localPaths = from.kind === 'local' ? files.map((f) => syncLocalPath(from.dir, f.rel)) : null;
+  return api.TransferCross(items, localPaths, dest, 'skip', bps, false, null, false);
+}
+
+// synchronizeDialog plans and runs one sync between any two sides.
+// xRef/yRef are the pair's CompareRefs in the caller's own seating order
+// (the CompareAny grammar — x→y is the first copy vector); the local↔s3
+// pair seats local first so its direction radios keep the historical
+// upload/download orientation.
+export function synchronizeDialog(xRef, yRef) {
+  if (xRef.kind !== 'local' && pairIsLocalS3(xRef, yRef)) [xRef, yRef] = [yRef, xRef];
   let info = null; // the plan (null while the walkers run)
   const status = el('div', { class: 'dlg-status', text: t('sync.planning') });
   const planBox = el('div', { class: 'sync-plan' });
@@ -85,7 +162,9 @@ export function synchronizeDialog(localRef, s3Ref) {
     el('span', { class: 'sync-dir-label', text: t('sync.dirLabel') }),
     ['both', 'up', 'down'].map((v) => el('label', { class: 'sync-dir-opt' },
       el('input', { type: 'radio', name: 'sync-dir', value: v, ...(v === 'both' ? { checked: true } : {}) }),
-      el('span', { text: t(`sync.${v === 'both' ? 'dirBoth' : v === 'up' ? 'dirUp' : 'dirDown'}`) }),
+      el('span', { text: v === 'both' ? t('sync.dirBoth') : pairIsLocalS3(xRef, yRef)
+        ? t(v === 'up' ? 'sync.dirUp' : 'sync.dirDown')
+        : t('sync.dirTo', { dest: syncSideLabel(v === 'up' ? yRef : xRef) }) }),
     )),
   );
   const delBox = el('label', { class: 'sync-del' },
@@ -98,7 +177,7 @@ export function synchronizeDialog(localRef, s3Ref) {
   delChk.addEventListener('change', () => draw());
 
   const m = openModal({
-    title: t('sync.title') + ' — ' + syncSideLabel(localRef) + ' ↔ ' + syncSideLabel(s3Ref),
+    title: t('sync.title') + ' — ' + syncSideLabel(xRef) + ' ↔ ' + syncSideLabel(yRef),
     body: [status, dirBox, planBox, delBox],
     wide: true,
     buttons: [
@@ -116,20 +195,16 @@ export function synchronizeDialog(localRef, s3Ref) {
     const dir = dirBox.querySelector('input:checked')?.value || 'both';
     const wantUp = dir !== 'down', wantDown = dir !== 'up';
     planBox.replaceChildren();
-    if (wantUp && info.uploads.length) {
-      planBox.append(syncSection(t('sync.uploadHdr', { dest: 's3://' + info.bucket + '/' + info.prefix }), info.uploads));
-    }
-    if (wantDown && info.downloads.length) {
-      planBox.append(syncSection(t('sync.downloadHdr', { dest: info.localDir }), info.downloads));
-    }
+    if (wantUp && info.copiesXY.length) planBox.append(syncSection(syncCopyHdr(xRef, yRef), info.copiesXY));
+    if (wantDown && info.copiesYX.length) planBox.append(syncSection(syncCopyHdr(yRef, xRef), info.copiesYX));
     if (delChk.checked) {
-      if (wantUp && info.delRemote.length) planBox.append(syncSection(t('sync.delRemoteHdr'), info.delRemote, 'del'));
-      if (wantDown && info.delLocal.length) planBox.append(syncSection(t('sync.delLocalHdr'), info.delLocal, 'del'));
+      if (wantUp && info.delY.length) planBox.append(syncSection(syncDelHdr(xRef, yRef), info.delY, 'del'));
+      if (wantDown && info.delX.length) planBox.append(syncSection(syncDelHdr(yRef, xRef), info.delX, 'del'));
     }
-    const nUp = wantUp ? info.uploads.length : 0;
-    const nDown = wantDown ? info.downloads.length : 0;
+    const nUp = wantUp ? info.copiesXY.length : 0;
+    const nDown = wantDown ? info.copiesYX.length : 0;
     const nDel = delChk.checked
-      ? (wantUp ? info.delRemote.length : 0) + (wantDown ? info.delLocal.length : 0)
+      ? (wantUp ? info.delY.length : 0) + (wantDown ? info.delX.length : 0)
       : 0;
     status.style.color = '';
     if (!nUp && !nDown && !nDel) {
@@ -137,7 +212,9 @@ export function synchronizeDialog(localRef, s3Ref) {
       runBtn.disabled = true;
       return;
     }
-    status.textContent = t('sync.summary', { up: nUp, down: nDown, skipped: info.skipped });
+    status.textContent = pairIsLocalS3(xRef, yRef)
+      ? t('sync.summary', { up: nUp, down: nDown, skipped: info.skipped })
+      : t('sync.summaryAny', { a: nUp, b: nDown, skipped: info.skipped });
     runBtn.disabled = false;
   }
 
@@ -152,15 +229,12 @@ export function synchronizeDialog(localRef, s3Ref) {
     const bps = savedThrottle();
     let jobs = 0;
     try {
-      if (dir !== 'down' && info.uploads.length) {
-        await api.Upload(info.uploads.map((f) => syncLocalPath(info.localDir, f.rel)),
-          info.bucket, info.prefix, 'skip', bps, null);
+      if (dir !== 'down' && info.copiesXY.length) {
+        await submitVector(xRef, yRef, info.copiesXY, bps);
         jobs++;
       }
-      if (dir !== 'up' && info.downloads.length) {
-        await api.DownloadRefs(info.bucket,
-          info.downloads.map((f) => ({ key: info.prefix + f.rel, size: f.size, isDir: false })),
-          info.localDir, 'skip', bps, null);
+      if (dir !== 'up' && info.copiesYX.length) {
+        await submitVector(yRef, xRef, info.copiesYX, bps);
         jobs++;
       }
     } catch (err) {
@@ -171,15 +245,11 @@ export function synchronizeDialog(localRef, s3Ref) {
     close(null);
     toast(t('sync.started', { n: jobs }), 'ok');
     if (!syncRunners) return;
-    if (wantDel && dir !== 'down' && info.delRemote.length) {
-      await syncRunners.deleteRemote(info);
-      if (dir !== 'up' && info.delLocal.length) await syncRunners.deleteLocal(info);
-    } else if (wantDel && dir !== 'up' && info.delLocal.length) {
-      await syncRunners.deleteLocal(info);
-    }
+    if (wantDel && dir !== 'down' && info.delY.length) await syncRunners.deleteSide(yRef, info.delY);
+    if (wantDel && dir !== 'up' && info.delX.length) await syncRunners.deleteSide(xRef, info.delX);
   }
 
-  api.SyncPreview(localRef, s3Ref).then((p) => {
+  api.SyncPreview(xRef, yRef).then((p) => {
     info = p;
     draw();
   }).catch((err) => {
@@ -2728,7 +2798,7 @@ const GUIDE_SECTIONS = [
     ['Grid', 'Click, Ctrl+click and Shift+click to select, Ctrl+A for all, Ctrl+I to invert, drag a marquee, or just type to jump to an item. The funnel row under the header filters per column; right-click the header to pick columns; Ctrl+F focuses the quick filter.'],
     ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and the line turns editable holding the typed source address (s3://Name/contents — the scheme is the source type, visible only while editing; the workstation side stays a bare native path). Paste any address to jump straight there: that typed form, a plain Name/contents source path, an s3:// URI, a connection URL (sftp://user:pass@host:21/root — an unconfigured one is saved as a new source), a local folder (C:\Projects, \\server\share, ~) or a file:/// URL. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here. The Home button on each pane toolbar jumps to its side home: the main pane returns to the open data source start view, the secondary pane lands on the workstation home folder.'],
-    ['Synchronize', 'The ⟳ Synchronize button (View → Synchronize, dual pane open) plans a sync between a local folder and an S3 prefix: missing and size-differing files copy each way — mtimes never matter — under skip semantics, so whatever landed in the meantime stays. The optional “remove files that are not at the source” leg runs each direction through the same confirmation windows as every delete.'],
+    ['Synchronize', 'The ⟳ Synchronize button (View → Synchronize, dual pane open) plans a sync between any two sides the panes seat — a local folder, an S3 bucket folder, a remote source directory: missing and size-differing files copy each way — mtimes never matter — under skip semantics, so whatever landed in the meantime stays. The direction picker narrows the run to one side; the optional “remove files that are not at the source” leg runs each direction through the same confirmation windows as every delete.'],
     ['Floating windows', 'File transfers, Running tasks, this guide and the other views open as non-modal popouts: the app underneath stays fully usable. They stack like real windows, Escape closes the topmost, and each remembers its position and size. Clicking any app window — main or popout — brings the whole group forward above other applications, with the clicked window on top.'],
     ['Edit files in place', 'Right-click a file → Edit opens it in the app you pick (the OS "Open with" chooser) or the system default; every save uploads automatically. On versioned buckets each save becomes a new version, so nothing is ever lost. Uploads are conditional: if the object changed on the server while you edited, the push refuses instead of overwriting it — the row turns \u21BB changed on server, and you decide: Push anyway, Reload from server (discarding your pending edits), or stop and discard.'],
     ['New file', 'Shift+F4, the 📄+ toolbar button, or New file… in the context menu creates an empty object with the name and type you pick (the WinSCP flow), then opens it in your editor. Cancelling the app picker — or having no app at all — still leaves the created empty file behind.'],

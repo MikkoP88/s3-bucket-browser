@@ -12,10 +12,11 @@ import (
 )
 
 // The Synchronize dialog's planner. SyncPreview rides the compare walkers
-// (any local dir vs any bucket prefix) through the same shared predicate
-// the CLI's sync command computes with, so these rigs pin the field shape:
-// both copy vectors, both delete vectors, sizes from the right side, and
-// the honest refusal for pairs the contract does not serve.
+// (any two sides: local dir, remote source dir, bucket prefix) through the
+// same shared predicate the CLI's sync command computes with, so these
+// rigs pin the field shape: both copy vectors in the call's own seating
+// order, both delete vectors, sizes from the right side, and the honest
+// refusal for the degenerate same-location pair.
 
 // syncRels strips a plan vector to its rel list.
 func syncRels(v []SyncFile) []string {
@@ -61,35 +62,32 @@ func TestSyncPreviewPlansBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"extra-local.txt", "grew.txt", "new.txt"}; !reflect.DeepEqual(syncRels(info.Uploads), want) {
-		t.Errorf("uploads = %v, want %v", syncRels(info.Uploads), want)
+	if want := []string{"extra-local.txt", "grew.txt", "new.txt"}; !reflect.DeepEqual(syncRels(info.CopiesXY), want) {
+		t.Errorf("copiesXY = %v, want %v", syncRels(info.CopiesXY), want)
 	}
-	if want := []string{"gone.txt", "grew.txt", "stale.txt"}; !reflect.DeepEqual(syncRels(info.Downloads), want) {
-		t.Errorf("downloads = %v, want %v", syncRels(info.Downloads), want)
+	if want := []string{"gone.txt", "grew.txt", "stale.txt"}; !reflect.DeepEqual(syncRels(info.CopiesYX), want) {
+		t.Errorf("copiesYX = %v, want %v", syncRels(info.CopiesYX), want)
 	}
-	if want := []string{"gone.txt", "stale.txt"}; !reflect.DeepEqual(syncRels(info.DelRemote), want) {
-		t.Errorf("delRemote = %v, want %v", syncRels(info.DelRemote), want)
+	if want := []string{"gone.txt", "stale.txt"}; !reflect.DeepEqual(syncRels(info.DelY), want) {
+		t.Errorf("delY = %v, want %v", syncRels(info.DelY), want)
 	}
-	if want := []string{"extra-local.txt", "new.txt"}; !reflect.DeepEqual(syncRels(info.DelLocal), want) {
-		t.Errorf("delLocal = %v, want %v", syncRels(info.DelLocal), want)
+	if want := []string{"extra-local.txt", "new.txt"}; !reflect.DeepEqual(syncRels(info.DelX), want) {
+		t.Errorf("delX = %v, want %v", syncRels(info.DelX), want)
 	}
 	if info.Skipped != 1 {
 		t.Errorf("skipped = %d, want 1 (same.txt)", info.Skipped)
 	}
-	// sizes come from the plan's own side: uploads carry the local size,
-	// downloads the remote one
-	if got := sizeOf(info.Uploads, "grew.txt"); got != 20 {
-		t.Errorf("upload grew.txt size = %d, want the local 20", got)
+	// sizes come from the plan's own side: copiesXY carry the local size,
+	// copiesYX the remote one
+	if got := sizeOf(info.CopiesXY, "grew.txt"); got != 20 {
+		t.Errorf("copyXY grew.txt size = %d, want the local 20", got)
 	}
-	if got := sizeOf(info.Downloads, "grew.txt"); got != 15 {
-		t.Errorf("download grew.txt size = %d, want the remote 15", got)
-	}
-	// the identity fields the run legs need
-	if info.Bucket != "docs" || info.Prefix != "" || info.LocalDir != root || info.Source != "syncsrc" {
-		t.Errorf("identity = %s/%s/%s/%s, want docs//%s/syncsrc", info.Bucket, info.Prefix, info.LocalDir, info.Source, root)
+	if got := sizeOf(info.CopiesYX, "grew.txt"); got != 15 {
+		t.Errorf("copyYX grew.txt size = %d, want the remote 15", got)
 	}
 
-	// the sides may arrive in either order — the planner seats them
+	// the call's own order seats the sides (the CompareAny grammar):
+	// reversing the pair mirrors the vectors, x→y stays the first leg
 	info2, err := a.SyncPreview(
 		CompareRef{Kind: "s3", Source: "syncsrc", Bucket: "docs"},
 		CompareRef{Kind: "local", Dir: root},
@@ -97,14 +95,16 @@ func TestSyncPreviewPlansBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(syncRels(info2.Uploads), syncRels(info.Uploads)) ||
-		!reflect.DeepEqual(syncRels(info2.DelLocal), syncRels(info.DelLocal)) {
-		t.Error("reversed pair changed the plan")
+	if !reflect.DeepEqual(syncRels(info2.CopiesXY), syncRels(info.CopiesYX)) ||
+		!reflect.DeepEqual(syncRels(info2.CopiesYX), syncRels(info.CopiesXY)) ||
+		!reflect.DeepEqual(syncRels(info2.DelY), syncRels(info.DelX)) {
+		t.Error("reversed pair did not mirror the plan")
 	}
 }
 
-// A prefixed s3 side trims its prefix exactly like the compare walk, and
-// the returned Prefix rides dirPrefix form so the run legs build keys.
+// A prefixed s3 side trims its prefix exactly like the compare walk, so
+// the vectors speak the prefix-relative grammar the run legs rebuild keys
+// from.
 func TestSyncPreviewUnderPrefix(t *testing.T) {
 	a := newTestApp(t)
 	a.Startup(context.Background())
@@ -126,20 +126,88 @@ func TestSyncPreviewUnderPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"fresh.txt"}; !reflect.DeepEqual(syncRels(info.Uploads), want) {
-		t.Errorf("uploads = %v, want %v", syncRels(info.Uploads), want)
+	if want := []string{"fresh.txt"}; !reflect.DeepEqual(syncRels(info.CopiesXY), want) {
+		t.Errorf("copiesXY = %v, want %v", syncRels(info.CopiesXY), want)
 	}
-	if want := []string{"old.txt"}; !reflect.DeepEqual(syncRels(info.DelRemote), want) {
-		t.Errorf("delRemote = %v, want %v", syncRels(info.DelRemote), want)
-	}
-	if info.Prefix != "raw/" {
-		t.Errorf("prefix = %q, want raw/", info.Prefix)
+	if want := []string{"old.txt"}; !reflect.DeepEqual(syncRels(info.DelY), want) {
+		t.Errorf("delY = %v, want %v", syncRels(info.DelY), want)
 	}
 }
 
-// The v1 contract: one local folder and one S3 prefix — anything else is
-// refused honestly, pointing at the surfaces that serve it.
-func TestSyncPreviewRefusesNonSyncPairs(t *testing.T) {
+// The matrix: any two sides plan — a local folder against a remote source
+// directory, a remote source against an S3 prefix — through the same
+// walkers and the same predicate. Only the degenerate pair (both sides
+// naming the same location) is refused.
+func TestSyncPreviewAnyPairPlans(t *testing.T) {
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("docs")
+	f.seed("docs", "shared.txt", "0123456789") // 10
+	f.seed("docs", "srv-grew.txt", "01234")    // 5 — engine side grew to 8
+	if err := a.SaveSource(fakeS3Source("syncmix", f.serve(t))); err != nil {
+		t.Fatal(err)
+	}
+	engSrc, engRoot := emptyLocalSource(t, "eng")
+	if err := a.SaveSource(engSrc); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Hour)
+	cmpTree(t, engRoot, "shared.txt", 10, base)
+	cmpTree(t, engRoot, "srv-grew.txt", 8, base)
+	cmpTree(t, engRoot, "new-on-engine.txt", 3, base)
+
+	// remote engine ↔ s3
+	info, err := a.SyncPreview(
+		CompareRef{Kind: "remote", Source: "eng", Dir: "/"},
+		CompareRef{Kind: "s3", Source: "syncmix", Bucket: "docs"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"new-on-engine.txt", "srv-grew.txt"}; !reflect.DeepEqual(syncRels(info.CopiesXY), want) {
+		t.Errorf("engine→s3 copies = %v, want %v", syncRels(info.CopiesXY), want)
+	}
+	if got := sizeOf(info.CopiesXY, "srv-grew.txt"); got != 8 {
+		t.Errorf("engine→s3 srv-grew.txt size = %d, want the engine's 8", got)
+	}
+	if want := []string{"srv-grew.txt"}; !reflect.DeepEqual(syncRels(info.CopiesYX), want) {
+		t.Errorf("s3→engine copies = %v, want %v", syncRels(info.CopiesYX), want)
+	}
+	if len(info.DelY) != 0 {
+		t.Errorf("delY = %v, want none (every s3 file lives at the engine)", syncRels(info.DelY))
+	}
+	if want := []string{"new-on-engine.txt"}; !reflect.DeepEqual(syncRels(info.DelX), want) {
+		t.Errorf("delX = %v, want %v", syncRels(info.DelX), want)
+	}
+	if info.Skipped != 1 {
+		t.Errorf("skipped = %d, want 1 (shared.txt)", info.Skipped)
+	}
+
+	// local ↔ remote engine
+	loc := t.TempDir()
+	cmpTree(t, loc, "shared.txt", 10, base)
+	cmpTree(t, loc, "loc-new.txt", 4, base)
+	info2, err := a.SyncPreview(
+		CompareRef{Kind: "local", Dir: loc},
+		CompareRef{Kind: "remote", Source: "eng", Dir: "/"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"loc-new.txt"}; !reflect.DeepEqual(syncRels(info2.CopiesXY), want) {
+		t.Errorf("local→engine copies = %v, want %v", syncRels(info2.CopiesXY), want)
+	}
+	if want := []string{"new-on-engine.txt", "srv-grew.txt"}; !reflect.DeepEqual(syncRels(info2.CopiesYX), want) {
+		t.Errorf("engine→local copies = %v, want %v", syncRels(info2.CopiesYX), want)
+	}
+	if want := []string{"new-on-engine.txt", "srv-grew.txt"}; !reflect.DeepEqual(syncRels(info2.DelY), want) {
+		t.Errorf("delY = %v, want %v", syncRels(info2.DelY), want)
+	}
+}
+
+// The one refusal: both sides naming the same location — a two-way plan
+// against itself. Different locations of the same kinds always plan.
+func TestSyncPreviewRefusesSameSide(t *testing.T) {
 	a := newTestApp(t)
 	a.Startup(context.Background())
 	f := newFakeS3("docs")
@@ -154,14 +222,30 @@ func TestSyncPreviewRefusesNonSyncPairs(t *testing.T) {
 	s3 := CompareRef{Kind: "s3", Source: "syncref", Bucket: "docs"}
 	loc := CompareRef{Kind: "local", Dir: labRoot}
 	rem := CompareRef{Kind: "remote", Source: "lab", Dir: "/"}
-	for _, pair := range [][2]CompareRef{{loc, loc}, {s3, s3}, {loc, rem}, {rem, s3}} {
+	for _, pair := range [][2]CompareRef{
+		{loc, loc},
+		{s3, s3},
+		{rem, rem},
+		{s3, {Kind: "s3", Source: "syncref", Bucket: "docs", Prefix: "/"}},
+	} {
 		_, err := a.SyncPreview(pair[0], pair[1])
 		if err == nil {
-			t.Errorf("SyncPreview(%s↔%s) accepted a non-sync pair", pair[0].Kind, pair[1].Kind)
+			t.Errorf("SyncPreview(%s↔%s) accepted the same location twice", pair[0].Kind, pair[1].Kind)
 			continue
 		}
-		if want := "one local folder and one S3 prefix"; !strings.Contains(err.Error(), want) {
+		if want := "the same location"; !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal = %q, want it to name %q", err.Error(), want)
+		}
+	}
+	// different locations of the same kinds always plan (the remote
+	// acceptance legs live in the matrix rig above)
+	other := t.TempDir()
+	for _, pair := range [][2]CompareRef{
+		{loc, {Kind: "local", Dir: other}},
+		{s3, {Kind: "s3", Source: "syncref", Bucket: "docs", Prefix: "sub"}},
+	} {
+		if _, err := a.SyncPreview(pair[0], pair[1]); err != nil {
+			t.Errorf("SyncPreview(%s↔%s) refused a legitimate pair: %v", pair[0].Kind, pair[1].Kind, err)
 		}
 	}
 }
@@ -195,6 +279,12 @@ func TestSyncPredicateMatchesHistoricalCLILoops(t *testing.T) {
 		for _, pair := range [][2]map[string]int64{{local, remote}, {remote, local}} {
 			hc, hd, hs := historical(pair[0], pair[1], del)
 			pc, pd, ps := syncplan.Plan(pair[0], pair[1], del)
+			if len(pc) != len(hc) || len(pd) != len(hd) {
+				t.Fatalf("del=%v vector lengths differ", del)
+			}
+			if ps != hs {
+				t.Errorf("del=%v skipped = %d, historical %d", del, ps, hs)
+			}
 			sort.Strings(hc)
 			sort.Strings(hd)
 			if !reflect.DeepEqual(pc, hc) {
@@ -202,9 +292,6 @@ func TestSyncPredicateMatchesHistoricalCLILoops(t *testing.T) {
 			}
 			if !reflect.DeepEqual(pd, hd) {
 				t.Errorf("del=%v dels = %v, historical %v", del, pd, hd)
-			}
-			if ps != hs {
-				t.Errorf("del=%v skipped = %d, historical %d", del, ps, hs)
 			}
 		}
 	}

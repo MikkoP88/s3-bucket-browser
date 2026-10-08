@@ -3,88 +3,94 @@ package api
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/syncplan"
 )
 
 // SyncFile names one planned item: its slash-relative path and the size the
-// plan's source side reported (uploads carry the local size, downloads and
-// both delete vectors the target side's).
+// plan's source side reported (each copy vector carries its from-side size,
+// each delete vector the to-side's).
 type SyncFile struct {
 	Rel  string `json:"rel"`
 	Size int64  `json:"size"`
 }
 
 // SyncPlanInfo is everything the Synchronize dialog presents and runs: the
-// two copy vectors (local→s3 and s3→local), the two delete vectors (target
-// files absent at the source — the delete leg is opt-in exactly like the
-// CLI's --delete), the unchanged count, and the side identities the run
-// needs (bucket, normalized prefix, local dir, source id).
+// two copy vectors (x→y and y→x, in the caller's own seating order — the
+// same grammar CompareAny uses), the two delete vectors (target files
+// absent at the source — the delete leg is opt-in exactly like the CLI's
+// --delete), and the unchanged count. The side identities are not echoed:
+// the dialog holds the very refs it passed.
 type SyncPlanInfo struct {
-	Bucket    string     `json:"bucket"`
-	Prefix    string     `json:"prefix"` // dirPrefix form ("photos/")
-	LocalDir  string     `json:"localDir"`
-	Source    string     `json:"source"` // s3 side's source id ("" = view source)
-	Uploads   []SyncFile `json:"uploads"`
-	Downloads []SyncFile `json:"downloads"`
-	DelRemote []SyncFile `json:"delRemote"` // s3 files absent locally
-	DelLocal  []SyncFile `json:"delLocal"`  // local files absent at the s3 side
-	Skipped   int        `json:"skipped"`   // size-equal pairs (either direction)
+	CopiesXY []SyncFile `json:"copiesXY"` // x → y
+	CopiesYX []SyncFile `json:"copiesYX"` // y → x
+	DelY     []SyncFile `json:"delY"`     // at y, absent at x
+	DelX     []SyncFile `json:"delX"`     // at x, absent at y
+	Skipped  int        `json:"skipped"`  // size-equal pairs (either direction)
 }
 
-// SyncPreview plans a local↔s3 synchronization — the same walk the compare
-// pane rides (any local dir vs any bucket prefix, sizes only, mtimes never
-// consulted because clocks lie) through the same shared predicate the CLI's
-// sync command computes its plan with, so the two faces can never drift.
-// The delete vectors are always reported; whether the delete leg RUNS is
-// the caller's explicit choice (the dialog's checkbox, the CLI's --delete).
-// Tracked as a task under the deep-compare budget: a recursive two-side
-// walk is a long, killable action exactly like CompareAny. Other side pairs
-// (remote sources, s3↔s3) are refused honestly — the CLI's own contract —
-// pointing the user at the compare + copy surfaces that already serve them.
+// sameSyncSide reports whether two refs name one location: the honest
+// refusal for a two-way plan against itself (every vector would be empty
+// or self-clobbering).
+func sameSyncSide(x, y CompareRef) bool {
+	if x.Kind != y.Kind {
+		return false
+	}
+	switch x.Kind {
+	case "local":
+		return filepath.Clean(x.Dir) == filepath.Clean(y.Dir)
+	case "s3":
+		return x.Source == y.Source && x.Bucket == y.Bucket && dirPrefix(x.Prefix) == dirPrefix(y.Prefix)
+	case "remote":
+		return x.Source == y.Source && remotefs.CleanPath(x.Dir) == remotefs.CleanPath(y.Dir)
+	}
+	return false
+}
+
+// SyncPreview plans a synchronization between any two sides — a local
+// folder, a remote source directory, an S3 bucket prefix — through the
+// same walk the compare pane rides and the same shared predicate the
+// CLI's sync command computes its plan with, so the two faces can never
+// drift. The call's own order seats the sides (x→y is the first copy
+// vector), the CompareAny grammar. mtimes are never consulted because
+// clocks lie. The delete vectors are always reported; whether the delete
+// leg RUNS is the caller's explicit choice (the dialog's checkbox, the
+// CLI's --delete). Tracked as a task under the deep-compare budget: a
+// recursive two-side walk is a long, killable action exactly like
+// CompareAny. The one refusal is the degenerate pair: both sides naming
+// the same location.
 func (a *App) SyncPreview(x, y CompareRef) (info *SyncPlanInfo, err error) {
-	var local, s3 CompareRef
-	for _, r := range []CompareRef{x, y} {
-		switch r.Kind {
-		case "local":
-			local = r
-		case "s3":
-			s3 = r
-		}
+	if sameSyncSide(x, y) {
+		return nil, fmt.Errorf("both sides are the same location (%s) — synchronization needs two different sides",
+			compareRefLabel(x))
 	}
-	if local.Kind != "local" || s3.Kind != "s3" {
-		return nil, fmt.Errorf("synchronize needs one local folder and one S3 prefix — use Compare + copy for other pairs")
-	}
-	info = &SyncPlanInfo{
-		Bucket:   s3.Bucket,
-		Prefix:   dirPrefix(s3.Prefix),
-		LocalDir: local.Dir,
-		Source:   s3.Source,
-	}
-	task := a.tasks.add("sync-preview", fmt.Sprintf("sync %s ↔ %s", info.LocalDir, compareRefLabel(s3)))
+	info = &SyncPlanInfo{}
+	task := a.tasks.add("sync-preview", fmt.Sprintf("sync %s ↔ %s", compareRefLabel(x), compareRefLabel(y)))
 	ctx, cancel := context.WithTimeout(task.ctx, a.tuning().CompareTimeout())
 	defer cancel()
 	defer func() { task.finish(err, false) }()
 
-	lm, err := a.walkCompareSide(ctx, local)
+	xm, err := a.walkCompareSide(ctx, x)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", compareRefLabel(local), err)
+		return nil, fmt.Errorf("%s: %w", compareRefLabel(x), err)
 	}
-	sm, err := a.walkCompareSide(ctx, s3)
+	ym, err := a.walkCompareSide(ctx, y)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", compareRefLabel(s3), err)
+		return nil, fmt.Errorf("%s: %w", compareRefLabel(y), err)
 	}
-	lSizes := sizesOnly(lm)
-	sSizes := sizesOnly(sm)
+	xSizes := sizesOnly(xm)
+	ySizes := sizesOnly(ym)
 
-	up, delRemote, skipped := syncplan.Plan(lSizes, sSizes, true)
-	down, delLocal, _ := syncplan.Plan(sSizes, lSizes, true)
+	xy, delY, skipped := syncplan.Plan(xSizes, ySizes, true)
+	yx, delX, _ := syncplan.Plan(ySizes, xSizes, true)
 	info.Skipped = skipped
-	info.Uploads = withSizes(up, lSizes)
-	info.Downloads = withSizes(down, sSizes)
-	info.DelRemote = withSizes(delRemote, sSizes)
-	info.DelLocal = withSizes(delLocal, lSizes)
-	task.progress(len(info.Uploads) + len(info.Downloads))
+	info.CopiesXY = withSizes(xy, xSizes)
+	info.CopiesYX = withSizes(yx, ySizes)
+	info.DelY = withSizes(delY, ySizes)
+	info.DelX = withSizes(delX, xSizes)
+	task.progress(len(info.CopiesXY) + len(info.CopiesYX))
 	return info, nil
 }
 

@@ -8,6 +8,27 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Synchronize grows the whole matrix — any two sides, both faces** —
+  the one-wall rule ("one local folder, one S3 prefix") falls on both
+  faces at once. The GUI dialog now takes any pair the dual pane can
+  seat — a local folder, an S3 prefix, a remote source directory —
+  through the same shared predicate (`pkg/core/syncplan`), with
+  destination-worded text where upload/download would lie ("Copy to
+  backup-box:/", "{dest} only" radios, a two-way summary that never
+  says upload), transfer legs that ride the transfer matrix
+  (`TransferCross` under forced *skip* semantics, typed items and
+  dests naming the from-side's source) while the local↔S3 pair keeps
+  its historical Upload/DownloadRefs fast paths and wording, and
+  delete legs that route by kind through the same gated confirmation
+  windows — the S3 leg of a named per-bucket source taking the
+  source-preview route like every other delete on that surface; the
+  only refusal left is the honest one, both sides naming the same
+  location. The CLI's `s3b sync` takes the same operand grammar
+  `cp` speaks — each operand a local directory, an
+  `s3://bucket/prefix/` URI, or a `NAME://` path into any saved
+  data source (engine↔engine legs ride the temp spool, local↔local
+  mirrors plainly), pinned by the sync matrix rigs. Localized in all
+  fifteen languages.
 - **Synchronize — the CLI's sync grown its GUI face** — the ⟳
   **Synchronize** button (global bar, View → Synchronize; needs the
   dual pane open) plans a sync between a local folder and an S3

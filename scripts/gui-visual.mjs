@@ -1146,15 +1146,15 @@ function shim() {
     BucketVersionStats: () => ({ currentObjects: 7, versions: 12, deleteMarkers: 2, noncurrent: 5, noncurrentBytes: 1048576 }),
     CompareAny: (x, y) => JSON.parse(JSON.stringify(world.compareRows)),
 
-    // the Synchronize dialog's planner — a canned local↔s3 plan (both copy
-    // vectors, both delete vectors, sizes from the from-side, skipped
-    // count); world.syncPlan overrides when a step wants its own shape
+    // the Synchronize dialog's planner — a canned plan in the predicate's
+    // own grammar (copiesXY = first side → second, delY = at the second,
+    // absent at the first; sizes from the from-side, skipped count);
+    // world.syncPlan overrides when a step wants its own shape
     SyncPreview: () => JSON.parse(JSON.stringify(world.syncPlan || {
-      bucket: 'team-files', prefix: '', localDir: 'C:\\Users\\demo\\Documents', source: '',
-      uploads: [{ rel: 'new.txt', size: 5 }, { rel: 'grew.txt', size: 20 }],
-      downloads: [{ rel: 'gone.txt', size: 12 }, { rel: 'stale.txt', size: 7 }],
-      delRemote: [{ rel: 'gone.txt', size: 12 }, { rel: 'stale.txt', size: 7 }],
-      delLocal: [{ rel: 'new.txt', size: 5 }],
+      copiesXY: [{ rel: 'new.txt', size: 5 }, { rel: 'grew.txt', size: 20 }],
+      copiesYX: [{ rel: 'gone.txt', size: 12 }, { rel: 'stale.txt', size: 7 }],
+      delY: [{ rel: 'gone.txt', size: 12 }, { rel: 'stale.txt', size: 7 }],
+      delX: [{ rel: 'new.txt', size: 5 }],
       skipped: 3,
     })),
     PreviewDelete: (bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
@@ -8063,12 +8063,14 @@ await step('synchronize', async () => {
     && up.args[1] === 'team-files' && up.args[2] === '' && up.args[3] === 'skip'
     && down.args[0] === 'team-files' && down.args[2] === 'C:\\Users\\demo\\Documents' && down.args[3] === 'skip'
     && JSON.stringify(down.args[1].map((r) => r.key)) === JSON.stringify(['gone.txt', 'stale.txt']));
-  // the delete legs route through the existing gated windows, one at a time
+  // the delete legs route through the existing gated windows, one at a time —
+  // the bucket rides a named per-bucket source, so the s3 leg takes the
+  // source-preview route
   await waitFor(() => modalVisible(), 4000, 'remote delete window');
-  const pv = await findCall('PreviewDelete');
+  const pv = await findCall('SourcePreviewDelete');
   await ok('the remote delete leg reaches its preview with its keys', !!pv
-    && pv.args[0] === 'team-files'
-    && JSON.stringify(pv.args[1]) === JSON.stringify(['gone.txt', 'stale.txt']));
+    && pv.args[0] === 'team-files' && pv.args[1] === 'team-files'
+    && JSON.stringify(pv.args[2]) === JSON.stringify(['gone.txt', 'stale.txt']));
   await closeModal();
   await waitFor(async () => !!(await findCall('LocalDeletePreview')), 4000, 'local delete window');
   const lp = await findCall('LocalDeletePreview');
@@ -8077,6 +8079,7 @@ await step('synchronize', async () => {
   await closeModal();
   await sleep(150);
   await ok('cancelled legs delete nothing anywhere', (await findCall('DeleteSelection')) === null
+    && (await findCall('SourceDeleteSelection')) === null
     && (await findCall('LocalRemove')) === null);
   // the View menu carries the leaf beside Dual-pane
   await page.locator('#menubar .mb-title', { hasText: /^view$/i }).first().click();
@@ -8087,6 +8090,74 @@ await step('synchronize', async () => {
     return i > 0 && /dual-pane|panes/i.test(items[i - 1].textContent);
   }));
   await page.locator('#menubar .mb-title', { hasText: /^view$/i }).first().click();
+});
+
+await step('sync-any', async () => {
+  // the matrix face: a remote source directory against the bucket — the
+  // plan speaks Copy with its destinations for both vectors, the direction
+  // radios name where, the run legs ride the transfer matrix under skip
+  // semantics, and the delete leg routes through the source-preview window
+  await evalPage(() => {
+    window.__shim.world.syncPlan = {
+      copiesXY: [{ rel: 'push.txt', size: 8 }, { rel: 'engine-grew.txt', size: 30 }],
+      copiesYX: [{ rel: 'pull.txt', size: 4 }],
+      delY: [{ rel: 'pull.txt', size: 4 }, { rel: 'srv-extra.txt', size: 6 }],
+      delX: [],
+      skipped: 2,
+    };
+  });
+  await navObjects('team-files');
+  await evalPage(() => window.__s3bSidePane.openAt({ kind: 'remote', source: 'backup-box', path: '' }));
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane on backup-box');
+  await waitFor(async () => evalPage(() => !document.getElementById('btn-sync').disabled), 4000, 'btn-sync armed');
+  await page.click('#btn-sync');
+  await waitFor(() => modalVisible(), 4000, 'sync dialog open');
+  await waitFor(async () => evalPage(() => document.querySelectorAll('#modal-root .sync-sec').length >= 2), 4000, 'plan sections');
+  await ok('both vectors speak Copy with their destination', evalPage(() => {
+    const hd = Array.from(document.querySelectorAll('#modal-root .sync-sec-hd')).map((h) => h.textContent);
+    return hd.length === 2 && hd[0].includes('Copy to s3://team-files/') && hd[1].includes('Copy to backup-box:/')
+      && document.querySelectorAll('#modal-root .sync-sec.del').length === 0
+      && document.querySelectorAll('#modal-root .sync-row').length === 3;
+  }));
+  await ok('the summary counts both ways without upload/download words', evalPage(() => {
+    const s = document.querySelector('#modal-root .dlg-status').textContent;
+    return s.includes('2 to copy one way') && s.includes('1 the other') && s.includes('2 unchanged');
+  }));
+  await ok('the direction radios name their destination', evalPage(() =>
+    document.querySelector('#modal-root input[name="sync-dir"][value="up"]')
+      .closest('.sync-dir-opt').textContent.includes('s3://team-files/ only')));
+  // the delete opt-in surfaces the one gated leg the plan names
+  await evalPage(() => document.querySelector('#modal-root .sync-del input').click());
+  await ok('the delete opt-in surfaces the one gated leg', evalPage(() => {
+    const dels = Array.from(document.querySelectorAll('#modal-root .sync-sec.del'));
+    return dels.length === 1 && dels[0].querySelector('.sync-sec-hd').textContent.includes('Delete at s3://team-files/');
+  }));
+  // run: both copy vectors ride the transfer matrix under skip semantics
+  await resetCalls();
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => evalPage(() => !document.querySelector('#modal-root .sync-dir')), 4000, 'dialog closed on run');
+  const xc = (await calls()).filter((c) => c.m === 'TransferCross');
+  await ok('both legs ride the transfer matrix with typed items and dests', xc.length === 2
+    && JSON.stringify(xc[0].args[0]) === JSON.stringify([
+      { source: 'backup-box', bucket: '', key: '/push.txt', size: 8, isDir: false },
+      { source: 'backup-box', bucket: '', key: '/engine-grew.txt', size: 30, isDir: false }])
+    && xc[0].args[1] === null
+    && JSON.stringify(xc[0].args[2]) === JSON.stringify({ kind: 's3', source: 'team-files', bucket: 'team-files', dir: '' })
+    && xc[0].args[3] === 'skip' && xc[0].args[5] === false
+    && JSON.stringify(xc[1].args[0]) === JSON.stringify([
+      { source: 'team-files', bucket: 'team-files', key: 'pull.txt', size: 4, isDir: false }])
+    && JSON.stringify(xc[1].args[2]) === JSON.stringify({ kind: 'remote', source: 'backup-box', bucket: '', dir: '/' }));
+  // the delete leg routes through the source-preview window (delX is empty,
+  // so no second window follows)
+  await waitFor(() => modalVisible(), 4000, 'remote delete window');
+  const pv = await findCall('SourcePreviewDelete');
+  await ok('the delete leg reaches its source preview with its keys', !!pv
+    && pv.args[0] === 'team-files' && pv.args[1] === 'team-files'
+    && JSON.stringify(pv.args[2]) === JSON.stringify(['pull.txt', 'srv-extra.txt']));
+  await closeModal();
+  await sleep(150);
+  await ok('the cancelled leg deletes nothing', (await findCall('SourceDeleteSelection')) === null);
+  await evalPage(() => { window.__shim.world.syncPlan = null; });
 });
 
 await step('pane-search', async () => {
