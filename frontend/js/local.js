@@ -1346,6 +1346,9 @@ export class SidePane {
     } else {
       tag.classList.add('hidden');
     }
+    // main listens here (seating changes: navigation, rebind) so a
+    // compare verdict never outlives the seats it speaks about
+    this.onViewChanged?.();
     updateCommandState();
   }
 }

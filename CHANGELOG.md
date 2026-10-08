@@ -262,9 +262,63 @@ follow [Semantic Versioning](https://semver.org/).
   "nothing failed to retry". Every retry goes through the same
   entry points, so its own failures can be retried in turn, and the
   original row keeps its verdict — retry never rewrites history.
+- **Compare grows its whole face** — the strip under the toolbar is
+  the compare’s home now: a flight shows itself (“Comparing X ↔ Y …”
+  with both seats named in the tree’s own grammar — `bucket/folder`,
+  `source:dir`, a bare local dir — and the button parked disabled so
+  a second click cannot stack a flight on a flight), the verdict
+  lands on the same strip as a summary (“✓ 2 identical · ← 1 only on
+  left · → 1 only on right · 1 newer on right · 1 size diff”, a
+  bucket that is zero stays unsaid) beside the details dialog that
+  still stacks with every count, a refused wire says so on the strip
+  with a Retry arm that re-runs the same pair, and the X clears the
+  banner and every decoration from BOTH grids at once. A verdict
+  about seats nobody sits in anymore retires by itself — moving the
+  main view or the pane past a verdict, or a flight landing after
+  its seats moved, clears it, so phantom arrows never stain rows the
+  compare no longer speaks about.
+- **The File menu seats the workspace verbs** — *Data Sources…* opens
+  the new source manager: every configured source in one list with
+  its type and target, Edit reopening the editor on the row, Remove
+  beside it, Add starting a fresh one. *Import S3 Credential…* keeps
+  its seat, and *Clear All…* resets the workspace to a freshly
+  opened state behind a Cancel/Clear confirm: every modal and
+  floating window closes, the dual pane closes and unbinds, selection,
+  clipboard and filter rest, the history empties (Back and Forward
+  disarm) and the view re-homes to the first source — while saved
+  settings, sources and preferences survive (a reopened app keeps
+  them) and running transfers keep running (they are the wire’s
+  business, not the workspace’s). Upload left the File menu for the
+  view verbs that always owned it (toolbar, context menus, empty
+  states), and New / Open / Close profile file ride the sidebar’s
+  background context menu beside the source verbs (Ctrl+S and Open
+  keep their File-menu seats; Save takes its own save-as flow when
+  there is nothing to overwrite).
 
 ### Fixed
 
+- **A sourceless app could stick on a loading skeleton** — with no
+  data source seated, a reload (F5, or the removal of the last
+  source) took loadView’s generic path: the skeleton and spinner
+  came up and waited on a listing no leg would ever request, so the
+  pane sat on “Loading” forever. The onboarding branch now renders
+  the welcome panel directly — nothing is in flight, and the welcome
+  panel IS the view.
+- **The transfers and tasks windows rebuilt every row on every
+  tick** — the
+  full redraw made the info button’s hover background flash on each
+  progress update, and a click racing the redraw could land on a
+  handler about to be discarded — the verb that looked stuck was a
+  dead promise on a replaced row. Rows are now patched in place: a
+  structural signature (status, phase, error shape, expanded state,
+  the route, the destination arm — every field that adds, removes or
+  re-seats a control) decides rebuild, and everything else (bytes,
+  percent, chips, counts, current file) patches the same DOM node.
+  The verb buttons read the job’s live state at click time and
+  refuse aloud when the job settled underneath them (a toast, not a
+  swallowed promise), and the Show destination arm appears the
+  moment a settled job grows a destination — the signature carries
+  it, so a dest-bearing tick rebuilds the row it belongs on.
 - **Root-level renames landed at “./name”** — path.Dir’s root
   artifact rode into the destination key: renaming a file at a
   bucket’s root computed “./new.txt”, a phantom “./” segment

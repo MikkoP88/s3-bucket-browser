@@ -98,6 +98,8 @@ const dict = {
     'doctor.summary': '{pass} pass \u00B7 {warn} warn \u00B7 {fail} fail \u00B7 {skip} skip',
     // menu bar
     'menu.file': 'File',
+    'menu.dataSources': 'Data Sources…',
+    'menu.clearAll': 'Clear All…',
     'menu.edit': 'Edit',
     'menu.view': 'View',
     'menu.help': 'Help',
@@ -644,6 +646,8 @@ const dict = {
     'doctor.summary': '{pass} ok \u00B7 {warn} varoitusta \u00B7 {fail} virhett\u00e4 \u00B7 {skip} ohitettu',
     // menu bar
     'menu.file': 'Tiedosto',
+    'menu.dataSources': 'Tietolähteet…',
+    'menu.clearAll': 'Tyhjennä kaikki…',
     'menu.edit': 'Muokkaa',
     'menu.view': 'N\u00e4yt\u00e4',
     'menu.help': 'Ohje',
@@ -1183,6 +1187,8 @@ const dict = {
     'doctor.summary': '{pass} ok · {warn} varningar · {fail} fel · {skip} hoppade över',
     // menu bar
     'menu.file': 'Arkiv',
+    'menu.dataSources': 'Datakällor…',
+    'menu.clearAll': 'Rensa allt…',
     'menu.edit': 'Redigera',
     'menu.view': 'Visa',
     'menu.help': 'Hjälp',
@@ -1722,6 +1728,8 @@ const dict = {
     'doctor.summary': '{pass} bestanden · {warn} Warnungen · {fail} Fehler · {skip} übersprungen',
     // menu bar
     'menu.file': 'Datei',
+    'menu.dataSources': 'Datenquellen…',
+    'menu.clearAll': 'Alles zurücksetzen…',
     'menu.edit': 'Bearbeiten',
     'menu.view': 'Ansicht',
     'menu.help': 'Hilfe',
@@ -2261,6 +2269,8 @@ const dict = {
     'doctor.summary': '{pass} réussis · {warn} avertissements · {fail} échecs · {skip} ignorés',
     // menu bar
     'menu.file': 'Fichier',
+    'menu.dataSources': 'Sources de données…',
+    'menu.clearAll': 'Tout effacer…',
     'menu.edit': 'Édition',
     'menu.view': 'Affichage',
     'menu.help': 'Aide',
@@ -2800,6 +2810,8 @@ const dict = {
     'doctor.summary': '{pass} correctos · {warn} avisos · {fail} errores · {skip} omitidos',
     // menu bar
     'menu.file': 'Archivo',
+    'menu.dataSources': 'Fuentes de datos…',
+    'menu.clearAll': 'Borrar todo…',
     'menu.edit': 'Editar',
     'menu.view': 'Ver',
     'menu.help': 'Ayuda',
@@ -3339,6 +3351,8 @@ const dict = {
     'doctor.summary': '{pass} aprovados · {warn} avisos · {fail} falhas · {skip} ignorados',
     // menu bar
     'menu.file': 'Arquivo',
+    'menu.dataSources': 'Fontes de dados…',
+    'menu.clearAll': 'Limpar tudo…',
     'menu.edit': 'Editar',
     'menu.view': 'Exibir',
     'menu.help': 'Ajuda',
@@ -3878,6 +3892,8 @@ const dict = {
     'doctor.summary': '{pass} superati · {warn} avvisi · {fail} errori · {skip} ignorati',
     // menu bar
     'menu.file': 'File',
+    'menu.dataSources': 'Sorgenti dati…',
+    'menu.clearAll': 'Cancella tutto…',
     'menu.edit': 'Modifica',
     'menu.view': 'Visualizza',
     'menu.help': 'Aiuto',
@@ -4417,6 +4433,8 @@ const dict = {
     'doctor.summary': '{pass} geslaagd · {warn} waarschuwingen · {fail} fouten · {skip} overgeslagen',
     // menu bar
     'menu.file': 'Bestand',
+    'menu.dataSources': 'Gegevensbronnen…',
+    'menu.clearAll': 'Alles wissen…',
     'menu.edit': 'Bewerken',
     'menu.view': 'Beeld',
     'menu.help': 'Help',
@@ -4956,6 +4974,8 @@ const dict = {
     'doctor.summary': '{pass} zaliczone · {warn} ostrzeżeń · {fail} błędów · {skip} pominiętych',
     // menu bar
     'menu.file': 'Plik',
+    'menu.dataSources': 'Źródła danych…',
+    'menu.clearAll': 'Wyczyść wszystko…',
     'menu.edit': 'Edycja',
     'menu.view': 'Widok',
     'menu.help': 'Pomoc',
@@ -5495,6 +5515,8 @@ const dict = {
     'doctor.summary': '{pass} успех · {warn} предупреждений · {fail} ошибок · {skip} пропущено',
     // menu bar
     'menu.file': 'Файл',
+    'menu.dataSources': 'Источники данных…',
+    'menu.clearAll': 'Очистить всё…',
     'menu.edit': 'Правка',
     'menu.view': 'Вид',
     'menu.help': 'Справка',
@@ -6034,6 +6056,8 @@ const dict = {
     'doctor.summary': '{pass} başarılı · {warn} uyarı · {fail} hata · {skip} atlandı',
     // menu bar
     'menu.file': 'Dosya',
+    'menu.dataSources': 'Veri kaynakları…',
+    'menu.clearAll': 'Tümünü temizle…',
     'menu.edit': 'Düzen',
     'menu.view': 'Görünüm',
     'menu.help': 'Yardım',
@@ -6573,6 +6597,8 @@ const dict = {
     'doctor.summary': '{pass} 通过 · {warn} 警告 · {fail} 失败 · {skip} 跳过',
     // menu bar
     'menu.file': '文件',
+    'menu.dataSources': '数据源…',
+    'menu.clearAll': '全部清除…',
     'menu.edit': '编辑',
     'menu.view': '查看',
     'menu.help': '帮助',
@@ -7112,6 +7138,8 @@ const dict = {
     'doctor.summary': '合格 {pass} · 警告 {warn} · 失敗 {fail} · スキップ {skip}',
     // menu bar
     'menu.file': 'ファイル',
+    'menu.dataSources': 'データソース…',
+    'menu.clearAll': 'すべてクリア…',
     'menu.edit': '編集',
     'menu.view': '表示',
     'menu.help': 'ヘルプ',
@@ -7651,6 +7679,8 @@ const dict = {
     'doctor.summary': '통과 {pass} · 경고 {warn} · 실패 {fail} · 건너뜀 {skip}',
     // menu bar
     'menu.file': '파일',
+    'menu.dataSources': '데이터 소스…',
+    'menu.clearAll': '모두 지우기…',
     'menu.edit': '편집',
     'menu.view': '보기',
     'menu.help': '도움말',

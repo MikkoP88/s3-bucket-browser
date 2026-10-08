@@ -540,6 +540,39 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 }
 .cb-x:hover { color: var(--accent); }
 
+/* Compare banner: the cmp variant of the connection strip — names the
+   pair under comparison, spins while the wire is out (busy), carries
+   the verdict summary (done) or the failure with its Retry arm (err).
+   The ⇄ glyph rides the dot; the spin takes its place in flight. */
+.conn-banner.cmp { background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.conn-banner.cmp.err { background: color-mix(in srgb, var(--danger) 12%, var(--panel)); }
+.cmp-dot {
+  width: 14px; height: 14px; background: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: var(--panel); font-weight: 700;
+}
+.cmp-dot::after { content: '\21C4'; }
+.conn-banner.cmp.busy .cmp-dot {
+  background: transparent; border: 2px solid var(--accent);
+  border-top-color: transparent; animation: load-spin .9s linear infinite;
+}
+.conn-banner.cmp.busy .cmp-dot::after { content: none; }
+.conn-banner.cmp.err .cmp-dot { background: var(--danger); }
+/* the compare button while its flight is out (disabled + dimmed — the
+   banner carries the spinner) */
+.tb-btn.busy { opacity: .55; }
+
+/* Data Sources manager rows (File → Data Sources…) — one source per
+   row: type icon, name, where it points, Edit and Remove beside it. */
+.ds-list { display: flex; flex-direction: column; gap: 6px; min-width: 440px; }
+.ds-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px; }
+.ds-row > .src-ic { flex: none; }
+.ds-main { flex: 1; min-width: 0; }
+.ds-name { font-weight: 600; overflow-wrap: anywhere; }
+.ds-sub { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+.ds-empty { color: var(--text-dim); padding: 20px 0; text-align: center; }
+
 /* In-flight variant: the panel is FETCHING, not empty — a spinner takes
    the icon's place and skeleton rows stand in for the listing that has
    not arrived yet, so a slow source can never read as an empty folder. */

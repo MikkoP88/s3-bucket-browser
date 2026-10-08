@@ -100,6 +100,16 @@
             <span class="cb-text" id="conn-banner-text"></span>
             <button class="btn primary cb-act" id="conn-banner-act" type="button"></button>
             <button class="cb-x" id="conn-banner-x" type="button">&#215;</button>
+          </div>
+          <!-- compare banner: the strip that names the pair being
+               compared — spinner while the wire is out, the verdict
+               summary once it lands, Retry when it fails; X clears the
+               decorations from both grids -->
+          <div class="conn-banner cmp hidden" id="cmp-banner" role="status">
+            <span class="cb-dot cmp-dot" aria-hidden="true"></span>
+            <span class="cb-text" id="cmp-banner-text"></span>
+            <button class="btn primary cb-act hidden" id="cmp-banner-retry" type="button">Retry</button>
+            <button class="cb-x" id="cmp-banner-x" type="button">&#215;</button>
           </div>          <div class="grid-head" id="grid-head" role="row"></div>
           <div class="grid-body" id="grid-body" tabindex="0" role="listbox" aria-label="Objects">
             <!-- parent row: the WinSCP parent-directory entry as the first

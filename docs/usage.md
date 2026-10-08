@@ -40,7 +40,10 @@ Click the **+** next to *DATA SOURCES* in the sidebar (or the button on
 the empty state). Every connection — an S3 bucket, an SFTP server, an
 FTP site, a WebDAV share, a local folder — is a *data source*; click one
 in the tree to browse it in the main view. Sources are color-coded, and
-each carries a live connectivity ball (green = reachable).
+each carries a live connectivity ball (green = reachable). **File →
+Data Sources…** opens the manager: every configured source in one
+list with its type and target, Edit reopening the editor on the
+row, Remove beside it, Add starting a fresh one.
 
 ![Data sources in the sidebar](screenshots/sources-tree.png)
 
@@ -68,10 +71,21 @@ go, remove any row (or clear the list), then import the checked ones
 ### Save your workspace
 
 Data sources live in the session until saved — the status bar counts
-unsaved sources. **Ctrl+S** / File → *Save As* writes an encrypted
-`.s3bprofile` (scrypt + AES-256-GCM, password of your choice) you can
-reopen, keep or share. On first launch the welcome screen disappears
-for good as soon as one source exists.
+unsaved sources. **Ctrl+S** / File → *Save profile file* writes an
+encrypted `.s3bprofile` (scrypt + AES-256-GCM, password of your
+choice; a profile never saved yet — or one holding session-only
+sources — takes Save through the save-as flow) you can reopen, keep
+or share. New / Open / Close profile file ride the sidebar’s
+background context menu (right-click the source tree). On first
+launch the welcome screen disappears for good as soon as one source
+exists.
+
+**File → Clear All…** resets the workspace to a freshly opened state
+(behind a Cancel / Clear confirm, like Exit): every dialog and
+floating window closes, the dual pane closes and unbinds, selection,
+clipboard and filter rest, the history empties and the view re-homes to the
+first source. Saved settings, sources and preferences survive — and
+running transfers keep running.
 
 ### Where secrets live
 
@@ -490,7 +504,13 @@ sources carry the
   home folder). Drag between
   panes transfers, and **Compare** — on the global bar, since it
   needs both sides — color-codes newer / older / size-diff /
-  only-here between the two sides. The **Dual-pane** button does
+  only-here between the two sides, with the strip under the toolbar
+  as its face: the pair named while the wire is out (the button
+  parked), the verdict summarized on landing (“✓ 2 identical · ← 1
+  only on left · …”, the details dialog stacking with every count),
+  a failure with its own Retry, an X that clears the banner and both
+  grids’ decorations, and a verdict that retires by itself when
+  either side moves on. The **Dual-pane** button does
   what it says: with the pane open it closes the pane; with the pane
   closed it opens — unless the pane was left on a view that is not
   the default home, in which case a small picker appears under the

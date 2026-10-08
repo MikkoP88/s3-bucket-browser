@@ -1144,7 +1144,14 @@ function shim() {
     VersionDiffText: () => ({ truncated: false, aText: 'alpha\nold line A\nomega', bText: 'alpha\nnew line B\nomega' }),
     GetBucketAdmin: () => JSON.parse(JSON.stringify(world.admin)),
     BucketVersionStats: () => ({ currentObjects: 7, versions: 12, deleteMarkers: 2, noncurrent: 5, noncurrentBytes: 1048576 }),
-    CompareAny: (x, y) => JSON.parse(JSON.stringify(world.compareRows)),
+    // CompareAny serves the seeded rows; a step can gate the flight
+    // (world.compareHold — a promise the wire waits on, for in-flight
+    // states) or fault it (world.compareFail — the banner err face)
+    CompareAny: async (x, y) => {
+      if (world.compareFail) throw new Error(world.compareFail);
+      if (world.compareHold) await world.compareHold;
+      return JSON.parse(JSON.stringify(world.compareRows));
+    },
 
     // the Synchronize dialog's planner — a canned plan in the predicate's
     // own grammar (copiesXY = first side → second, delY = at the second,
@@ -6185,7 +6192,26 @@ await step('transfers', async () => {
     return !!c && /File 2 \/ 3/.test(c.textContent) && /video-final\.mp4/.test(c.textContent)
       && /22\.0 MB \/ 75\.0 MB \(29%\)/.test(c.textContent);
   }, trSel));
-  await ok('status chip rendered', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .tr-chip.st-running`), trSel));  // per-item disclosure: live state rows for every top-level item — the
+  await ok('status chip rendered', evalPage((s) => !!document.querySelector(`${s} .tr-job.running .tr-chip.st-running`), trSel));
+  // row identity under progress: a tick that moves only bytes must patch
+  // the one row in place — the same DOM node, still connected, still
+  // owning its live handlers. The old full redraw rebuilt the row every
+  // tick: the info button hover background flashed on every replace and
+  // a click racing the replace landed on a closure that owned a dead row.
+  await evalPage((s) => {
+    window.__xferRow = document.querySelector(`${s} .tr-job[data-id="t1"]`);
+  }, trSel);
+  await evalPage(() => {
+    const t1 = window.__shim.world.transfers.find((x) => x.id === 't1');
+    Object.assign(t1, { currentSent: 31457280, sentBytes: 82289152 });
+    window.__shim.emit('transfer:update', {});
+  });
+  await ok('progress-only tick patches the same row in place', waitFor(async () => evalPage((s) => {
+    const row = document.querySelector(`${s} .tr-job[data-id="t1"]`);
+    return row === window.__xferRow && window.__xferRow.isConnected
+      && /\(40%\)/.test(row.querySelector('.tr-cur')?.textContent || '');
+  }, trSel), 4000, 'row identity'));
+  // per-item disclosure: live state rows for every top-level item — the
   // settled one reads its green check, the in-flight one is accent with
   // its size, the waiting folder counts its planned files
   await evalPage((s) => { document.querySelector(`${s} .tr-job.running .tr-morelink`)?.click(); }, trSel);
@@ -8144,6 +8170,82 @@ await step('compare', async () => {
     .some((r) => ['newer-remote', 'size-diff', 'only-remote', 'diff-below', 'same'].includes(r.dataset.cmp))));
   await ok('CompareAny called with both sides', (await findCall('CompareAny')) !== null);
   await shotOf('compare', '#grid-wrap');
+  // the banner state machine — the strip is the compare face now: the
+  // running pair while the wire is out, the verdict summary, failure
+  // with Retry, the X clearing decorations from BOTH grids, and the
+  // staleness retirement when a seat moves. Every success also stacks
+  // the details dialog; each leg closes it before the toolbar is needed.
+  await ok('done banner carries the verdict summary', waitFor(async () => evalPage(() => {
+    const b = document.getElementById('cmp-banner');
+    const t = document.getElementById('cmp-banner-text').textContent;
+    return !b.classList.contains('hidden') && !b.classList.contains('busy') && !b.classList.contains('err')
+      && /✓ 2 identical · ← 1 only on left · → 1 only on right · 1 newer on right · 1 size diff/.test(t)
+      && t.includes(' ↔ ')
+      && document.getElementById('cmp-banner-retry').classList.contains('hidden');
+  }), 4000, 'done banner'));
+  await ok('details dialog counts every bucket of the verdict', evalPage(() => {
+    const m = document.getElementById('modal-root');
+    return m.textContent.includes('Compare — ') && m.textContent.includes('Identical')
+      && m.textContent.includes('Only on left') && m.textContent.includes('Only on right')
+      && m.textContent.includes('Newer on right') && m.textContent.includes('Different size');
+  }));
+  await page.keyboard.press('Escape');
+  await waitFor(() => evalPage(() => document.getElementById('modal-root').classList.contains('hidden')), 2000, 'details closed');
+  // X: the banner goes and the decorations leave BOTH grids
+  await page.click('#cmp-banner-x');
+  await ok('X clears the banner and every decoration on both grids', waitFor(async () => evalPage(() => {
+    const dirty = (sel) => Array.from(document.querySelectorAll(sel)).some((r) => (r.dataset.cmp || '') !== '');
+    return document.getElementById('cmp-banner').classList.contains('hidden')
+      && !dirty('#grid-body .grid-row') && !dirty('#local-grid-body .grid-row');
+  }), 2000, 'cleared'));
+  // busy: the flight held on a gate — the strip names the running pair,
+  // the button parks disabled and dimmed, and the release lands the verdict
+  await evalPage(() => {
+    let rel;
+    window.__shim.world.compareHold = new Promise((r) => { rel = r; });
+    window.__cmpRelease = rel;
+  });
+  await page.click('#btn-compare');
+  await ok('run banner spins over both names, the button parked', waitFor(async () => evalPage(() => {
+    const b = document.getElementById('cmp-banner');
+    const btn = document.getElementById('btn-compare');
+    return b.classList.contains('busy') && !b.classList.contains('hidden')
+      && /^Comparing .+ ↔ .+ …$/.test(document.getElementById('cmp-banner-text').textContent)
+      && btn.disabled && btn.classList.contains('busy');
+  }), 4000, 'busy banner'));
+  await evalPage(() => window.__cmpRelease());
+  await ok('the release lands the verdict and re-arms the button', waitFor(async () => evalPage(() => {
+    const b = document.getElementById('cmp-banner');
+    return !b.classList.contains('busy') && /✓ 2 identical/.test(document.getElementById('cmp-banner-text').textContent)
+      && !document.getElementById('btn-compare').disabled;
+  }), 4000, 'done again'));
+  await page.keyboard.press('Escape'); // the stacked details dialog
+  await waitFor(() => evalPage(() => document.getElementById('modal-root').classList.contains('hidden')), 2000, 'details closed again');
+  // failure: the wire refusal names itself on the strip with a Retry arm
+  await evalPage(() => { window.__shim.world.compareFail = 'wire cut'; });
+  await page.click('#btn-compare');
+  await ok('failure banner carries the error and a Retry', waitFor(async () => evalPage(() => {
+    const b = document.getElementById('cmp-banner');
+    const t = document.getElementById('cmp-banner-text').textContent;
+    return b.classList.contains('err') && t.includes('Compare failed:') && t.includes('wire cut')
+      && !document.getElementById('cmp-banner-retry').classList.contains('hidden');
+  }), 4000, 'err banner'));
+  await evalPage(() => { window.__shim.world.compareFail = null; });
+  await page.click('#cmp-banner-retry');
+  await ok('Retry re-runs the compare to a verdict', waitFor(async () => evalPage(() => {
+    const b = document.getElementById('cmp-banner');
+    return !b.classList.contains('err') && /✓ 2 identical/.test(document.getElementById('cmp-banner-text').textContent)
+      && document.getElementById('cmp-banner-retry').classList.contains('hidden');
+  }), 4000, 'retry lands'));
+  await page.keyboard.press('Escape'); // the details dialog the retry stacked
+  await waitFor(() => evalPage(() => document.getElementById('modal-root').classList.contains('hidden')), 2000, 'details closed for good');
+  // staleness: the main seat moves — a verdict about abandoned seats
+  // decorates nothing and is said to no one
+  await clickTree('logs-2026');
+  await ok('a moved seat retires the verdict', waitFor(async () => evalPage(() => {
+    const dirty = Array.from(document.querySelectorAll('#grid-body .grid-row')).some((r) => (r.dataset.cmp || '') !== '');
+    return document.getElementById('cmp-banner').classList.contains('hidden') && !dirty;
+  }), 4000, 'stale cleared'));
 });
 
 await step('synchronize', async () => {
@@ -8531,6 +8633,102 @@ await step('log-area', async () => {
   await page.click('#status-log');
 });
 
+await step('file-menu', async () => {
+  // the File menu new shape: the workspace front doors (Data Sources,
+  // Import S3 Credential), the profile-file open/save pair, and Clear All
+  // (the as-if-reopened sweep). Upload left with the view verbs (toolbar,
+  // context menus, empty states); New / Save-as / Close profile file live
+  // on the profile surfaces (Ctrl+S keeps its seat here).
+  const openFile = async () => {
+    await page.locator('#menubar .mb-title', { hasText: /^file$/i }).first().click();
+    await sleep(80);
+  };
+  const fileItems = () => evalPage(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .map((i) => i.textContent.trim()));
+  await openFile();
+  const items = await fileItems();
+  await ok('Upload left the File menu for the view verbs', !items.some((x) => /upload/i.test(x)));
+  await ok('New/Close/Save-as profile file left with the profile surfaces', !items.some((x) => /new profile|close profile|save profile file as/i.test(x)));
+  await ok('Data Sources and Clear All are seated', items.some((x) => /data sources/i.test(x)) && items.some((x) => /clear all/i.test(x)));
+  await ok('Open profile file and Save profile file keep their seats', items.some((x) => /open profile/i.test(x)) && items.some((x) => /save profile file/i.test(x)));
+  await shot('menu-file');
+  // Data Sources: the workspace inventory — every source in one list,
+  // Edit reopens the editor on it, Add starts a fresh one
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => /data sources/i.test(i.textContent));
+    it?.click();
+  });
+  await waitFor(() => modalVisible(), 4000, 'data sources dialog');
+  await ok('the manager lists every configured source with its identity', evalPage(() => {
+    const rows = document.querySelectorAll('#modal-root .ds-row');
+    return rows.length === window.__shim.world.sources.length && rows.length > 0
+      && (rows[0].querySelector('.ds-name')?.textContent.trim() || '') !== ''
+      && (rows[0].querySelector('.ds-sub')?.textContent.trim() || '') !== '';
+  }));
+  await ok('every row offers Edit and Remove beside the summary', evalPage(() => {
+    const rows = Array.from(document.querySelectorAll('#modal-root .ds-row'));
+    return rows.every((r) => Array.from(r.querySelectorAll('button.btn')).some((b) => /^edit$/i.test(b.textContent.trim()))
+      && Array.from(r.querySelectorAll('button.btn')).some((b) => /^remove$/i.test(b.textContent.trim())));
+  }));
+  await evalPage(() => {
+    Array.from(document.querySelectorAll('#modal-root .ds-row button.btn'))
+      .find((b) => /^edit$/i.test(b.textContent.trim()))?.click();
+  });
+  await ok('Edit reopens the source editor on the row', waitFor(async () => evalPage(() =>
+    !!document.querySelector('#modal-root .chips')
+    && (document.querySelector('#modal-root input.input')?.value || '') !== ''), 4000, 'editor open'));
+  await page.keyboard.press('Escape');
+  await waitFor(() => evalPage(() => document.getElementById('modal-root').classList.contains('hidden')), 2000, 'dialog closed');
+  // Clear All: the as-if-reopened sweep — TWO staged floating windows
+  // (the live transfers monitor and the guide) close, the session seats
+  // go, the view re-homes, the history empties (Back/Forward disarm)
+  // and the workspace says so. Saved settings and sources survive —
+  // this is not a factory reset.
+  await evalPage(() => window.__shim.emit('transfer:update', {}));
+  await waitFor(() => popoutVisible('transfers'), 4000, 'staged popout');
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => /guide/i.test(i.textContent));
+    it?.click();
+  });
+  // the usage guide rides the popout grammar (a floating window), not
+  // the modal tier — staging it means a SECOND floating window
+  await waitFor(() => popoutVisible('guide'), 4000, 'staged guide window');
+  // the File interactions ride synthetic clicks — immune to whatever
+  // floats over the bar (the sweep itself is what must clear the stack)
+  await evalPage(() => {
+    const t = Array.from(document.querySelectorAll('#menubar .mb-title')).find((x) => /^file$/i.test(x.textContent));
+    t?.click();
+  });
+  await sleep(80);
+  await evalPage(() => {
+    const it = Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => /clear all/i.test(i.textContent));
+    it?.click();
+  });
+  await waitFor(() => evalPage(() => document.getElementById('modal-root').textContent.includes('freshly opened')), 4000, 'clear confirm');
+  await evalPage(() => {
+    Array.from(document.querySelectorAll('#modal-root button'))
+      .find((b) => /^clear$/i.test(b.textContent.trim()))?.click();
+  });
+  await ok('the sweep closes every floating window and the stacked modals', waitFor(async () =>
+    (await evalPage(() => document.getElementById('modal-root').classList.contains('hidden')))
+    && !(await popoutVisible('transfers')) && !(await popoutVisible('guide')), 4000, 'sweep'));
+  await ok('session seats wiped: pane binding and popout geometry', evalPage(() =>
+    localStorage.getItem('s3b-side-src') === null
+    && Object.keys(localStorage).filter((k) => k.startsWith('s3b-popout-') && k !== 's3b-popout-center').length === 0));
+  await ok('history emptied: Back and Forward disarm', evalPage(() =>
+    document.getElementById('btn-back').disabled && document.getElementById('btn-forward').disabled));
+  await ok('the workspace says so', (await txt('#toasts')).includes('Workspace cleared'));
+  await ok('sources survive — the view re-homes to the first source', waitFor(async () => {
+    const first = await evalPage(() => window.__shim.world.sources[0]?.name || '');
+    return !!first && (await rowKeys()).length > 0 && (await txt('#breadcrumb')).includes(first);
+  }, 6000, 're-homed'));
+});
+
 await step('profile-flow', async () => {
   await page.locator('#menubar .mb-title').first().click(); // File
   await sleep(80);
@@ -8579,6 +8777,17 @@ await step('onboarding-empty', async () => {
   await ok('path bar carries no source crumb when nothing is selected', p2.evaluate(() => document.getElementById('breadcrumb').children.length === 0));
   await settlePaint(p2);
   await p2.screenshot({ path: path.join(OUT, String(++shotNo).padStart(2, '0') + '-onboarding-empty.png') });
+  // the stuck-loading fix itself: a reload on the welcome must land back
+  // on the welcome — the onboarding branch renders the panel directly and
+  // never falls through to a loading skeleton that no response will ever
+  // displace (with no source there is no listing to answer for it)
+  await p2.reload();
+  await p2.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
+  await ok('reload lands on the welcome, not a loading skeleton', await p2.waitForFunction(() => {
+    const empty = document.getElementById('empty-state');
+    return !empty.classList.contains('hidden') && !empty.classList.contains('is-loading')
+      && document.getElementById('load-skel').classList.contains('hidden');
+  }, null, { timeout: 8000 }).then(() => true).catch(() => false));
   // first import straight from the welcome: the app must open the imported
   // source's content, and the welcome never shows again once any source
   // exists ("No data source yet" was sticking around before)

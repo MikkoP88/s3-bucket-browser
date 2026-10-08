@@ -483,7 +483,7 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
   // one dialog, going back instead of wiping the pile.
   const onBackdrop = (e) => { if (e.target === r) close(null); };
   r.addEventListener('mousedown', onBackdrop);
-  Object.assign(entry, { box, esc, trap, onBackdrop });
+  Object.assign(entry, { box, esc, trap, onBackdrop, close });
   modalStack.push(entry);
   r.replaceChildren(box);
   // initial focus: first form control, else first button
@@ -491,6 +491,18 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
   firstCtl?.focus?.();
   // btns exposes the footer buttons (some dialogs toggle them live)
   return { close, body: box.querySelector('.modal-body'), btns: [...foot.children] };
+}
+
+// closeAllModals / closeAllFloating: the "as if reopened" sweep (File →
+// Clear all). Modals unwind top-down — each close restores the parent
+// beneath it; floating windows go wholesale, DOM popouts and the native
+// OS windows alike.
+export function closeAllModals() {
+  while (modalStack.length) modalStack[modalStack.length - 1].close(null);
+}
+export function closeAllFloating() {
+  for (const p of popouts.values()) p.close();
+  for (const id of nativeOpen) api.ClosePopout(id);
 }
 
 // ---------- popouts: floating, non-modal windows ----------
@@ -1888,8 +1900,9 @@ function viewHistory(onToggle) {
 // info glyph: icon-only on purpose — the "+N more" suffix is its own
 // clickable affordance for multi-item jobs. The word rides
 // aria-label for screen readers, aria-expanded carries the state,
-// Toggling flips an id-keyed Set (rows are rebuilt on every progress
-// event — DOM-local state would not survive one) and re-renders through
+// Toggling flips an id-keyed Set (a row's node now survives the
+// progress ticks, but a structural change still swaps it — DOM-local
+// state would not survive that) and re-renders through
 // draw(); focus returns to the fresh glyph so a keyboard toggle
 // doesn't strand focus on a node the redraw just replaced.
 const trMoreBtn = (id, isOpen, onToggle) => el('button', {
@@ -2041,6 +2054,9 @@ function openTransferManagerDom(onClose) {
 
   // item names cache: one fetch per job per window life
   const itemCache = new Map();
+  // keyed row cache: id -> {node, update} — draw()'s reconcile keeps
+  // each row's node across progress ticks (see jobRow/taskRow)
+  const rowCache = new Map();
 
 
   // Clear retires exactly what the window shows (viewHistory decides
@@ -2074,8 +2090,39 @@ function openTransferManagerDom(onClose) {
       seen.set(base, (seen.get(base) || 0) + 1);
       j._dup = seen.get(base);
     });
-    list.replaceChildren(...visible.map((j) => renderJob(j)));
-    if (!visible.length) list.appendChild(el('div', { class: 'tm-empty', text: t('transfer.noTransfers') }));
+    // Keyed reconcile: each job keeps its DOM node across the ~100ms
+    // progress redraws — a rebuilt node loses :hover mid-gesture (the
+    // info glyph's background flashed with every tick) and can swallow
+    // a click whose mousedown landed on the node the redraw replaced.
+    // update() patches the volatile parts in place; only a structural
+    // change rebuilds the row, and the order pass moves nothing while
+    // the ranking holds still.
+    const keep = new Set();
+    for (const j of visible) {
+      keep.add(j.id);
+      const entry = rowCache.get(j.id);
+      if (entry && entry.update(j)) continue; // patched in seat
+      const fresh = jobRow(j);
+      if (entry) entry.node.replaceWith(fresh.node); // structural swap
+      rowCache.set(j.id, fresh);
+    }
+    for (const id of rowCache.keys()) if (!keep.has(id)) rowCache.delete(id);
+    const want = visible.map((j) => rowCache.get(j.id).node);
+    const have = Array.from(list.children);
+    const same = have.length === want.length && have.every((n, i) => n === want[i]);
+    if (!same) {
+      // rows that left the view go; surviving nodes move into order —
+      // node objects are never replaced here, so a pointer hovering
+      // a control keeps its hover through the reorder (this runs only
+      // when the ranking or the row set actually shifted)
+      for (const n of have) if (n.classList.contains('tr-job') && !want.includes(n)) n.remove();
+      list.append(...want);
+      const staleEmpty = list.querySelector('.tm-empty');
+      if (visible.length && staleEmpty) staleEmpty.remove();
+    }
+    if (!visible.length && !list.querySelector('.tm-empty')) {
+      list.appendChild(el('div', { class: 'tm-empty', text: t('transfer.noTransfers') }));
+    }
     hist.redraw(jobs);
   }
 
@@ -2122,7 +2169,91 @@ function openTransferManagerDom(onClose) {
     return j.status === 'canceled' && (j.doneFiles + j.failedFiles + j.skippedFiles) < j.totalFiles;
   }
 
-  function renderJob(j) {
+  // jobChips: the status-chip run — the state itself, the phase while
+  // running, the critical/warn flags. Text-only content, safe to
+  // rebuild inside the existing span on every progress tick.
+  function jobChips(j) {
+    const running = j.status === 'running';
+    const chips = [];
+    const stKey = { running: 'transfer.stRunning', done: 'transfer.stDone', error: 'transfer.stError', canceled: 'transfer.stCanceled', failed: 'transfer.stError' }[j.status] || null;
+    if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
+    if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
+    if (running && j.phase === 'paused') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.pausedChip') }));
+    if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
+    if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));
+    // byteless in-flight transfer = server-side copy: activity without
+    // percentages, said aloud instead of a frozen row
+    if (running && j.op === 'transfer' && j.currentFile && !j.currentTotal) {
+      chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.serverCopy') }));
+    }
+    return chips;
+  }
+
+  // metaCounts / metaBytes: the two tr-meta spans — files and outcomes
+  // on the left, bytes, speed and ETA (the lifetime average once
+  // finished) on the right.
+  function metaCounts(j) {
+    return t('transfer.filesCount', { d: j.doneFiles, t: j.totalFiles })
+      + (j.failedFiles ? ` · ${t('transfer.failedCount', { n: j.failedFiles })}` : '')
+      + (j.skippedFiles ? ` · ${t('transfer.skippedCount', { n: j.skippedFiles })}` : '');
+  }
+  function metaBytes(j) {
+    const running = j.status === 'running';
+    let bytes = `${fmtBytes(j.sentBytes)}${j.totalBytes ? ` / ${fmtBytes(j.totalBytes)}` : ''}`;
+    if (running && j.speedBps > 1) bytes += ` @ ${fmtSpeed(j.speedBps)}`;
+    if (running && j.etaMs > 0) bytes += ` · ${fmtEta(j.etaMs / 1000)}`;
+    if (!running && j.elapsedMs > 0) bytes += ` · ${t('transfer.doneIn', { t: fmtEta(j.elapsedMs / 1000).replace('~', '') })}`;
+    return bytes;
+  }
+
+  // curParts: the now-transferring line — which file of how many is
+  // moving and its own progress; the multi-item case never shows a
+  // stale name. curLine renders it (presence rides the structural
+  // signature, the text patches per tick).
+  function curParts(j) {
+    const parts = [t('transfer.fileOf', { i: j.fileIndex || 1, t: j.totalFiles || 1 }), j.currentFile];
+    if (j.currentTotal > 0) {
+      const fpct = Math.floor((j.currentSent / j.currentTotal) * 100);
+      parts.push(`${fmtBytes(j.currentSent)} / ${fmtBytes(j.currentTotal)} (${fpct}%)`);
+    }
+    return parts;
+  }
+  function curLine(j) {
+    if (j.status !== 'running' || !j.currentFile) return null;
+    return el('div', { class: 'tr-cur', title: j.currentFile, text: curParts(j).join(' · ') });
+  }
+
+  // detailPairs: the expanded panel's label/value rows (jobDetail
+  // renders them; update() re-renders them into the same node).
+  function detailPairs(j) {
+    const running = j.status === 'running';
+    const pairs = [];
+    if (j.startedAt > 0) pairs.push([t('transfer.startedAt'), new Date(j.startedAt).toLocaleString()]);
+    const endedAt = j.endedAt > 0 ? j.endedAt
+      : (!running && j.elapsedMs > 0 && j.startedAt > 0 ? j.startedAt + j.elapsedMs : 0);
+    if (endedAt > 0) pairs.push([t('transfer.endedAt'), new Date(endedAt).toLocaleString()]);
+    pairs.push([t('transfer.idLabel'), j.id]);
+    const elapsed = j.elapsedMs > 0 ? j.elapsedMs : (j.startedAt > 0 ? Date.now() - j.startedAt : 0);
+    if (elapsed > 1000 && j.sentBytes > 0) pairs.push([t('transfer.avgSpeed'), fmtSpeed(j.sentBytes / (elapsed / 1000))]);
+    if (running && (j.totalFiles > 0 || j.totalBytes > 0)) {
+      const remFiles = Math.max(0, (j.totalFiles || 0) - (j.doneFiles || 0) - (j.failedFiles || 0) - (j.skippedFiles || 0));
+      pairs.push([t('transfer.remaining'), `${remFiles} · ${fmtBytes(Math.max(0, j.totalBytes - j.sentBytes))}`]);
+    }
+    if (j.error) pairs.push([t('transfer.errorText'), j.error, true]);
+    return pairs;
+  }
+
+  // jobRow builds one row together with its in-place update:
+  // update(nj) patches bar, percentage, chips, counts, the
+  // current-file line and the detail panel into the EXISTING node and
+  // returns true; a structural change (status, phase, expansion, the
+  // button set, the error line arriving) changes the signature,
+  // returns false, and draw() swaps the node. Progress ticks then
+  // never replace the node a pointer is hovering or a click is
+  // landing on — the info glyph stops flashing and buttons stop
+  // swallowing clicks mid-press.
+  function jobRow(j) {
+    let live = j; // handlers read the job as it is NOW, not as built
     const pct = jobPct(j);
     const running = j.status === 'running';
     const v = jobVerb(j);
@@ -2137,31 +2268,26 @@ function openTransferManagerDom(onClose) {
     const indet = running && !j.totalBytes && !j.totalFiles;
     const bar = el('div', { class: `tr-bar${indet ? ' tr-indet' : ''}` },
       el('div', { style: `width:${pct}%` }));
+    const barFill = bar.firstChild;
 
-    // Status chips: the state itself, the phase while running, and the
-    // critical/warn flags that must outshout everything else.
-    const stKey = { running: 'transfer.stRunning', done: 'transfer.stDone', error: 'transfer.stError', canceled: 'transfer.stCanceled', failed: 'transfer.stError' }[j.status] || null;
-    const chips = [];
-    if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
-    if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
-    if (running && j.phase === 'paused') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.pausedChip') }));
-    if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
-    if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));
-    // byteless in-flight transfer = server-side copy: activity without
-    // percentages, said aloud instead of a frozen row
-    if (running && j.op === 'transfer' && j.currentFile && !j.currentTotal) {
-      chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.serverCopy') }));
-    }
-
-    // Counts + throughput: files, bytes, live speed and ETA while it
-    // runs; the lifetime average rides finished rows.
-    const counts = t('transfer.filesCount', { d: j.doneFiles, t: j.totalFiles })
-      + (j.failedFiles ? ` · ${t('transfer.failedCount', { n: j.failedFiles })}` : '')
-      + (j.skippedFiles ? ` · ${t('transfer.skippedCount', { n: j.skippedFiles })}` : '');
-    let bytes = `${fmtBytes(j.sentBytes)}${j.totalBytes ? ` / ${fmtBytes(j.totalBytes)}` : ''}`;
-    if (running && j.speedBps > 1) bytes += ` @ ${fmtSpeed(j.speedBps)}`;
-    if (running && j.etaMs > 0) bytes += ` · ${fmtEta(j.etaMs / 1000)}`;
-    if (!running && j.elapsedMs > 0) bytes += ` · ${t('transfer.doneIn', { t: fmtEta(j.elapsedMs / 1000).replace('~', '') })}`;
+    const chipsEl = el('span', { class: 'tr-chips' }, ...jobChips(j));
+    const pctEl = el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` });
+    const linkEl = (j.items > 1) ? moreLink(j.id, j.items, expanded.has(j.id), toggle) : null;
+    const pauseBtn = running ? el('button', { class: 'btn',
+      text: j.phase === 'paused' ? t('transfer.resumeJob') : t('transfer.pauseJob'),
+      // live, not the build-time snapshot: the row survives ticks, so
+      // the verb must read the phase the job wears at click time
+      // a refusal (the job settled between the tick and the click) is
+      // spoken, not swallowed — the row redraws on the next tick
+      onclick: async () => { try { await (live.phase === 'paused' ? api.ResumeTransfer(live.id) : api.PauseTransfer(live.id)); } catch (e) { toast(String(e), 'error'); } } }) : null;
+    const cancelBtn = running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { try { await api.CancelTransfer(live.id); } catch (e) { toast(String(e), 'error'); } } }) : null;
+    const retryBtn = (!running && retryable(j)) ? el('button', { class: 'btn', text: t('transfer.retryFailed'), onclick: async () => {
+      // One click, only what failed: the backend resubmits the failed
+      // (or, when canceled, unfinished) items under skip semantics —
+      // what landed stays, what failed goes again.
+      try { await api.RetryTransfer(live.id); } catch (e) { toast(String(e), 'error'); }
+    } }) : null;
+    const destBtn = (!running && j.dest && j.dest.kind) ? el('button', { class: 'btn', text: t('transfer.showDest'), onclick: () => xferGotoDest(live.dest) }) : null;
 
     // The route block: where the bytes come from and where they go —
     // From above, To below, nothing between: the route reads vertically
@@ -2176,70 +2302,77 @@ function openTransferManagerDom(onClose) {
           el('span', { class: 'tr-loc', text: j.to || '—' })))
       : null;
 
-    // The now-transferring line: which file of how many is moving and
-    // its own progress — the multi-item case never shows a stale name.
-    let cur = null;
-    if (running && j.currentFile) {
-      const parts = [t('transfer.fileOf', { i: j.fileIndex || 1, t: j.totalFiles || 1 }), j.currentFile];
-      if (j.currentTotal > 0) {
-        const fpct = Math.floor((j.currentSent / j.currentTotal) * 100);
-        parts.push(`${fmtBytes(j.currentSent)} / ${fmtBytes(j.currentTotal)} (${fpct}%)`);
-      }
-      cur = el('div', { class: 'tr-cur', title: j.currentFile, text: parts.join(' · ') });
-    }
-
+    const countsEl = el('span', { text: metaCounts(j) });
+    const bytesEl = el('span', { text: metaBytes(j) });
     const job = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
         el('span', { class: 'tr-name', title: title, text: title }),
-        (j.items > 1) ? moreLink(j.id, j.items, expanded.has(j.id), toggle) : null,
-        el('span', { class: 'tr-chips' }, ...chips),
-        el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
-        running ? el('button', { class: 'btn', text: j.phase === 'paused' ? t('transfer.resumeJob') : t('transfer.pauseJob'), onclick: async () => { await (j.phase === 'paused' ? api.ResumeTransfer(j.id) : api.PauseTransfer(j.id)); } }) : null,
-        running ? el('button', { class: 'btn', text: t('transfer.cancelJob'), onclick: async () => { await api.CancelTransfer(j.id); } })
-          : retryable(j) ? el('button', { class: 'btn', text: t('transfer.retryFailed'), onclick: async () => {
-            // One click, only what failed: the backend resubmits the failed
-            // (or, when canceled, unfinished) items under skip semantics —
-            // what landed stays, what failed goes again.
-            try { await api.RetryTransfer(j.id); } catch (e) { toast(String(e), 'error'); }
-          } }) : null,
-        (!running && j.dest && j.dest.kind) ? el('button', { class: 'btn', text: t('transfer.showDest'), onclick: () => xferGotoDest(j.dest) }) : null,
+        linkEl,
+        chipsEl,
+        pctEl,
+        pauseBtn,
+        cancelBtn,
+        retryBtn,
+        destBtn,
         trMoreBtn(j.id, expanded.has(j.id), toggle),
       ),
       bar,
       el('div', { class: 'tr-meta' },
-        el('span', { text: counts }),
-        el('span', { text: bytes }),
+        countsEl,
+        bytesEl,
       ),
       route,
-      cur,
+      curLine(j),
       j.error ? el('div', { class: 'tr-sub', text: j.error }) : null,
       expanded.has(j.id) ? jobDetail(j) : null,
     );
     job.dataset.id = j.id;
-    return job;
+    const curEl = job.querySelector('.tr-cur');
+    const errEl = job.querySelector('.tr-sub');
+    const detailEl = job.querySelector('.tr-detail');
+
+    // The structural signature: everything whose change adds, removes
+    // or re-seats a control. The volatile numbers (bar, pct, chips,
+    // counts, current file) are deliberately absent — they patch in
+    // place below.
+    const sig = (x) => [x.status, x.phase || '', x.stalled ? 1 : 0, x.errorKind || '',
+      x._dup || 1, (x.items > 1) ? 1 : 0, expanded.has(x.id) ? 1 : 0,
+      x.error ? 1 : 0, x.currentFile ? 1 : 0, x.dest ? 1 : 0, x.from || '', x.to || '',
+      x.itemRows ? x.itemRows.length : 0, jobTitleBase(x)].join('|');
+    const builtSig = sig(j);
+
+    const update = (nj) => {
+      if (sig(nj) !== builtSig) return false;
+      live = nj;
+      const nRun = nj.status === 'running';
+      job.className = `tr-job ${nj.status}${nj.stalled ? ' stalled' : ''}`;
+      const nIndet = nRun && !nj.totalBytes && !nj.totalFiles;
+      bar.className = `tr-bar${nIndet ? ' tr-indet' : ''}`;
+      barFill.style.width = `${jobPct(nj)}%`;
+      pctEl.textContent = `${Math.floor(jobPct(nj))}%`;
+      chipsEl.replaceChildren(...jobChips(nj));
+      countsEl.textContent = metaCounts(nj);
+      bytesEl.textContent = metaBytes(nj);
+      if (linkEl) linkEl.textContent = t('transfer.more', { n: nj.items - 1 });
+      if (curEl && nRun && nj.currentFile) {
+        curEl.textContent = curParts(nj).join(' · ');
+        curEl.title = nj.currentFile;
+      }
+      if (errEl && nj.error) errEl.textContent = nj.error;
+      if (detailEl) detailEl.replaceChildren(itemsBlock(nj, itemCache, draw), ...kvPairs(detailPairs(nj)));
+      return true;
+    };
+    return { node: job, update };
   }
 
   // jobDetail: the expanded panel — what the compact row can't afford:
   // when it started, the id (log correlation), the lifetime average,
   // what's left, and the full error text (the row's line is ellipsized).
+  // detailPairs feeds it; update() re-renders the same node per tick.
   function jobDetail(j) {
-    const running = j.status === 'running';
-    const pairs = [];
-    if (j.startedAt > 0) pairs.push([t('transfer.startedAt'), new Date(j.startedAt).toLocaleString()]);
-    const endedAt = j.endedAt > 0 ? j.endedAt
-      : (!running && j.elapsedMs > 0 && j.startedAt > 0 ? j.startedAt + j.elapsedMs : 0);
-    if (endedAt > 0) pairs.push([t('transfer.endedAt'), new Date(endedAt).toLocaleString()]);
-    pairs.push([t('transfer.idLabel'), j.id]);
-    const elapsed = j.elapsedMs > 0 ? j.elapsedMs : (j.startedAt > 0 ? Date.now() - j.startedAt : 0);
-    if (elapsed > 1000 && j.sentBytes > 0) pairs.push([t('transfer.avgSpeed'), fmtSpeed(j.sentBytes / (elapsed / 1000))]);
-    if (running && (j.totalFiles > 0 || j.totalBytes > 0)) {
-      const remFiles = Math.max(0, (j.totalFiles || 0) - (j.doneFiles || 0) - (j.failedFiles || 0) - (j.skippedFiles || 0));
-      pairs.push([t('transfer.remaining'), `${remFiles} \u00B7 ${fmtBytes(Math.max(0, j.totalBytes - j.sentBytes))}`]);
-    }
-    if (j.error) pairs.push([t('transfer.errorText'), j.error, true]);
     return el('div', { class: 'tr-detail kv', id: `tr-det-${String(j.id).replace(/[^a-zA-Z0-9_-]/g, '_')}` },
       itemsBlock(j, itemCache, draw),
-      ...kvPairs(pairs));
+      ...kvPairs(detailPairs(j)));
   }
 
 
@@ -2380,6 +2513,10 @@ function runningTasksDom() {
 
   // item names cache: one fetch per job per window life
   const itemCache = new Map();
+  // keyed row cache: id -> {node, update} — draw()'s reconcile keeps
+  // each row's node across tasks:update ticks (taskRow builds the twin
+  // of the transfers window's jobRow)
+  const rowCache = new Map();
 
 
   // Clear retires exactly what the window shows (viewHistory decides
@@ -2397,8 +2534,32 @@ function runningTasksDom() {
     hist.seed(tasks);
     rows = tasks;
     const visible = hist.visible(tasks);
-    list.replaceChildren(...visible.map(renderTask));
-    if (!visible.length) list.appendChild(el('div', { class: 'tm-empty', text: t('tasks.empty') }));
+    // Keyed reconcile, the transfers window's twin: each task keeps
+    // its DOM node across tasks:update redraws — update() patches
+    // volatile parts in place, only a structural change rebuilds
+    // the row, and nothing moves while the ranking holds still.
+    const keep = new Set();
+    for (const j of visible) {
+      keep.add(j.id);
+      const entry = rowCache.get(j.id);
+      if (entry && entry.update(j)) continue; // patched in seat
+      const fresh = taskRow(j);
+      if (entry) entry.node.replaceWith(fresh.node); // structural swap
+      rowCache.set(j.id, fresh);
+    }
+    for (const id of rowCache.keys()) if (!keep.has(id)) rowCache.delete(id);
+    const want = visible.map((j) => rowCache.get(j.id).node);
+    const have = Array.from(list.children);
+    const same = have.length === want.length && have.every((n, i) => n === want[i]);
+    if (!same) {
+      for (const n of have) if (n.classList.contains('tr-job') && !want.includes(n)) n.remove();
+      list.append(...want);
+      const staleEmpty = list.querySelector('.tm-empty');
+      if (visible.length && staleEmpty) staleEmpty.remove();
+    }
+    if (!visible.length && !list.querySelector('.tm-empty')) {
+      list.appendChild(el('div', { class: 'tm-empty', text: t('tasks.empty') }));
+    }
     hist.redraw(tasks);
   }
 
@@ -2409,7 +2570,65 @@ function runningTasksDom() {
     return j.status === 'done' ? 100 : 0;
   }
 
-  function renderTask(j) {
+  // taskChips: the status-chip run (text-only — rebuilt inside the
+  // existing span on every tasks:update tick).
+  function taskChips(j) {
+    const running = j.status === 'running' || j.status === 'queued';
+    const chips = [];
+    const stKey = { running: 'transfer.stRunning', queued: 'transfer.stRunning', done: 'transfer.stDone', error: 'transfer.stError', canceled: 'transfer.stCanceled' }[j.status] || null;
+    if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
+    if (running && j.phase === 'count') chips.push(el('span', { class: 'tr-chip st-phase', text: t('tasks.counting') }));
+    if (running && j.phase === 'paused') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.pausedChip') }));
+    if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
+    if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
+    if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));
+    return chips;
+  }
+
+  // taskCounts / taskPace: the two tr-meta spans — units on the left,
+  // speed and ETA (the duration once finished) on the right.
+  function taskCounts(j) {
+    return j.totalUnits > 0
+      ? t('tasks.counts', { d: j.doneUnits, t: j.totalUnits })
+      : (j.doneUnits > 0 ? String(j.doneUnits) : '');
+  }
+  function taskPace(j) {
+    const running = j.status === 'running' || j.status === 'queued';
+    let pace = '';
+    if (running && j.speed > 0.05) {
+      // merged transfer rows carry bytes/sec; pure tasks carry units/sec
+      const sp = ['upload', 'download', 'transfer'].includes(j.kind)
+        ? fmtSpeed(j.speed) : `${j.speed >= 10 ? Math.round(j.speed) : j.speed.toFixed(1)}/s`;
+      pace = `@ ${sp}`;
+    }
+    if (running && j.etaMs > 0) pace += `${pace ? ' · ' : ''}${fmtEta(j.etaMs / 1000)}`;
+    if (!running && j.elapsedMs > 0) pace = t('transfer.doneIn', { t: fmtEta(j.elapsedMs / 1000).replace('~', '') });
+    return pace;
+  }
+
+  // taskDetailPairs: the panel's label/value rows (taskDetail renders
+  // them; update() re-renders them into the same node per tick).
+  function taskDetailPairs(j) {
+    const running = j.status === 'running' || j.status === 'queued';
+    const pairs = [
+      [t('transfer.idLabel'), j.id],
+      [t('transfer.kind'), j.kind],
+    ];
+    if (j.startedAt > 0) pairs.push([t('transfer.startedAt'), new Date(j.startedAt).toLocaleString()]);
+    const endedAt = j.endedAt > 0 ? j.endedAt
+      : (!running && j.elapsedMs > 0 && j.startedAt > 0 ? j.startedAt + j.elapsedMs : 0);
+    if (endedAt > 0) pairs.push([t('transfer.endedAt'), new Date(endedAt).toLocaleString()]);
+    if (j.error) pairs.push([t('transfer.errorText'), j.error, true]);
+    return pairs;
+  }
+
+  // taskRow: the tasks-window twin of jobRow — the node survives the
+  // redraws, update() patches bar, chips and meta text in place, and
+  // only a structural change (status, phase, expansion, the button
+  // set, the current line arriving) changes the signature and swaps
+  // the node. Hover keeps its seat; clicks stop landing on replaced
+  // nodes.
+  function taskRow(j) {
     const pct = taskPct(j);
     const running = j.status === 'running' || j.status === 'queued';
     // Every row leads with its action type: "✕ Deleting s3://b — 3
@@ -2429,72 +2648,77 @@ function runningTasksDom() {
     const indet = running && !j.totalUnits;
     const bar = el('div', { class: `tr-bar${indet ? ' tr-indet' : ''}` },
       el('div', { style: `width:${pct}%` }));
+    const barFill = bar.firstChild;
 
-    // Status chips: the state itself, the phase while counting or
-    // cleaning up, and the timeout flag that must outshout the rest.
-    const stKey = { running: 'transfer.stRunning', queued: 'transfer.stRunning', done: 'transfer.stDone', error: 'transfer.stError', canceled: 'transfer.stCanceled' }[j.status] || null;
-    const chips = [];
-    if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
-    if (running && j.phase === 'count') chips.push(el('span', { class: 'tr-chip st-phase', text: t('tasks.counting') }));
-    if (running && j.phase === 'paused') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.pausedChip') }));
-    if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
-    if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
-    if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));
+    const chipsEl = el('span', { class: 'tr-chips' }, ...taskChips(j));
+    const pctEl = el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` });
+    const linkEl = (j.items > 1) ? moreLink(j.id, j.items, expanded.has(j.id), toggle) : null;
+    const cancelBtn = running ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { try { await api.CancelTask(j.id); } catch (e) { toast(String(e), 'error'); } } }) : null;
 
-    // Units + pace: counts, live speed and ETA while it runs; the
-    // lifetime average and the total duration ride finished rows.
-    const counts = j.totalUnits > 0
-      ? t('tasks.counts', { d: j.doneUnits, t: j.totalUnits })
-      : (j.doneUnits > 0 ? String(j.doneUnits) : '');
-    let pace = '';
-    if (running && j.speed > 0.05) {
-      // merged transfer rows carry bytes/sec; pure tasks carry units/sec
-      const sp = ['upload', 'download', 'transfer'].includes(j.kind)
-        ? fmtSpeed(j.speed) : `${j.speed >= 10 ? Math.round(j.speed) : j.speed.toFixed(1)}/s`;
-      pace = `@ ${sp}`;
-    }
-    if (running && j.etaMs > 0) pace += `${pace ? ' · ' : ''}${fmtEta(j.etaMs / 1000)}`;
-    if (!running && j.elapsedMs > 0) pace = t('transfer.doneIn', { t: fmtEta(j.elapsedMs / 1000).replace('~', '') });
-
+    const countsEl = el('span', { text: taskCounts(j) });
+    const paceEl = el('span', { text: taskPace(j) });
     const task = el('div', { class: `tr-job ${j.status}${j.stalled ? ' stalled' : ''}` },
       el('div', { class: 'tr-top' },
         el('span', { class: 'tr-name', title: title, text: title }),
-        (j.items > 1) ? moreLink(j.id, j.items, expanded.has(j.id), toggle) : null,
-        el('span', { class: 'tr-chips' }, ...chips),
-        el('span', { class: 'tr-pct mono', text: `${Math.floor(pct)}%` }),
-        running ? el('button', { class: 'btn', text: t('tasks.cancel'), onclick: async () => { await api.CancelTask(j.id); } }) : null,
+        linkEl,
+        chipsEl,
+        pctEl,
+        cancelBtn,
         trMoreBtn(j.id, expanded.has(j.id), toggle),
       ),
       bar,
-      (counts || pace) ? el('div', { class: 'tr-meta' },
-        el('span', { text: counts }),
-        el('span', { text: pace }),
+      (countsEl.textContent || paceEl.textContent) ? el('div', { class: 'tr-meta' },
+        countsEl,
+        paceEl,
       ) : null,
       (running && j.current) ? el('div', { class: 'tr-cur', title: j.current, text: j.current }) : null,
       j.error ? el('div', { class: 'tr-sub', text: j.error }) : null,
       expanded.has(j.id) ? taskDetail(j) : null,
     );
     task.dataset.id = j.id;
-    return task;
+    const curEl = task.querySelector('.tr-cur');
+    const errEl = task.querySelector('.tr-sub');
+    const detailEl = task.querySelector('.tr-detail');
+
+    // Structural signature: everything whose change adds, removes or
+    // re-seats a control (the label rides it — merged rows relabel).
+    const sig = (x) => {
+      const xr = x.status === 'running' || x.status === 'queued';
+      return [x.status, x.phase || '', x.stalled ? 1 : 0, x.errorKind || '',
+        (x.items > 1) ? 1 : 0, expanded.has(x.id) ? 1 : 0, x.error ? 1 : 0,
+        x.current ? 1 : 0, (x.totalUnits > 0 || x.doneUnits > 0) ? 1 : 0,
+        x.label || '', x.kind, x.itemRows ? x.itemRows.length : 0].join('|');
+    };
+    const builtSig = sig(j);
+
+    const update = (nj) => {
+      if (sig(nj) !== builtSig) return false;
+      const nRun = nj.status === 'running' || nj.status === 'queued';
+      task.className = `tr-job ${nj.status}${nj.stalled ? ' stalled' : ''}`;
+      const nIndet = nRun && !nj.totalUnits;
+      bar.className = `tr-bar${nIndet ? ' tr-indet' : ''}`;
+      barFill.style.width = `${taskPct(nj)}%`;
+      pctEl.textContent = `${Math.floor(taskPct(nj))}%`;
+      chipsEl.replaceChildren(...taskChips(nj));
+      countsEl.textContent = taskCounts(nj);
+      paceEl.textContent = taskPace(nj);
+      if (linkEl) linkEl.textContent = t('transfer.more', { n: nj.items - 1 });
+      if (curEl && nRun && nj.current) { curEl.textContent = nj.current; curEl.title = nj.current; }
+      if (errEl && nj.error) errEl.textContent = nj.error;
+      if (detailEl) detailEl.replaceChildren(itemsBlock(nj, itemCache, draw), ...kvPairs(taskDetailPairs(nj)));
+      return true;
+    };
+    return { node: task, update };
   }
 
   draw();
   // taskDetail: the tasks-window panel — id, kind, start; the error
   // already rides the row (one line), the panel wraps it in full.
+  // taskDetailPairs feeds it; update() re-renders it per tick.
   function taskDetail(j) {
-    const running = j.status === 'running' || j.status === 'queued';
-    const pairs = [
-      [t('transfer.idLabel'), j.id],
-      [t('transfer.kind'), j.kind],
-    ];
-    if (j.startedAt > 0) pairs.push([t('transfer.startedAt'), new Date(j.startedAt).toLocaleString()]);
-    const endedAt = j.endedAt > 0 ? j.endedAt
-      : (!running && j.elapsedMs > 0 && j.startedAt > 0 ? j.startedAt + j.elapsedMs : 0);
-    if (endedAt > 0) pairs.push([t('transfer.endedAt'), new Date(endedAt).toLocaleString()]);
-    if (j.error) pairs.push([t('transfer.errorText'), j.error, true]);
     return el('div', { class: 'tr-detail kv', id: `tr-det-${String(j.id).replace(/[^a-zA-Z0-9_-]/g, '_')}` },
       itemsBlock(j, itemCache, draw),
-      ...kvPairs(pairs));
+      ...kvPairs(taskDetailPairs(j)));
   }
 
 
@@ -2901,7 +3125,7 @@ const GUIDE_SECTIONS = [
   ['Getting started', [
     ['Add a data source', 'Click the + button next to DATA SOURCES on the left (or the button on the empty state). Every connection is a data source — an S3 source is one bucket, a remote source one server root, a local source one folder; click one to browse it in the main view.'],
     ['Import existing credentials', '"Import S3 Credential" (File menu or the empty state) reads credential files — AWS INI (~/.aws/credentials), rclone, JSON, .env, encrypted .s3bprofile — or a KMS service (Vault, AWS SM, Azure, GCP). Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3. Test each candidate before importing. Picks accumulate — add from several files and services, remove any row (or clear all), then import the checked ones.'],
-    ['Save your workspace', 'Data sources live in the session until saved. Ctrl+S / File → Save As writes an encrypted .s3bprofile you can reopen, keep or share; the status bar counts unsaved sources.'],
+    ['Save your workspace', 'Data sources live in the session until saved. Ctrl+S / File → Save profile file writes an encrypted .s3bprofile you can reopen, keep or share (unsaved sessions land in Save-as); the status bar counts unsaved sources.'],
     ['Secrets', 'Keys and passwords are stored in the OS keyring (Windows Credential Manager, macOS Keychain, Linux SecretService) when available, with a 0600-permission file fallback on headless hosts.'],
     ['Settings', 'The Settings menu opens one dialog with a page tree: theme (light/dark), 15 languages, view options, network timeouts and S3 retries, the transfer engine (multipart part size, parts in flight, stall threshold), delete gates and security — including the opt-in Secure Storage mode that encrypts the whole source store. Every change applies immediately; no restart.'],
   ]],

@@ -11,7 +11,7 @@ import {
   usageGuideDialog, sourcesInfoDialog, importCredsDialog, pill, versionChoiceDialog,
   renderPopoutView, licenseGate,
   runDeleteWindow, delTypedOn, delWindowOn, delAutoConfirm, licenseDialog, taskKindVerb, promptFile, applySearchCols,
-  bucketSourceDialog, setXferGoto,
+  bucketSourceDialog, setXferGoto, closeAllFloating, closeAllModals,
   synchronizeDialog, setSyncRunners, syncLocalPath, syncRemoteKey, syncS3Prefix,
 } from './dialogs.js';
 import { SR_DEFAULT_COLS, storedSearchCols } from './srgrid.js';
@@ -50,6 +50,10 @@ localPane.sourceTypeOf = (name) => {
   const x = sources.find((s) => s.name === name || s.id === name);
   return x ? x.type : '';
 };
+// the pane announces seating changes through this hook (updateStatus
+// tail in local.js) — the compare banner listens so a verdict never
+// outlives its seats
+localPane.onViewChanged = maybeClearCompare;
 window.__s3bSidePane = localPane; // battery handle: gui-visual drives the pane directly
 const tree = new Tree({
   onNavigate: (loc) => nav.to(loc),
@@ -354,6 +358,9 @@ async function boot() {
   window.__s3bConnPause = () => { clearInterval(connTimer); connTimer = null; };
   $('conn-banner-x').title = t('connDismiss');
   $('conn-banner-x').onclick = () => hideConnBanner();
+  $('cmp-banner-x').title = 'Clear compare decorations';
+  $('cmp-banner-x').onclick = () => cmpBannerClear();
+  $('cmp-banner-retry').onclick = () => compareDirs();
 
   // the secondary pane's remembered location is session-scoped: a
   // fresh app run forgets where the pane stood (its first open
@@ -793,6 +800,16 @@ function showOnboarding() {
   renderSidebarHead();
   // The sidebar stays empty (the header's + adds sources); the main-area
   // empty state carries the call to action.
+  renderOnboardingPanel();
+}
+
+// renderOnboardingPanel paints the no-sources welcome face: the call to
+// action lives in the main area's empty state. Shared by showOnboarding
+// (boot and the import flows) and loadView's onboarding branch (F5 on
+// the welcome screen, the last source's removal) so every road to the
+// panel lands the same view — never a loading skeleton with nothing
+// behind it that no response will ever displace.
+function renderOnboardingPanel() {
   renderBreadcrumb();
   showEmpty(t('noSources'), t('noSourcesSub'), [
     el('button', { class: 'btn primary', text: `+ ${t('addSource')}`, onclick: () => sourceEditor(null, afterSourceSaved) }),
@@ -1055,6 +1072,23 @@ async function loadView(loc, { silent = false } = {}) {
   if (!silent) renderBreadcrumb();
   tree.markCurrent(loc);
   applyMainDragPayload(loc);
+  if (loc.kind === 'onboarding') {
+    // No source exists: the welcome panel IS the view. Nothing is in
+    // flight, so the generic path's loading skeleton would wait forever
+    // on a response no leg will ever produce (the stuck Loading the
+    // source-less app could land in through F5 or the last removal).
+    currentEntries = [];
+    grid.setRows([]);
+    setGridSource('');
+    setUpbar('off');
+    renderSidebarHead();
+    renderOnboardingPanel();
+    updateStatus();
+    return;
+  }
+  // A compare banner about seats nobody sits in anymore is a lie —
+  // navigation is the main side's choke point.
+  maybeClearCompare();
   // Non-silent navigation SHOWS work: skeleton rows + spinner while the
   // listing is in flight — a blank panel reads as "empty folder" on a
   // slow source, which is a lie until the response lands.
@@ -1925,6 +1959,10 @@ function wireGrid() {
       null,
       [t('pf.new'), '', newProfileFileUi],
       [t('pf.open'), '', openProfileFileUi],
+      // Close rode the File menu until the reshuffle; its seat is
+      // here now, beside the verbs it finishes — disabled whenever
+      // there is nothing open and nothing unsaved
+      [t('pf.close'), '', closeProfileFileUi, !(pfState.open || pfState.sourceCount)],
       null,
       ['Collapse all', '', () => tree.collapseAll()],
       ['Refresh', 'F5', () => refreshCurrent()],
@@ -2313,25 +2351,118 @@ async function folderProperties() {
 // remove, refresh — and the one-root rule's re-home when the source
 // owned the view.
 function removeSourceEntry(src, node) {
-  return ['Remove source\u2026', '', async () => {
-    if (await confirm({
-      title: `Remove source ${node.source}?`,
-      message: 'The connection is removed from the workspace.\nStored credentials will be deleted.',
-      danger: true, okLabel: 'Remove',
-    })) {
-      try {
-        const wasView = nav.current?.source === src.name;
-        await api.RemoveSource(src.id || src.name);
-        await refreshSources();
-        refreshPfState();
-        // one-root rule: a source that owned the view takes the view
-        // with it — re-home so the next view-source binding resolves
-        // a live source (an S3 heir keeps the engine pointer live)
-        if (wasView) reHomeView();
-      } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
-    }
-  }];
+  return ['Remove source\u2026', '', () => doRemoveSource(src, node.source)];
 }
+// doRemoveSource: the confirm-remove-refresh core both the tree menus'
+// Remove-source item and the Data Sources dialog's Remove share — and
+// the one-root rule's re-home when the source owned the view.
+async function doRemoveSource(src, name) {
+  if (!(await confirm({
+    title: `Remove source ${name}?`,
+    message: 'The connection is removed from the workspace.\nStored credentials will be deleted.',
+    danger: true, okLabel: 'Remove',
+  }))) return;
+  try {
+    const wasView = nav.current?.source === src.name;
+    await api.RemoveSource(src.id || src.name);
+    await refreshSources();
+    refreshPfState();
+    // one-root rule: a source that owned the view takes the view
+    // with it — re-home so the next view-source binding resolves
+    // a live source (an S3 heir keeps the engine pointer live)
+    if (wasView) reHomeView();
+  } catch (err) { toast(`Remove failed: ${err}`, 'error'); }
+}
+
+// dsSummary: the one-line identity under a Data Sources row — where
+// the source actually points (endpoint and bucket, host:port and root,
+// the folder).
+function dsSummary(src) {
+  if (src.type === 's3') return `${src.s3?.endpoint || 'AWS default endpoint'}${src.bucket ? ` · bucket ${src.bucket}` : ' · all buckets'}`;
+  if (src.type === 'local') return src.localRoot || 'workstation';
+  const host = `${src.host || '?'}${src.port ? `:${src.port}` : ''}`;
+  return `${host}${src.root ? ` · ${src.root}` : ''}`;
+}
+
+// dataSourcesUi is the File menu's source manager: every configured
+// data source in one list — Edit reopens the source editor on it,
+// Remove takes it down with the same confirm the tree menu carries,
+// Add starts a fresh editor. The tree stays the browsing surface; this
+// is the workspace's own inventory.
+async function dataSourcesUi() {
+  const list = el('div', { class: 'ds-list' });
+  const modal = openModal({
+    title: t('menu.dataSources').replace(/\u2026$/, ''),
+    body: list,
+    wide: true,
+    buttons: [
+      { label: `+ ${t('addSource')}`, class: 'primary', onclick: (close) => { close(null); sourceEditor(null, afterSourceSaved); } },
+      { label: 'Close' },
+    ],
+  });
+  const renderList = () => {
+    if (!sources.length) {
+      list.replaceChildren(el('div', { class: 'ds-empty', text: t('noSourcesSub') }));
+      return;
+    }
+    list.replaceChildren(...sources.map((src) => el('div', { class: 'ds-row' },
+      srcIconEl(src.type, src.color),
+      el('div', { class: 'ds-main' },
+        el('div', { class: 'ds-name', text: src.name }),
+        el('div', { class: 'ds-sub', text: dsSummary(src) })),
+      el('button', { class: 'btn', text: 'Edit', onclick: () => { modal.close(); sourceEditor(src, afterSourceSaved); } }),
+      el('button', { class: 'btn danger', text: 'Remove', onclick: async () => { await doRemoveSource(src, src.name); renderList(); } }),
+    )));
+  };
+  renderList();
+}
+
+// clearAllSessionUi is the File menu's "as if reopened" reset: every
+// modal and floating window closes, the dual pane unbinds, the
+// clipboard and selection empty, the filter rests, the session keys a
+// fresh boot would not have go, and the view re-homes to the first
+// source (the welcome panel when none survives). Saved settings,
+// sources and preferences stay — a reopened app keeps them; running
+// transfers keep running, they are the wire's business, not the
+// workspace's.
+async function clearAllSessionUi() {
+  if (!(await confirm({
+    title: t('menu.clearAll').replace(/\u2026$/, ''),
+    message: 'Close every window and reset the workspace to a freshly opened state?\nRunning transfers keep running; saved settings and sources are kept.',
+    okLabel: 'Clear', danger: true,
+  }))) return;
+  try {
+    closeAllModals();
+    closeAllFloating();
+    cmpBannerClear();
+    localPane.reset();
+    // the pane closes too — a freshly opened app shows no side pane, and
+    // one left open would re-bind itself: refreshSources() restores any
+    // visible unbound pane, and the nothing-remembered leg is the
+    // workstation default that writes the very seat just wiped
+    localPane.hide();
+    // the pane's session seats (binding + location) are boot-wiped keys;
+    // a reopened app starts unbound
+    for (const k of ['s3b-side-src', 's3b-side-loc']) localStorage.removeItem(k);
+    for (const k of Object.keys(localStorage)) {
+      if (k.startsWith('s3b-popout-') && k !== 's3b-popout-center') localStorage.removeItem(k);
+    }
+    Object.assign(clipboard, { mode: null, kind: null, bucket: null, source: null, dir: null, keys: [], paths: [] });
+    grid.clearSelection();
+    $('filter').value = '';
+    grid.setFilter('');
+    $('toasts')?.replaceChildren();
+    nav.stack.length = 0;
+    nav.forward.length = 0;
+    await refreshSources();
+    nav.to(sourceHomeLoc(), { push: false });
+    updateCommandState();
+    toast('Workspace cleared', 'ok');
+  } catch (err) {
+    toast(`Clear failed: ${err}`, 'error');
+  }
+}
+
 // showTreeMenu gives sidebar nodes (sources, buckets and folders)
 // context-menu parity with grid rows. node = {kind:'source',…} source root,
 // {kind:'source', bucket, …} bucket-scoped S3 source (the node IS the
@@ -3057,10 +3188,72 @@ function cmpRefLabel(ref) {
   return ref.dir;
 }
 
+// compare banner state: 'idle' (nothing compared) | 'run' | 'done' |
+// 'err' — the strip under the toolbar is the compare's face: what pair,
+// in flight (spinner), the verdict, or the failure with its Retry arm.
+let cmpState = 'idle';
+// the pair the last verdict (or the in-flight probe) speaks about — the
+// banner goes stale the moment either side moves (maybeClearCompare)
+let cmpSideRef = null;
+let cmpMainRef = null;
+let cmpLastText = '';
+
+// cmpRefEq: per-side reference equality (sameSyncRef's grammar, ref
+// against ref) — the staleness check asks "same seat?", not "the
+// degenerate pair?".
+function cmpRefEq(a, b) {
+  if (!a || !b || a.kind !== b.kind) return false;
+  const norm = (s) => (s || '').replace(/\/*$/, '');
+  if (a.kind === 's3') return norm(a.source) === norm(b.source) && a.bucket === b.bucket && norm(a.prefix) === norm(b.prefix);
+  if (a.kind === 'remote') return norm(a.source) === norm(b.source) && norm(a.dir) === norm(b.dir);
+  return norm(a.dir) === norm(b.dir);
+}
+
+// cmpBanner drives the strip: 'hide' folds it away (and forgets the
+// state), 'run' spins over both names, 'done' carries the verdict
+// summary, 'err' the failure and the Retry arm.
+function cmpBanner(state, text) {
+  const b = $('cmp-banner');
+  if (!b) return;
+  if (state === 'hide') { b.classList.add('hidden'); cmpState = 'idle'; return; }
+  cmpState = state;
+  if (text) cmpLastText = text;
+  b.classList.remove('hidden');
+  b.classList.toggle('busy', state === 'run');
+  b.classList.toggle('err', state === 'err');
+  $('cmp-banner-text').textContent = text || cmpLastText;
+  $('cmp-banner-retry').classList.toggle('hidden', state !== 'err');
+}
+
+// cmpBannerClear: the X and every staleness path — the banner goes and
+// the decorations leave BOTH grids (a left-over decoration set would
+// stain same-named rows in whatever view lands next).
+function cmpBannerClear() {
+  cmpBanner('hide');
+  cmpSideRef = null;
+  cmpMainRef = null;
+  cmpLastText = '';
+  grid.setCmp(null);
+  localPane.clearCompare();
+}
+
+// maybeClearCompare runs at both seating choke points (loadView for the
+// main side, the pane's onViewChanged hook for the pane side): a banner
+// speaking about seats nobody sits in anymore is a lie. A flight in
+// progress guards its own staleness when the wire answers.
+function maybeClearCompare() {
+  if (cmpState === 'idle' || cmpState === 'run') return;
+  if (!cmpRefEq(cmpSideRef, sidePaneRef()) || !cmpRefEq(cmpMainRef, mainCompareRef())) cmpBannerClear();
+}
+
 // compareDirs compares the side pane against the main view (local ↔ S3,
 // remote ↔ remote, local ↔ remote, …) and decorates both grids
-// (WinSCP-style keep-in-sync).
+// (WinSCP-style keep-in-sync). The banner names the pair while the wire
+// is out (loading state), summarizes the verdict on the strip beside the
+// details dialog, and carries Retry on failure.
+let compareBusy = false;
 async function compareDirs() {
+  if (compareBusy) { toast('A compare is already running'); return; }
   const x = sidePaneRef();
   const y = mainCompareRef();
   if (!x) {
@@ -3070,12 +3263,31 @@ async function compareDirs() {
     return;
   }
   if (!y) { toast('Open a bucket folder or remote directory to compare against'); return; }
+  compareBusy = true;
+  const btn = $('btn-compare');
+  btn.disabled = true;
+  btn.classList.add('busy');
+  cmpSideRef = x;
+  cmpMainRef = y;
+  cmpBanner('run', `Comparing ${cmpRefLabel(x)} ↔ ${cmpRefLabel(y)} …`);
   try {
     const rows = await api.CompareAny(x, y);
-    localPane.setCompare(rows);
-    grid.setCmp(aggregateCompare(rows));
     const n = (s) => rows.filter((r) => r.status === s).length;
     const xl = cmpRefLabel(x), yl = cmpRefLabel(y);
+    // the seats may have moved while the wire was out (navigation is
+    // not blocked during the flight) — a verdict about abandoned seats
+    // decorates nothing and is said to no one
+    if (!cmpRefEq(cmpSideRef, sidePaneRef()) || !cmpRefEq(cmpMainRef, mainCompareRef())) {
+      cmpBannerClear();
+      return;
+    }
+    localPane.setCompare(rows);
+    grid.setCmp(aggregateCompare(rows));
+    const bits = [`✓ ${n('same')} identical`, `← ${n('only-local')} only on left`, `→ ${n('only-remote')} only on right`];
+    if (n('newer-local')) bits.push(`${n('newer-local')} newer on left`);
+    if (n('newer-remote')) bits.push(`${n('newer-remote')} newer on right`);
+    if (n('size-diff')) bits.push(`${n('size-diff')} size diff`);
+    cmpBanner('done', `${xl} ↔ ${yl} — ${bits.join(' · ')}`);
     properties(`Compare — ${xl} \u2194 ${yl}`, [
       ['Identical', n('same')],
       [`Only on left (${xl})`, n('only-local')],
@@ -3085,10 +3297,13 @@ async function compareDirs() {
       ['Different size', n('size-diff')],
     ]);
   } catch (err) {
-    toast(`Compare failed: ${err}`, 'error');
+    cmpBanner('err', `Compare failed: ${err}`);
+  } finally {
+    compareBusy = false;
+    btn.classList.remove('busy');
+    updateCommandState(); // re-enable per seating (canCompare)
   }
 }
-
 // sameSyncRef names the degenerate pair: both sides one location, the
 // honest refusal for a two-way plan against itself (it mirrors the Go
 // planner's own gate).
@@ -3177,6 +3392,17 @@ function setPanes(on) {
   localStorage.setItem('s3b-panes', on ? '1' : '0');
   if (on) localPane.show();
   else localPane.hide();
+  // the banner's other half rides the pane: hidden pane → the strip
+  // rests (decorations persist with the pane's own state); shown
+  // again → the last verdict restates itself if the seats still
+  // answer to it
+  if (cmpState === 'done' || cmpState === 'err') {
+    if (on) {
+      if (cmpRefEq(cmpSideRef, sidePaneRef()) && cmpRefEq(cmpMainRef, mainCompareRef())) cmpBanner(cmpState, cmpLastText);
+    } else {
+      $('cmp-banner')?.classList.add('hidden');
+    }
+  }
 }
 
 async function renameSelection() {
@@ -4468,12 +4694,12 @@ async function refreshPfState() {
     sp.textContent = `\u{1F510} ${pfState.name || 'profile file'}${pfState.dirty ? ' \u25CF' : ''}`;
     sp.title = pfState.path
       ? `${pfState.path}${pfState.dirty ? ' — unsaved changes (Ctrl+S)' : ''}`
-      : 'unsaved profile file — use File \u2192 Save profile file as\u2026';
+      : 'unsaved profile file — use File \u2192 Save profile file (Ctrl+S)';
   } else if (pfState.sourceCount > 0) {
     // Session-only sources: live in memory, gone on close (strict model).
     sp.classList.remove('hidden');
     sp.textContent = `\u25CF ${pfState.sourceCount} unsaved source${pfState.sourceCount === 1 ? '' : 's'}`;
-    sp.title = 'These sources live in memory only and vanish on close.\nUse File \u2192 Save profile file as\u2026 to store them in an encrypted profile file.';
+    sp.title = 'These sources live in memory only and vanish on close.\nUse File \u2192 Save profile file (Ctrl+S) to store them in an encrypted profile file.';
   } else {
     sp.classList.add('hidden');
   }
@@ -4751,24 +4977,18 @@ function mountMenubar() {
     {
       label: t('menu.file'),
       items: [
-        // One Upload entry with a Files/Folder submenu — the same selector
-        // every other Upload surface (toolbar, context menus, empty states)
-        // opens.
-        {
-          label: 'Upload',
-          items: [
-            { label: 'Files\u2026', kbd: 'Ctrl+U', action: uploadFiles, enabled: () => st().canUpload },
-            { label: 'Folder\u2026', action: uploadFolder, enabled: () => st().canUpload },
-          ],
-        },
-        null,
+        // The workspace's front doors: the source manager and the
+        // credential import. Upload stays on the toolbar, the context
+        // menus and the empty states — it is a view verb, not a file
+        // verb; New/Save-as/Close profile file stay on pf.open's own
+        // window (Save keeps its Ctrl+S seat here).
+        { label: t('menu.dataSources'), action: dataSourcesUi },
         { label: 'Import S3 Credential\u2026', action: importCredsUi },
         null,
-        { label: t('pf.new'), action: newProfileFileUi },
         { label: t('pf.open'), action: openProfileFileUi },
         { label: t('pf.save'), kbd: 'Ctrl+S', action: saveProfileFileUi, enabled: () => pfState.open || pfState.sourceCount > 0 },
-        { label: t('pf.saveAs'), action: saveAsProfileFileUi, enabled: () => pfState.open || pfState.sourceCount > 0 },
-        { label: t('pf.close'), action: closeProfileFileUi, enabled: () => pfState.open || pfState.sourceCount > 0 },
+        null,
+        { label: t('menu.clearAll'), action: clearAllSessionUi },
         null,
         { label: t('menu.exit'), action: () => api.ExitApp() },
       ],
