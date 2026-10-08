@@ -118,12 +118,25 @@ func TestEditRemoteGuardRefusesForceLandsAndRebases(t *testing.T) {
 	a, _, root := labEditorApp(t, "lab", "/cfg.conf", "team A v1")
 	s := openLabEdit(t, a, "lab", "/cfg.conf")
 
-	if err := os.WriteFile(s.Local, []byte("team B v2"), 0o600); err != nil {
+	// the local edit — a different size than the pull, because the
+	// explicit push's dirty re-check sees size before ms mtime and a
+	// same-size write inside the pull's own millisecond is the one blind
+	// spot no file identity can close (the CI clocks sat inside it every
+	// run — the guarded push sailed before the guard ever spoke)
+	if err := os.WriteFile(s.Local, []byte("team B v2 draft"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// the teammate lands the same-size overwrite while the edit is open
-	time.Sleep(20 * time.Millisecond) // guarantee an mtime delta on every clock
+	// the teammate lands the same-size overwrite while the edit is open;
+	// its mtime is moved off the pull baseline explicitly, because a
+	// 20ms wall-clock gap is not a delta every filesystem clock can show
 	if err := os.WriteFile(filepath.Join(root, "cfg.conf"), []byte("team A v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	base := s.rMod
+	s.mu.Unlock()
+	moved := time.UnixMilli(base - 3_600_000) // an hour off the baseline — unmissable
+	if err := os.Chtimes(filepath.Join(root, "cfg.conf"), moved, moved); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,19 +157,19 @@ func TestEditRemoteGuardRefusesForceLandsAndRebases(t *testing.T) {
 	if err := a.PushEditFile(tgt, true); err != nil {
 		t.Fatalf("PushEditFile force = %v, want nil", err)
 	}
-	if b := read(t, filepath.Join(root, "cfg.conf")); b != "team B v2" {
+	if b := read(t, filepath.Join(root, "cfg.conf")); b != "team B v2 draft" {
 		t.Fatalf("engine content after the forced push = %q, want the edited bytes", b)
 	}
 
-	// the rebased guard: a second guarded save lands with no false conflict
-	time.Sleep(20 * time.Millisecond)
-	if err := os.WriteFile(s.Local, []byte("team B v3"), 0o600); err != nil {
+	// the rebased guard: a second guarded save lands with no false
+	// conflict (its own size delta keeps the push honestly dirty)
+	if err := os.WriteFile(s.Local, []byte("team B v3 final"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.PushEditFile(tgt, false); err != nil {
 		t.Fatalf("guarded push after the rebase = %v, want nil (no false conflict)", err)
 	}
-	if b := read(t, filepath.Join(root, "cfg.conf")); b != "team B v3" {
+	if b := read(t, filepath.Join(root, "cfg.conf")); b != "team B v3 final" {
 		t.Fatalf("engine content = %q, want the second edit's bytes", b)
 	}
 	if err := a.StopEditFile(tgt, false); err != nil {
