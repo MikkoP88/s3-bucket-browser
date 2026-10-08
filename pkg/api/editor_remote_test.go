@@ -98,10 +98,25 @@ func TestEditRemoteWatcherPushesStableSaves(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	for _, sv := range a.EditingFiles() {
-		if sv.Dirty || sv.PushFailed || sv.Stale {
-			t.Fatalf("session after a landed auto-save = %+v, want clean", sv)
+	// the landing and the settle are two events — the write reaches the
+	// engine's disk inside the push, the dirty flag clears in the same
+	// tick's next statements, and a fast poller can sample between them
+	// (the macOS runner caught the gap; the S3 rig's own waitFor idiom)
+	settle := time.Now().Add(3 * time.Second)
+	for {
+		clean := true
+		for _, sv := range a.EditingFiles() {
+			if sv.Dirty || sv.PushFailed || sv.Stale {
+				clean = false
+			}
 		}
+		if clean {
+			break
+		}
+		if time.Now().After(settle) {
+			t.Fatalf("session never settled clean after the landed auto-save: %+v", a.EditingFiles())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if err := a.StopEditFile(EditTarget{Kind: "remote", Source: "lab", Key: "/notes.md"}, false); err != nil {
 		t.Fatal(err)
