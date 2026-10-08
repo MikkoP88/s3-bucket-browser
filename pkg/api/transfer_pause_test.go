@@ -108,6 +108,7 @@ func waitJobStatus(t *testing.T, a *App, id, status string) JobInfo {
 func TestTransferPauseResume(t *testing.T) {
 	a, h, f := pauseRigApp(t, "docs/b.txt")
 	paths := pauseRigFiles(t)
+	mu, loglines := captureLogLines(t)
 	id, err := a.Upload(paths, "docs", "", PolicyOverwrite, 0, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -151,6 +152,25 @@ func TestTransferPauseResume(t *testing.T) {
 		if got := remoteContent(t, f, k); got != want {
 			t.Fatalf("key %s = %q after resume, want %q", k, got, want)
 		}
+	}
+
+	// the park and the wake each said so under the job's own source tag
+	mu.Lock()
+	pausedN, resumedN := 0, 0
+	for _, l := range *loglines {
+		if l.Scope != "transfer" || l.Source != "docs" || l.Level != LogInfo {
+			continue
+		}
+		switch l.Message {
+		case "job " + id + " paused":
+			pausedN++
+		case "job " + id + " resumed":
+			resumedN++
+		}
+	}
+	mu.Unlock()
+	if pausedN != 1 || resumedN != 1 {
+		t.Fatalf("pause/resume log lines = %d/%d, want exactly 1/1", pausedN, resumedN)
 	}
 
 	// settled and unknown rows accept neither verb

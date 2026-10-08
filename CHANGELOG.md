@@ -8,6 +8,26 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The activity log grows its missing voices** — every
+  bucket-administration verb now lands a line in the log the app
+  already keeps: the fourteen setters the Admin panel speaks each say
+  exactly what changed (versioning enabled, bucket policy updated,
+  CORS rules updated (2), default encryption set to aws:kms (key …),
+  tags updated (3)…) scoped *admin* and sourced to the bucket —
+  info for what changed, warn for what was removed (an empty CORS or
+  lifecycle rule set rides the delete wire-verb and says so), error
+  when the wire refuses — while client-resolution failures stay
+  silent the way CreateBucket set the law (the caller already holds
+  the error, and there is no resolved bucket to source the line to).
+  The transfer row's newest verbs log too: pausing and resuming a job
+  each say so under the job's own source tag, so the log drawer's
+  per-source filter keeps working mid-park. And the vocabulary
+  underneath is made honest: LogScopes — the Settings dialog's
+  file-log scope selector options, where an unlisted scope is a value
+  cleanLogFilter silently drops on save — had drifted to miss four
+  scopes the app emits (edit, license, mkfile, security); all
+  twenty-two are now listed, sorted, and pinned by a test that walks
+  the emitted set.
 - **Doctor learns the clock** — a Clock Skew check joins the pipeline
   between TLS and auth: it HEADs the endpoint and compares the local
   clock against the server's Date header, so the RequestTimeTooSkewed

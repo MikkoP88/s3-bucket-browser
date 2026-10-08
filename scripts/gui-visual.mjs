@@ -462,7 +462,7 @@ function shim() {
     // seen-on-a-line sources and configured data sources.
     logSettings: {
       mode: 'off', dir: '', levels: [], scopes: [], sources: [],
-      allScopes: ['admin', 'app', 'copy', 'delete', 'doctor', 'download', 'import', 'list', 'mkdir', 'profile', 'rename', 'settings', 'share', 'sources', 'transfer', 'upload', 'versions'],
+      allScopes: ['admin', 'app', 'copy', 'delete', 'doctor', 'download', 'drag', 'edit', 'import', 'license', 'list', 'mkdir', 'mkfile', 'profile', 'rename', 'security', 'settings', 'share', 'sources', 'transfer', 'upload', 'versions'],
       allSources: ['hetzner', 'lab', 'local', 'team-files', 'vault'],
     },
     // secure-storage status (Settings → Security): off by default; the

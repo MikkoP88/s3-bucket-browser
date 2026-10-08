@@ -779,7 +779,11 @@ Right-click a bucket → **Admin panel**: one tabbed dialog for
 versioning, policy, ACL, CORS, lifecycle rules, default encryption,
 public-access block, static website and tags — plus a versions overview
 and the object-lock tab. Everything the CLI's `s3b bucket …` tree
-offers, same confirm gates.
+offers, same confirm gates. Every change lands in the activity log —
+one line per verb, scoped *admin*, sourced to the bucket: info for
+what changed, warn for what was removed, error when the wire refuses
+— and pausing or resuming a transfer says so in the same log under
+the job's own source.
 
 ![Admin panel](screenshots/admin-panel.png)
 

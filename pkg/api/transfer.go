@@ -322,37 +322,40 @@ func (m *jobManager) cancel(id string) bool {
 }
 
 // pause parks a running, flowing job between files; resume releases one
-// that is parked. The booleans say which calls did something — pausing a
-// paused job or resuming a flowing one is a no-op, and a settled job
-// accepts neither.
-func (m *jobManager) pause(id string) bool {
+// that is parked. The first return says which calls did something —
+// pausing a paused job or resuming a flowing one is a no-op, and a
+// settled job accepts neither; the second carries the job's source tag
+// so the verb logs under the row the log drawer already filters by.
+func (m *jobManager) pause(id string) (bool, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, j := range m.all {
 		j.mu.Lock()
 		match := j.info.ID == id && j.info.Status == JobRunning && j.hold == nil
+		src := j.src
 		j.mu.Unlock()
 		if match {
 			j.pause()
-			return true
+			return true, src
 		}
 	}
-	return false
+	return false, ""
 }
 
-func (m *jobManager) resume(id string) bool {
+func (m *jobManager) resume(id string) (bool, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, j := range m.all {
 		j.mu.Lock()
 		match := j.info.ID == id && j.hold != nil
+		src := j.src
 		j.mu.Unlock()
 		if match {
 			j.resume()
-			return true
+			return true, src
 		}
 	}
-	return false
+	return false, ""
 }
 
 // itemsOf returns the stored item names of a job (nil when unknown —
@@ -639,11 +642,23 @@ func (a *App) CancelTransfer(id string) bool { return a.jobs.cancel(id) }
 // PauseTransfer parks a running job at its next between-files gate —
 // the in-flight file (if any) settles first, the row says "paused", and
 // nothing new starts until ResumeTransfer (or cancel) releases the gate.
-func (a *App) PauseTransfer(id string) bool { return a.jobs.pause(id) }
+func (a *App) PauseTransfer(id string) bool {
+	ok, src := a.jobs.pause(id)
+	if ok {
+		a.emitLogSrc(LogInfo, "transfer", src, fmt.Sprintf("job %s paused", id))
+	}
+	return ok
+}
 
 // ResumeTransfer releases a paused job; the walker continues at the very
 // file it stopped before.
-func (a *App) ResumeTransfer(id string) bool { return a.jobs.resume(id) }
+func (a *App) ResumeTransfer(id string) bool {
+	ok, src := a.jobs.resume(id)
+	if ok {
+		a.emitLogSrc(LogInfo, "transfer", src, fmt.Sprintf("job %s resumed", id))
+	}
+	return ok
+}
 
 // RetryTransfer resubmits only a settled job's failed items (a canceled
 // job's unfinished ones) as a fresh job under skip semantics — what

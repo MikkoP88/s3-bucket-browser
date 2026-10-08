@@ -39,7 +39,8 @@ type fakeS3 struct {
 	objects         map[string]map[string]string // bucket → key → content
 	etags           map[string]map[string]string // bucket → key → etag (content-derived)
 	deleted         []string
-	sawChecksumMode bool // some GET asked for response checksums
+	adminOps        []string // admin subresource calls that landed, in order
+	sawChecksumMode bool     // some GET asked for response checksums
 	// faults injects transient failures: "PUT bucket/key" / "GET bucket/key"
 	// → how many requests to fail with a 500 before serving honestly
 	// again (the retry rigs' lever).
@@ -139,6 +140,29 @@ func splitS3Path(p string) (bucket, key string) {
 	return p, ""
 }
 
+// adminSubresource names the bucket-administration subresource a request
+// carries (?versioning, ?policy, ...), or "" when it carries none — the
+// admin-log rigs' half of the fake's dispatch.
+func adminSubresource(r *http.Request) string {
+	for _, sub := range []string{"versioning", "policy", "cors", "lifecycle",
+		"encryption", "website", "tagging"} {
+		if r.URL.Query().Has(sub) {
+			return sub
+		}
+	}
+	if r.URL.Query().Has("publicAccessBlock") { // the wire spells PAB without hyphens
+		return "public-access-block"
+	}
+	return ""
+}
+
+// adminLandings lists the admin subresource calls that landed, in order.
+func (f *fakeS3) adminLandings() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.adminOps)
+}
+
 // serve wires the endpoint and returns its URL.
 func (f *fakeS3) serve(t *testing.T) string {
 	t.Helper()
@@ -178,6 +202,16 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.headObject(w, bucket, key)
 	case r.Method == http.MethodPut && r.Header.Get("x-amz-copy-source") != "":
 		f.copyObject(w, r, bucket, key)
+	case (r.Method == http.MethodPut || r.Method == http.MethodDelete) && adminSubresource(r) != "":
+		sub := adminSubresource(r)
+		if f.tripped(r.Method, bucket, sub) {
+			http.Error(w, "fakeS3: injected fault", http.StatusInternalServerError)
+			return
+		}
+		f.mu.Lock()
+		f.adminOps = append(f.adminOps, r.Method+" "+sub+" "+bucket)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodPut:
 		if f.tripped("PUT", bucket, key) {
 			http.Error(w, "fakeS3: injected fault", http.StatusInternalServerError)

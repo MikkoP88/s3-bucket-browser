@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/adminops"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/bucketops"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/versioning"
@@ -123,12 +124,16 @@ func (a *App) SetBucketVersioning(bucket string, enable bool) error {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	status := "Suspended"
+	note := "versioning suspended"
 	if enable {
 		status = "Enabled"
+		note = "versioning enabled"
 	}
 	if err := versioning.SetStatus(ctx, c.S3, bucket, status); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("setting versioning failed: %v", err))
 		return err
 	}
+	a.emitLogSrc(LogInfo, "admin", bucket, note)
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	return nil
 }
@@ -142,8 +147,10 @@ func (a *App) PutBucketPolicy(bucket, raw string) error {
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	if err := adminops.PutPolicy(ctx, c.S3, bucket, raw); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("updating bucket policy failed: %v", err))
 		return err
 	}
+	a.emitLogSrc(LogInfo, "admin", bucket, "bucket policy updated")
 	a.emit(EventS3Changed, map[string]string{"bucket": bucket})
 	return nil
 }
@@ -156,7 +163,12 @@ func (a *App) DeleteBucketPolicy(bucket string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.DeletePolicy(ctx, c.S3, bucket)
+	if err := adminops.DeletePolicy(ctx, c.S3, bucket); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("removing bucket policy failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogWarn, "admin", bucket, "bucket policy removed")
+	return nil
 }
 
 // PutBucketCORS replaces the CORS rules.
@@ -167,7 +179,16 @@ func (a *App) PutBucketCORS(bucket string, rules []adminops.CORSRule) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.PutCORS(ctx, c.S3, bucket, rules)
+	if err := adminops.PutCORS(ctx, c.S3, bucket, rules); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("updating CORS rules failed: %v", err))
+		return err
+	}
+	if len(rules) == 0 { // adminops routes an empty rule set to the delete wire-verb
+		a.emitLogSrc(LogWarn, "admin", bucket, "CORS rules removed (empty set)")
+		return nil
+	}
+	a.emitLogSrc(LogInfo, "admin", bucket, fmt.Sprintf("CORS rules updated (%d)", len(rules)))
+	return nil
 }
 
 // DeleteBucketCORS removes all CORS rules.
@@ -178,7 +199,12 @@ func (a *App) DeleteBucketCORS(bucket string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.DeleteCORS(ctx, c.S3, bucket)
+	if err := adminops.DeleteCORS(ctx, c.S3, bucket); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("removing CORS rules failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogWarn, "admin", bucket, "CORS rules removed")
+	return nil
 }
 
 // PutBucketLifecycle replaces lifecycle rules.
@@ -189,7 +215,16 @@ func (a *App) PutBucketLifecycle(bucket string, rules []adminops.LifecycleRule) 
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.PutLifecycle(ctx, c.S3, bucket, rules)
+	if err := adminops.PutLifecycle(ctx, c.S3, bucket, rules); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("updating lifecycle rules failed: %v", err))
+		return err
+	}
+	if len(rules) == 0 { // adminops routes an empty rule set to the delete wire-verb
+		a.emitLogSrc(LogWarn, "admin", bucket, "lifecycle rules removed (empty set)")
+		return nil
+	}
+	a.emitLogSrc(LogInfo, "admin", bucket, fmt.Sprintf("lifecycle rules updated (%d)", len(rules)))
+	return nil
 }
 
 // DeleteBucketLifecycle removes lifecycle rules.
@@ -200,7 +235,12 @@ func (a *App) DeleteBucketLifecycle(bucket string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.DeleteLifecycle(ctx, c.S3, bucket)
+	if err := adminops.DeleteLifecycle(ctx, c.S3, bucket); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("removing lifecycle rules failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogWarn, "admin", bucket, "lifecycle rules removed")
+	return nil
 }
 
 // PutBucketEncryption sets default encryption ("AES256" | "aws:kms").
@@ -211,7 +251,16 @@ func (a *App) PutBucketEncryption(bucket, algorithm, kmsKeyID string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.PutEncryption(ctx, c.S3, bucket, algorithm, kmsKeyID)
+	if err := adminops.PutEncryption(ctx, c.S3, bucket, algorithm, kmsKeyID); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("setting default encryption failed: %v", err))
+		return err
+	}
+	note := fmt.Sprintf("default encryption set to %s", algorithm)
+	if algorithm == "aws:kms" && kmsKeyID != "" {
+		note = fmt.Sprintf("default encryption set to %s (key %s)", algorithm, kmsKeyID)
+	}
+	a.emitLogSrc(LogInfo, "admin", bucket, note)
+	return nil
 }
 
 // DeleteBucketEncryption removes default encryption.
@@ -222,7 +271,12 @@ func (a *App) DeleteBucketEncryption(bucket string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.DeleteEncryption(ctx, c.S3, bucket)
+	if err := adminops.DeleteEncryption(ctx, c.S3, bucket); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("removing default encryption failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogWarn, "admin", bucket, "default encryption removed")
+	return nil
 }
 
 // PutBucketPAB stores public-access-block settings.
@@ -233,7 +287,12 @@ func (a *App) PutBucketPAB(bucket string, pab adminops.PABInfo) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.PutPAB(ctx, c.S3, bucket, pab)
+	if err := adminops.PutPAB(ctx, c.S3, bucket, pab); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("updating public-access-block settings failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogInfo, "admin", bucket, "public-access-block settings updated")
+	return nil
 }
 
 // PutBucketWebsite stores website hosting configuration.
@@ -244,7 +303,12 @@ func (a *App) PutBucketWebsite(bucket string, w adminops.WebsiteInfo) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.PutWebsite(ctx, c.S3, bucket, w)
+	if err := adminops.PutWebsite(ctx, c.S3, bucket, w); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("configuring website hosting failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogInfo, "admin", bucket, "website hosting configured")
+	return nil
 }
 
 // DeleteBucketWebsite removes website hosting.
@@ -255,7 +319,12 @@ func (a *App) DeleteBucketWebsite(bucket string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.DeleteWebsite(ctx, c.S3, bucket)
+	if err := adminops.DeleteWebsite(ctx, c.S3, bucket); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("removing website hosting failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogWarn, "admin", bucket, "website hosting removed")
+	return nil
 }
 
 // PutBucketTags replaces the bucket tag set.
@@ -266,7 +335,12 @@ func (a *App) PutBucketTags(bucket string, tags []adminops.Tag) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.PutTags(ctx, c.S3, bucket, tags)
+	if err := adminops.PutTags(ctx, c.S3, bucket, tags); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("updating tags failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogInfo, "admin", bucket, fmt.Sprintf("tags updated (%d)", len(tags)))
+	return nil
 }
 
 // DeleteBucketTags removes all bucket tags.
@@ -277,5 +351,10 @@ func (a *App) DeleteBucketTags(bucket string) error {
 	}
 	ctx, cancel := a.quickCtx()
 	defer cancel()
-	return adminops.DeleteTags(ctx, c.S3, bucket)
+	if err := adminops.DeleteTags(ctx, c.S3, bucket); err != nil {
+		a.emitLogSrc(LogError, "admin", bucket, fmt.Sprintf("removing tags failed: %v", err))
+		return err
+	}
+	a.emitLogSrc(LogWarn, "admin", bucket, "tags removed")
+	return nil
 }

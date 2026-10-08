@@ -55,8 +55,9 @@ type LogSettings struct {
 // call sites.
 var LogScopes = []string{
 	"admin", "app", "copy", "delete", "doctor", "download", "drag",
-	"import", "list", "mkdir", "profile", "rename", "settings",
-	"share", "sources", "transfer", "upload", "versions",
+	"edit", "import", "license", "list", "mkdir", "mkfile", "profile",
+	"rename", "security", "settings", "share", "sources", "transfer",
+	"upload", "versions",
 }
 
 // GetLogSettings returns the current log-file preference. A never-saved
