@@ -8,6 +8,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Doctor learns the clock** — a Clock Skew check joins the pipeline
+  between TLS and auth: it HEADs the endpoint and compares the local
+  clock against the server's Date header, so the RequestTimeTooSkewed
+  rejection SigV4 hands a drifted machine is named before it ever fires
+  — within 5 minutes passes, past 5 warns, past 15 fails carrying the
+  NTP resync commands, a probe that cannot complete skips honestly
+  (reachability stays owned by the TCP/TLS checks), and a server that
+  sends no usable Date header warns instead of guessing. Both faces
+  ride it free — the GUI renders check rows from the registry and the
+  CLI report loop already speaks any check — and a latent mapping bug
+  rides along: the RequestTimeTooSkewed advice could never match its
+  own error code (a normalized-form mismatch nobody caught because the
+  test never asserted the cause), and now it does and the test does.
 - **Transfers learn to pause** — every running job in the transfer
   manager (uploads, downloads, copies, moves — the synchronize
   auto-legs too, they ride the same walker) grows a **Pause**

@@ -15,7 +15,7 @@ see the [releases](https://github.com/MikkoP88/s3-bucket-browser/releases) or [B
 s3b source add lab s3://my-bucket --endpoint http://localhost:9000 \\
     --access-key minioadmin --secret-key minioadmin
 s3b source test lab          # lightweight connectivity check
-s3b doctor s3://my-bucket    # deep diagnosis: DNS → TCP → TLS → auth → policy/ACL
+s3b doctor s3://my-bucket    # deep diagnosis: DNS → TCP → TLS → clock → auth → policy/ACL
 
 # Non-S3 sources live in the same store and use NAME:// URIs everywhere;
 # shorthand sftp://user:pass@host:port/root — a password-less URL uses

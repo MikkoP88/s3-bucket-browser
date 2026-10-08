@@ -60,7 +60,7 @@ func presignCmd() *cobra.Command {
 func doctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor [s3://bucket]",
-		Short: "Diagnose connectivity: DNS, TCP, TLS, auth, bucket policy, ACL",
+		Short: "Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, bucket policy, ACL",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())

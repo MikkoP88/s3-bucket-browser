@@ -3,6 +3,7 @@ package errhelp
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/aws/smithy-go"
@@ -26,7 +27,7 @@ func TestForErrorSDKCodes(t *testing.T) {
 		wantCauseIn string
 	}{
 		{"SignatureDoesNotMatch", "secret key"},
-		{"InvalidAccessKeyId", "access key ID"},
+		{"InvalidAccessKeyId", "access key id"},
 		{"NoSuchBucket", "does not exist"},
 		{"AccessDenied", "permissions"},
 		{"BucketNotEmpty", "not empty"},
@@ -40,6 +41,9 @@ func TestForErrorSDKCodes(t *testing.T) {
 		}
 		if a.Code != c.code {
 			t.Errorf("code = %q, want %q", a.Code, c.code)
+		}
+		if !strings.Contains(strings.ToLower(a.Cause), c.wantCauseIn) {
+			t.Errorf("ForError(%s).Cause = %q, want it to contain %q", c.code, a.Cause, c.wantCauseIn)
 		}
 	}
 	// Spot-check one suggestion body.
@@ -82,6 +86,22 @@ func TestForErrorUnknownCodeStillExplains(t *testing.T) {
 func TestForErrorNil(t *testing.T) {
 	if ForError(nil) != nil {
 		t.Error("ForError(nil) should be nil")
+	}
+}
+
+func TestForCode(t *testing.T) {
+	a := ForCode("RequestTimeTooSkewed")
+	if a == nil {
+		t.Fatal("ForCode(RequestTimeTooSkewed) = nil, want the clock advice")
+	}
+	if !strings.Contains(strings.ToLower(a.Cause), "clock") {
+		t.Errorf("ForCode(RequestTimeTooSkewed).Cause = %q, want the clock cause", a.Cause)
+	}
+	if len(a.Commands) == 0 {
+		t.Error("clock advice should carry the NTP resync commands")
+	}
+	if ForCode("NoSuchCodeAtAll") != nil {
+		t.Error("ForCode(unknown) should be nil")
 	}
 }
 

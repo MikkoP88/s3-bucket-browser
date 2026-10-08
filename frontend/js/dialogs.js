@@ -2933,7 +2933,7 @@ const GUIDE_SECTIONS = [
   ['Administration', [
     ['Admin panel', 'Right-click a bucket → Admin panel: versioning, policy, ACL, CORS, lifecycle, encryption, public-access block, website, tags, versions and lock — one tabbed dialog.'],
     ['New bucket, one step', 'New bucket… on the sidebar’s background menu or an S3 source’s context menu creates the bucket and seats its data source in one gesture — the newborn source appears in the tree and its empty contents open. Deleting a bucket removes its data source with it. Account-wide S3 sources from older workspaces split into one source per bucket automatically the first time the account is reachable (on demand too: the source editor’s Split button, or s3b source split on the CLI).'],
-    ['Doctor', 'Help → Doctor opens a picker of your S3 sources — choose one and it runs a guided diagnosis: DNS → TCP → TLS → auth → permissions, with one-click re-runs of individual checks. Right-clicking a bucket → Doctor… goes straight there.'],
+    ['Doctor', 'Help → Doctor opens a picker of your S3 sources — choose one and it runs a guided diagnosis: DNS → TCP → TLS → clock → auth → permissions, with one-click re-runs of individual checks. Right-clicking a bucket → Doctor… goes straight there.'],
     ['Presign & storage class', 'The context menu creates time-limited pre-signed URLs and converts objects between storage classes (server-side copy).'],
     ['Properties', 'Context menu → Properties shows full metadata for buckets, folders, objects and sources — provider, region, versioning, lock, encryption, policy state.'],
   ]],

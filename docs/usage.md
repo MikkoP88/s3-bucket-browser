@@ -784,9 +784,12 @@ offers, same confirm gates.
 ![Admin panel](screenshots/admin-panel.png)
 
 - **Doctor** — Help → Doctor opens a picker of your S3 sources — pick one
-  and the guided diagnosis runs: DNS → TCP → TLS → auth → permissions,
-  with plain-language remediation and one-click re-runs of individual
-  checks — in a floating window that doesn't block the app while it runs.
+  and the guided diagnosis runs: DNS → TCP → TLS → clock → auth →
+  permissions (the clock check compares your system time against the
+  server's Date header and names the RequestTimeTooSkewed rejection
+  before it ever fires), with plain-language remediation and one-click
+  re-runs of individual checks — in a floating window that doesn't
+  block the app while it runs.
   Right-clicking a bucket or data source → **Doctor…** skips the picker
   and diagnoses that target directly (same window, same checks).
 - **License** — Help → License shows the app's license identity (PolyForm

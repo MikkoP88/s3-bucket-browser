@@ -62,7 +62,7 @@ described here. The same engine backs both.
   - [s3b completion powershell](#s3b-completion-powershell) — Generate the autocompletion script for powershell
   - [s3b completion zsh](#s3b-completion-zsh) — Generate the autocompletion script for zsh
 - [s3b cp](#s3b-cp) — Copy files (local↔S3, S3→S3 server-side)
-- [s3b doctor](#s3b-doctor) — Diagnose connectivity: DNS, TCP, TLS, auth, bucket policy, ACL
+- [s3b doctor](#s3b-doctor) — Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, bucket policy, ACL
 - [s3b du](#s3b-du) — Count objects and total size under a prefix or source folder
 - [s3b edit](#s3b-edit) — Edit a file with $VISUAL/$EDITOR and push it back guarded
 - [s3b find](#s3b-find) — Search objects by name, size, age, kind or storage class
@@ -1503,7 +1503,7 @@ s3b cp SRC DST [flags]
 
 ## s3b doctor
 
-Diagnose connectivity: DNS, TCP, TLS, auth, bucket policy, ACL
+Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, bucket policy, ACL
 
 ```
 s3b doctor [s3://bucket]

@@ -84,9 +84,10 @@ gap this project fills.
    [s3-bucket-tester](https://github.com/MikkoP88/s3-bucket-tester)) warns
    that Cloudflare R2 rejects path-style, MinIO ACLs are synthetic, B2 has
    no policy/ACL APIs — before the request fails.
-5. **Connection doctor.** DNS → TCP → TLS → auth → policy/ACL checks with
-   plain-language remediation (`s3b doctor`). No competitor diagnoses
-   anything.
+5. **Connection doctor.** DNS → TCP → TLS → clock skew → auth → policy/ACL
+   checks with plain-language remediation (`s3b doctor`) — the clock check
+   compares your system time against the server's before SigV4 rejects it.
+   No competitor diagnoses anything.
 6. **Performance at scale.** Streaming ListObjectsV2 pagination (the Go
    side holds one page at a time), virtualized rendering, cancelable deep
    search — one floating Search window spans every configured source at

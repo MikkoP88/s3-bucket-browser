@@ -84,7 +84,7 @@ func adviceFor(code string) *Advice {
 			Suggestion: "Check bucket policy and ACL settings — access may be blocked",
 			Commands:   []string{"aws s3api get-bucket-policy --bucket <bucket>"},
 		}
-	case "requesttimetoolargeskewed", "requesttimeout", "requesttimetoolarge":
+	case "requesttimetooskewed", "requesttimeout", "requesttimetoolarge":
 		return &Advice{
 			Code:       code,
 			Cause:      "Request time is too far from the server's clock",
@@ -206,6 +206,15 @@ func ForError(err error) *Advice {
 		return a
 	}
 	return nil
+}
+
+// ForCode returns Advice for a bare SDK error code (no error object of its
+// own), or nil when nothing specific is known. Callers that reach a verdict
+// from evidence rather than a returned error — e.g. doctor measuring the
+// clock skew the wire would reject — still speak the same remediation the
+// live error carries.
+func ForCode(code string) *Advice {
+	return adviceFor(code)
 }
 
 // matchTransport recognizes transport-level failures by message content.

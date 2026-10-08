@@ -1,8 +1,9 @@
 // Package doctor runs connection diagnostics against an S3 endpoint.
 //
-// The check pipeline (DNS → TCP → TLS → auth → policy/ACL with plain-language
-// remediation) is ported from s3-bucket-tester; the S3 API checks now run
-// through the official SDK instead of hand-rolled signed requests.
+// The check pipeline (DNS → TCP → TLS → clock skew → auth → policy/ACL with
+// plain-language remediation) is ported from s3-bucket-tester; the S3 API
+// checks now run through the official SDK instead of hand-rolled signed
+// requests.
 package doctor
 
 import (
@@ -12,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -34,6 +36,14 @@ const (
 	StatusWarn Status = "warn"
 	StatusFail Status = "fail"
 	StatusSkip Status = "skip"
+)
+
+// Clock-skew thresholds: SigV4 signs requests with the local clock and
+// providers reject anything stamped more than ~15 minutes off the server's
+// own — 15 minutes is the failure line, 5 minutes already worth a warning.
+const (
+	clockSkewWarn = 5 * time.Minute
+	clockSkewFail = 15 * time.Minute
 )
 
 // CheckResult is one diagnostic result (JSON-friendly, mirroring the
@@ -97,7 +107,8 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 		// DNS failed for a hostname: TCP/TLS cannot succeed either.
 		r.Checks = append(r.Checks,
 			timedCheck(func() CheckResult { return skip("TCP Connectivity Check", "DNS resolution failed") }),
-			timedCheck(func() CheckResult { return skip("TLS Certificate Check", "DNS resolution failed") }))
+			timedCheck(func() CheckResult { return skip("TLS Certificate Check", "DNS resolution failed") }),
+			timedCheck(func() CheckResult { return skip("Clock Skew Check", "DNS resolution failed") }))
 	} else {
 		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkTCP(host, port) }))
 		if provider.InsecureEndpoint(c.Endpoint) {
@@ -105,6 +116,9 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 		} else {
 			r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkTLS(host, port, insecureTLS) }))
 		}
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult {
+			return checkClockSkew(ctx, host, port, c.Endpoint, insecureTLS)
+		}))
 	}
 
 	if bucket != "" {
@@ -252,6 +266,91 @@ func checkTLS(host string, port int, insecure bool) CheckResult {
 	return res
 }
 
+// checkClockSkew compares the local clock against the server's Date response
+// header. SigV4 signs requests with the local clock and providers reject
+// anything stamped more than ~15 minutes off the server's own — the
+// RequestTimeTooSkewed failure this check names before it ever fires.
+func checkClockSkew(ctx context.Context, host string, port int, endpoint string, insecureTLS bool) CheckResult {
+	start := time.Now()
+	res := CheckResult{Check: "Clock Skew Check", Status: StatusPass}
+
+	scheme := "https"
+	if provider.InsecureEndpoint(endpoint) {
+		scheme = "http"
+	}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: insecureTLS, MinVersion: tls.VersionTLS12},
+		},
+	}
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead,
+		fmt.Sprintf("%s://%s:%d/", scheme, host, port), nil)
+	if err != nil {
+		res.Status = StatusSkip
+		res.Detail = "could not build the probe request"
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		// Reachability is owned by the TCP/TLS checks; a probe that cannot
+		// complete says nothing about the clocks.
+		res.Status = StatusSkip
+		res.Detail = "probe did not complete (reachability is covered by the TCP and TLS checks)"
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+	defer resp.Body.Close()
+
+	dateHdr := resp.Header.Get("Date")
+	if dateHdr == "" {
+		res.Status = StatusWarn
+		res.Detail = "server sent no Date header; clock skew cannot be verified"
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+	serverTime, err := time.Parse(http.TimeFormat, dateHdr)
+	if err != nil {
+		res.Status = StatusWarn
+		res.Error = fmt.Sprintf("malformed Date header %q", dateHdr)
+		res.Detail = "clock skew cannot be verified"
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+
+	now := time.Now()
+	skew := now.Sub(serverTime)
+	abs := skew
+	if abs < 0 {
+		abs = -abs
+	}
+	direction := "ahead of"
+	if skew < 0 {
+		direction = "behind"
+	}
+	info, _ := json.Marshal(map[string]any{
+		"skewSeconds": int64(skew.Seconds()),
+		"serverTime":  serverTime.UTC().Format(time.RFC3339),
+		"localTime":   now.UTC().Format(time.RFC3339),
+	})
+	res.Info = info
+	res.Detail = fmt.Sprintf("local clock is %s the server clock by %s", direction, abs.Truncate(time.Second))
+
+	switch {
+	case abs > clockSkewFail:
+		res.Status = StatusFail
+		res.Detail = "skew beyond the SigV4 signing window (RequestTimeTooSkewed): " + res.Detail
+		res.Advice = errhelp.ForCode("RequestTimeTooSkewed")
+	case abs > clockSkewWarn:
+		res.Status = StatusWarn
+	}
+	res.Duration = ms(time.Since(start))
+	return res
+}
+
 func checkAuth(ctx context.Context, c *s3client.Client, bucket string) CheckResult {
 	start := time.Now()
 	res := CheckResult{Check: "Bucket Authentication Check", Status: StatusPass}
@@ -364,6 +463,7 @@ func CheckNames() []string {
 		"DNS Resolution Check",
 		"TCP Connectivity Check",
 		"TLS Certificate Check",
+		"Clock Skew Check",
 		"Bucket Authentication Check",
 		"Bucket Policy Check",
 		"Bucket ACL Check",
@@ -398,6 +498,10 @@ func RunCheck(ctx context.Context, c *s3client.Client, bucket, name string, inse
 			return timedCheck(func() CheckResult { return skip("TLS Certificate Check", "endpoint uses plain HTTP") }), nil
 		}
 		return timedCheck(func() CheckResult { return checkTLS(host, port, insecureTLS) }), nil
+	case "Clock Skew Check":
+		return timedCheck(func() CheckResult {
+			return checkClockSkew(ctx, host, port, c.Endpoint, insecureTLS)
+		}), nil
 	case "Bucket Authentication Check":
 		return timedCheck(func() CheckResult { return checkAuth(ctx, c, bucket) }), nil
 	case "Bucket Policy Check":
