@@ -2799,6 +2799,8 @@ NAME:// path into any saved data source — the same operand grammar cp
 speaks. Copies files whose size differs or that are missing on the target;
 --delete also removes extra files on the target (--force required above the
 safety threshold of 50 files).
+--watch re-runs the sync until Ctrl+C (default every 30s, --interval to
+change) — quiet on passes that move nothing.
 
 ```
 s3b sync SRC DST [flags]
@@ -2807,9 +2809,11 @@ s3b sync SRC DST [flags]
 ### Options
 
 ```
-      --delete    remove files that no longer exist at the source
-      --dry-run   show planned actions, transfer nothing
-      --force     with --delete: allow removing more than 50 files (L1 safety gate)
+      --delete              remove files that no longer exist at the source
+      --dry-run             show planned actions, transfer nothing
+      --force               with --delete: allow removing more than 50 files (L1 safety gate)
+      --interval duration   poll interval for --watch (default 30s)
+      --watch               keep re-syncing until Ctrl+C
 
 ```
 

@@ -8193,6 +8193,92 @@ await step('sync-any', async () => {
   await evalPage(() => { window.__shim.world.syncPlan = null; });
 });
 
+await step('sync-auto', async () => {
+  // Keep synchronized: the Run click is the standing consent — the arm
+  // pass rides the same headless legs every tick rides (the transfer
+  // matrix under skip semantics, the delete legs previewed and landed
+  // WITHOUT a window — but never forced past an L2 gate), the interval
+  // re-plans and re-runs, and the reopened dialog seats the stop surface
+  // that disarms in place. The step leaves nothing armed behind.
+  await evalPage(() => {
+    window.__shim.world.syncPlan = {
+      copiesXY: [{ rel: 'push.txt', size: 8 }],
+      copiesYX: [],
+      delY: [{ rel: 'srv-extra.txt', size: 6 }],
+      delX: [],
+      skipped: 1,
+    };
+  });
+  await navObjects('team-files');
+  await evalPage(() => window.__s3bSidePane.openAt({ kind: 'remote', source: 'backup-box', path: '' }));
+  await waitFor(async () => (await sideKeys()).includes('/backup.sh'), 6000, 'pane on backup-box');
+  await waitFor(async () => evalPage(() => !document.getElementById('btn-sync').disabled), 4000, 'btn-sync armed');
+  await page.click('#btn-sync');
+  await waitFor(() => modalVisible(), 4000, 'sync dialog open');
+  await waitFor(async () => evalPage(() => document.querySelectorAll('#modal-root .sync-sec').length >= 1), 4000, 'plan sections');
+  // the Keep synchronized opt-in seats its own interval field
+  await evalPage(() => document.querySelector('#modal-root .sync-auto input').click());
+  await ok('the auto opt-in seats a seconds field defaulting to 30', evalPage(() =>
+    document.querySelector('#modal-root .sync-auto-secs').value === '30'));
+  await ok('the auto hint names the law', evalPage(() =>
+    document.querySelector('#modal-root .sync-auto-hint').textContent.length > 10));
+  await evalPage(() => { document.querySelector('#modal-root .sync-auto-secs').value = '5'; });
+  // arm: the delete opt-in rides along, the dialog closes, the pass runs
+  // headlessly — no confirmation window ever opens
+  await evalPage(() => document.querySelector('#modal-root .sync-del input').click());
+  await evalPage(() => { document.getElementById('toasts').innerHTML = ''; });
+  await resetCalls();
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await waitFor(async () => evalPage(() => !document.querySelector('#modal-root .sync-dir')), 4000, 'dialog closed on arm');
+  await ok('arming names the cadence', waitFor(async () => (await txt('#toasts')).includes('every 5 s'), 4000, 'armed toast'));
+  // the arm pass: one matrix copy vector, then the delete leg previewed
+  // AND landed with no window (requiresL2 false in the shim)
+  await waitFor(async () => (await findCall('SourceDeleteSelection')) !== null, 4000, 'headless delete lands');
+  const xc = (await calls()).filter((c) => c.m === 'TransferCross');
+  const pv = await findCall('SourcePreviewDelete');
+  const ds = await findCall('SourceDeleteSelection');
+  await ok('the arm pass rides the matrix with the planned items', xc.length === 1
+    && JSON.stringify(xc[0].args[0]) === JSON.stringify([
+      { source: 'backup-box', bucket: '', key: '/push.txt', size: 8, isDir: false }])
+    && JSON.stringify(xc[0].args[2]) === JSON.stringify({ kind: 's3', source: 'team-files', bucket: 'team-files', dir: '' })
+    && xc[0].args[3] === 'skip');
+  await ok('the delete leg lands headlessly with its keys and no force', !!pv && !!ds
+    && pv.args[0] === 'team-files' && pv.args[1] === 'team-files'
+    && JSON.stringify(pv.args[2]) === JSON.stringify(['srv-extra.txt'])
+    && ds.args[0] === 'team-files' && ds.args[3] === false);
+  await ok('no confirmation window ever opened for the pass', !(await modalVisible()));
+  await ok('the pass did not stop itself with an error toast', !(await txt('#toasts')).includes('stopped:'));
+  // the tick: the interval re-plans on its own cadence
+  await ok('the tick re-plans the pair', waitFor(async () =>
+    (await calls()).filter((c) => c.m === 'SyncPreview').length >= 2, 9000, 'second SyncPreview'));
+  // the stop surface: reopening the dialog seats Stop, which disarms in
+  // place and reverts the button for one-click re-arm
+  await page.click('#btn-sync');
+  await waitFor(() => modalVisible(), 4000, 'sync dialog reopen');
+  await waitFor(async () => evalPage(() => document.querySelectorAll('#modal-root .sync-sec').length >= 1), 4000, 'reopened plan');
+  await ok('an armed pair seats Stop as the primary with its options', evalPage(() =>
+    document.querySelector('#modal-root .modal-foot .btn.primary').textContent.includes('Stop auto-sync')
+    && document.querySelector('#modal-root .sync-auto input').checked === true
+    && document.querySelector('#modal-root .sync-auto-secs').value === '5'));
+  await evalPage(() => { document.getElementById('toasts').innerHTML = ''; });
+  await evalPage(() => document.querySelector('#modal-root .modal-foot .btn.primary').click());
+  await ok('the stop disarms in place and reverts the button', evalPage(() => {
+    const btn = document.querySelector('#modal-root .modal-foot .btn.primary');
+    return !btn.textContent.includes('Stop auto-sync') && btn.textContent.includes('Synchronize')
+      && !btn.disabled && document.querySelector('#modal-root .sync-auto input').checked === false;
+  }));
+  await ok('the stop says so', (await txt('#toasts')).includes('Auto-sync stopped'));
+  await closeModal();
+  // disarmed plans nothing: the SyncPreview count holds across a full
+  // interval past the stop
+  await sleep(300);
+  const settled = (await calls()).filter((c) => c.m === 'SyncPreview').length;
+  await sleep(5200);
+  const after = (await calls()).filter((c) => c.m === 'SyncPreview').length;
+  await ok('a stopped auto-sync plans nothing further', settled === after);
+  await evalPage(() => { window.__shim.world.syncPlan = null; });
+});
+
 await step('pane-search', async () => {
   // the pane's Search scopes to the opened source: the dropdown offers
   // exactly one entry — the pane's current location, auto-selected and

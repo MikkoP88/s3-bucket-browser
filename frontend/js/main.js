@@ -5295,6 +5295,55 @@ function wireEvents() {
       }
       return deleteRemoteSelection(side.source, files.map((f) => syncRemoteKey(side.dir, f.rel)));
     },
+    // the auto-sync pass's headless delete leg: the same preview + L2 gate
+    // the interactive windows ride, minus the window — the arm click is
+    // the standing consent, but a pass never escalates past a gate a
+    // human would have to type through (requiresL2 skips that pass's
+    // deletes and gets named by the dialog).
+    autoDelete: async (side, files) => {
+      if (side.kind === 's3') {
+        const keys = files.map((f) => syncS3Prefix(side.prefix, f.rel));
+        const p = side.source
+          ? await api.SourcePreviewDelete(side.source, side.bucket, keys)
+          : await api.PreviewDelete(side.bucket, keys);
+        if (p.requiresL2) return { gated: files.length };
+        const res = side.source
+          ? await api.SourceDeleteSelection(side.source, side.bucket, keys, false)
+          : await api.DeleteSelection(side.bucket, keys, false);
+        return { deleted: res?.deleted || 0 };
+      }
+      if (side.kind === 'local') {
+        const paths = files.map((f) => syncLocalPath(side.dir, f.rel));
+        const p = await api.LocalDeletePreview(paths);
+        if (p.requiresL2) return { gated: files.length };
+        const res = await api.LocalRemove(paths, false);
+        return { deleted: res?.deleted || 0 };
+      }
+      const keys = files.map((f) => syncRemoteKey(side.dir, f.rel));
+      const p = await api.RemoteDeletePreview(side.source, keys);
+      if (p.requiresL2) return { gated: files.length };
+      const res = await api.RemoteRemove(side.source, keys, false);
+      return { deleted: res?.deleted || 0 };
+    },
+    // one armed pass settled: refresh whichever seating views hold the
+    // pair (the transfer legs fire their own events; the deletes and the
+    // remote/local copies land here)
+    autoRefresh: (x, y) => {
+      const seatsMain = (r) => !r ? false
+        : r.kind === 's3' ? nav.current?.kind === 'objects' && nav.current.bucket === r.bucket
+          && (nav.current.source || '') === (r.source || '')
+        : r.kind === 'remote' ? nav.current?.kind === 'remote' && nav.current.source === r.source
+        : nav.current?.kind === 'local';
+      if (seatsMain(x) || seatsMain(y)) refreshCurrent();
+      const b = localPane.binding;
+      if (!b || b.kind === 'local') return;
+      const paneSrc = sources.find((s) => (s.id || s.name) === b.source)?.name || b.source;
+      const seatsPane = (r) => !r ? false
+        : r.kind === 's3' ? b.kind === 's3' && b.bucket === r.bucket
+        : r.kind === 'remote' ? b.kind === 'remote' && paneSrc === r.source
+        : false;
+      if (seatsPane(x) || seatsPane(y)) localPane.refresh();
+    },
   });
   onEvent('xfer:dest', (d) => gotoDest(d));
   // Guarded exit: the backend refused an exit that would lose work (the X

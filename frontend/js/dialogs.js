@@ -40,6 +40,77 @@ function xferGotoDest(d) {
 let syncRunners = null;
 export const setSyncRunners = (r) => { syncRunners = r; };
 
+// autoSyncs: the armed pairs — Run with Keep synchronized checked keeps
+// re-planning and re-running the pair until stopped. Keyed by the two
+// side labels (order-free); entries hold the armed options and the
+// interval timer. Session-only by design: a background mutator must
+// never outlive the session that armed it.
+const autoSyncs = new Map();
+
+function syncPairKey(x, y) {
+  return [syncSideLabel(x), syncSideLabel(y)].sort().join('\u2194');
+}
+
+// armAutoSync registers the pair and runs the first pass at once — the
+// Run click is the consent, so the arm pass rides the same headless legs
+// every later tick rides (no confirmation windows; the plan the click
+// answered already named exactly what runs).
+function armAutoSync(x, y, dir, del, bps, everyMs) {
+  const key = syncPairKey(x, y);
+  stopAutoSync(key);
+  const entry = { x, y, dir, del, bps, every: everyMs, timer: null, busy: false, lastGate: -1 };
+  entry.timer = setInterval(() => { autoSyncPass(entry); }, everyMs);
+  autoSyncs.set(key, entry);
+  autoSyncPass(entry);
+  toast(t('sync.autoArmed', { n: Math.round(everyMs / 1000) }), 'ok');
+}
+
+function stopAutoSync(key) {
+  const e = autoSyncs.get(key);
+  if (!e) return false;
+  clearInterval(e.timer);
+  autoSyncs.delete(key);
+  return true;
+}
+
+// autoSyncPass runs one armed pass: re-plan (the world moved since the
+// arm), land the copy vectors under skip semantics, then the armed
+// delete legs headlessly — the arm click is the standing consent, but a
+// pass never escalates past an L2 gate (bulk deletes above the preview
+// threshold skip and get named, never forced). Any hard failure stops
+// the loop with one honest toast — a background mutator must not retry
+// a dead engine forever.
+async function autoSyncPass(e) {
+  if (e.busy) return; // a slow pass never stacks on its own tick
+  e.busy = true;
+  try {
+    const info = await api.SyncPreview(e.x, e.y);
+    const wantUp = e.dir !== 'down', wantDown = e.dir !== 'up';
+    if (wantUp && info.copiesXY.length) await submitVector(e.x, e.y, info.copiesXY, e.bps);
+    if (wantDown && info.copiesYX.length) await submitVector(e.y, e.x, info.copiesYX, e.bps);
+    if (e.del && syncRunners?.autoDelete) {
+      if (wantUp && info.delY.length) gateNote(e, await syncRunners.autoDelete(e.y, info.delY));
+      if (wantDown && info.delX.length) gateNote(e, await syncRunners.autoDelete(e.x, info.delX));
+    }
+    syncRunners?.autoRefresh?.(e.x, e.y);
+  } catch (err) {
+    if (stopAutoSync(syncPairKey(e.x, e.y))) {
+      toast(t('sync.autoStopped', { err }), 'error');
+    }
+  } finally {
+    e.busy = false;
+  }
+}
+
+// gateNote names a pass whose deletes were skipped above the L2 gate —
+// once per distinct count, so a standing bulk drift does not toast every
+// tick.
+function gateNote(e, r) {
+  if (!r || !r.gated || r.gated === e.lastGate) return;
+  e.lastGate = r.gated;
+  toast(t('sync.autoGated', { n: r.gated }));
+}
+
 // syncLocalPath joins a local dir and a plan rel into one path Go opens
 // on every OS (forward slashes are fine on Windows too).
 export function syncLocalPath(dir, rel) {
@@ -173,15 +244,30 @@ export function synchronizeDialog(xRef, yRef) {
     el('div', { class: 'sync-del-hint', text: t('sync.delHint') }),
   );
   const delChk = delBox.querySelector('input');
+  const autoSecs = el('input', { type: 'number', min: '5', step: '1', value: '30', class: 'sync-auto-secs' });
+  const autoBox = el('label', { class: 'sync-auto' },
+    el('input', { type: 'checkbox' }),
+    el('span', { text: t('sync.autoLabel') }),
+    autoSecs,
+    el('span', { class: 'sync-auto-unit', text: 's' }),
+    el('div', { class: 'sync-auto-hint', text: t('sync.autoHint') }),
+  );
+  const autoChk = autoBox.querySelector('input');
+  const armed = autoSyncs.get(syncPairKey(xRef, yRef));
+  let isArmed = !!armed;
+  if (armed) {
+    autoChk.checked = true;
+    autoSecs.value = String(Math.round(armed.every / 1000));
+  }
   dirBox.addEventListener('change', () => draw());
   delChk.addEventListener('change', () => draw());
 
   const m = openModal({
     title: t('sync.title') + ' — ' + syncSideLabel(xRef) + ' ↔ ' + syncSideLabel(yRef),
-    body: [status, dirBox, planBox, delBox],
+    body: [status, dirBox, planBox, delBox, autoBox],
     wide: true,
     buttons: [
-      { label: t('sync.run'), class: 'primary', disabled: true, onclick: (close) => runSubmit(close) },
+      { label: armed ? t('sync.autoStop') : t('sync.run'), class: 'primary', disabled: !armed, onclick: (close) => runSubmit(close) },
       { label: 'Close' },
     ],
   });
@@ -209,7 +295,7 @@ export function synchronizeDialog(xRef, yRef) {
     status.style.color = '';
     if (!nUp && !nDown && !nDel) {
       status.textContent = t('sync.empty');
-      runBtn.disabled = true;
+      runBtn.disabled = !isArmed; // Stop answers even an empty plan
       return;
     }
     status.textContent = pairIsLocalS3(xRef, yRef)
@@ -224,9 +310,31 @@ export function synchronizeDialog(xRef, yRef) {
   // so the transfer manager owns its queue first. One confirmation at a
   // time.
   async function runSubmit(close) {
+    // an armed pair seats its own stop surface: the button disarms in
+    // place and reverts, so re-arming with different options is one
+    // click away
+    if (isArmed) {
+      stopAutoSync(syncPairKey(xRef, yRef));
+      isArmed = false;
+      autoChk.checked = false;
+      runBtn.textContent = t('sync.run');
+      draw();
+      toast(t('sync.autoOff'), 'ok');
+      return;
+    }
     if (!info) return;
     const dir = dirBox.querySelector('input:checked')?.value || 'both';
     const bps = savedThrottle();
+    // Keep synchronized: the Run click is the consent — the arm pass
+    // rides the same headless legs every later tick rides (no
+    // confirmation windows), and the interval re-runs the pair until the
+    // dialog's stop surface disarms it
+    if (autoChk.checked) {
+      const every = Math.max(5, parseInt(autoSecs.value, 10) || 30) * 1000;
+      close(null);
+      armAutoSync(xRef, yRef, dir, delChk.checked, bps, every);
+      return;
+    }
     let jobs = 0;
     try {
       if (dir !== 'down' && info.copiesXY.length) {

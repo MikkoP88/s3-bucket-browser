@@ -520,6 +520,17 @@ directory compare) with S3 and the secondary pane.
   predicate the CLI's `s3b sync` rides computes the plan, and that
   CLI now takes the same operand grammar `cp` speaks (`s3b sync
   vault://media ./mirror`), so the faces agree on the whole matrix.
+  *Keep synchronized* — off by default beside the remove-extras opt-in,
+  with its own seconds field (30 by default) — turns the one-shot run
+  into a standing mirror instead: the Run click is the standing
+  consent, and every interval re-plans and re-runs the same legs
+  headlessly — no further prompts, bulk deletions above the safety
+  threshold skipped and named rather than forced, any hard failure
+  stopping the loop with one honest note. It lives for the session
+  only: reopen the Synchronize dialog to stop it (the button has
+  become **Stop auto-sync**, and disarming reverts it in place). The
+  CLI twin is `s3b sync --watch` (`--interval` to change the
+  cadence), which re-runs the pair until Ctrl+C.
 
 - **Floating windows** — the views you keep an eye on — File transfers,
   Running tasks, Search, the User guide, the keyboard map, the sources overview,

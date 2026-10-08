@@ -6,9 +6,12 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
@@ -619,7 +622,8 @@ func runRmVersions(ctx context.Context, c *s3client.Client, u s3URI, recursive, 
 }
 
 func syncCmd() *cobra.Command {
-	var del, dryRun, force bool
+	var del, dryRun, force, watch bool
+	var watchEvery time.Duration
 	cmd := &cobra.Command{
 		Use:   "sync SRC DST",
 		Short: "Sync any two locations (local, S3, or a NAME:// source path)",
@@ -627,7 +631,9 @@ func syncCmd() *cobra.Command {
 			"NAME:// path into any saved data source — the same operand grammar cp\n" +
 			"speaks. Copies files whose size differs or that are missing on the target;\n" +
 			"--delete also removes extra files on the target (--force required above the\n" +
-			fmt.Sprintf("safety threshold of %d files).", rmForceThreshold),
+			fmt.Sprintf("safety threshold of %d files).", rmForceThreshold) + "\n" +
+			"--watch re-runs the sync until Ctrl+C (default every 30s, --interval to\n" +
+			"change) — quiet on passes that move nothing.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The view client is only needed when an operand is s3:// —
@@ -639,6 +645,15 @@ func syncCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+			}
+			if watch && flagJSON {
+				return usageErr("--watch is interactive; drop it (or --json)")
+			}
+			if watch {
+				if dryRun {
+					return usageErr("--watch keeps syncing — drop --dry-run (it plans once, it does not watch)")
+				}
+				return watchSync(cmd.Context(), c, args, watchEvery, del, force)
 			}
 			x, err := syncDialSide(cmd.Context(), c, args[0])
 			if err != nil {
@@ -666,6 +681,8 @@ func syncCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
+	f.BoolVar(&watch, "watch", false, "keep re-syncing until Ctrl+C")
+	f.DurationVar(&watchEvery, "interval", 30*time.Second, "poll interval for --watch")
 	f.BoolVar(&del, "delete", false, "remove files that no longer exist at the source")
 	f.BoolVar(&dryRun, "dry-run", false, "show planned actions, transfer nothing")
 	f.BoolVar(&force, "force", false,
@@ -903,6 +920,62 @@ func syncRun(ctx context.Context, x, y *syncSide, del, dryRun, force bool) (sync
 	n, err := syncDeleteAt(ctx, y, deletes)
 	res.Deleted = n
 	return res, err
+}
+
+// watchSync re-runs the pair until Ctrl+C (or the context ends): every
+// pass dials both sides fresh — an engine's idle wire may have died
+// between passes — and runs the one sync law. A pass that moves nothing
+// prints nothing; transient errors after the first pass are printed, not
+// fatal (the next tick retries); the --delete gate refuses in place,
+// exactly the one-shot voice.
+func watchSync(ctx context.Context, c *s3client.Client, args []string, every time.Duration, del, force bool) error {
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(stop)
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	fmt.Fprintln(os.Stderr, "syncing "+args[0]+" → "+args[1]+" every "+every.String()+" — Ctrl+C to stop")
+	first := true
+	pass := func() error {
+		x, err := syncDialSide(ctx, c, args[0])
+		if err != nil {
+			return err
+		}
+		y, err := syncDialSide(ctx, c, args[1])
+		if err != nil {
+			x.Close()
+			return err
+		}
+		defer y.Close()
+		defer x.Close()
+		if sameSyncLocation(x, y) {
+			return usageErr("sync needs two different locations — both operands name %s", x.label)
+		}
+		res, err := syncRun(ctx, x, y, del, false, force)
+		if err != nil {
+			return err
+		}
+		if first || res.Uploaded > 0 || res.Deleted > 0 {
+			res.print()
+		}
+		first = false
+		return nil
+	}
+	if err := pass(); err != nil {
+		return opErr(err)
+	}
+	for {
+		select {
+		case <-stop:
+			return nil
+		case <-ctx.Done():
+			return nil
+		case <-tick.C:
+			if err := pass(); err != nil {
+				fmt.Fprintln(os.Stderr, "sync watch error:", err)
+			}
+		}
+	}
 }
 
 // syncCopyOne lands one planned file x → y. A same-source S3 pair copies

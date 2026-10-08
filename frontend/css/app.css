@@ -1650,3 +1650,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .sync-row.more { color: var(--text-dim); font-style: italic; }
 .sync-del { display: block; margin: 4px 0 8px; }
 .sync-del-hint { color: var(--text-dim); font-size: 12px; margin: 2px 0 0 22px; }
+.sync-auto { display: flex; gap: 6px; align-items: center; margin: 4px 0 8px; flex-wrap: wrap; cursor: pointer; }
+.sync-auto-secs { width: 64px; }
+.sync-auto-unit { color: var(--text-dim); }
+.sync-auto-hint { flex-basis: 100%; color: var(--text-dim); font-size: 12px; margin: 2px 0 0 22px; }

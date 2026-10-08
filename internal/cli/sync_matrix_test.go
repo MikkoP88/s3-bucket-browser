@@ -9,10 +9,12 @@
 package cli
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // syncStage seeds the lab engine and a local folder in the shape the
@@ -174,5 +176,94 @@ func TestSyncLocalToLocalMirrors(t *testing.T) {
 	}
 	if code := Execute([]string{"sync", src, src}); code != exitUsage {
 		t.Fatalf("same local dir: exit %d (want usage %d)", code, exitUsage)
+	}
+}
+
+// --watch is the standing mirror: each pass re-plans and lands what
+// drifted — copies and, with the opt-in, deletes — quietly when nothing
+// moved, until the loop is stopped (here the context; in the field
+// Ctrl+C). The rig drops and removes files at the near side mid-flight
+// and waits for the mirror to catch each one, then proves a stopped
+// watch moves nothing further.
+func TestSyncWatchKeepsPairInStep(t *testing.T) {
+	engRoot, locDir := syncStage(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- watchSync(ctx, nil, []string{locDir, "lab://"}, 40*time.Millisecond, true, false)
+	}()
+
+	waitFor := func(what string, cond func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !cond() {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s never landed", what)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// the first pass settles the stage: the size-diff and missing copies
+	// land, the target-only extra falls to the delete leg
+	waitFor("the first pass", func() bool {
+		if b, err := os.ReadFile(filepath.Join(engRoot, "target-grew.txt")); err != nil || string(b) != "1234" {
+			return false
+		}
+		if b, err := os.ReadFile(filepath.Join(engRoot, "fresh.txt")); err != nil || string(b) != "mm" {
+			return false
+		}
+		_, err := os.Stat(filepath.Join(engRoot, "extra-at-target.txt"))
+		return os.IsNotExist(err)
+	})
+
+	// a file dropped at the source after the first pass lands on the next
+	if err := os.WriteFile(filepath.Join(locDir, "late.txt"), []byte("just landed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("the late file's copy", func() bool {
+		b, err := os.ReadFile(filepath.Join(engRoot, "late.txt"))
+		return err == nil && string(b) == "just landed"
+	})
+
+	// a file removed at the source falls at the target on the next pass
+	if err := os.Remove(filepath.Join(locDir, "fresh.txt")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("the delete leg", func() bool {
+		_, err := os.Stat(filepath.Join(engRoot, "fresh.txt"))
+		return os.IsNotExist(err)
+	})
+
+	// stopping the watch is clean — and final
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("watchSync returned %v, want nil on stop", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchSync never stopped after the context ended")
+	}
+	if err := os.WriteFile(filepath.Join(locDir, "after-stop.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(engRoot, "after-stop.txt")); !os.IsNotExist(err) {
+		t.Error("a stopped watch kept syncing")
+	}
+}
+
+// The watch refusals: --watch is interactive (no --json) and it syncs for
+// real (no --dry-run) — both usage errors before the loop ever ticks.
+func TestSyncWatchRefusals(t *testing.T) {
+	syncStage(t)
+	for _, args := range [][]string{
+		{"sync", "lab://", "lab://mirror", "--watch", "--json"},
+		{"sync", "lab://", "lab://mirror", "--watch", "--dry-run"},
+	} {
+		if code := Execute(args); code != exitUsage {
+			t.Errorf("%v exit = %d, want the usage refusal %d", args, code, exitUsage)
+		}
 	}
 }

@@ -8,6 +8,28 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Synchronize grows the standing mirror on both faces** — the
+  one-shot pair becomes a kept pair. `s3b sync --watch` re-runs the
+  sync until Ctrl+C (`--interval`, 30s default): every pass dials
+  both sides fresh (an engine's idle wire may have died between
+  passes), a pass that moves nothing prints nothing, transient errors
+  after the first pass are printed and retried on the next tick, and
+  `--watch --json` / `--watch --dry-run` refuse as the usage errors
+  they are. The GUI's Synchronize dialog gains *Keep synchronized* —
+  off by default, its own seconds field — where the Run click is the
+  standing consent: the arm pass and every later tick ride the same
+  headless legs (the transfer matrix under skip semantics, the delete
+  legs previewed and landed without windows, a bulk delete above the
+  safety threshold skipped and named once per count, never forced past
+  an L2 gate), any hard failure stops the loop with one honest note,
+  and the reopened dialog seats **Stop auto-sync**, which disarms in
+  place and reverts the button for one-click re-arm. Session-only by
+  design: a background mutator never outlives the session that armed
+  it. Pinned by the internal/cli watch rigs (the standing mirror with
+  mid-flight adds and removes, the clean stop, after-stop quiescence,
+  both refusals) and the battery's sync-auto step (the arm pass's
+  headless matrix and delete legs, the cadence toast, the tick's
+  re-plan, the stop surface and its quiescence).
 - **The editor grows its CLI face: `s3b edit`** — one guarded
   round trip in the terminal, speaking `cp`’s operand grammar
   (`./file`, `s3://bucket/key`, `NAME://path`): the file pulls to a
