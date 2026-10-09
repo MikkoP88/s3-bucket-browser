@@ -18,9 +18,10 @@ func errAdvice(err error) *errhelp.Advice {
 func presignCmd() *cobra.Command {
 	var expires string
 	cmd := &cobra.Command{
-		Use:   "presign s3://bucket/key",
-		Short: "Generate a pre-signed GET URL for an object",
-		Args:  cobra.ExactArgs(1),
+		Use:               "presign s3://bucket/key",
+		Short:             "Generate a pre-signed GET URL for an object",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -59,9 +60,10 @@ func presignCmd() *cobra.Command {
 
 func doctorCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "doctor [s3://bucket]",
-		Short: "Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, bucket policy, ACL",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "doctor [s3://bucket]",
+		Short:             "Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, bucket policy, ACL",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {

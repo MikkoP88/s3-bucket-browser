@@ -904,6 +904,7 @@ s3b edit s3://b/cfg/app.yml                # guarded edit in $EDITOR, ETag/If-Ma
 s3b edit vault://media/notes.md            # same round trip for any source file
 s3b find s3://b --name 'backup*' --older 90d
 s3b find s3://b --ext pdf,csv --path docs --larger 1MB
+s3b find vault://media --name '*.md'        # any saved source, same filters
 s3b doctor s3://my-bucket
 
 s3b versions ls s3://b/docs/report.pdf      # timeline, newest first
@@ -914,4 +915,7 @@ s3b rb s3://old-bucket --force              # empties versioned buckets too
 ```
 
 Every command takes `--json`, `--profile` and `--verbose`; shell
-completions: `s3b completion bash|zsh|fish|powershell`.
+completions: `s3b completion bash|zsh|fish|powershell` — and they are
+typed: source and profile names, the s3:// and NAME:// operand grammars
+(the shell’s own file completion stays alive beside them on the transfer
+verbs), storage classes, retention modes and the source-type list.

@@ -112,7 +112,8 @@ func editCmd() *cobra.Command {
 			"Local paths edit in place. A file that does not exist yet is created\n" +
 			"on exit. Operands: ./file, s3://bucket/key, or NAME://path into any\n" +
 			"saved data source.",
-		Args: cobra.ExactArgs(1),
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeTransferURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runEdit(cmd.Context(), args[0], force)
 		},

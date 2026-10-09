@@ -44,9 +44,10 @@ func versionsTarget(arg string) (bucket, key string, err error) {
 
 func versionsLsCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ls s3://bucket/key",
-		Short: "List the version timeline of an object, newest first",
-		Args:  cobra.ExactArgs(1),
+		Use:               "ls s3://bucket/key",
+		Short:             "List the version timeline of an object, newest first",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -92,10 +93,11 @@ func versionsLsCmd() *cobra.Command {
 func versionsRestoreCmd() *cobra.Command {
 	var versionID string
 	cmd := &cobra.Command{
-		Use:   "restore s3://bucket/key --version-id ID",
-		Short: "Restore an old version as the current one (server-side copy)",
-		Long:  "The previous current version stays in the timeline — nothing is lost.",
-		Args:  cobra.ExactArgs(1),
+		Use:               "restore s3://bucket/key --version-id ID",
+		Short:             "Restore an old version as the current one (server-side copy)",
+		Long:              "The previous current version stays in the timeline — nothing is lost.",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -125,9 +127,10 @@ func versionsRestoreCmd() *cobra.Command {
 func versionsUndoCmd() *cobra.Command {
 	var versionID string
 	cmd := &cobra.Command{
-		Use:   "undo s3://bucket/key --version-id ID",
-		Short: "Undo a delete: remove a delete marker so the object reappears",
-		Args:  cobra.ExactArgs(1),
+		Use:               "undo s3://bucket/key --version-id ID",
+		Short:             "Undo a delete: remove a delete marker so the object reappears",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -158,9 +161,10 @@ func versionsRmCmd() *cobra.Command {
 	var versionID string
 	var all, dryRun, force bool
 	cmd := &cobra.Command{
-		Use:   "rm s3://bucket/key (--version-id ID | --all)",
-		Short: "Destroy version(s) permanently — unrecoverable, even from history (L3)",
-		Args:  cobra.ExactArgs(1),
+		Use:               "rm s3://bucket/key (--version-id ID | --all)",
+		Short:             "Destroy version(s) permanently — unrecoverable, even from history (L3)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -232,9 +236,10 @@ func versionsPurgeCmd() *cobra.Command {
 	var mode string
 	var dryRun, force bool
 	cmd := &cobra.Command{
-		Use:   "purge s3://bucket[/prefix]",
-		Short: "Bulk-purge versions under a prefix (noncurrent versions or delete markers)",
-		Args:  cobra.ExactArgs(1),
+		Use:               "purge s3://bucket[/prefix]",
+		Short:             "Bulk-purge versions under a prefix (noncurrent versions or delete markers)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -298,9 +303,10 @@ func versionsPurgeCmd() *cobra.Command {
 
 func versionsStatCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stat s3://bucket[/prefix]",
-		Short: "Version statistics: current, noncurrent, delete markers, noncurrent bytes",
-		Args:  cobra.ExactArgs(1),
+		Use:               "stat s3://bucket[/prefix]",
+		Short:             "Version statistics: current, noncurrent, delete markers, noncurrent bytes",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {

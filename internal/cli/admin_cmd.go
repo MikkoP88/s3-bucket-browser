@@ -36,6 +36,18 @@ func bucketCmd() *cobra.Command {
 		bucketTagsCmd(),
 		bucketLockCmd(),
 	)
+	// Every admin verb speaks s3://bucket first (the put verbs take FILE
+	// after) — one walk wires the shared URI completion on every leaf.
+	for _, sub := range cmd.Commands() {
+		if sub.ValidArgsFunction == nil {
+			sub.ValidArgsFunction = completeS3URIs
+		}
+		for _, leaf := range sub.Commands() {
+			if leaf.ValidArgsFunction == nil {
+				leaf.ValidArgsFunction = completeS3URIs
+			}
+		}
+	}
 	return cmd
 }
 

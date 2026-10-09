@@ -41,10 +41,11 @@ func lsCmd() *cobra.Command {
 	var watch bool
 	var watchEvery time.Duration
 	cmd := &cobra.Command{
-		Use:   "ls [s3://bucket[/prefix] | NAME://dir]",
-		Short: "List buckets, or one directory view of a bucket or source",
-		Long:  "Without an argument lists all buckets.\nWith s3://bucket/prefix shows one directory view (folders + objects);\n--recursive streams every object under the prefix instead.\nSource URIs (NAME://dir over any saved non-S3 source) work the same way.\n--watch re-lists and prints changes until Ctrl+C.",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "ls [s3://bucket[/prefix] | NAME://dir]",
+		Short:             "List buckets, or one directory view of a bucket or source",
+		Long:              "Without an argument lists all buckets.\nWith s3://bucket/prefix shows one directory view (folders + objects);\n--recursive streams every object under the prefix instead.\nSource URIs (NAME://dir over any saved non-S3 source) work the same way.\n--watch re-lists and prints changes until Ctrl+C.",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeSourceURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				if watch {
@@ -226,9 +227,10 @@ func printEntry(e listing.Entry) {
 
 func treeCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "tree s3://bucket[/prefix] | NAME://dir",
-		Short: "Show a bucket or source subtree as an ASCII tree",
-		Args:  cobra.ExactArgs(1),
+		Use:               "tree s3://bucket[/prefix] | NAME://dir",
+		Short:             "Show a bucket or source subtree as an ASCII tree",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeSourceURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
 				return err
@@ -292,9 +294,10 @@ func drawTree(ctx context.Context, c *s3client.Client, bucket, prefix, indent st
 
 func duCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "du s3://bucket[/prefix] | NAME://dir",
-		Short: "Count objects and total size under a prefix or source folder",
-		Args:  cobra.ExactArgs(1),
+		Use:               "du s3://bucket[/prefix] | NAME://dir",
+		Short:             "Count objects and total size under a prefix or source folder",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeSourceURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
 				return err
@@ -330,9 +333,10 @@ func duCmd() *cobra.Command {
 
 func statCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stat s3://bucket[/key] | NAME://path",
-		Short: "Show bucket, object or source-path metadata",
-		Args:  cobra.ExactArgs(1),
+		Use:               "stat s3://bucket[/key] | NAME://path",
+		Short:             "Show bucket, object or source-path metadata",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeSourceURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
 				return err

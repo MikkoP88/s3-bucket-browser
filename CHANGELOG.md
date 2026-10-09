@@ -295,6 +295,32 @@ follow [Semantic Versioning](https://semver.org/).
   keep their File-menu seats; Save takes its own save-as flow when
   there is nothing to overwrite).
 
+- **The CLI’s discovery face: find over any saved source, TAB completion
+  for the whole vocabulary** — `find` takes a source URI beside
+  s3://bucket[/prefix] (NAME://dir over any saved non-S3 source), walking
+  the source’s own engine depth-first through the same filter pipeline
+  (--name, --ext, --path, --larger/--smaller, --older/--newer, --kind,
+  --limit): hits speak their path relative to the searched root the way
+  the S3 leg always has, the JSON face carries the source’s name, the
+  stderr summary names the URI it walked — and `--class` over a source
+  refuses up front as a usage error (remote trees carry no storage class;
+  the GUI search refuses the same mix with the same words). Every operand
+  learns to complete: source names on `source test` and `source remove`,
+  profile names on the persistent `--profile` flag and `profile test`, the
+  browsing grammar (s3:// plus every saved NAME://) on ls, tree, du, stat,
+  mkdir, rm and find, the s3://-only grammar on the versions, lock, admin,
+  presign, doctor and sc verbs (a put verb’s FILE position goes back to
+  the shell), cp/mv/sync/edit offering URI candidates on both seats while
+  the shell’s own file completion stays alive beside them, and the static
+  enums — storage classes on sc’s second seat, retention modes on
+  `lock retention --mode`, the exact source-type list `source add --type`
+  accepts. Every completer is offline (it reads the profile store and the
+  verbs’ own enums, never dials a wire) and silent with an error
+  directive on a store it cannot read — the command itself will speak —
+  and cobra’s own speech (help screens, the completion protocol) rides
+  the swappable writer so capture-based tests see the completion stream
+  too.
+
 ### Fixed
 
 - **A sourceless app could stick on a loading skeleton** — with no

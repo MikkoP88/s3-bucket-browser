@@ -120,7 +120,18 @@ func TestEditRemoteConflictAndForce(t *testing.T) {
 	}
 
 	// the exit-code contract: a conflict is an operation failure (1),
-	// with the error label and the --force advice on stderr
+	// with the error label and the --force advice on stderr. The leg
+	// stages a size-differing engine move — re-running leg 1's editor
+	// would rewrite the same 12 bytes the refusal left behind, and a
+	// same-size write whose clock lands in the same millisecond as the
+	// pull's stamp is invisible to the guard's mtime half (the rig-clock
+	// law: never lean on the ms).
+	pinEditor(t, func(staged string) error {
+		if err := os.WriteFile(staged, []byte("team B draft"), 0o600); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(root, "a.txt"), []byte("team A grew it longer"), 0o600)
+	})
 	r, w, perr := os.Pipe()
 	if perr != nil {
 		t.Fatal(perr)

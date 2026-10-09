@@ -17,10 +17,11 @@ import (
 func mbCmd() *cobra.Command {
 	var objectLock bool
 	cmd := &cobra.Command{
-		Use:   "mb s3://bucket",
-		Short: "Make a bucket",
-		Long:  "Creates a bucket. --object-lock enables object lock at creation (the only moment it can be turned on; versioning comes with it).",
-		Args:  cobra.ExactArgs(1),
+		Use:               "mb s3://bucket",
+		Short:             "Make a bucket",
+		Long:              "Creates a bucket. --object-lock enables object lock at creation (the only moment it can be turned on; versioning comes with it).",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -54,9 +55,10 @@ func mbCmd() *cobra.Command {
 func rbCmd() *cobra.Command {
 	var force, dryRun bool
 	cmd := &cobra.Command{
-		Use:   "rb s3://bucket",
-		Short: "Remove a bucket (must be empty, or pass --force)",
-		Args:  cobra.ExactArgs(1),
+		Use:               "rb s3://bucket",
+		Short:             "Remove a bucket (must be empty, or pass --force)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -149,9 +151,10 @@ func rbCmd() *cobra.Command {
 
 func mkdirCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "mkdir s3://bucket/path/... | NAME://dir",
-		Short: "Create a folder marker (S3) or a real folder (source URIs)",
-		Args:  cobra.ExactArgs(1),
+		Use:               "mkdir s3://bucket/path/... | NAME://dir",
+		Short:             "Create a folder marker (S3) or a real folder (source URIs)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeSourceURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
 				return err

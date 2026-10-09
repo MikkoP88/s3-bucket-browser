@@ -155,9 +155,10 @@ func profileRemoveCmd() *cobra.Command {
 
 func profileTestCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "test [NAME]",
-		Short: "Test connectivity for a profile (lightweight doctor)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "test [NAME]",
+		Short:             "Test connectivity for a profile (lightweight doctor)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeProfileNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := store()
 			if err != nil {

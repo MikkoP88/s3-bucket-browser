@@ -1621,17 +1621,20 @@ Streams every object under the prefix and prints the ones matching all filters.
 so 'backup*' also matches nested paths). --ext filters by name extension and --path by a
 substring of the parent directory (both case-insensitive). Sizes accept 10MB / 1.5GB forms;
 ages 30d / 24h; --kind file|dir keeps only files or folders.
+Source URIs (NAME://dir over any saved non-S3 source) work the same way — every
+entry under the path, depth-first, through the source's own engine; --class is
+S3-only (remote trees carry no storage class).
 
 ```
-s3b find s3://bucket[/prefix] [flags]
+s3b find s3://bucket[/prefix] | NAME://dir [flags]
 ```
 
 ### Options
 
 ```
-      --class string     exact storage class (e.g. GLACIER)
+      --class string     exact storage class (e.g. GLACIER; S3 runs only)
       --ext string       comma-separated name extensions (e.g. pdf,jpg; dot optional)
-      --kind string      match only files or only folders (file|dir; folders are keys ending in /)
+      --kind string      match only files or only folders (file|dir)
       --larger string    match objects larger than this (e.g. 10MB)
       --limit int        stop after N matches (0 = unlimited)
   -n, --name string      substring or glob to match against the key

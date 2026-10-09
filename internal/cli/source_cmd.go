@@ -25,6 +25,12 @@ import (
 	"golang.org/x/term"
 )
 
+// sourceTypes is the one law of --type: the add validation accepts
+// exactly this list and TAB completion offers exactly this list.
+var sourceTypes = []string{
+	"s3", "sftp", "scp", "ftp", "ftps", "webdav", "webdavs", "local",
+}
+
 func sourceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "source",
@@ -265,7 +271,7 @@ func sourceAddCmd() *cobra.Command {
 					LocalRoot: root,
 				}
 			default:
-				return usageErr("unsupported source type %q (want s3, sftp, scp, ftp, ftps, webdav, webdavs or local)", typ)
+				return usageErr("unsupported source type %q (want %s)", typ, strings.Join(sourceTypes, ", "))
 			}
 
 			if src.Type != profile.TypeS3 {
@@ -304,6 +310,7 @@ func sourceAddCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&typ, "type", "s3", "source type: s3, sftp, scp, ftp, ftps, webdav, webdavs, local")
+	cmd.RegisterFlagCompletionFunc("type", completeSourceTypes)
 	f.StringVar(&endpoint, "endpoint", "", "endpoint URL (empty = AWS)")
 	f.StringVar(&region, "region", "", "region (default us-east-1)")
 	f.StringVar(&accessKey, "access-key", "", "access key ID ($S3B_ACCESS_KEY)")
@@ -406,9 +413,10 @@ func sourceListCmd() *cobra.Command {
 
 func sourceRemoveCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "remove NAME|ID",
-		Short: "Remove a data source",
-		Args:  cobra.ExactArgs(1),
+		Use:               "remove NAME|ID",
+		Short:             "Remove a data source",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeSourceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := store()
 			if err != nil {
@@ -440,9 +448,10 @@ func sourceRemoveCmd() *cobra.Command {
 
 func sourceTestCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "test [NAME|ID]",
-		Short: "Test connectivity for a source",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "test [NAME|ID]",
+		Short:             "Test connectivity for a source",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeSourceNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			s, err := store()
 			if err != nil {

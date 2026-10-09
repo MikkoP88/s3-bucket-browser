@@ -27,9 +27,10 @@ func lockRetentionCmd() *cobra.Command {
 	var versionID, mode, until string
 	var clear, bypass bool
 	cmd := &cobra.Command{
-		Use:   "retention s3://bucket/key [--version-id ID] [--mode M --until T | --clear]",
-		Short: "Show, set or clear object retention",
-		Args:  cobra.ExactArgs(1),
+		Use:               "retention s3://bucket/key [--version-id ID] [--mode M --until T | --clear]",
+		Short:             "Show, set or clear object retention",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {
@@ -91,6 +92,7 @@ func lockRetentionCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&versionID, "version-id", "", "target a specific version (default: current)")
 	f.StringVar(&mode, "mode", "", "GOVERNANCE or COMPLIANCE")
+	cmd.RegisterFlagCompletionFunc("mode", completeRetentionModes)
 	f.StringVar(&until, "until", "", "RFC3339 timestamp or +Nd/+Nh relative to now")
 	f.BoolVar(&clear, "clear", false, "remove GOVERNANCE retention")
 	f.BoolVar(&bypass, "bypass-governance", false, "send x-amz-bypass-governance-retention (required to shorten/clear GOVERNANCE; the server still checks permissions)")
@@ -101,9 +103,10 @@ func lockLegalHoldCmd() *cobra.Command {
 	var versionID string
 	var on, off bool
 	cmd := &cobra.Command{
-		Use:   "legalhold s3://bucket/key [--version-id ID] [--on|--off]",
-		Short: "Show or toggle the legal hold of an object version",
-		Args:  cobra.ExactArgs(1),
+		Use:               "legalhold s3://bucket/key [--version-id ID] [--on|--off]",
+		Short:             "Show or toggle the legal hold of an object version",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := resolveClient(cmd.Context())
 			if err != nil {

@@ -71,7 +71,8 @@ func copyLikeCmd(name, short string, move bool) *cobra.Command {
 			"SRC or DST being a directory/prefix (or --recursive) copies everything beneath it.\n" +
 			"A destination inside the source's own subtree is refused before a byte moves —\n" +
 			"a move beneath itself would delete the fresh copies with the originals.",
-		Args: cobra.ExactArgs(2),
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: completeTransferURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The S3 client is only needed when one side is s3:// — source-
 			// URI operands dial their own engines (S3 sources included).
@@ -480,9 +481,10 @@ func copyS3ToS3(ctx context.Context, c *s3client.Client, src, dst string, opts c
 func rmCmd() *cobra.Command {
 	var recursive, force, dryRun, versions bool
 	cmd := &cobra.Command{
-		Use:   "rm s3://bucket[/prefix] | NAME://path",
-		Short: "Delete objects or source files (folders need --recursive; large batches --force)",
-		Args:  cobra.ExactArgs(1),
+		Use:               "rm s3://bucket[/prefix] | NAME://path",
+		Short:             "Delete objects or source files (folders need --recursive; large batches --force)",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeSourceURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if r, err := dialSourceURI(cmd.Context(), args[0]); err != nil {
 				return err
@@ -646,7 +648,8 @@ func syncCmd() *cobra.Command {
 			fmt.Sprintf("safety threshold of %d files).", rmForceThreshold) + "\n" +
 			"--watch re-runs the sync until Ctrl+C (default every 30s, --interval to\n" +
 			"change) — quiet on passes that move nothing.",
-		Args: cobra.ExactArgs(2),
+		Args:              cobra.ExactArgs(2),
+		ValidArgsFunction: completeTransferURIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The view client is only needed when an operand is s3:// —
 			// NAME:// operands dial their own engines (S3 sources too).

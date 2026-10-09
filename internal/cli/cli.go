@@ -148,6 +148,8 @@ func NewRoot() *cobra.Command {
 		provenanceCmd(),
 	)
 	root.CompletionOptions.HiddenDefaultCmd = false
+	// --profile completes the saved profile names on every subcommand.
+	root.RegisterFlagCompletionFunc("profile", completeProfileNames)
 	return root
 }
 
@@ -177,6 +179,10 @@ func Execute(args []string) (code int) {
 		color.NoColor = true
 	}
 	root := NewRoot()
+	// Cobra's own speech (help screens, the __complete protocol) rides
+	// the swappable writer like every other line, so capture-based tests
+	// see the completion stream too. In production it is os.Stdout.
+	root.SetOut(out)
 	root.SetArgs(args)
 	if err := root.Execute(); err != nil {
 		var ee exitError
