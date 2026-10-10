@@ -439,6 +439,28 @@ follow [Semantic Versioning](https://semver.org/).
   location), a closed pane hands the seat back to the main view,
   and the preference (`s3b-inspector`) survives Clear All the way
   every face preference does.
+- **The gallery finishes its grammar: tiles that drag, drop and walk** —
+  every tile is a drag source the way its row always was — the same MIME
+  and the same payload (source, bucket, dir), the OS drag-out URL riding
+  the precomputed `DownloadURL` seam in browser mode, and a thumbnail
+  never hijacking the gesture (the picture is not draggable, the tile is)
+  — and folder tiles are drop targets speaking the one grammar the rows
+  speak: the grid’s new `acceptedTypes()` names the payload types both
+  faces receive, a dashed highlight marks the hovered folder, and the drop
+  parses through the same dispatcher — a tile dropped on a folder tile
+  lands the exact transfer the row-on-row drop lands (the in-view
+  server-side copy behind the version choice; a pane-bound folder tile
+  streams through the cross engine the tree targets ride, because the
+  pane binding addresses its source by ID). The keyboard completes too:
+  PageUp and PageDown stride by twenty the way the rows stride, and each
+  face owns its keys through a listener on its own wrap — the grammar
+  that gives the PANE gallery the keyboard it never had (arrows, Enter,
+  Home, End and the page strides walk the pane’s tiles while the main
+  view’s selection stays put, and the pane body’s Backspace climb and
+  grid walk stop propagation so the document chain never double-walks a
+  focused pane), while modified keys (the Alt+arrows history walk) stay
+  the global chain’s — a bare arrow walks tiles, a modified one walks
+  history.
 
 ### Fixed
 

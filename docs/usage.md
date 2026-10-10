@@ -490,8 +490,14 @@ sources carry the
   the rows for tiles: a glyph and name per item, a live thumbnail for
   every image (a bounded preview sliver — no download), the same
   selection, verbs and context menus the rows own, and the arrow keys
-  walking visual order with Enter activating. The choice is a
-  preference and persists across sessions; both views share one
+  walking visual order with Enter activating, Home/End holding the
+  ends and PgUp/PgDn striding a page. Tiles drag the way rows drag —
+  drop files on a folder tile to transfer into it (same-bucket drops
+  default to a move, Shift forces one anywhere, Ctrl keeps a copy),
+  and drag a tile out to another app through the OS gesture. The pane
+  face carries the keyboard too: focus inside the pane and the keys
+  walk the pane tiles while the main view stands still. The choice is
+  a preference and persists across sessions; both views share one
   listing, so filters and sorts speak in either.
 - **Inspector** — F8, the ℹ toolbar button (the pane’s toolbar
   carries its own, both toggling the same panel) or the View menu
@@ -917,6 +923,7 @@ you'll use daily:
 | Ctrl+U / Ctrl+D | upload files / download selection |
 | Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste (in-app paste runs the real transfer; copy also mirrors small selections onto Explorer's clipboard) |
 | Ctrl+A / Ctrl+I | select all / invert selection |
+| PgUp / PgDn | jump a page in the listing (rows or tiles) |
 | Del / Shift+Del | delete window / permanent path |
 | F4 / Shift+F4 | edit the selected file / new file |
 | ← / → (viewer) | walk the folder’s previewable files while the preview is open |

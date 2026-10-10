@@ -12196,6 +12196,134 @@ await step('gallery-view', async () => {
   await evalPage(() => localStorage.removeItem('s3b-gallery-pane'));
 });
 
+// ---------- gallery parity: drag and the pane keyboard ----------
+await step('gallery-parity', async () => {
+  // The tile face completes its parity with the rows: a drag speaks the
+  // row grammar from a tile (the shared payload, the OS drag-out URL,
+  // a folder tile a real drop target), a seated thumbnail never hijacks
+  // the gesture, PageUp/PageDown hold the flat page the rows face
+  // steps — and the pane gallery owns a keyboard: focus inside a face
+  // walks that face alone, never the main grid behind it. Leaves the
+  // world canonical: rows face, pane closed, no preferences seated.
+  const tileByCap = (cap) => elOrNull((c) => Array.from(document.querySelectorAll('#gallery .g-tile'))
+    .find((t) => t.querySelector('.g-cap').textContent === c) || null, cap);
+  const paneTileByCap = (cap) => elOrNull((c) => Array.from(document.querySelectorAll('#local-gallery .g-tile'))
+    .find((t) => t.querySelector('.g-cap').textContent === c) || null, cap);
+  await navObjects('team-files');
+  await resetCalls();
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for gallery-parity');
+  await evalPage(() => { if (document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => !document.getElementById('gallery').classList.contains('hidden')
+    && document.querySelectorAll('#gallery .g-tile').length === 7), 4000, 'parity tiles seated');
+  // the OS drag-out URL a tile dragstart carries (the dragOS law:
+  // click seats the selection, the URLs precompute, then drag)
+  await evalPage(() => {
+    const t = Array.from(document.querySelectorAll('#gallery .g-tile'))
+      .find((x) => x.querySelector('.g-cap').textContent === 'readme.md');
+    t?.click();
+  });
+  await waitFor(async () => (await findCall('MakeDragUrls')) !== null, 4000, 'tile drag urls');
+  const dl = await evalPage(() => {
+    const t = Array.from(document.querySelectorAll('#gallery .g-tile'))
+      .find((x) => x.querySelector('.g-cap').textContent === 'readme.md');
+    if (!t) return null;
+    const dt = new DataTransfer();
+    t.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: dt }));
+    return { url: dt.getData('DownloadURL') || '', uris: (dt.getData('text/uri-list') || '').trim() };
+  });
+  await ok('a tile dragstart carries the OS drag-out URL the rows carry',
+    !!dl && /drag\/0\/readme\.md$/.test(dl.url) && /readme\.md$/.test(dl.uris));
+  // a seated thumbnail never hijacks the gesture: the tile stays the drag
+  await ok('a seated thumbnail never hijacks the tile gesture', waitFor(async () => evalPage(() => {
+    const t = Array.from(document.querySelectorAll('#gallery .g-tile'))
+      .find((x) => x.querySelector('.g-cap').textContent === 'scan.png');
+    const img = t?.querySelector('.g-thumb img');
+    return !!img && img.getAttribute('draggable') === 'false' && t.draggable === true;
+  }), 4000, 'thumb not draggable'));
+  // a tile drop onto a folder tile runs the transfer the rows face runs
+  await resetCalls();
+  await dnd(await tileByCap('readme.md'), await tileByCap('docs'));
+  await vcvChoose(false); // team-files keeps versioning: keep it plain
+  const c = await findCall('CopySelection');
+  await ok('a tile drop onto a folder tile runs the same transfer',
+    !!c && c.args[1][0] === 'readme.md' && c.args[3] === 'docs/');
+  await ok('same-bucket tile drop defaults to move', c && c.args[4] === true);
+  // PageUp/PageDown step the flat page the rows face steps
+  await page.focus('#gallery');
+  await page.keyboard.press('End');
+  await page.keyboard.press('PageUp');
+  await ok('pageup steps back to the first tile', evalPage(() => {
+    const tiles = Array.from(document.querySelectorAll('#gallery .g-tile'));
+    const sel = document.querySelector('#gallery .g-tile.sel .g-cap');
+    return !!sel && !!tiles[0] && sel.textContent === tiles[0].querySelector('.g-cap').textContent;
+  }));
+  await page.keyboard.press('PageDown');
+  await ok('pagedown steps forward to the last tile (the flat 20 clamps)', evalPage(() => {
+    const tiles = Array.from(document.querySelectorAll('#gallery .g-tile'));
+    const sel = document.querySelector('#gallery .g-tile.sel .g-cap');
+    return !!sel && !!tiles[tiles.length - 1] && sel.textContent === tiles[tiles.length - 1].querySelector('.g-cap').textContent;
+  }));
+  // park the main face at its first tile: the pane legs must not move it
+  await page.keyboard.press('Home');
+  // the pane face earns its keyboard: focus inside it walks it alone
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'parity pane root rows');
+  // the face is in-memory state a predecessor may have left ON (the pane
+  // close never resets it) — seat it through the toggle oracle
+  await evalPage(() => {
+    if (document.getElementById('local-btn-gallery').getAttribute('aria-pressed') !== 'true') document.getElementById('local-btn-gallery').click();
+  });
+  await waitFor(() => evalPage(() => !document.getElementById('local-gallery').classList.contains('hidden')
+    && document.querySelectorAll('#local-gallery .g-tile').length === 7), 4000, 'parity pane tiles');
+  await evalPage(() => { const t = document.querySelector('#local-gallery .g-tile'); t.click(); t.focus(); });
+  await page.keyboard.press('ArrowRight');
+  await ok('the pane tile keyboard walks the pane face', evalPage(() => {
+    const tiles = Array.from(document.querySelectorAll('#local-gallery .g-tile'));
+    const sel = document.querySelector('#local-gallery .g-tile.sel .g-cap');
+    return !!sel && !!tiles[1] && sel.textContent === tiles[1].querySelector('.g-cap').textContent;
+  }));
+  await ok('focus inside the pane never moves the main grid', evalPage(() => {
+    const mt = Array.from(document.querySelectorAll('#gallery .g-tile'));
+    const sel = document.querySelector('#gallery .g-tile.sel .g-cap');
+    return !!sel && !!mt[0] && sel.textContent === mt[0].querySelector('.g-cap').textContent;
+  }));
+  // Enter activates the focused folder tile, navigating the pane
+  await evalPage(() => {
+    const t = Array.from(document.querySelectorAll('#local-gallery .g-tile'))
+      .find((x) => (x.dataset.key || '').endsWith('/'));
+    t?.click();
+    t?.focus();
+  });
+  await page.keyboard.press('Enter');
+  await ok('enter activates the focused pane tile', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#local-gallery .g-tile').length === 3), 6000, 'parity pane docs tiles'));
+  // a main tile drops onto a pane folder tile (back at the pane root)
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(() => evalPage(() => document.querySelectorAll('#local-gallery .g-tile').length === 7), 6000, 'parity pane root tiles back');
+  await resetCalls();
+  await dnd(await tileByCap('readme.md'), await paneTileByCap('docs'));
+  await vcvChoose(false);
+  // the pane target addresses its binding (a source ID), so the same drop
+  // streams through the cross engine the tree targets ride — still a
+  // server-side copy for same-client S3, version choice honored
+  const x2 = await findCall('TransferCross');
+  await ok('a tile drop onto a pane folder tile lands the same transfer',
+    !!x2 && x2.args[0][0].source === 'team-files' && x2.args[0][0].key === 'readme.md'
+      && x2.args[2].kind === 's3' && x2.args[2].bucket === 'team-files' && x2.args[2].dir === 'docs/'
+      && x2.args[5] === false);
+  // leave the world canonical: rows face, pane face off, pane closed
+  await evalPage(() => {
+    if (document.getElementById('local-btn-gallery').getAttribute('aria-pressed') === 'true') document.getElementById('local-btn-gallery').click();
+  });
+  await page.click('#local-btn-close');
+  await sleep(200);
+  await evalPage(() => { if (!document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('gallery').classList.contains('hidden')
+    && !document.getElementById('grid-body').classList.contains('hidden')), 4000, 'parity rows back');
+  await evalPage(() => { localStorage.removeItem('s3b-gallery'); localStorage.removeItem('s3b-gallery-pane'); });
+});
+
 // ---------- the inspector: the docked details panel ----------
 await step('inspector', async () => {
   // The selection's own facts the instant the selection changes — no

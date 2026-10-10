@@ -868,7 +868,7 @@ export class Grid {
     });
     row.addEventListener('dragover', (e) => {
       if (!row._model?.isDir) return;
-      if (!(this.accepts || acceptedMimes(this.kind)).some((t) => e.dataTransfer.types.includes(t))) return;
+      if (!this.acceptedTypes().some((t) => e.dataTransfer.types.includes(t))) return;
       e.preventDefault();
       row.classList.add('drop-target');
     });
@@ -877,7 +877,7 @@ export class Grid {
       row.classList.remove('drop-target');
       if (!row._model?.isDir) return;
       let payload = null;
-      for (const t of (this.accepts || acceptedMimes(this.kind))) {
+      for (const t of this.acceptedTypes()) {
         const d = e.dataTransfer.getData(t);
         if (d) { payload = JSON.parse(d); break; }
       }
@@ -895,6 +895,12 @@ export class Grid {
       keys: rows.map((r) => r.key),
       entries: rows.map((r) => ({ key: r.key, size: r.size || 0, isDir: !!r.isDir })),
     };
+  }
+
+  // acceptedTypes names the payload MIME types this grid receives on folder
+  // seats — the one grammar both faces (rows and tiles) speak on dragover.
+  acceptedTypes() {
+    return this.accepts || acceptedMimes(this.kind);
   }
 
   // ---------- keyboard ----------

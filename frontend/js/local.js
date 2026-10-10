@@ -197,8 +197,10 @@ export class SidePane {
     });
     body.addEventListener('keydown', (e) => {
       // the climb key rests while the parent row is hidden (Settings -> View)
-      if (e.key === 'Backspace' && parentRowOn()) { e.preventDefault(); this.up(); return; }
-      if (this.grid.keydown(e)) e.preventDefault();
+      if (e.key === 'Backspace' && parentRowOn()) { e.preventDefault(); e.stopPropagation(); this.up(); return; }
+      // a handled key stops here: focus sitting in the pane means the pane
+      // owns the walk — the document chain must not move the main grid too
+      if (this.grid.keydown(e)) { e.preventDefault(); e.stopPropagation(); }
     });
 
     // pane-owned chrome: navigation and the path bar act on the pane's own

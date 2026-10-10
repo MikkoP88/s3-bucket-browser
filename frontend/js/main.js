@@ -3603,6 +3603,43 @@ function makeGalleryFace(cfg) {
         }
         g.on.context?.(e, g.selectedRows());
       });
+      // drag speaks the row grammar from the tile face: the payload is the
+      // shared selection the rows would drag (a drag off-selection seats
+      // the dragged tile alone, the way a row drag does), the OS drag-out
+      // riding with it — and a folder tile is a drop target exactly the
+      // way a folder row is.
+      tile.draggable = true;
+      tile.addEventListener('dragstart', (e) => {
+        if (!g.sel.has(m.key)) {
+          g.sel.clear();
+          g.sel.add(m.key);
+          syncSel();
+        }
+        e.dataTransfer.setData(g.mime, JSON.stringify(g.dragPayload()));
+        e.dataTransfer.effectAllowed = 'copyMove';
+        g.on.dragOS?.(e, g.selectedRows());
+        g.on.dragstart?.(g.selectedRows());
+      });
+      if (m.isDir) {
+        tile.addEventListener('dragover', (e) => {
+          if (!g.acceptedTypes().some((t) => e.dataTransfer.types.includes(t))) return;
+          e.preventDefault();
+          tile.classList.add('drop-target');
+        });
+        tile.addEventListener('dragleave', () => tile.classList.remove('drop-target'));
+        tile.addEventListener('drop', (e) => {
+          tile.classList.remove('drop-target');
+          let payload = null;
+          for (const t of g.acceptedTypes()) {
+            const d = e.dataTransfer.getData(t);
+            if (d) { payload = JSON.parse(d); break; }
+          }
+          if (!payload) return;
+          e.preventDefault();
+          e.stopPropagation();
+          g.on.drop?.(m, payload, e);
+        });
+      }
       if (isImageRow(m)) {
         const ck = seatKey(m);
         const url = face.cache.get(ck);
@@ -3619,6 +3656,7 @@ function makeGalleryFace(cfg) {
   function seatThumb(thumb, url) {
     const img = el('img', { alt: '' });
     img.src = url;
+    img.draggable = false; // the tile owns the drag, never the picture
     thumb.replaceChildren(img);
   }
 
@@ -3702,6 +3740,18 @@ function makeGalleryFace(cfg) {
     }
   }
 
+  // the wrap owns the keys focus pays inside it: the arrows walk the
+  // tiles, PageUp/PageDown step the same flat page the rows step,
+  // Enter activates — and swallowing a handled key keeps the document
+  // chain from walking a face nobody is looking at (this is the
+  // keyboard the pane gallery rides; the main view keeps its global
+  // fallback for a focus parked nowhere).
+  $(cfg.wrapId).addEventListener('keydown', (e) => {
+    if (face.on && tileWalk(cfg.wrapId, face, cfg.gridOf(), e)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  });
   face.apply = apply;
   face.render = render;
   face.syncSel = syncSel;
@@ -3729,20 +3779,26 @@ const paneGallery = makeGalleryFace({
   gridOf: () => localPane.grid, refOf: paneGalleryRef,
 });
 
-// galleryKeydown is the tile face of the grid keyboard: arrows walk
-// the selection in visual order (Up and Down step by the laid-out
-// column count, computed from the geometry each press pays), Enter
+// tileWalk is the tile face of the grid keyboard: arrows walk the
+// selection in visual order (Up and Down step by the laid-out column
+// count, computed from the geometry each press pays), PageUp and
+// PageDown step the same flat page the rows face steps, Enter
 // activates — and every other verb the global chain owns (Delete, F2,
 // F4, Ctrl+A, the clipboard) rides the shared selection unchanged,
-// because it sits above this routing. The main view owns it; the
-// pane face is click-only — the pane rows keyboard stays with the
-// pane rows.
-function galleryKeydown(e) {
-  const rows = grid.rows;
+// because it sits above this routing. Both faces speak it: the main
+// view through the global fallback (galleryKeydown below), the pane
+// gallery through the wrap listener the face itself wires — focus
+// inside a face owns that face.
+function tileWalk(wrapId, face, g, e) {
+  // modifier combos belong to the global chain (Alt+arrows the history
+  // walk and the parent climb, Ctrl+letters the verbs) — the wrap sits
+  // below it in the bubble path and must let them pass
+  if (e.altKey || e.ctrlKey || e.metaKey) return false;
+  const rows = g.rows;
   const n = rows.length;
   if (!n) return false;
-  const tiles = [...$('gallery').children];
-  const idx = Math.max(0, rows.findIndex((r) => r.key === grid.focusKey));
+  const tiles = [...$(wrapId).children];
+  const idx = Math.max(0, rows.findIndex((r) => r.key === g.focusKey));
   let ni = null;
   switch (e.key) {
     case 'ArrowDown':
@@ -3757,26 +3813,32 @@ function galleryKeydown(e) {
     }
     case 'ArrowRight': ni = idx + 1; break;
     case 'ArrowLeft': ni = idx - 1; break;
+    case 'PageDown': ni = Math.min(n - 1, idx + 20); break;
+    case 'PageUp': ni = Math.max(0, idx - 20); break;
     case 'Home': ni = 0; break;
     case 'End': ni = n - 1; break;
     case 'Enter': {
-      const m = grid.rowByKey(grid.focusKey);
-      if (m) grid.on.activate?.(m);
+      const m = g.rowByKey(g.focusKey);
+      if (m) g.on.activate?.(m);
       return true;
     }
     default: return false;
   }
   e.preventDefault();
   ni = Math.max(0, Math.min(n - 1, ni));
-  grid.sel.clear();
-  grid.sel.add(rows[ni].key);
-  grid.focusKey = rows[ni].key;
-  grid.anchorKey = rows[ni].key;
-  gallery.syncSel();
+  g.sel.clear();
+  g.sel.add(rows[ni].key);
+  g.focusKey = rows[ni].key;
+  g.anchorKey = rows[ni].key;
+  face.syncSel();
   const tile = tiles[ni];
   if (tile) tile.scrollIntoView({ block: 'nearest' });
-  grid.on.select?.(grid.selectedRows());
+  g.on.select?.(g.selectedRows());
   return true;
+}
+
+function galleryKeydown(e) {
+  return tileWalk('gallery', gallery, grid, e);
 }
 
 function galleryOwnsView() {
