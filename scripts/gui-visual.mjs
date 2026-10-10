@@ -12037,6 +12037,165 @@ await step('view-restore', async () => {
   }));
 });
 
+// ---------- the gallery: the tile face of the listing ----------
+await step('gallery-view', async () => {
+  // Glyphs by type, a live thumbnail for every image through the
+  // capped preview read (a sliver, never a download), the rows
+  // selection and verbs shared, the tile keyboard walking visual
+  // order — the main view only. A faulted thumb read stays silent
+  // under the glyph and retries on the next seating; the preference
+  // persists beside the column layouts and survives a keep-staged
+  // reload (settle t1 after the re-seeded boot, the way view-restore
+  // does). Leaves the world canonical: rows face, no preference,
+  // team-files root seated.
+  const settleT1 = () => evalPage(() => {
+    const t1 = (window.__shim.world.transfers || []).find((x) => x.id === 't1');
+    if (t1 && t1.status === 'running') { t1.status = 'done'; t1.sentBytes = t1.totalBytes; }
+  });
+  const tileByCap = (cap) => elOrNull((c) => Array.from(document.querySelectorAll('#gallery .g-tile'))
+    .find((t) => t.querySelector('.g-cap').textContent === c) || null, cap);
+  const paneTileByCap = (cap) => elOrNull((c) => Array.from(document.querySelectorAll('#local-gallery .g-tile'))
+    .find((t) => t.querySelector('.g-cap').textContent === c) || null, cap);
+  await navObjects('team-files');
+  await resetCalls();
+  // the keyboard legs pin the full-width geometry (the laid-out column
+  // count feeding the clamp): close the pane if an earlier step left it
+  // standing
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for gallery');
+  await page.click('#btn-gallery');
+  await ok('the gallery seats the listing as tiles over the hidden rows', waitFor(async () => evalPage(() =>
+    !document.getElementById('gallery').classList.contains('hidden')
+    && document.getElementById('grid-body').classList.contains('hidden')
+    && document.querySelectorAll('#gallery .g-tile').length === 7), 4000, 'tiles seated'));
+  await shot('gallery');
+  await ok('a folder tile carries its glyph and caption', (async () => {
+    const h = await tileByCap('docs');
+    return !!h && await h.asElement().evaluate((t) =>
+      t.querySelector('.g-thumb .icon').textContent.codePointAt(0) === 0x1F4C1
+      && t.querySelector('.g-cap').textContent === 'docs');
+  })());
+  await ok('the image tile seats a thumbnail through the capped preview read', waitFor(async () => {
+    const c = await findCall('PreviewData');
+    return !!c && c.args[0]?.maxBytes === 196608 && c.args[0]?.kind === 's3'
+      && await evalPage(() => {
+        const t = Array.from(document.querySelectorAll('#gallery .g-tile'))
+          .find((x) => x.querySelector('.g-cap').textContent === 'scan.png');
+        const src = t?.querySelector('.g-thumb img')?.getAttribute('src') || '';
+        return src.startsWith('data:image/');
+      });
+  }, 4000, 'thumb seated'));
+  await ok('a text tile keeps its glyph — no image element', evalPage(() => {
+    const t = Array.from(document.querySelectorAll('#gallery .g-tile'))
+      .find((x) => x.querySelector('.g-cap').textContent === 'readme.md');
+    return !!t && !t.querySelector('.g-thumb img') && !!t.querySelector('.g-thumb .icon');
+  }));
+  // selection speaks the row tokens: click, ctrl+a, escape
+  const scanTile = await tileByCap('scan.png');
+  await scanTile.asElement().click();
+  await ok('a click seats one selection the status bar speaks', evalPage(() =>
+    document.querySelector('#gallery .g-tile.sel .g-cap')?.textContent === 'scan.png')
+    && (await txt('#status-selection')).trim().startsWith('1 of'));
+  await page.keyboard.press('Control+a');
+  await ok('ctrl+a selects every tile the rows own', evalPage(() =>
+    document.querySelectorAll('#gallery .g-tile.sel').length === 7));
+  await page.keyboard.press('Escape');
+  await ok('escape clears the tile selection with the rows', evalPage(() =>
+    document.querySelectorAll('#gallery .g-tile.sel').length === 0));
+  // the soft-fail law: a faulted read stays silent and retries
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await evalPage(() => { window.__shim.world.fault = { preview: 'the bridge refused the glance' }; });
+  await (await tileByCap('photos')).asElement().dblclick();
+  await waitFor(async () => evalPage(() => document.querySelectorAll('#gallery .g-tile').length === 2), 6000, 'photos tiles');
+  await ok('a faulted thumb read stays silent under the glyph', (async () => {
+    await sleep(400);
+    return evalPage(() => document.querySelectorAll('#gallery .g-thumb img').length === 0
+      && !document.getElementById('toasts').textContent.includes('Preview failed'));
+  })());
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await evalPage(() => document.getElementById('btn-refresh').click());
+  await ok('recovery re-seats the thumbnails the fault starved', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#gallery .g-thumb img').length === 2), 4000, 'faulted thumbs recover'));
+  // the viewer and the context menu ride the same verbs
+  await (await tileByCap('img-001.jpg')).asElement().dblclick();
+  await ok('a double-click seats the viewer from a tile', waitFor(async () => evalPage(() =>
+    !document.getElementById('viewer').classList.contains('hidden')
+    && document.getElementById('viewer-name').textContent === 'img-001.jpg'), 4000, 'viewer from tile'));
+  await page.keyboard.press('Escape');
+  await ok('escape closes the viewer and re-seats the gallery', evalPage(() =>
+    document.getElementById('viewer').classList.contains('hidden')
+    && !document.getElementById('gallery').classList.contains('hidden')));
+  await (await tileByCap('img-002.jpg')).asElement().click({ button: 'right' });
+  await ok('the tile context menu opens with the row verbs', waitFor(async () => evalPage(() => {
+    const items = Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'));
+    return items.length > 0 && items.some((i) => /^preview/i.test(i.textContent));
+  }), 3000, 'tile ctxmenu'));
+  await page.keyboard.press('Escape');
+  // the tile keyboard: visual order, Home/Enter, the walk back
+  await page.keyboard.press('Alt+ArrowLeft');
+  await waitFor(async () => evalPage(() => document.querySelectorAll('#gallery .g-tile').length === 7), 6000, 'back to root tiles');
+  await page.focus('#gallery');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowRight');
+  await ok('arrow keys walk the tiles in visual order', evalPage(() =>
+    document.querySelector('#gallery .g-tile.sel .g-cap')?.textContent === 'photos'));
+  await page.keyboard.press('ArrowDown');
+  await ok('arrow down steps by the laid-out row', evalPage(() => {
+    const tiles = Array.from(document.querySelectorAll('#gallery .g-tile'));
+    const caps = tiles.map((t) => t.querySelector('.g-cap').textContent);
+    const sel = document.querySelector('#gallery .g-tile.sel .g-cap');
+    if (!sel) return false;
+    const i = caps.indexOf(sel.textContent);
+    const top0 = tiles[0].offsetTop;
+    let cols = 1;
+    for (let k = 1; k < tiles.length; k++) { if (tiles[k].offsetTop === top0) cols++; else break; }
+    return i === Math.min(caps.length - 1, cols);
+  }));
+  await page.keyboard.press('Home');
+  await page.keyboard.press('Enter');
+  await ok('enter activates the focused tile', waitFor(async () =>
+    (await rowKeys()).includes('docs/notes.md')
+    && evalPage(() => document.querySelectorAll('#gallery .g-tile').length === 3), 6000, 'docs tiles'));
+  await page.keyboard.press('Alt+ArrowLeft');
+  await ok('alt+left walks back with the tiles following', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#gallery .g-tile').length === 7), 6000, 'root tiles back'));
+  // the preference survives a keep-staged reload (root seat restored)
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE);
+  await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'boot after gallery reload');
+  await settleT1();
+  await ok('the preference re-seats the tiles after a reload', waitFor(async () => evalPage(() =>
+    !document.getElementById('gallery').classList.contains('hidden')
+    && document.querySelectorAll('#gallery .g-tile').length === 7), 8000, 'tiles after boot'));
+  // leave the world canonical: rows face, preference gone, root seated
+  await page.click('#btn-gallery');
+  await ok('toggling back returns the rows face', waitFor(async () => evalPage(() =>
+    document.getElementById('gallery').classList.contains('hidden')
+    && !document.getElementById('grid-body').classList.contains('hidden'))
+    && (await rowKeys()).length === 7, 4000, 'rows back'));
+  await evalPage(() => localStorage.removeItem('s3b-gallery'));
+  // the pane carries the same tile face — the toolbar family parity
+  // the dual-pane step pins — with its own toggle and preference
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'pane root rows');
+  await page.click('#local-btn-gallery');
+  await ok('the pane seats its own tile face over its rows', waitFor(async () => evalPage(() =>
+    !document.getElementById('local-gallery').classList.contains('hidden')
+    && document.getElementById('local-grid-body').classList.contains('hidden')
+    && document.querySelectorAll('#local-gallery .g-tile').length === 7), 4000, 'pane tiles'));
+  await ok('the pane thumbnail seats through the binding read', waitFor(async () => evalPage(() => {
+    const t = Array.from(document.querySelectorAll('#local-gallery .g-tile'))
+      .find((x) => x.querySelector('.g-cap').textContent === 'scan.png');
+    return (t?.querySelector('.g-thumb img')?.getAttribute('src') || '').startsWith('data:image/');
+  }), 4000, 'pane thumb'));
+  await (await paneTileByCap('docs')).asElement().dblclick();
+  await ok('a pane tile double-click navigates the pane', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#local-gallery .g-tile').length === 3), 6000, 'pane docs tiles'));
+  await evalPage(() => document.getElementById('local-btn-close').click());
+  await sleep(200);
+  await evalPage(() => localStorage.removeItem('s3b-gallery-pane'));
+});
+
 await step('toasts-cleanup', async () => {
   await ok('toasts appeared during the matrix', evalPage(() => document.getElementById('toasts').children.length > 0 || true));
   await shot('final');

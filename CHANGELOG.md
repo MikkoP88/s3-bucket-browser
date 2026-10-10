@@ -390,6 +390,34 @@ follow [Semantic Versioning](https://semver.org/).
   floating view, not the workspace); a malformed or absent store is
   simply ignored.
 
+- **The gallery: the listing grows a tile face** — the toolbar's new
+  🖼 button seats every folder and file as a tile (a glyph by type, its
+  name beneath), and every image tile earns a live thumbnail through
+  the same preview grammar the viewer owns: a bounded PreviewData
+  sliver (192 KB, `maxBytes` threading through the Go side's caller
+  cap — the Range request, the remote engine lock and the local read
+  all honor it now), never a download and never a byte on disk beyond
+  the bridge. The tiles share the rows model, selection and verbs
+  outright — click, ctrl/shift grammar, Ctrl+A, Escape, the status
+  bar, the toolbar actions, the context menu, double-click activating
+  folders and seating the viewer — so the tile face is a view of the
+  listing, not a second one; the arrow keys walk visual order (Up and
+  Down stepping by the laid-out column count), Enter activates, Home
+  and End hold the ends. Thumbnails load lazily through an
+  IntersectionObserver (a pool of four reads, a 240-entry cache swept
+  on overflow), a refused sniff or a failed read keeps the glyph
+  silently and retries on the next seating, an SVG's text/xml sniff is
+  vouched by its extension the way the viewer always has, and a
+  generation token keeps a view that moved on from paying for tiles
+  nobody seats anymore. The secondary pane carries its own face — the
+  same button family the pane toolbar owes the main view, its own
+  toggle and preference (`s3b-gallery-pane`), speaking the binding
+  grammar so a pane bound to another source thumbnails through it.
+  The preference persists beside the column layouts and survives
+  Clear All. Underneath, the model hook widened: streamed pages
+  (appendRows) fire the same on.model contract apply() always did,
+  because a streamed page is a model change too.
+
 ### Fixed
 
 - **A sourceless app could stick on a loading skeleton** — with no

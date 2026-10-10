@@ -1,6 +1,6 @@
 // S3 Bucket Browser — application shell (Explorer layout).⁠​‌‌‌​​‌‌​​‌‌​​‌‌​‌‌​​​‌​​​‌​‌‌​‌​‌‌‌​​​​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌‌​​‌‌​​​‌‌​‌‌​​‌​‌​​‌​‌‌​‌​‌‌‌​‌‌​​​‌‌​​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​​​​‌‌​‌‌​‌‌‌‌​‌‌‌​​​​​‌‌‌‌​​‌​‌‌‌​​‌​​‌‌​‌​​‌​‌‌​​‌‌‌​‌‌​‌​​​​‌‌‌​‌​​​​‌​​​​​​​‌​‌​​​​‌‌​​​‌‌​​‌​‌​​‌​​‌​​​​​​​‌‌​​‌​​​‌‌​​​​​​‌‌​​‌​​​‌‌​‌‌​​​‌​​​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​​‌​​​​​​‌​‌​​​​​‌‌​​‌​‌​‌‌‌​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌‌​​‌‌​​‌​‌​‌‌​‌‌‌​​​‌​​​​​​​‌​‌​​​​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌​​‌​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌​‌​​​​​‌‌​‌‌‌‌​‌‌​‌‌​​​‌‌‌‌​​‌​‌​​​‌‌​​‌‌​‌‌‌‌​‌‌‌​​‌​​‌‌​‌‌​‌​​‌​​​​​​‌​​‌​​‌​‌‌​‌‌‌​​‌‌‌​‌​​​‌‌​​‌​‌​‌‌‌​​‌​​‌‌​‌‌‌​​‌‌​​​​‌​‌‌​‌‌​​​​‌​​​​​​‌​‌​‌​‌​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​‌​​‌‌​​​‌‌​‌​​‌​‌‌​​​‌‌​‌‌​​‌​‌​‌‌​‌‌‌​​‌‌‌​​‌‌​‌‌​​‌​‌​​‌​​​​​​​‌‌​​​‌​​‌​‌‌‌​​​‌‌​​​​​​‌​‌‌‌​​​‌‌​​​​​​‌​​​​​​‌‌‌‌‌​​​​‌​​​​​​‌‌​​‌‌‌​‌‌​‌​​‌​‌‌‌​‌​​​‌‌​‌​​​​‌‌‌​‌​‌​‌‌​​​‌​​​‌​‌‌‌​​‌‌​​​‌‌​‌‌​‌‌‌‌​‌‌​‌‌​‌​​‌​‌‌‌‌​‌​​‌‌​‌​‌‌​‌​​‌​‌‌​‌​‌‌​‌‌​‌​‌‌​‌‌​‌‌‌‌​‌​‌​​​​​​‌‌‌​​​​​‌‌‌​​​​​‌​‌‌‌‌​‌‌‌​​‌‌​​‌‌​​‌‌​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​‌​‌​‌‌​​​‌‌​‌‌​‌​‌‌​‌‌​​‌​‌​‌‌‌​‌​​​​‌​‌‌​‌​‌‌​​​‌​​‌‌‌​​‌​​‌‌​‌‌‌‌​‌‌‌​‌‌‌​‌‌‌​​‌‌​‌‌​​‌​‌​‌‌‌​​‌​⁠
 import { api, onEvent, subscribeStream } from './api.js';
-import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl, slashPath } from './util.js';
+import { el, fmtBytes, fmtSpeed, fmtDate, basename, parentPrefix, debounce, srcIconEl, slashPath, fileIcon } from './util.js';
 import { nav, parentOf, clipboard, clipHasItems, view } from './state.js';
 import { Grid, COLUMNS, DEFAULT_COLS, saveColState } from './grid.js';
 import { Tree } from './tree.js';
@@ -335,6 +335,14 @@ async function boot() {
   wireDrop();
   wireEvents();
   nav.onNavigate(rememberView); // the seat persists from here on
+  grid.on.model = () => gallery.render(); // the tiles follow the rows model
+  localPane.grid.on.model = () => paneGallery.render(); // the pane tiles follow theirs
+  // the pane status bar keeps speaking through its own on.select —
+  // the tiles mirror the pane selection beside it
+  const paneSelect = localPane.grid.on.select;
+  localPane.grid.on.select = (rows) => { paneSelect?.(rows); paneGallery.syncSel(); };
+  gallery.apply(); // seat each tile face when its preference is on
+  paneGallery.apply();
 
   // Log drawer: mount (subscription is wired in wireEvents) and restore
   // visibility from the last session.
@@ -1986,7 +1994,9 @@ function refreshDragUrls() {
 }
 
 function wireGrid() {
-  grid.on.select = () => { updateStatus(); refreshDragUrls(); };
+  // the tile face follows every selection change the rows own — the
+  // grid verbs (Ctrl+A, Invert, the Escape clear) all re-emit here
+  grid.on.select = () => { updateStatus(); refreshDragUrls(); gallery.syncSel(); };
   grid.on.dragOS = (e, rows) => {
     // OS drag-out. Desktop: a plain drag of a files-only selection floats
     // a native OLE drag — Go stages the selection and Explorer drops real
@@ -2229,6 +2239,7 @@ function wireLocalPane() {
   $('local-btn-upload').onclick = () => openMenu($('local-btn-upload'), uploadChoices(paneUploadFiles, paneUploadFolder));
   $('local-btn-download').onclick = () => paneDownload();
   $('local-btn-find').onclick = paneSearch;
+  wireGalleryToggle('local-btn-gallery', paneGallery, 's3b-gallery-pane', 'local-gallery');
   $('local-btn-newfolder').onclick = () => paneNewFolder();
   $('local-btn-newfile').onclick = () => paneNewFile();
 }
@@ -3480,6 +3491,294 @@ function hideViewer() {
   viewer.text = '';
 }
 
+// ============================ gallery =============================
+// The gallery is the tile face of the same listing: folder and file
+// glyphs by type, a live thumbnail for every image (a bounded
+// PreviewData sliver — never a download, never a byte on disk
+// beyond the bridge), sharing the rows model, selection and verbs
+// so every toolbar action and selection key works exactly as it
+// does in the rows view. makeGalleryFace builds one face per grid
+// seat — the main view and the secondary pane each own theirs,
+// with a button, a container and a preference of their own.
+
+const GALLERY_THUMB_BYTES = 192 * 1024; // a thumbnail sliver of the preview bound
+const GALLERY_POOL = 4;                 // thumb reads in flight (a pool, not a stampede)
+const GALLERY_CACHE_MAX = 240;          // data URLs kept across scrolls (a sweep, not a ledger)
+
+// wireGalleryToggle is the one wiring every face shares: the toggle
+// is a preference, not a session seat — it persists beside the
+// column layouts and survives Clear All the same way.
+function wireGalleryToggle(btnId, face, prefKey, wrapId) {
+  $(btnId).onclick = () => {
+    face.on = !face.on;
+    try { localStorage.setItem(prefKey, face.on ? '1' : '0'); }
+    catch { /* a quota problem must never break the toggle */ }
+    face.apply();
+    if (face.on) $(wrapId).focus();
+  };
+}
+
+function makeGalleryFace(cfg) {
+  const face = {
+    on: localStorage.getItem(cfg.prefKey) === '1',
+    seq: 0,           // render generation: a stale fetch never seats a tile
+    cache: new Map(), // seat key -> dataURL ('' means the glyph already said it)
+    io: null,         // IntersectionObserver over the visible tiles
+    queue: [],        // tiles waiting for a thumb read
+    inFlight: 0,
+  };
+
+  // seatKey names one thumbnail seat: the view it lives in plus the
+  // key — the same file under a different prefix (or the same name in
+  // another source) is a different picture.
+  const seatKey = (m) => {
+    const loc = cfg.refOf() || {};
+    return `${loc.kind}|${loc.source || ''}|${loc.bucket || ''}|${loc.prefix || loc.path || loc.dir || ''}|${m.key}`;
+  };
+
+  // apply seats the tile face or the rows face. The rows head and body
+  // hide (the model underneath keeps running — filters, sorts and
+  // selection all still speak), and returning to rows re-locks the
+  // head width the hidden plane could not track.
+  function apply() {
+    const g = cfg.gridOf();
+    $(cfg.btnId).setAttribute('aria-pressed', face.on ? 'true' : 'false');
+    $(cfg.wrapId).classList.toggle('hidden', !face.on);
+    g.headClip.classList.toggle('hidden', face.on);
+    g.body.classList.toggle('hidden', face.on);
+    if (face.on) render();
+    else { g.syncHeadWidth(); g.syncHeadScroll(); g.positionHandles(); }
+  }
+
+  // render builds the tiles from the live rows model — every model
+  // change (data, filter, sort, selection prune) re-seats them through
+  // the on.model hook. Image tiles start as glyphs and fetch their
+  // sliver lazily as they scroll into view.
+  function render() {
+    const g = cfg.gridOf();
+    const seq = ++face.seq;
+    face.queue.length = 0;
+    // a fresh model forgets the cached misses: a thumb a transient fault
+    // starved retries on the next seating, while the hits stay instant
+    for (const [k, v] of face.cache) if (!v) face.cache.delete(k);
+    if (face.io) face.io.disconnect();
+    const wrap = $(cfg.wrapId);
+    wrap.replaceChildren();
+    if (!face.on) return;
+    if (!face.io) {
+      face.io = new IntersectionObserver((ents) => {
+        for (const en of ents) {
+          if (!en.isIntersecting) continue;
+          face.io.unobserve(en.target);
+          face.queue.push(en.target);
+          pump(face.seq); // the live generation, not the one this observer was born under
+        }
+      }, { root: wrap, rootMargin: '160px' });
+    }
+    for (const m of g.rows) {
+      const tile = el('button', { class: 'g-tile', type: 'button', role: 'option' });
+      tile.dataset.key = m.key;
+      if (g.focusKey == null) g.focusKey = m.key;
+      const sel = g.sel.has(m.key);
+      tile.classList.toggle('sel', sel);
+      tile.setAttribute('aria-selected', sel ? 'true' : 'false');
+      const thumb = el('div', { class: 'g-thumb' },
+        el('span', { class: 'icon', text: fileIcon(m.name || m.key, m.isDir) }));
+      tile.appendChild(thumb);
+      tile.appendChild(el('div', { class: 'g-cap', text: m.name || m.key || '' }));
+      tile.addEventListener('click', (e) => click(e, m));
+      tile.addEventListener('dblclick', () => g.on.activate?.(m));
+      tile.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (!g.sel.has(m.key)) {
+          g.sel.clear();
+          g.sel.add(m.key);
+          g.focusKey = m.key;
+          g.anchorKey = m.key;
+          syncSel();
+          g.on.select?.(g.selectedRows());
+        }
+        g.on.context?.(e, g.selectedRows());
+      });
+      if (isImageRow(m)) {
+        const ck = seatKey(m);
+        const url = face.cache.get(ck);
+        if (url) seatThumb(thumb, url);
+        else if (!face.cache.has(ck)) {
+          tile.dataset.thumb = ck;
+          face.io.observe(tile);
+        } // a cached miss ('') keeps its glyph: the sniff or the wire already spoke
+      }
+      wrap.appendChild(tile);
+    }
+  }
+
+  function seatThumb(thumb, url) {
+    const img = el('img', { alt: '' });
+    img.src = url;
+    thumb.replaceChildren(img);
+  }
+
+  // pump keeps at most GALLERY_POOL thumb reads in flight; the
+  // generation token keeps a view that moved on from paying for tiles
+  // nobody seats anymore.
+  function pump(seq) {
+    const g = cfg.gridOf();
+    while (face.inFlight < GALLERY_POOL && face.queue.length) {
+      if (seq !== face.seq) { face.queue.length = 0; return; }
+      const tile = face.queue.shift();
+      const ck = tile.dataset.thumb;
+      if (!ck || !tile.isConnected) continue;
+      const m = g.rowByKey(tile.dataset.key);
+      if (!m) continue;
+      face.inFlight++;
+      fetchThumb(tile, m, ck).finally(() => { face.inFlight--; pump(face.seq); });
+    }
+  }
+
+  // fetchThumb reads one sliver (the viewer grammar plus the caller
+  // cap) and seats it only when the sniff agrees the bytes are an
+  // image — the SVG extension law vouches the way it always has. A
+  // refused sniff, a failed read or a stale generation all keep the
+  // glyph: the tile stays honest under the name either way.
+  async function fetchThumb(tile, m, ck) {
+    const seq = face.seq;
+    try {
+      const t = viewerTarget(cfg.refOf(), m);
+      t.maxBytes = GALLERY_THUMB_BYTES;
+      const p = await api.PreviewData(t);
+      if (seq !== face.seq) return;
+      const svg = /\.svg$/i.test(m.name || '');
+      const sniffImg = p.contentType.startsWith('image/')
+        || (svg && p.contentType.startsWith('text/xml'));
+      if (!sniffImg) { cachePut(ck, ''); return; }
+      const ct = svg && !p.contentType.startsWith('image/') ? 'image/svg+xml' : p.contentType;
+      const url = `data:${ct};base64,${p.data}`;
+      cachePut(ck, url);
+      if (tile.isConnected) seatThumb(tile.firstElementChild, url);
+    } catch {
+      cachePut(ck, '');
+    }
+  }
+
+  function cachePut(ck, url) {
+    if (face.cache.size >= GALLERY_CACHE_MAX) face.cache.clear();
+    face.cache.set(ck, url);
+  }
+
+  // click is the tile grammar of the row click: plain clicks seat one,
+  // ctrl toggles, shift ranges from the anchor — all into the shared
+  // selection so every verb sees the same rows.
+  function click(e, m) {
+    const g = cfg.gridOf();
+    if (e.ctrlKey || e.metaKey) {
+      if (g.sel.has(m.key)) g.sel.delete(m.key); else g.sel.add(m.key);
+    } else if (e.shiftKey && g.anchorKey) {
+      const a = g.rows.findIndex((r) => r.key === g.anchorKey);
+      const b = g.rows.findIndex((r) => r.key === m.key);
+      if (a >= 0 && b >= 0) {
+        g.sel.clear();
+        for (let i = Math.min(a, b); i <= Math.max(a, b); i++) g.sel.add(g.rows[i].key);
+      }
+    } else {
+      g.sel.clear();
+      g.sel.add(m.key);
+      g.anchorKey = m.key;
+    }
+    g.focusKey = m.key;
+    syncSel();
+    g.on.select?.(g.selectedRows());
+  }
+
+  function syncSel() {
+    const g = cfg.gridOf();
+    for (const tile of $(cfg.wrapId).children) {
+      const on = g.sel.has(tile.dataset.key);
+      tile.classList.toggle('sel', on);
+      tile.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+  }
+
+  face.apply = apply;
+  face.render = render;
+  face.syncSel = syncSel;
+  face.owns = () => face.on && !$(cfg.wrapId).classList.contains('hidden');
+  return face;
+}
+
+const gallery = makeGalleryFace({
+  btnId: 'btn-gallery', wrapId: 'gallery', prefKey: 's3b-gallery',
+  gridOf: () => grid, refOf: () => nav.current,
+});
+
+// paneGalleryRef speaks the binding grammar the pane owns: an S3
+// binding names its own source and bucket, a remote binding its
+// source, a local binding the workstation itself — viewerTarget and
+// the seat key do the rest.
+function paneGalleryRef() {
+  const b = localPane.binding || {};
+  if (b.kind === 'remote') return { kind: 'remote', source: b.source };
+  if (b.kind === 's3') return { kind: 's3', source: b.source, bucket: localPane.bucket };
+  return { kind: 'local' };
+}
+const paneGallery = makeGalleryFace({
+  btnId: 'local-btn-gallery', wrapId: 'local-gallery', prefKey: 's3b-gallery-pane',
+  gridOf: () => localPane.grid, refOf: paneGalleryRef,
+});
+
+// galleryKeydown is the tile face of the grid keyboard: arrows walk
+// the selection in visual order (Up and Down step by the laid-out
+// column count, computed from the geometry each press pays), Enter
+// activates — and every other verb the global chain owns (Delete, F2,
+// F4, Ctrl+A, the clipboard) rides the shared selection unchanged,
+// because it sits above this routing. The main view owns it; the
+// pane face is click-only — the pane rows keyboard stays with the
+// pane rows.
+function galleryKeydown(e) {
+  const rows = grid.rows;
+  const n = rows.length;
+  if (!n) return false;
+  const tiles = [...$('gallery').children];
+  const idx = Math.max(0, rows.findIndex((r) => r.key === grid.focusKey));
+  let ni = null;
+  switch (e.key) {
+    case 'ArrowDown':
+    case 'ArrowUp': {
+      const top0 = tiles.length ? tiles[0].offsetTop : 0;
+      let cols = 1;
+      for (let i = 1; i < tiles.length; i++) {
+        if (tiles[i].offsetTop === top0) cols++; else break;
+      }
+      ni = idx + (e.key === 'ArrowDown' ? cols : -cols);
+      break;
+    }
+    case 'ArrowRight': ni = idx + 1; break;
+    case 'ArrowLeft': ni = idx - 1; break;
+    case 'Home': ni = 0; break;
+    case 'End': ni = n - 1; break;
+    case 'Enter': {
+      const m = grid.rowByKey(grid.focusKey);
+      if (m) grid.on.activate?.(m);
+      return true;
+    }
+    default: return false;
+  }
+  e.preventDefault();
+  ni = Math.max(0, Math.min(n - 1, ni));
+  grid.sel.clear();
+  grid.sel.add(rows[ni].key);
+  grid.focusKey = rows[ni].key;
+  grid.anchorKey = rows[ni].key;
+  gallery.syncSel();
+  const tile = tiles[ni];
+  if (tile) tile.scrollIntoView({ block: 'nearest' });
+  grid.on.select?.(grid.selectedRows());
+  return true;
+}
+
+function galleryOwnsView() {
+  return gallery.owns();
+}
 function viewerWalk(step) {
   if (!viewer.open) return;
   const next = viewer.idx + step;
@@ -4983,6 +5282,7 @@ function wireToolbar() {
   $('btn-compare').onclick = compareDirs;
   $('btn-sync').onclick = synchronizePair;
   $('btn-find').onclick = openSearch;
+  wireGalleryToggle('btn-gallery', gallery, 's3b-gallery', 'gallery');
   $('btn-newfolder').onclick = newFolder;
   $('btn-newfile').onclick = newFile;
   $('btn-theme').onclick = toggleTheme;
@@ -5791,8 +6091,9 @@ function wireKeys() {
       grid.clearSelection(); return;
     }
 
-    // grid navigation keys (arrows, Enter, type-to-jump)
-    if (grid.keydown(e)) e.preventDefault();
+    // grid navigation keys (arrows, Enter, type-to-jump) — the tile
+    // face walks its own visual order when the gallery owns the view
+    if (galleryOwnsView() ? galleryKeydown(e) : grid.keydown(e)) e.preventDefault();
   });
 }
 

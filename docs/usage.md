@@ -486,6 +486,13 @@ sources carry the
   files live: S3 objects, remote sources, workstation files and the
   dual pane. Files past 16 MiB are refused aloud — download those
   to view them.
+- **Gallery view** — the 🖼 toolbar button (or the pane's own) trades
+  the rows for tiles: a glyph and name per item, a live thumbnail for
+  every image (a bounded preview sliver — no download), the same
+  selection, verbs and context menus the rows own, and the arrow keys
+  walking visual order with Enter activating. The choice is a
+  preference and persists across sessions; both views share one
+  listing, so filters and sorts speak in either.
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
   *New file…* in the context menu opens a small dialog for a file name
   and type (a dozen common extensions, or none). The empty file is

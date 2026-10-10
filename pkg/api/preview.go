@@ -28,6 +28,22 @@ type PreviewTarget struct {
 	Bucket string `json:"bucket"`
 	Key    string `json:"key"`
 	Path   string `json:"path"`
+	// MaxBytes caps this read below PreviewMaxBytes when the caller
+	// speaks it (a thumbnail asks for a sliver where the viewer asks
+	// for the whole glance). Zero and negatives mean the full bound;
+	// anything past the bound is clamped to it.
+	MaxBytes int64 `json:"maxBytes"`
+}
+
+// capBytes settles the read bound one target speaks: a positive
+// MaxBytes below the preview bound narrows the read (a thumbnail's
+// sliver), everything else — zero, negative, oversized — reads the
+// full PreviewMaxBytes the viewer has always paid.
+func (t PreviewTarget) capBytes() int64 {
+	if t.MaxBytes <= 0 || t.MaxBytes > PreviewMaxBytes {
+		return PreviewMaxBytes
+	}
+	return t.MaxBytes
 }
 
 // PreviewPayload is what crossed the bridge: at most PreviewMaxBytes of
@@ -48,11 +64,11 @@ type PreviewPayload struct {
 func (a *App) PreviewData(t PreviewTarget) (PreviewPayload, error) {
 	switch t.Kind {
 	case "s3":
-		return a.previewS3(t.Source, t.Bucket, t.Key)
+		return a.previewS3(t.Source, t.Bucket, t.Key, t.capBytes())
 	case "remote":
-		return a.previewRemote(t.Source, t.Key)
+		return a.previewRemote(t.Source, t.Key, t.capBytes())
 	case "local":
-		return a.previewLocal(t.Path)
+		return a.previewLocal(t.Path, t.capBytes())
 	default:
 		return PreviewPayload{}, fmt.Errorf(
 			"cannot preview kind %q — S3 objects, remote source files and local files carry previews", t.Kind)
@@ -63,7 +79,7 @@ func (a *App) PreviewData(t PreviewTarget) (PreviewPayload, error) {
 // multi-gigabyte object for a glance. The wire's ContentRange carries
 // the true total past the cut; a full-body 200 means the object fits —
 // and the LimitReader backstop caps any server that ignores Range.
-func (a *App) previewS3(source, bucket, key string) (PreviewPayload, error) {
+func (a *App) previewS3(source, bucket, key string, max int64) (PreviewPayload, error) {
 	if bucket == "" {
 		return PreviewPayload{}, fmt.Errorf("pass an object key: s3://bucket/key")
 	}
@@ -81,13 +97,13 @@ func (a *App) previewS3(source, bucket, key string) (PreviewPayload, error) {
 	out, err := c.S3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
-		Range:  aws.String(fmt.Sprintf("bytes=0-%d", PreviewMaxBytes-1)),
+		Range:  aws.String(fmt.Sprintf("bytes=0-%d", max-1)),
 	})
 	if err != nil {
 		return PreviewPayload{}, err
 	}
 	defer out.Body.Close()
-	p, err := readBounded(out.Body, out.ContentLength, out.ContentRange)
+	p, err := readBounded(out.Body, out.ContentLength, out.ContentRange, max)
 	if err != nil {
 		return PreviewPayload{}, err
 	}
@@ -97,7 +113,7 @@ func (a *App) previewS3(source, bucket, key string) (PreviewPayload, error) {
 // previewRemote reads through the source's own engine — the same lock
 // discipline every engine call rides (one FTP data connection at a
 // time), and the same folder refusal the editor's pull speaks.
-func (a *App) previewRemote(idOrName, keyPath string) (PreviewPayload, error) {
+func (a *App) previewRemote(idOrName, keyPath string, max int64) (PreviewPayload, error) {
 	if keyPath == "" || strings.HasSuffix(keyPath, "/") {
 		return PreviewPayload{}, fmt.Errorf("%s is a folder", keyPath)
 	}
@@ -116,7 +132,7 @@ func (a *App) previewRemote(idOrName, keyPath string) (PreviewPayload, error) {
 		return PreviewPayload{}, err
 	}
 	defer rc.Close()
-	p, err := readBounded(rc, &size, nil)
+	p, err := readBounded(rc, &size, nil, max)
 	if err != nil {
 		return PreviewPayload{}, err
 	}
@@ -125,7 +141,7 @@ func (a *App) previewRemote(idOrName, keyPath string) (PreviewPayload, error) {
 
 // previewLocal stats before it reads: a directory is refused the same
 // way, and the stat carries the true size.
-func (a *App) previewLocal(path string) (PreviewPayload, error) {
+func (a *App) previewLocal(path string, max int64) (PreviewPayload, error) {
 	if path == "" || strings.HasSuffix(path, "/") {
 		return PreviewPayload{}, fmt.Errorf("%s is a folder", path)
 	}
@@ -142,7 +158,7 @@ func (a *App) previewLocal(path string) (PreviewPayload, error) {
 	}
 	defer f.Close()
 	size := st.Size()
-	p, err := readBounded(f, &size, nil)
+	p, err := readBounded(f, &size, nil, max)
 	if err != nil {
 		return PreviewPayload{}, err
 	}
@@ -159,14 +175,15 @@ func (a *App) previewCtx() (context.Context, context.CancelFunc) {
 	return context.Background(), nil
 }
 
-// readBounded reads at most PreviewMaxBytes, sniffs the content type,
-// and settles the honest shape: reportedSize when the engine speaks it
-// (S3's ContentLength or the engine's Open size), contentRange's total
-// when the wire cut the read ("bytes 0-N/TOTAL" — the true size past
-// the cut), and Truncated whenever the file outgrew the bound —
-// including a server that ignored the Range and paid the backstop.
-func readBounded(r io.Reader, reportedSize *int64, contentRange *string) (PreviewPayload, error) {
-	data, err := io.ReadAll(io.LimitReader(r, PreviewMaxBytes+1))
+// readBounded reads at most max bytes (PreviewMaxBytes when the caller
+// did not narrow it), sniffs the content type, and settles the honest
+// shape: reportedSize when the engine speaks it (S3's ContentLength or
+// the engine's Open size), contentRange's total when the wire cut the
+// read ("bytes 0-N/TOTAL" — the true size past the cut), and Truncated
+// whenever the file outgrew the bound — including a server that ignored
+// the Range and paid the backstop.
+func readBounded(r io.Reader, reportedSize *int64, contentRange *string, max int64) (PreviewPayload, error) {
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
 	if err != nil {
 		return PreviewPayload{}, err
 	}
@@ -183,8 +200,8 @@ func readBounded(r io.Reader, reportedSize *int64, contentRange *string) (Previe
 			}
 		}
 	}
-	if int64(len(data)) > PreviewMaxBytes { // a full-body answer past the bound
-		p.Data = data[:PreviewMaxBytes]
+	if int64(len(data)) > max { // a full-body answer past the bound
+		p.Data = data[:max]
 		p.Truncated = true
 	} else if p.Size > int64(len(data)) {
 		p.Truncated = true

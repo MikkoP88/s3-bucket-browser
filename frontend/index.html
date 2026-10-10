@@ -84,6 +84,12 @@
           <button class="tb-btn" id="btn-newfile" title="New file (Shift+F4)">&#128196;+</button>
           <span class="tb-sep"></span>
           <button class="tb-btn" id="btn-find" title="Search (Ctrl+Shift+F)">&#128269;<span class="tb-word"> Search</span></button>
+          <span class="tb-sep"></span>
+          <!-- Gallery: the tile face of the same listing — folder and
+               file glyphs by type, live thumbnails for images (a
+               bounded preview sliver, never a download), sharing the
+               row selection and verbs. The secondary pane carries its own -->
+          <button class="tb-btn" id="btn-gallery" title="Gallery view (tiles with image thumbnails)" aria-pressed="false">&#128444;</button>
         </header>
 
         <!-- ============ Nav bar: breadcrumb + filter ============ -->
@@ -137,6 +143,13 @@
             </button>
             <div class="grid-canvas" id="grid-canvas"></div>
           </div>
+          <!-- gallery: the tile face of the same listing — glyphs by
+               type, live image thumbnails (a bounded PreviewData
+               sliver, never a download), sharing the row model,
+               selection and verbs; hidden while the rows own the
+               view and covered by the same overlay panels (loading,
+               errors, empty states) when they own the area -->
+          <div class="gallery hidden" id="gallery" tabindex="0" role="listbox" aria-label="Gallery"></div>
           <div class="empty-state hidden" id="empty-state">
             <img class="empty-icon" src="assets/logo.svg" alt="">
             <div class="empty-title" id="empty-title"></div>
@@ -183,6 +196,11 @@
           <button class="tb-btn" id="local-btn-newfile" title="New file in this pane">&#128196;+</button>
           <span class="tb-sep"></span>
           <button class="tb-btn" id="local-btn-find" title="Search this pane&#39;s content">&#128269;<span class="tb-word"> Search</span></button>
+          <span class="tb-sep"></span>
+          <!-- Gallery: the pane's own tile face over this pane's listing
+               — the same glyphs, thumbnails and verbs (the toolbar
+               family parity the panes owe the main view) -->
+          <button class="tb-btn" id="local-btn-gallery" title="Gallery view (tiles with image thumbnails)" aria-pressed="false">&#128444;</button>
           <span class="tb-spacer"></span>
           <button class="tb-btn" id="local-btn-close" title="Close the secondary pane (F9)">&#215;</button>
         </header>
@@ -208,6 +226,11 @@
             </button>
             <div class="grid-canvas" id="local-grid-canvas"></div>
           </div>
+          <!-- the pane's own gallery: the tile face of this pane's
+               listing, sharing the pane rows model, selection and
+               verbs; covered by the same pane overlays (empty state,
+               load skeleton) -->
+          <div class="gallery hidden" id="local-gallery" tabindex="0" role="listbox" aria-label="Secondary pane gallery"></div>
           <div class="empty-state hidden" id="local-empty">
             <img class="empty-icon" src="assets/logo.svg" alt="">
             <div class="empty-title" id="local-empty-title"></div>

@@ -190,3 +190,71 @@ func TestPreviewRefusalsAndSniff(t *testing.T) {
 		}
 	}
 }
+
+// The caller's cap: MaxBytes narrows the read below the preview bound —
+// the thumbnail's sliver — on every leg, while zero, negatives and
+// anything past the bound read the full PreviewMaxBytes the viewer has
+// always paid (the default call stays byte-identical).
+func TestPreviewCallerCap(t *testing.T) {
+	a := newTestApp(t)
+	a.Startup(context.Background())
+	f := newFakeS3("pics")
+	f.seed("pics", "tile.png", strings.Repeat("x", 4096))
+	if err := a.SaveSource(fakeS3Source("shots", f.serve(t))); err != nil {
+		t.Fatal(err)
+	}
+
+	// a narrowed S3 read rides the Range window: exactly the sliver,
+	// ContentRange speaking the true total, Truncated honest
+	p, err := a.PreviewData(PreviewTarget{Kind: "s3", Source: "shots", Bucket: "pics", Key: "tile.png", MaxBytes: 64})
+	if err != nil {
+		t.Fatalf("capped s3: %v", err)
+	}
+	if len(p.Data) != 64 || !p.Truncated || p.Size != 4096 {
+		t.Errorf("capped s3 shape: %d bytes, size %d, truncated %v — want 64, 4096, true", len(p.Data), p.Size, p.Truncated)
+	}
+
+	// the same object below the cap reads whole: no cut, no Truncated
+	p, err = a.PreviewData(PreviewTarget{Kind: "s3", Source: "shots", Bucket: "pics", Key: "tile.png", MaxBytes: 8192})
+	if err != nil {
+		t.Fatalf("uncapped s3: %v", err)
+	}
+	if len(p.Data) != 4096 || p.Truncated {
+		t.Errorf("uncapped s3 shape: %d bytes, truncated %v — want the whole object, no cut", len(p.Data), p.Truncated)
+	}
+
+	// zero and negatives mean the full bound; oversized clamps to it
+	f.seed("pics", "huge.png", strings.Repeat("x", PreviewMaxBytes+7))
+	for _, mb := range []int64{0, -5, PreviewMaxBytes + 4096} {
+		p, err := a.PreviewData(PreviewTarget{Kind: "s3", Source: "shots", Bucket: "pics", Key: "huge.png", MaxBytes: mb})
+		if err != nil {
+			t.Fatalf("max %d: %v", mb, err)
+		}
+		if len(p.Data) != PreviewMaxBytes || !p.Truncated {
+			t.Errorf("max %d shape: %d bytes, truncated %v — want the clamped full bound", mb, len(p.Data), p.Truncated)
+		}
+	}
+
+	// the engine legs honor the same sliver
+	src, root := emptyLocalSource(t, "lab")
+	if err := a.SaveSource(src); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "big.img"), make([]byte, 8192), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err = a.PreviewData(PreviewTarget{Kind: "remote", Source: "lab", Key: "/big.img", MaxBytes: 100})
+	if err != nil {
+		t.Fatalf("capped remote: %v", err)
+	}
+	if len(p.Data) != 100 || !p.Truncated || p.Size != 8192 {
+		t.Errorf("capped remote shape: %d bytes, size %d, truncated %v", len(p.Data), p.Size, p.Truncated)
+	}
+	p, err = a.PreviewData(PreviewTarget{Kind: "local", Path: filepath.Join(root, "big.img"), MaxBytes: 100})
+	if err != nil {
+		t.Fatalf("capped local: %v", err)
+	}
+	if len(p.Data) != 100 || !p.Truncated || p.Size != 8192 {
+		t.Errorf("capped local shape: %d bytes, size %d, truncated %v", len(p.Data), p.Size, p.Truncated)
+	}
+}

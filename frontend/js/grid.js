@@ -570,6 +570,7 @@ export class Grid {
     if (!this.hasFilters() && this.sortKey === 'name' && this.sortDir === 1) {
       this.rows.push(...rows);
       this.render();
+      if (this.on.model) this.on.model(); // a streamed page is a model change too — the tiles follow
     } else {
       this.apply(); // filter or non-default sort: full recompute
     }
@@ -630,6 +631,7 @@ export class Grid {
     const live = new Set(rows.map((r) => r.key));
     for (const k of this.sel) if (!live.has(k)) this.sel.delete(k);
     this.render(true); // force: re-emit select (selection may have been pruned)
+    if (this.on.model) this.on.model(); // the gallery re-seats its tiles on every model change
   }
 
   selectedRows() { return this.rows.filter((r) => this.sel.has(r.key)); }
