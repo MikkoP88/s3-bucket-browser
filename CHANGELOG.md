@@ -333,6 +333,20 @@ follow [Semantic Versioning](https://semver.org/).
   refused aloud — the exact size and the cap — without reading a byte
   over the wire, a failed read toasts while the seat stays honest
   with its name, and a folder activation never seats the viewer.
+- **The glance learns text — and the terminal gets `cat`.** The
+  in-app viewer now seats readable files, not just images: a readme,
+  config, CSV or log double-clicked (or Preview’d from the menu)
+  opens in the same lightbox as a monospace scroll with Wrap and
+  Copy verbs — still no download, nothing on disk. The walk becomes
+  the previewable union (images and text one sequence), the desk is
+  chosen by the wire’s sniff with the extension vouching the way
+  the SVG law always has (octet-stream on a readme still seats
+  text; an image wearing a text name reroutes to the image desk),
+  and text shows its first 512 KB while Copy speaks the whole
+  read. The CLI gains the twin: `s3b cat s3://bucket/key` (or
+  `NAME://path`, or a plain workstation path) streams one file’s
+  bytes to stdout — it pipes cleanly into grep or jq — with the
+  same operand routing `edit` uses and folders refused up front.
 
 ### Fixed
 

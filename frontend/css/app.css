@@ -1737,3 +1737,20 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   background: transparent; color: #fff; font-size: 13px; cursor: pointer;
 }
 #viewer .viewer-close:hover { background: var(--danger); }
+/* text mode: the pre is its own scrollable desk; Wrap flips soft wrap */
+#viewer pre {
+  position: relative; z-index: 1; margin: 0;
+  max-width: 92vw; max-height: 84vh; overflow: auto;
+  padding: 14px 18px; box-sizing: border-box; border-radius: 6px;
+  background: var(--panel); color: var(--text);
+  font: 12px/1.5 "Cascadia Code", Consolas, monospace;
+  white-space: pre; box-shadow: var(--shadow);
+}
+#viewer pre.wrap { white-space: pre-wrap; }
+/* bar verbs beside the meta (text mode’s Wrap / Copy) */
+#viewer .viewer-act {
+  border: 1px solid rgba(255, 255, 255, .25); border-radius: 4px;
+  background: transparent; color: #fff; cursor: pointer;
+  font: 600 12px "Segoe UI", system-ui, sans-serif; padding: 4px 10px;
+}
+#viewer .viewer-act:hover { background: var(--accent); border-color: var(--accent); }

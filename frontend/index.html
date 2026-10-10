@@ -264,16 +264,20 @@
   <!-- Marquee selection rectangle -->
   <div class="marquee hidden" id="marquee"></div>
 
-  <!-- Image viewer: one file, one glance. Arrows walk the folder’s
-       images, Esc closes, a click toggles actual size. -->
-  <div id="viewer" class="hidden" role="dialog" aria-label="Image preview">
+  <!-- File viewer: one file, one glance. Arrows walk the folder’s
+       previewable files (images and text), Esc closes, a click on the
+       image toggles actual size, and text seats a Wrap / Copy bar. -->
+  <div id="viewer" class="hidden" role="dialog" aria-label="File preview">
     <div class="viewer-scrim" id="viewer-scrim"></div>
-    <button class="viewer-nav viewer-prev" id="viewer-prev" aria-label="Previous image">&#8249;</button>
+    <button class="viewer-nav viewer-prev" id="viewer-prev" aria-label="Previous file">&#8249;</button>
     <img id="viewer-img" alt="" draggable="false">
-    <button class="viewer-nav viewer-next" id="viewer-next" aria-label="Next image">&#8250;</button>
+    <pre id="viewer-text"></pre>
+    <button class="viewer-nav viewer-next" id="viewer-next" aria-label="Next file">&#8250;</button>
     <div class="viewer-bar">
       <span class="viewer-name" id="viewer-name"></span>
       <span class="viewer-meta" id="viewer-meta"></span>
+      <button class="viewer-act" id="viewer-wrap" title="Toggle soft wrap">Wrap</button>
+      <button class="viewer-act" id="viewer-copy" title="Copy the read text">Copy</button>
       <button class="viewer-close" id="viewer-close" aria-label="Close">&#10005;</button>
     </div>
   </div>

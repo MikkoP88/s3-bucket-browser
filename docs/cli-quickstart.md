@@ -41,6 +41,7 @@ s3b ls s3://b/photos/         # one folder view (any source: lab://, vault://)
 s3b tree s3://b               # ASCII tree
 s3b du s3://b/photos/         # size + count under a prefix
 s3b stat s3://b/photos/a.jpg  # object metadata
+s3b cat s3://b/logs/app.log    # stream one file to stdout (no download)
 s3b mb s3://new-bucket        s3b mkdir s3://b/folder/
 ```
 

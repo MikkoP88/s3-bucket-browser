@@ -463,15 +463,17 @@ sources carry the
   CLI twin is `s3b edit PATH` — one guarded round trip in the
   terminal (`$VISUAL`/`$EDITOR`, a conflict refused with your edit
   kept, `--force` to overwrite, a missing file created on exit).
-- **Preview images** — double-click an image (or right-click →
-  *Preview*) to see it inside the app: a lightbox over everything, no
-  download, nothing touches disk — the view reads a bounded slice
-  through the bridge and renders it in place. Arrow keys walk the
-  folder’s images in grid order, Esc closes, a click on the image
-  toggles between fitted and actual size. The same seat works
-  everywhere files live: S3 objects, remote sources, workstation
-  files and the dual pane. Files past 16 MiB are refused aloud —
-  download those to view them.
+- **Preview files** — double-click an image or a text file (or
+  right-click → *Preview*) to see it inside the app: a lightbox over
+  everything, no download, nothing touches disk — the view reads a
+  bounded slice through the bridge and seats it in place, images
+  fitted (a click toggles actual size), text files (readme, config,
+  CSV, log…) in a monospace scroll with Wrap and Copy verbs. Arrow
+  keys walk the folder’s previewable files in grid order — text and
+  images one union — and Esc closes. The same seat works everywhere
+  files live: S3 objects, remote sources, workstation files and the
+  dual pane. Files past 16 MiB are refused aloud — download those
+  to view them.
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
   *New file…* in the context menu opens a small dialog for a file name
   and type (a dozen common extensions, or none). The empty file is
@@ -885,7 +887,7 @@ you'll use daily:
 | Ctrl+A / Ctrl+I | select all / invert selection |
 | Del / Shift+Del | delete window / permanent path |
 | F4 / Shift+F4 | edit the selected file / new file |
-| ← / → (viewer) | walk the folder’s images while the preview is open |
+| ← / → (viewer) | walk the folder’s previewable files while the preview is open |
 | F9 | dual pane |
 | Ctrl+L | event log |
 | Ctrl+S | save workspace profile |
@@ -912,6 +914,7 @@ s3b sync ./site s3://b/site/ --delete
 s3b sync vault://media ./mirror             # any two sides, same rule
 s3b edit s3://b/cfg/app.yml                # guarded edit in $EDITOR, ETag/If-Match
 s3b edit vault://media/notes.md            # same round trip for any source file
+s3b cat s3://b/logs/app.log                # stream one file to stdout, no download
 s3b find s3://b --name 'backup*' --older 90d
 s3b find s3://b --ext pdf,csv --path docs --larger 1MB
 s3b find vault://media --name '*.md'        # any saved source, same filters

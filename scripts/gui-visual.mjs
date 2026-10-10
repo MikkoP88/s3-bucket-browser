@@ -1531,12 +1531,21 @@ function shim() {
       v.capBytes = base.capBytes || 262144;
       return v;
     },
-    // PreviewData (the image viewer glance): a real 1x1 PNG with a
-    // small honest size; world.fault.preview fails the read so the
-    // toast leg stays testable
-    PreviewData: async () => {
+    // PreviewData (the file viewer glance): a real 1x1 PNG for image
+    // rows; text rows get honest text/plain bytes — the fixture the
+    // content assert pins on the desk. world.fault.preview fails the
+    // read so the toast leg stays testable
+    PreviewData: async (t) => {
       const flt = (world.fault || {}).preview;
       if (flt) throw new Error(flt);
+      const name = ((t && (t.key || t.path)) || '').split('/').pop() || '';
+      if (/\.(txt|md|json|csv|log|yaml|ini|conf|toml)$/i.test(name)) {
+        const text = `# ${name}\n\nThe glance reads text too — readme, config, csv, log:\nthe folder walks its previewable files and the monospace\ndesk seats the bytes without a download.\n`;
+        const bytes = new TextEncoder().encode(text);
+        let bin = '';
+        bytes.forEach((b) => { bin += String.fromCharCode(b); });
+        return { data: btoa(bin), contentType: 'text/plain; charset=utf-8', size: bytes.length, truncated: false };
+      }
       return {
         data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
         contentType: 'image/png',
@@ -11074,6 +11083,81 @@ await step('image-viewer', async () => {
   await ok('the pane leg leaves no viewer behind', evalPage(() =>
     document.getElementById('viewer').classList.contains('hidden')
     && !document.getElementById('viewer-img').getAttribute('src')));
+});
+
+await step('text-viewer', async () => {
+  // the glance learns text: a readme double-clicked in the objects
+  // view seats the monospace desk — no download, nothing on disk —
+  // the walk becomes the previewable union (text and images one
+  // sequence), Wrap flips soft wrap, Copy toasts, Esc drops the text,
+  // the menu Preview re-seats, and a row no desk speaks never
+  // carries the verb nor reads the wire.
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'root rows');
+  await resetCalls();
+  await dblClickRow('readme.md');
+  await ok('double-click a text file seats the viewer on the text desk', waitFor(async () => evalPage(() =>
+    !document.getElementById('viewer').classList.contains('hidden')
+    && document.getElementById('viewer-name').textContent === 'readme.md'
+    && !document.getElementById('viewer-text').classList.contains('hidden')
+    && document.getElementById('viewer-img').classList.contains('hidden')
+    && document.getElementById('viewer-meta').textContent.includes('1 / 2')), 4000, 'text seated'));
+  await ok('the desk speaks the read bytes as text', waitFor(async () => {
+    const c = await findCall('PreviewData');
+    return !!c && c.args[0]?.kind === 's3' && c.args[0]?.key === 'readme.md'
+      && await evalPage(() => document.getElementById('viewer-text').textContent.startsWith('# readme.md'));
+  }, 4000, 'text bytes'));
+  await shot('viewer-text');
+  // -- the walk is the previewable union: the next seat is the image --
+  await page.keyboard.press('ArrowRight');
+  await ok('the walk crosses into the image desk', waitFor(async () => evalPage(() =>
+    document.getElementById('viewer-name').textContent === 'scan.png'
+    && document.getElementById('viewer-meta').textContent.includes('2 / 2')
+    && !document.getElementById('viewer-img').classList.contains('hidden')
+    && document.getElementById('viewer-text').classList.contains('hidden')
+    && (document.getElementById('viewer-img').getAttribute('src') || '')
+      .startsWith('data:image/png;base64,')), 4000, 'walk to image'));
+  await page.keyboard.press('ArrowLeft');
+  await ok('the walk returns to the text desk', waitFor(async () => evalPage(() =>
+    document.getElementById('viewer-name').textContent === 'readme.md'
+    && !document.getElementById('viewer-text').classList.contains('hidden')), 4000, 'walk back'));
+  // -- Wrap flips soft wrap --
+  await evalPage(() => document.getElementById('viewer-wrap').click());
+  await ok('Wrap flips soft wrap on the text desk', await evalPage(() =>
+    document.getElementById('viewer-text').classList.contains('wrap')));
+  await evalPage(() => document.getElementById('viewer-wrap').click());
+  // -- Copy speaks the read; the toast confirms --
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await evalPage(() => document.getElementById('viewer-copy').click());
+  await ok('Copy toasts its confirmation', waitFor(async () =>
+    (await txt('#toasts')).includes('Copied'), 4000, 'copy toast'));
+  // -- Esc closes and drops the text --
+  await page.keyboard.press('Escape');
+  await ok('Escape closes the viewer and drops the text', await evalPage(() =>
+    document.getElementById('viewer').classList.contains('hidden')
+    && !document.getElementById('viewer-text').textContent));
+  // -- the menu Preview seats the text desk too --
+  await resetCalls();
+  await openCtx('readme.md');
+  await ok('the context menu carries Preview on a text row', await evalPage(() =>
+    Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .some((i) => /^preview/i.test(i.textContent))));
+  await ctxItem(/^preview/i);
+  await ok('the menu Preview seats the text desk', waitFor(async () => evalPage(() =>
+    !document.getElementById('viewer').classList.contains('hidden')
+    && document.getElementById('viewer-name').textContent === 'readme.md'), 4000, 'menu text preview'));
+  await page.keyboard.press('Escape');
+  // -- a row no desk speaks never carries the verb nor reads the wire --
+  await resetCalls();
+  await openCtx('budget-2026.xlsx');
+  await ok('a spreadsheet row carries no Preview verb and never reads the wire', (async () => {
+    await sleep(150);
+    return (await evalPage(() =>
+      !Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+        .some((i) => /^preview/i.test(i.textContent))))
+      && (await findCall('PreviewData')) === null;
+  })());
+  await page.keyboard.press('Escape');
 });
 
 await step('edit-diff', async () => {

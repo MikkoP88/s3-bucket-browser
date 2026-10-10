@@ -56,6 +56,7 @@ described here. The same engine backs both.
     - [s3b bucket website delete](#s3b-bucket-website-delete) — Disable website hosting
     - [s3b bucket website get](#s3b-bucket-website-get) — Print website hosting settings
     - [s3b bucket website put](#s3b-bucket-website-put) — Configure website hosting
+- [s3b cat](#s3b-cat) — Print one file to stdout
 - [s3b completion](#s3b-completion) — Generate the autocompletion script for the specified shell
   - [s3b completion bash](#s3b-completion-bash) — Generate the autocompletion script for bash
   - [s3b completion fish](#s3b-completion-fish) — Generate the autocompletion script for fish
@@ -140,6 +141,7 @@ Documentation: https://github.com/MikkoP88/s3-bucket-browser
 ### SEE ALSO
 
 * [s3b bucket](#s3b-bucket)
+* [s3b cat](#s3b-cat)
 * [s3b completion](#s3b-completion)
 * [s3b cp](#s3b-cp)
 * [s3b doctor](#s3b-doctor)
@@ -1184,6 +1186,46 @@ s3b bucket website put s3://bucket [flags]
 ### SEE ALSO
 
 * [s3b bucket website](#s3b-bucket-website)
+
+## s3b cat
+
+Print one file to stdout
+
+### Synopsis
+
+Streams one file's bytes to stdout — nothing is written to disk, so
+it pipes cleanly (s3b cat s3://logs/app.log | grep ERROR). Operands
+route the way edit's do: s3://bucket/key reads the view profile,
+NAME://path reads any saved data source (S3-type sources dial their
+own client), and a plain path reads a workstation file. Folders
+refuse: a stream names one file. Bytes cross unmodified — pair it
+with your own tooling for anything fancier.
+
+```
+s3b cat s3://bucket/key | NAME://path | PATH
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b](#s3b)
 
 ## s3b completion
 

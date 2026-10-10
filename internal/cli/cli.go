@@ -134,6 +134,7 @@ func NewRoot() *cobra.Command {
 		mvCmd(),
 		rmCmd(),
 		editCmd(),
+		catCmd(),
 		syncCmd(),
 		presignCmd(),
 		doctorCmd(),
