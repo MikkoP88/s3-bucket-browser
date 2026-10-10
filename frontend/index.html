@@ -264,6 +264,20 @@
   <!-- Marquee selection rectangle -->
   <div class="marquee hidden" id="marquee"></div>
 
+  <!-- Image viewer: one file, one glance. Arrows walk the folder’s
+       images, Esc closes, a click toggles actual size. -->
+  <div id="viewer" class="hidden" role="dialog" aria-label="Image preview">
+    <div class="viewer-scrim" id="viewer-scrim"></div>
+    <button class="viewer-nav viewer-prev" id="viewer-prev" aria-label="Previous image">&#8249;</button>
+    <img id="viewer-img" alt="" draggable="false">
+    <button class="viewer-nav viewer-next" id="viewer-next" aria-label="Next image">&#8250;</button>
+    <div class="viewer-bar">
+      <span class="viewer-name" id="viewer-name"></span>
+      <span class="viewer-meta" id="viewer-meta"></span>
+      <button class="viewer-close" id="viewer-close" aria-label="Close">&#10005;</button>
+    </div>
+  </div>
+
   <!-- Wails v3 runtime (an ES module — a classic script tag would die on its
        export statement and leave window.wails undefined, killing every
        binding call), then the v2-surface bridge; both load before main.js

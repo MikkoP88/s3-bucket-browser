@@ -1531,6 +1531,19 @@ function shim() {
       v.capBytes = base.capBytes || 262144;
       return v;
     },
+    // PreviewData (the image viewer glance): a real 1x1 PNG with a
+    // small honest size; world.fault.preview fails the read so the
+    // toast leg stays testable
+    PreviewData: async () => {
+      const flt = (world.fault || {}).preview;
+      if (flt) throw new Error(flt);
+      return {
+        data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+        contentType: 'image/png',
+        size: 95,
+        truncated: false,
+      };
+    },
     // ---- OS interop ----
     PickUploadFiles: () => ['C:\\Users\\demo\\Downloads\\invoice.pdf', 'C:\\Users\\demo\\Downloads\\photos'],
     // local delete (side pane): count-then-act preview + permanent remove
@@ -10925,6 +10938,142 @@ await step('edit-any', async () => {
   });
   await ok('world restored (default editor session back)', waitFor(async () => evalPage(() =>
     !document.getElementById('status-editing').classList.contains('hidden')), 4000, 'restored pill'));
+});
+
+await step('image-viewer', async () => {
+  // the in-app glance: an image double-clicked in any view that seats
+  // files opens in a lightbox over everything — no download, nothing
+  // touches disk — arrows walk the folder images in grid order, Esc
+  // closes, a click toggles actual size, and the 16 MiB bound is
+  // refused aloud without a wire read. The staged 24 MiB pano leaves
+  // the world again before the step ends so later steps meet the
+  // fixtures they pin.
+  await navObjects('team-files');
+  await dblClickRow('photos');
+  await waitFor(async () => (await rowKeys()).includes('photos/img-001.jpg'), 6000, 'photos rows');
+  await evalPage(() => {
+    window.__shim.world.objects['team-files']
+      .push({ key: 'photos/wall-pano.png', size: 25165824, lastModified: Date.now() - 6 * 864e5 });
+  });
+  await page.click('#btn-refresh');
+  await waitFor(async () => (await rowKeys()).includes('photos/wall-pano.png'), 6000, 'pano row listed');
+  // -- open on double-click: the lightbox seats with name and counter --
+  await resetCalls();
+  await dblClickRow('img-001.jpg');
+  await ok('double-click an image seats the viewer', waitFor(async () => evalPage(() =>
+    !document.getElementById('viewer').classList.contains('hidden')
+    && document.getElementById('viewer-name').textContent === 'img-001.jpg'
+    && document.getElementById('viewer-meta').textContent.includes('1 / 3')), 4000, 'viewer open'));
+  await ok('the glance rides the typed preview read and renders the sniffed bytes', waitFor(async () => {
+    const c = await findCall('PreviewData');
+    return !!c && c.args[0]?.kind === 's3' && c.args[0]?.bucket === 'team-files'
+      && c.args[0]?.key === 'photos/img-001.jpg'
+      && await evalPage(() => (document.getElementById('viewer-img').getAttribute('src') || '')
+        .startsWith('data:image/png;base64,'));
+  }, 4000, 'typed read'));
+  await shot('viewer');
+  // -- arrows walk the folder images; the first image is the floor --
+  await resetCalls();
+  await page.keyboard.press('ArrowRight');
+  await ok('ArrowRight walks to the next image of the folder', waitFor(async () => evalPage(() =>
+    document.getElementById('viewer-name').textContent === 'img-002.jpg'
+    && document.getElementById('viewer-meta').textContent.includes('2 / 3')), 4000, 'walk'));
+  await ok('the walk reads the next image through the bridge', waitFor(async () => {
+    const c = await findCall('PreviewData');
+    return !!c && c.args[0]?.key === 'photos/img-002.jpg';
+  }, 4000, 'walk read'));
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
+  await ok('ArrowLeft returns and the first image is the floor (no wrap)', waitFor(async () => evalPage(() =>
+    document.getElementById('viewer-name').textContent === 'img-001.jpg'
+    && document.getElementById('viewer-meta').textContent.includes('1 / 3')), 4000, 'floor'));
+  // -- a click on the image toggles fitted / actual --
+  await evalPage(() => document.getElementById('viewer-img').click());
+  await ok('a click on the image toggles actual size', evalPage(() =>
+    document.getElementById('viewer').classList.contains('actual')));
+  await evalPage(() => document.getElementById('viewer-img').click());
+  await ok('a second click returns the fitted frame', evalPage(() =>
+    !document.getElementById('viewer').classList.contains('actual')));
+  // -- Esc closes and drops the frame --
+  await page.keyboard.press('Escape');
+  await ok('Escape closes the viewer and drops the frame', evalPage(() =>
+    document.getElementById('viewer').classList.contains('hidden')
+    && !document.getElementById('viewer-img').getAttribute('src')));
+  // -- the context-menu seat --
+  await resetCalls();
+  await openCtx('img-001.jpg');
+  await ok('the context menu carries Preview on an image row', evalPage(() =>
+    Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .some((i) => /^preview/i.test(i.textContent))));
+  await ctxItem(/^preview/i);
+  await ok('the menu Preview seats the viewer again', waitFor(async () => evalPage(() =>
+    !document.getElementById('viewer').classList.contains('hidden')
+    && document.getElementById('viewer-name').textContent === 'img-001.jpg'), 4000, 'menu preview'));
+  await page.keyboard.press('Escape');
+  // -- the 16 MiB bound: refused aloud, never a wire read --
+  await resetCalls();
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await dblClickRow('wall-pano.png');
+  await ok('the oversize row seats with its name and no image', waitFor(async () => evalPage(() =>
+    !document.getElementById('viewer').classList.contains('hidden')
+    && document.getElementById('viewer-name').textContent === 'wall-pano.png'
+    && !document.getElementById('viewer-img').getAttribute('src')), 4000, 'oversize seated'));
+  await ok('a row past the bound is refused aloud', waitFor(async () =>
+    (await txt('#toasts')).includes('wall-pano.png is 24.0 MB — previews cap at 16.0 MB'), 4000, 'cap toast'));
+  await ok('the refusal never touches the wire', (async () => {
+    await sleep(150);
+    return (await findCall('PreviewData')) === null;
+  })());
+  await page.keyboard.press('Escape');
+  // -- a failed read toasts; the seat stays honest with the name --
+  await evalPage(() => { window.__shim.world.fault = { preview: 'the bridge refused the glance' }; });
+  await dblClickRow('img-002.jpg');
+  await ok('a failed read toasts and the seat stays honest', waitFor(async () =>
+    (await txt('#toasts')).includes('Preview failed')
+    && await evalPage(() => !document.getElementById('viewer').classList.contains('hidden')
+      && document.getElementById('viewer-name').textContent === 'img-002.jpg'
+      && !document.getElementById('viewer-img').getAttribute('src')), 4000, 'failed read'));
+  await evalPage(() => { window.__shim.world.fault = null; });
+  await page.keyboard.press('Escape');
+  // -- a folder activation never seats the viewer --
+  await clickTree('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'root rows');
+  await resetCalls();
+  await dblClickRow('docs');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'docs rows');
+  await ok('a folder activation never seats the viewer', evalPage(() =>
+    document.getElementById('viewer').classList.contains('hidden'))
+    && (await findCall('PreviewData')) === null);
+  // -- the staged pano leaves: later steps meet the fixtures they pin --
+  await evalPage(() => {
+    const o = window.__shim.world.objects['team-files'];
+    o.splice(o.findIndex((x) => x.key === 'photos/wall-pano.png'), 1);
+  });
+  // -- the dual pane seat: the walk follows the pane grid, the read
+  //    speaks the binding source (the id grammar the pane binds by) --
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'pane s3 root');
+  const pdir = await sideRow('photos');
+  await pdir.asElement().dblclick();
+  await waitFor(async () => (await sideKeys()).includes('photos/img-001.jpg'), 6000, 'pane photos rows');
+  await resetCalls();
+  const prow = await sideRow('img-001.jpg');
+  await prow.asElement().dblclick();
+  await ok('the pane image opens through the binding source', waitFor(async () => {
+    const c = await findCall('PreviewData');
+    return !!c && c.args[0]?.kind === 's3' && c.args[0]?.source === 'src-team-files'
+      && c.args[0]?.bucket === 'team-files' && c.args[0]?.key === 'photos/img-001.jpg'
+      && await evalPage(() => !document.getElementById('viewer').classList.contains('hidden'));
+  }, 4000, 'pane viewer'));
+  await page.keyboard.press('ArrowRight');
+  await ok('the walk follows the pane rows', waitFor(async () => evalPage(() =>
+    document.getElementById('viewer-name').textContent === 'img-002.jpg'
+    && document.getElementById('viewer-meta').textContent.includes('2 / 2')), 4000, 'pane walk'));
+  await page.keyboard.press('Escape');
+  await evalPage(() => { window.__s3bSidePane.hide(); });
+  await ok('the pane leg leaves no viewer behind', evalPage(() =>
+    document.getElementById('viewer').classList.contains('hidden')
+    && !document.getElementById('viewer-img').getAttribute('src')));
 });
 
 await step('edit-diff', async () => {

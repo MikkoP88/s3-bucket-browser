@@ -201,7 +201,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "fakeS3: injected fault", http.StatusInternalServerError)
 			return
 		}
-		f.getObject(w, bucket, key)
+		f.getObject(w, r, bucket, key)
 	case r.Method == http.MethodHead:
 		if f.tripped("HEAD", bucket, key) {
 			http.Error(w, "fakeS3: injected fault", http.StatusInternalServerError)
@@ -281,7 +281,7 @@ func (f *fakeS3) listBuckets(w http.ResponseWriter) {
 	io.WriteString(w, b.String())
 }
 
-func (f *fakeS3) getObject(w http.ResponseWriter, bucket, key string) {
+func (f *fakeS3) getObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	f.mu.Lock()
 	content, ok := f.objects[bucket][key]
 	etag := f.etags[bucket][key]
@@ -289,6 +289,30 @@ func (f *fakeS3) getObject(w http.ResponseWriter, bucket, key string) {
 	if !ok {
 		http.Error(w, "fakeS3: no such key", http.StatusNotFound)
 		return
+	}
+	// A Range GET is answered the S3 grammar: 206 with Content-Range
+	// naming the served window and the true total past the cut — the
+	// preview leg's wire. Only a syntactic bytes=a-b is honored (the
+	// shape the SDK sends); an empty object falls to the full body.
+	if rng := r.Header.Get("Range"); rng != "" {
+		var first, last int64
+		if n, _ := fmt.Sscanf(rng, "bytes=%d-%d", &first, &last); n == 2 {
+			total := int64(len(content))
+			if first > total {
+				first = total
+			}
+			if last >= total {
+				last = total - 1
+			}
+			if last >= first {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("ETag", etag)
+				w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", first, last, total))
+				w.WriteHeader(http.StatusPartialContent)
+				io.WriteString(w, content[first:last+1])
+				return
+			}
+		}
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("ETag", etag)

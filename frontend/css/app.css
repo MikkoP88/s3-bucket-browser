@@ -1698,3 +1698,42 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .diff-row.diff-del { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
 .diff-row.diff-ctx { color: var(--text-dim); }
 .diff-ident { padding: 10px; color: var(--text-dim); white-space: pre-wrap; font-family: inherit; }
+/* Image viewer (the preview overlay): scrim + fitted image + caption
+   bar. z-index 110 sits above the modal root (100) — a glance owns
+   the screen — but under the toasts (120) so refusals still speak. */
+#viewer {
+  position: fixed; inset: 0; z-index: 110;
+  display: flex; align-items: center; justify-content: center;
+}
+#viewer .viewer-scrim { position: absolute; inset: 0; background: rgba(8, 10, 14, .84); }
+#viewer img {
+  position: relative; z-index: 1;
+  max-width: 92vw; max-height: 84vh; object-fit: contain;
+  background: var(--panel); /* alpha-carrying images read against it */
+  box-shadow: var(--shadow); cursor: zoom-in;
+}
+/* actual size: the scrollable desk, the image at its own pixels */
+#viewer.actual { overflow: auto; align-items: flex-start; justify-content: flex-start; padding: 20px; box-sizing: border-box; }
+#viewer.actual img { max-width: none; max-height: none; cursor: zoom-out; }
+#viewer .viewer-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 46px; height: 68px; border: none; border-radius: 6px;
+  background: rgba(20, 24, 32, .55); color: #fff;
+  font-size: 30px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+#viewer .viewer-nav:hover { background: var(--accent); }
+#viewer .viewer-prev { left: 10px; }
+#viewer .viewer-next { right: 10px; }
+#viewer .viewer-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; background: rgba(12, 14, 20, .8); color: #fff;
+}
+#viewer .viewer-name { font: 600 13px "Segoe UI", system-ui, sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#viewer .viewer-meta { font: 12px "Cascadia Code", Consolas, monospace; color: #b8c0cc; white-space: nowrap; }
+#viewer .viewer-close {
+  margin-left: auto; width: 26px; height: 26px; border: none; border-radius: 4px;
+  background: transparent; color: #fff; font-size: 13px; cursor: pointer;
+}
+#viewer .viewer-close:hover { background: var(--danger); }

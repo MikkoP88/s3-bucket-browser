@@ -321,6 +321,19 @@ follow [Semantic Versioning](https://semver.org/).
   the swappable writer so capture-based tests see the completion stream
   too.
 
+- **In-app image viewer** — double-click an image in any view that
+  seats files — S3 objects, remote sources, workstation files, the
+  dual pane — and it opens in a lightbox over everything without
+  touching disk: the view asks the bridge for a bounded slice
+  (`PreviewData` caps at 16 MiB, sniffs the content type, speaks the
+  true size and whether the read was cut) and renders it as a data
+  URL. Arrow keys walk the folder’s images in grid order, Esc closes,
+  a click on the image toggles fitted and actual size, and the context
+  menus grow a Preview item beside Open. A row past the bound is
+  refused aloud — the exact size and the cap — without reading a byte
+  over the wire, a failed read toasts while the seat stays honest
+  with its name, and a folder activation never seats the viewer.
+
 ### Fixed
 
 - **A sourceless app could stick on a loading skeleton** — with no

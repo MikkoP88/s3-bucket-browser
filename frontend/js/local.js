@@ -142,6 +142,7 @@ export class SidePane {
         return;
       }
       if (this.binding.kind === 'remote') { this.on.activateRemoteFile?.(this.binding.source, m); return; }
+      if (this.on.activateLocalFile) { this.on.activateLocalFile(m); return; }
       app().OpenLocal(m.path).catch((e) => this.on.openFail?.(e));
     };
     this.grid.on.select = () => this.updateStatus();

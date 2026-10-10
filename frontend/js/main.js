@@ -330,6 +330,7 @@ async function boot() {
   mountMenubar();
   wireGrid();
   wireLocalPane();
+  wireViewer();
   wireKeys();
   wireDrop();
   wireEvents();
@@ -1847,11 +1848,13 @@ function wireGrid() {
     const loc = nav.current;
     if (loc.kind === 'local') {
       if (row.isDir) nav.to({ kind: 'local', dir: row.path });
+      else if (isImageRow(row)) previewRow(row);
       else api.OpenLocal(row.path).catch((e) => toast(`Local: ${e}`, 'error'));
       return;
     }
     if (loc.kind === 'remote') {
       if (row.isDir) nav.to({ kind: 'remote', source: loc.source, path: row.key });
+      else if (isImageRow(row)) previewRow(row);
       else downloadSelection([{ key: row.key, size: row.size, name: row.name }]);
       return;
     }
@@ -1859,6 +1862,8 @@ function wireGrid() {
       nav.to({ kind: 'objects', source: loc.source, bucket: row.key, prefix: '' });
     } else if (row.isDir) {
       nav.to({ kind: 'objects', source: loc.source, bucket: loc.bucket, prefix: row.key });
+    } else if (isImageRow(row)) {
+      previewRow(row);
     } else {
       downloadSelection([{ key: row.key, size: row.size, name: row.name }]);
     }
@@ -2005,9 +2010,21 @@ function wireLocalPane() {
     }
     dropToLocal(payload, localPane.dir);
   };
-  // Enter on a file of a remote/S3-bound pane downloads it (WinSCP-style).
-  localPane.on.activateRemoteFile = (_source, row) => downloadSideRows([row]);
-  localPane.on.activateS3File = (_bucket, row) => downloadSideRows([row]);
+  // Enter on a file of a remote/S3-bound pane downloads it (WinSCP-style)
+  // — unless it is an image, which earns the in-app glance instead; the
+  // local binding rides the same law through its activateLocalFile hook.
+  localPane.on.activateRemoteFile = (_source, row) => {
+    if (isImageRow(row)) previewRow(row, { kind: 'remote', source: localPane.binding.source }, localPane.grid);
+    else downloadSideRows([row]);
+  };
+  localPane.on.activateS3File = (_bucket, row) => {
+    if (isImageRow(row)) previewRow(row, { kind: 'objects', source: localPane.binding.source, bucket: localPane.bucket }, localPane.grid);
+    else downloadSideRows([row]);
+  };
+  localPane.on.activateLocalFile = (row) => {
+    if (isImageRow(row)) previewRow(row, { kind: 'local' }, localPane.grid);
+    else api.OpenLocal(row.path).catch((e) => toast(`Local: ${e}`, 'error'));
+  };
   localPane.grid.on.context = (e, rows) => showLocalRowMenu(e, rows);
   localPane.grid.on.headerMenu = (e) => columnMenu(e, localPane.grid, 's3b-cols-local');
   localPane.grid.on.colsChanged = () => saveColState('s3b-cols-local', localPane.grid.visibleCols().map((c) => c.id), localPane.grid.widths);
@@ -2145,6 +2162,7 @@ function showContextMenu(e, rows) {
     // Remote sources: engine-native operations plus the cross-source
     // transfer matrix (copy/cut/paste/download stream through TransferCross).
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
+    else if (sel === 1 && isImageRow(rows[0])) items.push(['Preview', 'Enter', () => previewRow(rows[0])]);
     items.push([`Download${sel ? ` (${sel})` : ''}\u2026`, 'Ctrl+D', () => downloadSelection(), !sel]);
     items.push(null);
     items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
@@ -2173,6 +2191,7 @@ function showContextMenu(e, rows) {
     // delete; the remote-native create ops rest (no local mkdir/rename
     // APIs) and local-to-local drags stay Explorer's job
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
+    else if (sel === 1 && isImageRow(rows[0])) items.push(['Preview', 'Enter', () => previewRow(rows[0])]);
     items.push(null);
     items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
     items.push(['Cut', 'Ctrl+X', () => cutSelection(), !sel]);
@@ -2192,6 +2211,7 @@ function showContextMenu(e, rows) {
     items.push(['Properties', 'Alt+Enter', () => selectionProperties(), !sel]);
   } else {
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
+    else if (sel === 1 && isImageRow(rows[0])) items.push(['Preview', 'Enter', () => previewRow(rows[0])]);
     items.push([`Download${sel ? ` (${sel})` : ''}`, 'Ctrl+D', () => downloadSelection()]);
     items.push(null);
     items.push(['Cut', 'Ctrl+X', () => cutSelection()]);
@@ -3145,6 +3165,107 @@ async function editObject(row, ref) {
   } catch (err) {
     toast(`Edit failed: ${err}`, 'error');
   }
+}
+
+// ============================ image viewer ============================
+// The in-app glance: every view that seats files can show an image
+// without moving a byte to disk — a bounded read over the bridge (Go
+// caps it at 16 MiB, sniffs the type, speaks the true size), rendered
+// as a data URL in a lightbox over everything. Arrows walk the
+// folder’s images in grid order, Esc closes, a click on the image
+// toggles actual size. The 16 MiB bound mirrors Go’s PreviewMaxBytes:
+// a row past it is refused aloud, never dragged over the bridge.
+const VIEWER_MAX_BYTES = 16 << 20;
+const IMG_RE = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i;
+const viewer = { open: false, rows: [], idx: 0, ref: null };
+
+function isImageRow(row) {
+  return !!row && !row.isDir && !row.isBucket && IMG_RE.test(row.name || row.key || '');
+}
+
+// viewerTarget builds one row’s typed operand from the seat it lives
+// in — the editObject ref grammar (a pane binding names its own
+// source; the view source keeps its historical "" form).
+function viewerTarget(ref, row) {
+  if (ref.kind === 'local') return { kind: 'local', path: row.path };
+  if (ref.kind === 'remote') return { kind: 'remote', source: ref.source, key: row.key };
+  return { kind: 's3', source: ref.source || viewSource, bucket: ref.bucket, key: row.key };
+}
+
+// previewRow seats the viewer on one image row, walking the image rows
+// of the grid it came from (the side pane’s when it seats there).
+function previewRow(row, ref, fromGrid) {
+  const g = fromGrid || grid;
+  const rows = g.rows.filter(isImageRow);
+  const idx = rows.findIndex((r) => r.key === row.key);
+  viewer.rows = idx >= 0 ? rows : [row]; // a row the grid no longer seats still previews
+  viewer.idx = idx >= 0 ? idx : 0;
+  viewer.ref = ref || nav.current;
+  viewer.open = true;
+  $('viewer').classList.remove('hidden');
+  viewerShow();
+}
+
+async function viewerShow() {
+  const row = viewer.rows[viewer.idx];
+  if (!row) { hideViewer(); return; }
+  const img = $('viewer-img');
+  img.removeAttribute('src'); // a stale frame must not linger under the new name
+  img.alt = row.name || '';
+  $('viewer-name').textContent = row.name || row.key;
+  $('viewer-meta').textContent = `${viewer.idx + 1} / ${viewer.rows.length}`;
+  const one = viewer.rows.length < 2;
+  $('viewer-prev').classList.toggle('hidden', one);
+  $('viewer-next').classList.toggle('hidden', one);
+  if (row.size && row.size > VIEWER_MAX_BYTES) {
+    toast(`${row.name} is ${fmtBytes(row.size)} — previews cap at ${fmtBytes(VIEWER_MAX_BYTES)}`, 'error');
+    if (one) hideViewer();
+    return;
+  }
+  try {
+    const p = await api.PreviewData(viewerTarget(viewer.ref, row));
+    // render only what the sniff blesses as an image (SVG sniffs as
+    // text/xml — its extension vouches, and <img> sandboxes its scripts)
+    const svg = /\.svg$/i.test(row.name || '');
+    const imgType = p.contentType.startsWith('image/')
+      || (svg && p.contentType.startsWith('text/xml'));
+    if (!imgType) {
+      toast(`${row.name} is ${p.contentType || 'not an image'} — download it to view`, 'error');
+      if (one) hideViewer();
+      return;
+    }
+    const ct = svg && !p.contentType.startsWith('image/') ? 'image/svg+xml' : p.contentType;
+    img.src = `data:${ct};base64,${p.data}`;
+    $('viewer-meta').textContent = `${viewer.idx + 1} / ${viewer.rows.length} · ${fmtBytes(p.size || row.size || 0)}${p.truncated ? ' · capped at 16 MiB' : ''}`;
+  } catch (err) {
+    toast(`Preview failed: ${err}`, 'error');
+    if (one) hideViewer();
+  }
+}
+
+function hideViewer() {
+  viewer.open = false;
+  const v = $('viewer');
+  v.classList.add('hidden');
+  v.classList.remove('actual');
+  $('viewer-img').removeAttribute('src');
+}
+
+function viewerWalk(step) {
+  if (!viewer.open) return;
+  const next = viewer.idx + step;
+  if (next < 0 || next >= viewer.rows.length) return; // the ends hold
+  viewer.idx = next;
+  viewerShow();
+}
+
+function wireViewer() {
+  $('viewer-close').onclick = () => hideViewer();
+  $('viewer-scrim').onclick = () => hideViewer();
+  $('viewer-prev').onclick = () => viewerWalk(-1);
+  $('viewer-next').onclick = () => viewerWalk(1);
+  // click the image itself: fitted ⇄ actual size (the lightbox idiom)
+  $('viewer-img').onclick = () => $('viewer').classList.toggle('actual');
 }
 
 // Shift+Del: destroy the selection including all versions and delete markers
@@ -4319,7 +4440,9 @@ function showSideRemoteRowMenu(e, rows) {
   openMenu(e, [
     ...(sel === 1 && rows[0].isDir
       ? [['Open', 'Enter', () => localPane.grid.on.activate(rows[0])]]
-      : [[`Download${sel ? ` (${sel})` : ''}\u2026`, 'Ctrl+D', () => downloadSideRows(rows)]]),
+      : sel === 1 && isImageRow(rows[0])
+        ? [['Preview', 'Enter', () => previewRow(rows[0], { kind: 'remote', source: b.source }, localPane.grid)]]
+        : [[`Download${sel ? ` (${sel})` : ''}\u2026`, 'Ctrl+D', () => downloadSideRows(rows)]]),
     null,
     ['Copy', 'Ctrl+C', () => copySelection(), !sel],
     ['Cut', 'Ctrl+X', () => cutSelection(), !sel],
@@ -4429,7 +4552,9 @@ function showSideS3RowMenu(e, rows) {
   openMenu(e, [
     ...(sel === 1 && rows[0].isDir
       ? [['Open', 'Enter', () => localPane.grid.on.activate(rows[0])]]
-      : [['Download\u2026', 'Ctrl+D', () => downloadSideRows(rows.filter((r) => !r.isBucket)), hasBucketRow]]),
+      : sel === 1 && isImageRow(rows[0]) && !hasBucketRow
+        ? [['Preview', 'Enter', () => previewRow(rows[0], { kind: 'objects', source: b.source, bucket: localPane.bucket }, localPane.grid)]]
+        : [['Download\u2026', 'Ctrl+D', () => downloadSideRows(rows.filter((r) => !r.isBucket)), hasBucketRow]]),
     ...(sel === 1 && rows[0].isDir && !rows[0].isBucket
       ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 's3', source: b.source, bucket: localPane.bucket, dir: rows[0].key }), !pasteReady()]]
       : []),
@@ -5372,6 +5497,15 @@ function cutSelection() { setClip('cut'); }
 
 function wireKeys() {
   document.addEventListener('keydown', (e) => {
+    // the image viewer owns the glance keys while it is open — before
+    // anything else, even with focus parked in a text box
+    if (viewer.open && !e.ctrlKey && !e.metaKey && !e.altKey
+      && (e.key === 'Escape' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      if (e.key === 'Escape') hideViewer();
+      else viewerWalk(e.key === 'ArrowLeft' ? -1 : 1);
+      return;
+    }
     // modal-open keys still work (Escape handled in dialogs)
     const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA';
     if (e.key === 'F1') { e.preventDefault(); helpSheet(); return; }
