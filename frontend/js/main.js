@@ -334,6 +334,7 @@ async function boot() {
   wireKeys();
   wireDrop();
   wireEvents();
+  nav.onNavigate(rememberView); // the seat persists from here on
 
   // Log drawer: mount (subscription is wired in wireEvents) and restore
   // visibility from the last session.
@@ -373,7 +374,22 @@ async function boot() {
   localStorage.removeItem('s3b-side-loc');
 
   const ok = await refreshSources();
-  if (ok) nav.to(sourceHomeLoc());
+  // the last view restores when its source still resolves — the app
+  // reopens where you left it, not on the first source doorstep. The
+  // seat lands SYNCHRONOUSLY (an instant restore, or the default home)
+  // because the boot contract leans on the ordering: the initial seat
+  // is what the async legacy split re-homes when it dissolves a source
+  // the view sat on — an awaited restore would delay the seat past
+  // that window and strand the view on the raw first source. A stored
+  // source the boot pass cannot see yet (the split is about to mint
+  // it) completes through the bounded late restore instead.
+  if (ok) {
+    const last = readStoredViewLoc();
+    const instant = !!(last && (!last.source
+      || sources.some((s) => s.name === last.source || s.id === last.source)));
+    nav.to(instant ? last : sourceHomeLoc());
+    if (!instant && last && last.source) void lateRestoreView(last);
+  }
   initSidebarResize();
   initPaneResize();
   initTreeFilterPanel();
@@ -588,6 +604,57 @@ async function splitLegacySources() {
     return splitAny;
   } finally {
     splitInFlight = false;
+  }
+}
+
+// rememberView persists the main window seat on every navigation — the
+// next launch reopens here. Popout windows never write (they render one
+// floating view, not the workspace); onboarding is the absence of a
+// seat, not one. Clear All wipes the key with the other session seats
+// and its re-home re-records the first source — a freshly opened app
+// remembers exactly that.
+function rememberView(loc) {
+  if (document.body.classList.contains('popout-win')) return;
+  if (!loc || !['buckets', 'objects', 'remote', 'local'].includes(loc.kind)) {
+    localStorage.removeItem('s3b-lastview');
+    return;
+  }
+  try { localStorage.setItem('s3b-lastview', JSON.stringify(loc)); }
+  catch { /* a quota problem must never break navigation */ }
+}
+
+// readStoredViewLoc parses the remembered view into a seatable
+// location — the synchronous half of the restore. The local
+// workstation view carries no source and restores as-is; anything
+// without a source but a kind that needs one is malformed and ignored.
+function readStoredViewLoc() {
+  let loc = null;
+  try { loc = JSON.parse(localStorage.getItem('s3b-lastview') || 'null'); }
+  catch { return null; }
+  if (!loc || typeof loc !== 'object' || typeof loc.kind !== 'string') return null;
+  if (!['buckets', 'objects', 'remote', 'local'].includes(loc.kind)) return null;
+  if (!loc.source && loc.kind !== 'local') return null;
+  return loc;
+}
+
+// lateRestoreView completes the restore when the stored seat names a
+// source the boot pass could not see yet — the legacy split may be
+// seconds from minting it (the provisional-world law: never decide
+// against a world that is about to change shape). The wait never
+// crosses a settled world: once no account-wide source can split
+// anymore, a missing source is a dead seat and the default home (or
+// the split's own re-home of it) stands. Bounded short on purpose —
+// the restore must not fight a user who is already clicking, and a
+// source that exists is restored instantly, never through here.
+async function lateRestoreView(loc) {
+  const want = loc.source;
+  const has = () => sources.some((s) => s.name === want || s.id === want);
+  const pending = () => sources.some((s) => s.type === 's3' && !s.bucket);
+  const t0 = Date.now();
+  while (Date.now() - t0 < 1500) {
+    await new Promise((r) => setTimeout(r, 60));
+    if (has()) { nav.to(loc); return; }
+    if (!pending()) return; // the world settled without it
   }
 }
 
@@ -2573,8 +2640,10 @@ async function clearAllSessionUi() {
     // workstation default that writes the very seat just wiped
     localPane.hide();
     // the pane's session seats (binding + location) are boot-wiped keys;
-    // a reopened app starts unbound
-    for (const k of ['s3b-side-src', 's3b-side-loc']) localStorage.removeItem(k);
+    // a reopened app starts unbound — and the remembered view is a
+    // session seat too: the sweep drops it and the re-home below
+    // re-records the first source, exactly what a fresh open remembers
+    for (const k of ['s3b-side-src', 's3b-side-loc', 's3b-lastview']) localStorage.removeItem(k);
     for (const k of Object.keys(localStorage)) {
       if (k.startsWith('s3b-popout-') && k !== 's3b-popout-center') localStorage.removeItem(k);
     }

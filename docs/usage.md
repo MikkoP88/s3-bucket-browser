@@ -32,6 +32,12 @@ The same binary also builds windowless — the app served over HTTP
 and driven from a browser tab on any machine — see the
 [server mode guide](server.md).
 
+Reopening the app picks up where browsing left off: the main view
+re-seats the last location — a bucket, one of its folders, a remote
+directory, a workstation folder — while its source still exists; a
+seat whose source has disappeared falls back to the first source’s
+home.
+
 ![First launch — onboarding](screenshots/onboarding.png)
 
 ### Add a data source
@@ -83,7 +89,8 @@ exists.
 **File → Clear All…** resets the workspace to a freshly opened state
 (behind a Cancel / Clear confirm, like Exit): every dialog and
 floating window closes, the dual pane closes and unbinds, selection,
-clipboard and filter rest, the history empties and the view re-homes to the
+clipboard and filter rest, the history empties, the remembered last
+view goes with the rest of the session, and the view re-homes to the
 first source. Saved settings, sources and preferences survive — and
 running transfers keep running.
 

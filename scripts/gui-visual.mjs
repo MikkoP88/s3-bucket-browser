@@ -4275,6 +4275,10 @@ await step('tree-filter', async () => {
   // every bucket is its own source after the split — and the landing in
   // team-files reveals its folder level, so "the whole tree" here means
   // the eight source rows plus docs and photos.
+  // Home the main view first: the boot re-seats the remembered view
+  // now, and a seat deeper than team-files root would expand the
+  // fresh-boot tree past exactly the labels pinned below.
+  await navObjects('team-files');
   const store0 = await evalPage(() => JSON.parse(JSON.stringify(
     Object.fromEntries(Object.entries(localStorage).filter(([k]) => k.startsWith('s3b-'))))));
   await evalPage((d) => {
@@ -8108,7 +8112,11 @@ await step('delete-window-uniform', async () => {
   // deleting the bucket takes its scoped source with it (one-bucket
   // model) — restore the fixture world for the legs that follow: the
   // reload re-seeds the legacy account and the boot pass re-runs the
-  // split, so team-files is itself again
+  // split, so team-files is itself again. Drop the remembered seat
+  // first: the delete re-homed the app to another source's home and
+  // the boot would restore THAT seat — these legs pin the default
+  // landing (hetzner's buckets, re-homed to team-files by the split)
+  await evalPage(() => localStorage.removeItem('s3b-lastview'));
   await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
   await page.reload();
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'boot objects after restore');
@@ -8128,6 +8136,8 @@ await step('delete-window-uniform', async () => {
   await waitFor(async () => (await findCall('DeleteBucket')) !== null, 4000, 'classic DeleteBucket fired');
   await evalPage(() => localStorage.removeItem('s3b-del-window'));
   // same restore: leg (b) deleted the bucket (and its source) again
+  // (same seat-drop: the re-home wrote a home the reload must not keep)
+  await evalPage(() => localStorage.removeItem('s3b-lastview'));
   await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
   await page.reload();
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'boot objects after restore (b)');
@@ -8749,6 +8759,11 @@ await step('file-menu', async () => {
     const first = await evalPage(() => window.__shim.world.sources[0]?.name || '');
     return !!first && (await rowKeys()).length > 0 && (await txt('#breadcrumb')).includes(first);
   }, 6000, 're-homed'));
+  await ok('the clear resets the remembered view to the fresh-open seat', waitFor(async () => {
+    const lv = await evalPage(() => JSON.parse(localStorage.getItem('s3b-lastview') || 'null'));
+    const first = await evalPage(() => window.__shim.world.sources[0]?.name || '');
+    return !!lv && lv.source === first && (lv.kind === 'objects' || lv.kind === 'buckets');
+  }, 4000, 'lastview reset'));
 });
 
 await step('profile-flow', async () => {
@@ -11979,6 +11994,47 @@ await step('layout-audit', async () => {
   await closeModal();
   await page.setViewportSize({ width: 1440, height: 900 });
   await sleep(120);
+});
+
+await step('view-restore', async () => {
+  // the app reopens where you left it: every navigation remembers the
+  // seat and the next boot re-seats it while its source still resolves.
+  // team-files is minted by the legacy split AFTER the boot pass reads
+  // the store, so this leg also pins the restore deferring to a pending
+  // split; a dead seat falls to the default home (re-homed by the
+  // split), and the fall
+  // re-records that home — exactly what a fresh open would remember.
+  // Both reloads settle the re-seeded t1 again (leave the world whole).
+  const settleT1 = () => evalPage(() => {
+    const t1 = (window.__shim.world.transfers || []).find((x) => x.id === 't1');
+    if (t1 && t1.status === 'running') { t1.status = 'done'; t1.sentBytes = t1.totalBytes; }
+  });
+  await navObjects('team-files');
+  await dblClickRow('docs');
+  await waitFor(async () => (await rowKeys()).includes('docs/notes.md'), 6000, 'into docs');
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE);
+  await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'boot after reload');
+  await settleT1();
+  await ok('the boot re-seats the remembered folder', waitFor(async () =>
+    (await rowKeys()).includes('docs/notes.md') && (await txt('#breadcrumb')).includes('docs'), 8000, 'restored seat'));
+  await ok('the store carries the typed seat', evalPage(() => {
+    const lv = JSON.parse(localStorage.getItem('s3b-lastview') || 'null');
+    return !!lv && lv.kind === 'objects' && lv.source === 'team-files'
+      && lv.bucket === 'team-files' && lv.prefix === 'docs/';
+  }));
+  // a dead seat falls to the default home and re-records it
+  await evalPage(() => localStorage.setItem('s3b-lastview', JSON.stringify({ kind: 'remote', source: 'ghost-src', path: '' })));
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE);
+  await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'boot after dead-seat reload');
+  await settleT1();
+  await ok('a dead seat falls to the default home', waitFor(async () =>
+    (await rowKeys()).includes('readme.md') && (await txt('#breadcrumb')).includes('team-files'), 8000, 'default landing'));
+  await ok('the fall re-records the fresh-open seat', evalPage(() => {
+    const lv = JSON.parse(localStorage.getItem('s3b-lastview') || 'null');
+    return !!lv && lv.source === 'team-files' && lv.prefix === '' && (lv.kind === 'objects' || lv.kind === 'buckets');
+  }));
 });
 
 await step('toasts-cleanup', async () => {

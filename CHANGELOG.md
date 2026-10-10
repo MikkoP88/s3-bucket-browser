@@ -371,6 +371,24 @@ follow [Semantic Versioning](https://semver.org/).
   without navigating, the sidebar funnel narrows pins by label the
   way it always narrowed buckets, and favorites are preferences —
   they survive reloads and Clear All.
+- **The app reopens where you left it.** The main view remembers its
+  seat — a bucket, one of its folders, a remote directory, a
+  workstation folder — on every navigation, and the next launch
+  re-seats it while its source still resolves; a seat whose source
+  disappeared falls back to the first source’s home, and that fall
+  re-records it (a freshly opened app remembers exactly what it
+  opened on). The restore seats synchronously when the boot pass can
+  already see the stored source and completes through a bounded late
+  step when it cannot — the legacy split runs concurrently with boot,
+  so the very source the seat names may be seconds from minting, and
+  the restore defers to a pending split without ever crossing a
+  settled world (the provisional-world law that governs the favorites
+  upgrade) and without delaying the initial seat, whose timely
+  landing is what the split’s own re-home catches. Clear All wipes
+  the key with the other session seats and its re-home re-records
+  the first source; popout windows never write (they render one
+  floating view, not the workspace); a malformed or absent store is
+  simply ignored.
 
 ### Fixed
 
