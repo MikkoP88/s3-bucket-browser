@@ -10446,7 +10446,123 @@ await step('favorites', async () => {
   await ok('unstar hides the section', waitFor(async () => evalPage(() => document.getElementById('fav-section').classList.contains('hidden')), 4000, 'fav hidden'));
   await ok('favorites emptied', (await evalPage(() => localStorage.getItem('s3b-favs'))) === '[]');
 });
-
+await step('favorites-locations', async () => {
+  // typed pins: an S3 folder from the tree, remote directories from the
+  // grid and the tree, a workstation folder from the grid — then reload
+  // persistence, the pin-click navigation, the row menu unpinning
+  // without navigating, and the legacy bucket-name store upgrading in
+  // place under the active view source
+  await navObjects('team-files');
+  // the full battery can reach this step with backup-box still expanded
+  // from an earlier round — its /docs and /upload children sit ahead of
+  // team-files in the flat tree and treeRow takes the first match, so
+  // the remote docs would shadow team-files folder; fold it when open
+  await evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#tree .tnode'))
+      .find((r) => r.querySelector('.tlabel')?.textContent === 'backup-box');
+    const tw = row?.querySelector('.twist');
+    if (tw && tw.textContent.trim() === '\u25BC') tw.click();
+  });
+  await sleep(150);
+  await waitFor(async () => !!(await treeRow('docs')), 6000, 'docs tree node');
+  await rightClick(await treeRow('docs'));
+  await sleep(60);
+  await ctxItem(/add to favorites/i);
+  await ok('s3 folder pins from the tree', waitFor(async () =>
+    evalPage(() => (document.querySelector('#favorites .fav-label')?.textContent || '') === 'team-files/docs'), 4000, 'folder pin row'));
+  await clickTree('backup-box');
+  await waitFor(async () => !!(await gridRow('docs')), 6000, 'backup-box rows');
+  await rightClick(await gridRow('docs'));
+  await sleep(60);
+  await ctxItem(/add to favorites/i);
+  await ok('remote directory pins from the grid', waitFor(async () =>
+    evalPage(() => Array.from(document.querySelectorAll('#favorites .fav-label')).some((l) => l.textContent === 'backup-box:/docs')), 4000, 'remote grid pin'));
+  await waitFor(async () => !!(await treeRow('upload')), 6000, 'upload tree node');
+  await rightClick(await treeRow('upload'));
+  await sleep(60);
+  await ctxItem(/add to favorites/i);
+  await ok('remote directory pins from the tree', waitFor(async () =>
+    evalPage(() => Array.from(document.querySelectorAll('#favorites .fav-label')).some((l) => l.textContent === 'backup-box:/upload')), 4000, 'remote tree pin'));
+  await evalPage(() => document.querySelector('#main-pane .navbar')
+    .dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await waitFor(async () => !!(await elOrNull(() => document.querySelector('#breadcrumb input.path-edit') || null)), 4000, 'path editor');
+  await page.fill('#breadcrumb input.path-edit', 'C:\\Users\\demo');
+  await page.press('#breadcrumb input.path-edit', 'Enter');
+  await waitFor(async () => !!(await gridRow('Downloads')), 6000, 'workstation rows');
+  await rightClick(await gridRow('Downloads'));
+  await sleep(60);
+  await ctxItem(/add to favorites/i);
+  await ok('workstation folder pins from the grid', waitFor(async () =>
+    evalPage(() => Array.from(document.querySelectorAll('#favorites .fav-label')).some((l) => l.textContent === 'Downloads')), 4000, 'local pin row'));
+  // home the view before the reload so the restore lands somewhere known
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).some((k) => k === 'readme.md'), 6000, 'back to team-files');
+  const favRow = (label) => elOrNull((l) => Array.from(document.querySelectorAll('#favorites .fav-row'))
+    .find((r) => r.querySelector('.fav-label')?.textContent === l) || null, label);
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE);
+  await waitFor(async () => (await rowKeys()).some((k) => k === 'readme.md'), 8000, 'reload restore');
+  // the reload re-seeds the shim world and resurrects t1 as running —
+  // the transfers walk settled it done, and the badge-retire legs later
+  // in the battery (auto-refresh, hidden-ghost-refresh) assume that
+  // settlement: their emit-based retire re-polls ActiveTransfers, and a
+  // running t1 re-shows the jobs badge, which blocks every auto tick
+  // from firing. Restore the settle the reload clobbered (the badge
+  // itself stays untouched: it is hidden since boot and nothing
+  // re-polls it until the next transfer:update)
+  await evalPage(() => {
+    const t1 = (window.__shim.world.transfers || []).find((x) => x.id === 't1');
+    if (t1 && t1.status === 'running') { t1.status = 'done'; t1.sentBytes = t1.totalBytes; }
+  });
+  // renderFavorites rides refreshSources, which can land after the grid
+  // listing — await the section, never race it
+  await ok('pins persist across the reload', waitFor(async () =>
+    evalPage(() => Array.from(document.querySelectorAll('#favorites .fav-label')).map((l) => l.textContent).sort().join('|') === 'Downloads|backup-box:/docs|backup-box:/upload|team-files/docs'), 6000, 'pins after reload'));
+  await waitFor(async () => !!(await favRow('team-files/docs')), 4000, 'folder pin row after reload');
+  // click inside one page turn — a handle grabbed across an await can
+  // detach under a favorites re-render (the M5 selector-click family)
+  await evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#favorites .fav-row'))
+      .find((r) => r.querySelector('.fav-label')?.textContent === 'team-files/docs');
+    if (row) row.click();
+    return !!row;
+  });
+  await waitFor(async () => (await rowKeys()).some((k) => k === 'docs/notes.md')
+    && (await txt('#breadcrumb')).includes('docs'), 6000, 'pin navigation into the folder');
+  await ok('clicking a folder pin opens the folder', true);
+  await rightClick(await favRow('backup-box:/docs'));
+  await sleep(60);
+  await ctxItem(/remove from favorites/i);
+  await ok('the row menu unpins without navigating', waitFor(async () =>
+    !(await evalPage(() => Array.from(document.querySelectorAll('#favorites .fav-label')).some((l) => l.textContent === 'backup-box:/docs')))
+    && (await txt('#breadcrumb')).includes('docs'), 4000, 'unpin leaves the seat'));
+  // a legacy store (bare bucket names) upgrades in place under the
+  // active view source the moment the favorites re-render
+  await evalPage(() => localStorage.setItem('s3b-favs', JSON.stringify(['logs-2026'])));
+  await page.click('#sidebar-head .side-filter');
+  await page.fill('#tree-filter-input', 'logs');
+  await page.press('#tree-filter-input', 'Enter');
+  await ok('the legacy bucket name upgrades to a typed pin', waitFor(async () => {
+    const f = await evalPage(() => JSON.parse(localStorage.getItem('s3b-favs') || '[]'));
+    return f.length === 1 && f[0].kind === 'objects' && f[0].bucket === 'logs-2026'
+      && f[0].source === 'team-files' && f[0].prefix === '';
+  }, 4000, 'legacy upgraded'));
+  await ok('the upgraded pin renders under its label', evalPage(() =>
+    (document.querySelector('#favorites .fav-label')?.textContent || '') === 'logs-2026'));
+  // clear the funnel before closing it — Escape alone only folds the panel
+  await page.fill('#tree-filter-input', '');
+  await page.press('#tree-filter-input', 'Enter');
+  await page.press('#tree-filter-input', 'Escape');
+  await rightClick(await favRow('logs-2026'));
+  await sleep(60);
+  await ctxItem(/remove from favorites/i);
+  await ok('the last pin retiring hides the section', waitFor(async () =>
+    evalPage(() => document.getElementById('fav-section').classList.contains('hidden')), 4000, 'section hidden'));
+  await ok('the store empties', (await evalPage(() => localStorage.getItem('s3b-favs'))) === '[]');
+  // leave the world where the walk expects it: the team-files root
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).some((k) => k === 'readme.md'), 6000, 'back to the root');
+});
 await step('theme-toggle', async () => {
   const before = await evalPage(() => document.documentElement.dataset.theme);
   await page.click('#btn-theme');

@@ -367,7 +367,12 @@ directory compare) with S3 and the secondary pane.
   marks the climb — beside the `..` caption, seated in the Name
   column exactly where a folder's own name sits — resizing or
   reordering the columns never breaks the seat.
-- **Favorites** — star buckets and folders for one-click jumps.
+- **Favorites** — star a location for one-click jumps: an S3 bucket
+  or folder, a remote directory, or a workstation folder, from any
+  grid or tree context menu (the pinned row’s own menu opens or
+  unpins without navigating). A favorite keeps its own source — a
+  pinned folder jumps home even after you switch data sources — and
+  favorites persist across reloads and Clear All.
 - **Search** — Ctrl+Shift+F opens the Search window (also the toolbar
   button, View → Search, or *Search in this folder…* from a context
   menu — the menu presets the scope): WinSCP's Find window,

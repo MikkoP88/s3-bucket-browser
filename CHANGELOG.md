@@ -347,6 +347,30 @@ follow [Semantic Versioning](https://semver.org/).
   `NAME://path`, or a plain workstation path) streams one file’s
   bytes to stdout — it pipes cleanly into grep or jq — with the
   same operand routing `edit` uses and folders refused up front.
+- **Favorites grow from buckets to locations.** A favorite is now a
+  typed place — an S3 bucket root or one of its folders, a remote
+  directory, or a workstation folder — pinned from any context menu
+  that seats one (bucket rows and folder rows in the grid and the
+  tree, remote directories, workstation folders) under the label
+  grammar the app already speaks: a bucket shows its name, a folder
+  the bucket/prefix walk, a remote directory `source:path`, a
+  workstation folder its own name, the full address on the tooltip.
+  The M5 law stored bare bucket names and bound them to whichever S3
+  source was active at click time — with two S3 sources a favorite
+  silently followed the last one viewed; the typed pin carries its
+  own source and survives source switches, legacy stores upgrade in
+  place on the first render that can resolve an S3 source, and a pin
+  retires itself when its source disappears — but never against a
+  provisional world: while an account-wide legacy source can still
+  split into the bucket-scoped sources it names, neither the upgrade
+  nor the retirement runs (the boot pass that lands before the split
+  would otherwise destroy exactly the pins the split is about to
+  legitimate, a race the verification battery caught pinning a folder
+  of a bucket the split had not minted yet). Clicking a pin navigates
+  its exact location, the pin’s own context menu opens or unpins
+  without navigating, the sidebar funnel narrows pins by label the
+  way it always narrowed buckets, and favorites are preferences —
+  they survive reloads and Clear All.
 
 ### Fixed
 

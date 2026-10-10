@@ -512,6 +512,10 @@ async function refreshSources() {
   setGridSource(nav.current?.kind === 'local' ? '' : viewSource);
   renderSidebarHead();
   tree.setSources(sources, nav.current); // sources are the tree's top level
+  // favorites re-render with every source change: pins of sources that
+  // disappeared retire here, and the section shows from boot (the M5
+  // law waited for a buckets view to land first)
+  renderFavorites();
   // The side pane's source dropdown follows the source set
   // bucket/color ride along: the pane's S3 binding needs the scope
   // (bucket-scoped sources open their bucket, not the buckets view) and
@@ -959,31 +963,134 @@ function initTreeFilterPanel() {
 // ============================ navigation ============================
 nav.onNavigate((loc) => loadView(loc));
 
-// ============================ favorites (M5) ============================
+// ====================== favorites / pinned locations ======================
+// A favorite is a typed location — an S3 bucket root or one of its
+// folders, a remote source directory, or a workstation folder — pinned
+// to the sidebar section above the tree. The M5 law stored bare bucket
+// names and bound them to whichever S3 source was active at click time
+// (with two S3 sources a favorite silently followed the last one
+// viewed); the typed law carries its own source and survives source
+// switches. Legacy strings upgrade in place on the first render that
+// can resolve an S3 source, pins whose source disappears retire on the
+// same pass, and favorites are preferences — Clear All keeps them.
 function favorites() {
   try { return JSON.parse(localStorage.getItem('s3b-favs') || '[]'); } catch { return []; }
 }
-function isFavorite(bucket) { return favorites().includes(bucket); }
-function toggleFavorite(bucket) {
-  const favs = favorites();
-  const i = favs.indexOf(bucket);
-  if (i >= 0) favs.splice(i, 1); else favs.push(bucket);
-  localStorage.setItem('s3b-favs', JSON.stringify(favs));
+function saveFavorites(favs) {
+  try { localStorage.setItem('s3b-favs', JSON.stringify(favs)); } catch { /* quota */ }
+}
+// normalizeFavorites upgrades legacy bucket-name strings to typed pins
+// (the active S3 view source adopts them, else the first S3 source) and
+// retires pins whose source no longer exists. Saves only on change.
+// An account-wide legacy source has not said its last word — the split
+// pass can still mint bucket-scoped sources whose names do not exist in
+// the current list, so while one is pending the source world is
+// provisional: strings wait to upgrade (a legacy pin would otherwise
+// bind to a source the split is about to retire) and pins of unknown
+// sources are not pruned (a boot whose first pass lands before the
+// split would otherwise destroy exactly the pins the split is about to
+// legitimate). The settled pass after the split carries the final word;
+// a legacy source that never becomes reachable keeps the world pending
+// forever, which is the safe direction — a lingering pin costs a toast,
+// a premature prune destroys a favorite.
+function normalizeFavorites(favs) {
+  const names = new Set(sources.map((s) => s.name));
+  const pending = sources.some((s) => s.type === 's3' && !s.bucket);
+  let changed = false;
+  const out = [];
+  for (const f of favs) {
+    if (typeof f === 'string') {
+      if (pending) { out.push(f); continue; } // the split may re-name the adopter
+      const s0 = (names.has(viewSource) && sources.find((s) => s.name === viewSource)?.type === 's3')
+        ? viewSource
+        : sources.find((s) => s.type === 's3')?.name || '';
+      if (s0) { out.push({ kind: 'objects', source: s0, bucket: f, prefix: '' }); changed = true; }
+      else out.push(f); // no S3 source yet — the string waits for one
+      continue;
+    }
+    if (!f || typeof f !== 'object') { changed = true; continue; }
+    if ((f.kind === 'objects' || f.kind === 'remote') && sources.length && !pending && !names.has(f.source)) { changed = true; continue; }
+    out.push(f);
+  }
+  if (changed) saveFavorites(out);
+  return out;
+}
+// pinId is a favorite's identity — the same location pinned from two
+// seats folds into one row. Trailing separators are canonicalized away:
+// the grid's keys, the tree's prefixes and the remote engines' paths
+// disagree about them, and the label grammar already strips them — a
+// pin with a slash and a pin without are the same place.
+function pinId(p) {
+  if (!p || typeof p !== 'object') return `s:${JSON.stringify(p)}`;
+  if (p.kind === 'remote') return `r:${p.source}:${String(p.path || '/').replace(/\/+$/, '') || '/'}`;
+  if (p.kind === 'local') return `l:${String(p.dir || '').replace(/[\\/]+$/, '')}`;
+  return `o:${p.source}:${p.bucket}:${String(p.prefix || '').replace(/\/+$/, '')}`;
+}
+function isPinned(loc) {
+  const id = pinId(loc);
+  return normalizeFavorites(favorites()).some((f) => pinId(f) === id);
+}
+function togglePin(loc) {
+  const favs = normalizeFavorites(favorites());
+  const i = favs.findIndex((f) => pinId(f) === pinId(loc));
+  if (i >= 0) favs.splice(i, 1); else favs.push(loc);
+  saveFavorites(favs);
   renderFavorites();
 }
+// favItem builds the star verb every seat shares — grid rows, tree
+// nodes and the favorite's own row all speak it.
+function favItem(loc) {
+  return [isPinned(loc) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => togglePin(loc)];
+}
+// pinLabel is the row's short name: a bucket shows its name, a folder
+// the bucket/prefix walk, a remote directory the source:path grammar,
+// a workstation folder its own name (the full path rides the tooltip).
+function pinLabel(p) {
+  if (p.kind === 'remote') {
+    const path = String(p.path || '/').replace(/\/+$/, '');
+    return path ? `${p.source}:${path}` : p.source;
+  }
+  if (p.kind === 'local') {
+    const d = String(p.dir || '').replace(/[\\/]+$/, '');
+    return d.split(/[\\/]/).filter(Boolean).pop() || d || 'Workstation';
+  }
+  const pre = String(p.prefix || '').replace(/\/+$/, '');
+  return pre ? `${p.bucket}/${pre}` : p.bucket;
+}
+function pinTitle(p) {
+  if (p.kind === 'remote') return `${p.source}://${p.path || '/'}`;
+  if (p.kind === 'local') return p.dir || '';
+  return `${p.source}/${p.bucket}/${p.prefix || ''}`;
+}
+function navLocForPin(p) {
+  if (p.kind === 'remote') return { kind: 'remote', source: p.source, path: p.path || '/' };
+  if (p.kind === 'local') return { kind: 'local', dir: p.dir || '' };
+  return { kind: 'objects', source: p.source, bucket: p.bucket, prefix: p.prefix || '' };
+}
 function renderFavorites() {
-  // the tree filter narrows favorites too — a pinned bucket that cannot
-  // match has no business staying on screen while everything else filters
-  const favs = favorites().filter((b) => !treeMatcher || treeMatcher(b));
+  // the tree filter narrows favorites too — a pinned location that
+  // cannot match has no business staying on screen while everything
+  // else filters
+  const favs = normalizeFavorites(favorites()).filter((p) => !treeMatcher || treeMatcher(pinLabel(p)));
   $('fav-section').classList.toggle('hidden', favs.length === 0);
-  $('favorites').replaceChildren(...favs.map((b) => el('div', {
+  $('favorites').replaceChildren(...favs.map((p) => el('div', {
     class: 'fav-row',
     role: 'listitem',
-    title: `${viewSource}/${b}`,
-    onclick: () => nav.to({ kind: 'objects', source: viewSource, bucket: b, prefix: '' }),
+    title: pinTitle(p),
+    onclick: () => nav.to(navLocForPin(p)),
+    // the row's own menu: open the location, or drop the pin without
+    // navigating (the same unpin the grid and tree menus carry)
+    oncontextmenu: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openMenu(e, [
+        ['Open', 'Enter', () => nav.to(navLocForPin(p))],
+        favItem(p),
+      ]);
+    },
   },
     el('span', { class: 'fav-star', text: '\u2605' }),
-    el('span', { class: 'fav-label', text: b }),
+    el('span', { class: 'fav-label', text: pinLabel(p) }),
   )));
 }
 
@@ -2148,7 +2255,7 @@ function showContextMenu(e, rows) {
   if (loc.kind === 'buckets') {
     const b = rows[0];
     items.push(['Open', 'Enter', () => nav.to({ kind: 'objects', source: loc.source, bucket: b.key, prefix: '' })]);
-    items.push([isFavorite(b.key) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(b.key)]);
+    items.push(favItem({ kind: 'objects', source: loc.source || viewSource, bucket: b.key, prefix: '' }));
     items.push(['Search in bucket\u2026', '', () => searchWindow({ scopes: searchScopes(), sources, preset: { mode: 's3', source: loc.source || viewSource, bucket: b.key, prefix: '' }, onOpen: gotoSearchHit })]);
     items.push(null);
     items.push(['Copy name', '', () => copyAsText(rows, 'name')]);
@@ -2164,6 +2271,7 @@ function showContextMenu(e, rows) {
     // transfer matrix (copy/cut/paste/download stream through TransferCross).
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
     else if (sel === 1 && isPreviewRow(rows[0])) items.push(['Preview', 'Enter', () => previewRow(rows[0])]);
+    if (sel === 1 && rows[0].isDir) items.push(favItem({ kind: 'remote', source: loc.source, path: rows[0].key }));
     items.push([`Download${sel ? ` (${sel})` : ''}\u2026`, 'Ctrl+D', () => downloadSelection(), !sel]);
     items.push(null);
     items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
@@ -2193,6 +2301,7 @@ function showContextMenu(e, rows) {
     // APIs) and local-to-local drags stay Explorer's job
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
     else if (sel === 1 && isPreviewRow(rows[0])) items.push(['Preview', 'Enter', () => previewRow(rows[0])]);
+    if (sel === 1 && rows[0].isDir) items.push(favItem({ kind: 'local', dir: rows[0].path }));
     items.push(null);
     items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
     items.push(['Cut', 'Ctrl+X', () => cutSelection(), !sel]);
@@ -2213,6 +2322,7 @@ function showContextMenu(e, rows) {
   } else {
     if (sel === 1 && rows[0].isDir) items.push(['Open', 'Enter', () => grid.on.activate(rows[0])]);
     else if (sel === 1 && isPreviewRow(rows[0])) items.push(['Preview', 'Enter', () => previewRow(rows[0])]);
+    if (sel === 1 && rows[0].isDir) items.push(favItem({ kind: 'objects', source: loc.source || viewSource, bucket: loc.bucket, prefix: rows[0].key }));
     items.push([`Download${sel ? ` (${sel})` : ''}`, 'Ctrl+D', () => downloadSelection()]);
     items.push(null);
     items.push(['Cut', 'Ctrl+X', () => cutSelection()]);
@@ -2540,7 +2650,7 @@ function showTreeMenu(e, node) {
     openMenu(e, [
       ['Open', '', go],
       ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
-      [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
+      favItem({ kind: 'objects', source: node.source, bucket: node.bucket, prefix: '' }),
       null,
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
       ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && pasteReady())],
@@ -2570,6 +2680,7 @@ function showTreeMenu(e, node) {
     openMenu(e, [
       ['Open', '', () => nav.to({ kind: 'remote', source: node.source, path: node.path })],
       ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
+      favItem({ kind: 'remote', source: node.source, path: node.path }),
       null,
       ...uploadMenu(
         async () => { const paths = await api.PickUploadFiles(); if (paths?.length) uploadToRemote(paths, node.source, node.path); },
@@ -2612,7 +2723,7 @@ function showTreeMenu(e, node) {
     openMenu(e, [
       ['Open', '', go],
       ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
-      [isFavorite(node.bucket) ? '\u2605 Remove from favorites' : '\u2606 Add to favorites', '', () => toggleFavorite(node.bucket), !st.hasProfile],
+      favItem({ kind: 'objects', source: node.source, bucket: node.bucket, prefix: '' }),
       null,
       ...uploadMenu(() => uploadTo('', node.bucket, node.source), () => uploadFolderTo('', node.bucket, node.source), !st.hasProfile),
       ['Paste here', 'Ctrl+V', () => paste('', node.bucket, { kind: 's3', source: node.source, bucket: node.bucket, dir: '' }), !(st.hasProfile && pasteReady())],
@@ -2632,6 +2743,7 @@ function showTreeMenu(e, node) {
   openMenu(e, [
     ['Open', '', go],
     ['Open on secondary pane', '', () => sidePaneOpenFor(node)],
+    favItem({ kind: 'objects', source: node.source, bucket: node.bucket, prefix: node.prefix }),
     null,
     ...uploadMenu(() => uploadTo(node.prefix, node.bucket, node.source), () => uploadFolderTo(node.prefix, node.bucket, node.source), !st.hasProfile),
     ['Download\u2026', '', () => downloadTreeEntry(node), !st.hasProfile],
