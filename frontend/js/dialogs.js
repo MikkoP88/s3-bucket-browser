@@ -3105,6 +3105,7 @@ export function helpSheet() {
     ['Ctrl+Shift+N', 'New folder'],
     ['Shift+F4', 'New file'],
     ['Ctrl+U / Ctrl+D', 'Upload files / download selection'],
+    ['F8', 'Toggle the inspector panel'],
     ['F9', 'Toggle dual-pane local browser'],
     ['Ctrl+L', 'Toggle log area'],
     ['Ctrl+S', 'Save profile file'],

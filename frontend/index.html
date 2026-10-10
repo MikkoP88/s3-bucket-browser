@@ -90,6 +90,12 @@
                bounded preview sliver, never a download), sharing the
                row selection and verbs. The secondary pane carries its own -->
           <button class="tb-btn" id="btn-gallery" title="Gallery view (tiles with image thumbnails)" aria-pressed="false">&#128444;</button>
+          <span class="tb-sep"></span>
+          <!-- Inspector: the docked details panel — the selection's
+               own facts and quick verbs (F8). The pane toolbar mirrors
+               the button; both toggle the SAME panel, whichever grid
+               spoke last owning it -->
+          <button class="tb-btn" id="btn-inspector" title="Inspector (F8)" aria-pressed="false">&#8505;&#65038;</button>
         </header>
 
         <!-- ============ Nav bar: breadcrumb + filter ============ -->
@@ -201,6 +207,11 @@
                — the same glyphs, thumbnails and verbs (the toolbar
                family parity the panes owe the main view) -->
           <button class="tb-btn" id="local-btn-gallery" title="Gallery view (tiles with image thumbnails)" aria-pressed="false">&#128444;</button>
+          <span class="tb-sep"></span>
+          <!-- the pane mirror of the inspector toggle — the same panel,
+               the same preference (the toolbar family parity the panes
+               owe the main view) -->
+          <button class="tb-btn" id="local-btn-inspector" title="Inspector (F8)" aria-pressed="false">&#8505;&#65038;</button>
           <span class="tb-spacer"></span>
           <button class="tb-btn" id="local-btn-close" title="Close the secondary pane (F9)">&#215;</button>
         </header>
@@ -249,6 +260,21 @@
           </div>
           <div class="grid-status" id="local-grid-status" role="status"><span class="gs-src hidden" id="local-source"></span><span class="gs-text" id="local-status"></span></div>
         </div>
+      </section>
+
+      <!-- ============ Inspector: the docked details panel ============ -->
+      <!-- One panel for whichever grid spoke last — the main view or the
+           secondary pane. It shows the selection's own facts the instant
+           the selection changes (no round trips; the deep facts — ETag,
+           SSE, retention — stay a Properties click away), quick verbs
+           that follow the seat, and a view summary when nothing is
+           selected. Hidden until asked for; the preference survives
+           Clear All like every face preference. -->
+      <section class="inspector hidden" id="inspector" aria-label="Inspector">
+        <div class="insp-head"><span id="insp-seat">Details</span>
+          <button class="insp-x" id="insp-close" title="Close (F8)">&#10005;</button>
+        </div>
+        <div class="insp-body" id="inspector-body"></div>
       </section>
     </main>
 

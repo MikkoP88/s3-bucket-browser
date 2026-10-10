@@ -335,14 +335,16 @@ async function boot() {
   wireDrop();
   wireEvents();
   nav.onNavigate(rememberView); // the seat persists from here on
-  grid.on.model = () => gallery.render(); // the tiles follow the rows model
-  localPane.grid.on.model = () => paneGallery.render(); // the pane tiles follow theirs
+  grid.on.model = () => { gallery.render(); inspectorRender(); }; // the tiles and the inspector follow the rows model
+  localPane.grid.on.model = () => { paneGallery.render(); inspectorRender(); }; // the pane tiles follow theirs
   // the pane status bar keeps speaking through its own on.select —
-  // the tiles mirror the pane selection beside it
+  // the tiles mirror the pane selection beside it, and the pane grid
+  // takes the inspector with it (the grid that spoke last owns it)
   const paneSelect = localPane.grid.on.select;
-  localPane.grid.on.select = (rows) => { paneSelect?.(rows); paneGallery.syncSel(); };
+  localPane.grid.on.select = (rows) => { paneSelect?.(rows); paneGallery.syncSel(); inspSeat = 'pane'; inspectorRender(); };
   gallery.apply(); // seat each tile face when its preference is on
   paneGallery.apply();
+  if (localStorage.getItem('s3b-inspector') === '1') toggleInspector(true);
 
   // Log drawer: mount (subscription is wired in wireEvents) and restore
   // visibility from the last session.
@@ -1996,7 +1998,7 @@ function refreshDragUrls() {
 function wireGrid() {
   // the tile face follows every selection change the rows own — the
   // grid verbs (Ctrl+A, Invert, the Escape clear) all re-emit here
-  grid.on.select = () => { updateStatus(); refreshDragUrls(); gallery.syncSel(); };
+  grid.on.select = () => { updateStatus(); refreshDragUrls(); gallery.syncSel(); inspSeat = 'main'; inspectorRender(); };
   grid.on.dragOS = (e, rows) => {
     // OS drag-out. Desktop: a plain drag of a files-only selection floats
     // a native OLE drag — Go stages the selection and Explorer drops real
@@ -2240,6 +2242,7 @@ function wireLocalPane() {
   $('local-btn-download').onclick = () => paneDownload();
   $('local-btn-find').onclick = paneSearch;
   wireGalleryToggle('local-btn-gallery', paneGallery, 's3b-gallery-pane', 'local-gallery');
+  $('local-btn-inspector').onclick = () => toggleInspector(); // the pane mirror toggles the same panel
   $('local-btn-newfolder').onclick = () => paneNewFolder();
   $('local-btn-newfile').onclick = () => paneNewFile();
 }
@@ -3779,6 +3782,195 @@ function galleryKeydown(e) {
 function galleryOwnsView() {
   return gallery.owns();
 }
+
+// ===== the inspector: the docked details panel =====
+// One panel, one law: whichever grid spoke last owns it. It renders the
+// selection's own facts the instant the selection changes — never a
+// round trip (the deep facts — ETag, SSE, retention, usage — stay a
+// Properties click away, exactly the modal Alt+Enter always opened) —
+// quick verbs that follow the seat, and a view summary when nothing is
+// selected. Hidden until asked for (F8, the toolbars, the View menu);
+// the preference survives Clear All like every face preference.
+
+let inspSeat = 'main'; // 'main' | 'pane' — the grid that spoke last
+
+function inspectorOpen() { return !$('inspector').classList.contains('hidden'); }
+
+function toggleInspector(force) {
+  const on = force === undefined ? !inspectorOpen() : !!force;
+  $('inspector').classList.toggle('hidden', !on);
+  for (const id of ['btn-inspector', 'local-btn-inspector']) $(id)?.setAttribute('aria-pressed', on ? 'true' : 'false');
+  try { localStorage.setItem('s3b-inspector', on ? '1' : '0'); } catch { /* quota: a preference, not a session */ }
+  if (on) inspectorRender();
+}
+
+// paneSeatLoc names the pane's seat in the location grammar the verbs
+// speak — the same refs the pane activation handlers build.
+function paneSeatLoc() {
+  const b = localPane.binding || {};
+  if (b.kind === 'remote') return { kind: 'remote', source: b.source };
+  if (b.kind === 's3') return { kind: 'objects', source: b.source, bucket: localPane.bucket };
+  return { kind: 'local' };
+}
+
+// inspSeatLabel names a seat the way the breadcrumb would — the summary
+// face when nothing is selected.
+function inspSeatLabel(loc) {
+  if (!loc) return '';
+  if (loc.kind === 'buckets') return 'Buckets';
+  const tail = String(loc.prefix || loc.path || loc.dir || '').replace(/^\/+|\/+$/g, '');
+  if (loc.kind === 'objects') return loc.bucket ? `${loc.bucket}${tail ? `/${tail}` : ''}` : 'Buckets';
+  if (loc.kind === 'remote') return `${loc.source || ''}${tail ? `/${tail}` : ''}`;
+  if (loc.kind === 'local') return tail || 'Workstation';
+  return '';
+}
+
+function inspProps(pairs) {
+  const dl = el('dl', { class: 'insp-props' });
+  for (const [k, v] of pairs) {
+    if (v === undefined || v === null || v === '') continue;
+    dl.appendChild(el('dt', { text: k }));
+    dl.appendChild(el('dd', { text: String(v) }));
+  }
+  return dl;
+}
+
+// inspSummary is the no-selection face: the seat itself, its counts.
+function inspSummary(g, loc, pane) {
+  const files = g.rows.filter((r) => !r.isDir);
+  const folders = g.rows.length - files.length;
+  const bytes = files.reduce((sum, r) => sum + (r.size || 0), 0);
+  const parts = [];
+  if (folders) parts.push(`${folders} folder(s)`);
+  if (files.length) parts.push(`${files.length} file(s)`);
+  const props = [
+    ['Location', inspSeatLabel(loc) || '\u2014'],
+    ['Items', `${g.rows.length}${parts.length ? ` (${parts.join(', ')})` : ''}`],
+  ];
+  if (files.length) props.push(['Total size', fmtBytes(bytes)]);
+  const srcName = loc?.source || (loc?.kind === 'objects' ? currentViewSourceName(loc) : '');
+  if (srcName && loc?.kind !== 'local') {
+    const s = sources.find((x) => x.name === srcName);
+    props.push(['Source', `${srcName}${s ? ` (${s.type})` : ''}`]);
+  }
+  return el('div', { class: 'insp-sec' },
+    el('div', { class: 'insp-glyph', text: '\uD83D\uDD0E' }),
+    el('div', { class: 'insp-sub', text: pane ? 'Nothing selected in the pane' : 'Nothing selected' }),
+    inspProps(props));
+}
+
+// inspOne is the single-row face: the row's own facts, nothing dialed.
+function inspOne(row, loc, pane) {
+  const props = [
+    ['Kind', row.bucketCreated || row.isBucket ? 'Bucket' : row.isDir ? 'Folder' : (loc?.kind === 'objects' ? 'Object' : 'File')],
+  ];
+  if (!row.isDir && !row.isBucket && !row.bucketCreated) props.push(['Size', fmtBytes(row.size || 0)]);
+  const mod = row.lastModified || row.modTime;
+  if (mod) props.push(['Last modified', fmtDate(mod)]);
+  if (row.created) props.push(['Created', fmtDate(row.created)]);
+  if (row.storageClass) props.push(['Storage class', row.storageClass]);
+  const srcName = loc?.source || (loc?.kind === 'objects' && !pane ? currentViewSourceName(loc) : '');
+  if (srcName && loc?.kind !== 'local') props.push(['Source', srcName]);
+  const where = row.path || row.key || '';
+  if (where) props.push([row.path ? 'Path' : 'Key', where]);
+  return el('div', { class: 'insp-sec' },
+    el('div', { class: 'insp-head-row' },
+      el('span', { class: 'insp-glyph', text: fileIcon(row.name || row.key || '', row.isDir) }),
+      el('div', { class: 'insp-name', text: row.name || row.key || '' })),
+    inspProps(props));
+}
+
+// inspMany is the multi-selection face: the aggregate grammar the
+// Properties dialog speaks (multiProperties), without the modal.
+function inspMany(rows) {
+  const files = rows.filter((r) => !r.isDir);
+  const folders = rows.length - files.length;
+  const bytes = files.reduce((sum, r) => sum + (r.size || 0), 0);
+  const parts = [];
+  if (folders) parts.push(`${folders} folder(s)`);
+  if (files.length) parts.push(`${files.length} file(s)`);
+  const props = [['Items', `${rows.length}${parts.length ? ` (${parts.join(', ')})` : ''}`]];
+  if (files.length) props.push(['Total size', fmtBytes(bytes)]);
+  const ms = (v) => (typeof v === 'string' ? Date.parse(v) : v);
+  const times = rows.map((r) => ms(r.lastModified || r.modTime)).filter((v) => Number.isFinite(v) && v > 0);
+  if (times.length) props.push(['Modified range', `${fmtDate(Math.min(...times))} \u2014 ${fmtDate(Math.max(...times))}`]);
+  return el('div', { class: 'insp-sec' },
+    el('div', { class: 'insp-name', text: `${rows.length} item(s)` }),
+    inspProps(props));
+}
+
+function inspCopyCtx(loc, pane) {
+  if (pane) return inspCopyCtx(paneSeatLoc(), false);
+  if (loc?.kind === 'objects') return { kind: 'objects', bucket: loc.bucket, source: loc.source };
+  if (loc?.kind === 'remote') return { kind: 'remote', source: loc.source };
+  return { kind: 'local' };
+}
+
+// inspProperties opens the deep-facts modal the seat already owns.
+function inspProperties(one, loc, pane) {
+  if (pane) {
+    const b = localPane.binding || {};
+    if (b.kind === 'remote') return sideRemoteProperties(one);
+    if (b.kind === 's3') return sideS3Properties(one);
+    return properties(`Properties \u2014 ${one.name}`, [
+      ['Type', one.isDir ? 'Folder' : 'File'],
+      ...(!one.isDir ? [['Size', fmtBytes(one.size || 0)]] : []),
+      ['Path', one.path],
+    ]);
+  }
+  if (loc?.kind === 'buckets') return bucketProperties(one.name);
+  selectionProperties();
+}
+
+// inspVerbs builds the quick-verb row: the shared verbs the seat's own
+// menus speak, one click closer. The download verb follows the seat's
+// downloader (the pane speaks downloadSideRows; a local binding IS the
+// disk, so it earns Open instead of Edit, and never a download).
+function inspVerbs(rows, loc, pane) {
+  const b = pane ? (localPane.binding || {}) : {};
+  const g = pane ? localPane.grid : grid;
+  const one = rows.length === 1 ? rows[0] : null;
+  const isBucketRow = rows.some((r) => r.isBucket || r.bucketCreated) || (!pane && loc?.kind === 'buckets');
+  const localSeat = pane ? (b.kind !== 'remote' && b.kind !== 's3') : loc?.kind === 'local';
+  const acts = [];
+  if (one && !isBucketRow) {
+    if (one.isDir) acts.push(['Open', () => g.on.activate?.(one)]);
+    else {
+      if (isPreviewRow(one)) acts.push(['Preview', () => (pane ? previewRow(one, paneSeatLoc(), localPane.grid) : previewRow(one))]);
+      acts.push([localSeat ? 'Open' : 'Edit', () => (pane ? editObject(one, paneSeatLoc()) : editObject(one))]);
+    }
+  }
+  if (!isBucketRow && (pane ? b.kind === 'remote' || b.kind === 's3' : loc?.kind !== 'local')) {
+    acts.push(['Download\u2026', () => (pane ? downloadSideRows(rows) : downloadSelection())]);
+  }
+  if (!isBucketRow) acts.push(['Copy path', () => copyAsText(rows, 'path', inspCopyCtx(loc, pane))]);
+  if (one && !(isBucketRow && pane)) acts.push(['Properties\u2026', () => inspProperties(one, loc, pane)]);
+  if (!acts.length) return null;
+  const wrap = el('div', { class: 'insp-verbs' });
+  for (const [label, fn] of acts) {
+    wrap.appendChild(el('button', { class: 'insp-btn', type: 'button', text: label, onclick: fn }));
+  }
+  return wrap;
+}
+
+// inspectorRender is the one entry point: every selection or model
+// change in either grid lands here, and a hidden pane hands the seat
+// back to the main view.
+function inspectorRender() {
+  const box = $('inspector-body');
+  if (!box || !inspectorOpen()) return;
+  const pane = inspSeat === 'pane' && localPane.visible;
+  const g = pane ? localPane.grid : grid;
+  const loc = pane ? paneSeatLoc() : nav.current;
+  const rows = g.selectedRows();
+  $('insp-seat').textContent = pane ? 'Pane details' : 'Details';
+  const faces = rows.length === 0
+    ? [inspSummary(g, loc, pane)]
+    : rows.length === 1
+      ? [inspOne(rows[0], loc, pane), inspVerbs(rows, loc, pane)]
+      : [inspMany(rows), inspVerbs(rows, loc, pane)];
+  box.replaceChildren(...faces.filter(Boolean));
+}
 function viewerWalk(step) {
   if (!viewer.open) return;
   const next = viewer.idx + step;
@@ -4057,6 +4249,7 @@ function setPanes(on) {
   localStorage.setItem('s3b-panes', on ? '1' : '0');
   if (on) localPane.show();
   else localPane.hide();
+  inspectorRender(); // a hidden pane hands the inspector back to the main seat
   // the banner's other half rides the pane: hidden pane → the strip
   // rests (decorations persist with the pane's own state); shown
   // again → the last verdict restates itself if the seats still
@@ -5283,6 +5476,8 @@ function wireToolbar() {
   $('btn-sync').onclick = synchronizePair;
   $('btn-find').onclick = openSearch;
   wireGalleryToggle('btn-gallery', gallery, 's3b-gallery', 'gallery');
+  $('btn-inspector').onclick = () => toggleInspector();
+  $('insp-close').onclick = () => toggleInspector(false);
   $('btn-newfolder').onclick = newFolder;
   $('btn-newfile').onclick = newFile;
   $('btn-theme').onclick = toggleTheme;
@@ -5691,6 +5886,7 @@ function mountMenubar() {
         null,
         { label: t('menu.theme'), action: toggleTheme },
         { label: t('menu.panes'), kbd: 'F9', action: togglePanes },
+        { label: 'Inspector', kbd: 'F8', checked: () => inspectorOpen(), action: () => toggleInspector() },
         { label: t('menu.synchronize'), action: synchronizePair },
         { label: t('menu.log'), kbd: 'Ctrl+L', action: toggleLogArea },
         { label: t('menu.search'), action: () => openSearch() },
@@ -6071,6 +6267,7 @@ function wireKeys() {
     }
     if (e.key === 'Delete') { e.preventDefault(); if (e.shiftKey) deletePermanentSelection(); else deleteSelection(); return; }
     if (e.key === 'F9') { e.preventDefault(); togglePanes(); return; }
+    if (e.key === 'F8') { e.preventDefault(); toggleInspector(); return; }
     if (ctrl && e.key.toLowerCase() === 'a') { e.preventDefault(); grid.selectAll(); return; }
     if (ctrl && e.key.toLowerCase() === 'i') { e.preventDefault(); grid.invertSelection(); return; }
     if (ctrl && e.key.toLowerCase() === 'c') { copySelection(); return; }

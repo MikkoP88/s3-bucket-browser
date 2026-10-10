@@ -8360,7 +8360,7 @@ await step('synchronize', async () => {
   await ok('View menu carries the Synchronize leaf beside Dual-pane', evalPage(() => {
     const items = Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'));
     const i = items.findIndex((x) => /synchronize/i.test(x.textContent));
-    return i > 0 && /dual-pane|panes/i.test(items[i - 1].textContent);
+    return i > 0 && items.slice(0, i).some((x) => /dual-pane|panes/i.test(x.textContent));
   }));
   await page.locator('#menubar .mb-title', { hasText: /^view$/i }).first().click();
 });
@@ -12194,6 +12194,134 @@ await step('gallery-view', async () => {
   await evalPage(() => document.getElementById('local-btn-close').click());
   await sleep(200);
   await evalPage(() => localStorage.removeItem('s3b-gallery-pane'));
+});
+
+// ---------- the inspector: the docked details panel ----------
+await step('inspector', async () => {
+  // The selection's own facts the instant the selection changes — no
+  // round trips (the deep facts stay a Properties click away; the lazy
+  // folder-usage walk may still dial, a file stat never does), the
+  // aggregate grammar on multi-select, quick verbs that follow the
+  // seat, and whichever grid spoke last owning the panel — the pane
+  // toolbar mirror toggles the SAME panel. The preference survives a
+  // keep-staged reload (settle t1 after the re-seeded boot). Leaves
+  // the world canonical: panel closed, preference gone, rows face at
+  // the team-files root, pane closed.
+  const settleT1 = () => evalPage(() => {
+    const t1 = (window.__shim.world.transfers || []).find((x) => x.id === 't1');
+    if (t1 && t1.status === 'running') { t1.status = 'done'; t1.sentBytes = t1.totalBytes; }
+  });
+  const rowBy = (nm) => elOrNull((c) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .find((r) => r.querySelector('.tname')?.textContent.trim() === c) || null, nm);
+  const inspName = () => evalPage(() => document.querySelector('#inspector-body .insp-name')?.textContent || '');
+  const inspVal = (label) => evalPage((l) => {
+    const dt = Array.from(document.querySelectorAll('#inspector-body dt')).find((x) => x.textContent === l);
+    return dt ? (dt.nextElementSibling?.textContent || '') : null;
+  }, label);
+  const inspBtn = (label) => elOrNull((c) => Array.from(document.querySelectorAll('#inspector-body .insp-btn'))
+    .find((b) => b.textContent === c) || null, label);
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'inspector objects');
+  // normalize the pane state (a standing pane would steal the seat)
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for inspector');
+  await evalPage(() => document.getElementById('toasts').replaceChildren()); // the stack never expires on its own
+  await ok('the inspector stays hidden until asked for', evalPage(() =>
+    document.getElementById('inspector').classList.contains('hidden')
+    && document.getElementById('btn-inspector').getAttribute('aria-pressed') === 'false'));
+  await page.click('#btn-inspector');
+  await ok('the toolbar toggle seats the panel with the view summary', waitFor(async () =>
+    (await evalPage(() => !document.getElementById('inspector').classList.contains('hidden')
+      && document.getElementById('btn-inspector').getAttribute('aria-pressed') === 'true'))
+    && (await inspVal('Location')) === 'team-files'
+    && (await inspVal('Items')) === '7 (3 folder(s), 4 file(s))', 4000, 'panel seated'));
+  await shot('inspector');
+  // the single row: facts from the row itself, no file stat dialed
+  await resetCalls();
+  await (await rowBy('readme.md')).asElement().click();
+  await ok('a selection seats the row facts instantly', waitFor(async () =>
+    (await inspName()) === 'readme.md'
+    && (await inspVal('Kind')) === 'Object'
+    && (await inspVal('Size')) === '1.2 KB'
+    && (await inspVal('Key')) === 'readme.md', 3000, 'row facts'));
+  await ok('selection changes never dial a file stat', evalPage(() =>
+    !window.__shim.calls.some((c) => ['StatObject', 'SourceStatObject', 'RemoteStat'].includes(c.m)
+      && !String(c.args[1] || '').endsWith('/'))));
+  await (await rowBy('budget-2026.xlsx')).asElement().click();
+  await ok('the panel follows the walk', waitFor(async () =>
+    (await inspName()) === 'budget-2026.xlsx', 3000, 'walk follows'));
+  // multi: the aggregate grammar
+  await (await rowBy('scan.png')).asElement().click({ modifiers: ['Control'] });
+  await ok('a multi-selection aggregates', waitFor(async () =>
+    (await inspVal('Items')) === '2 (2 file(s))' && (await inspVal('Total size')) === '247 KB', 3000, 'aggregate'));
+  await page.keyboard.press('Escape');
+  await ok('escape returns the summary', waitFor(async () =>
+    (await inspVal('Items')) === '7 (3 folder(s), 4 file(s))', 3000, 'summary back'));
+  // the verbs follow the shape: preview seats the viewer, properties
+  // opens the deep modal the row facts never dialed
+  await (await rowBy('scan.png')).asElement().click();
+  await ok('the verb row follows the shape', waitFor(async () =>
+    !!((await inspBtn('Preview')) && (await inspBtn('Edit'))
+    && (await inspBtn('Download\u2026')) && (await inspBtn('Copy path'))
+    && (await inspBtn('Properties\u2026'))), 3000, 'verbs present'));
+  await (await inspBtn('Preview')).asElement().click();
+  await ok('the preview verb seats the viewer', waitFor(() => evalPage(() =>
+    !document.getElementById('viewer').classList.contains('hidden')
+    && document.getElementById('viewer-name').textContent === 'scan.png'), 4000, 'viewer from inspector'));
+  await page.keyboard.press('Escape');
+  await waitFor(() => evalPage(() => document.getElementById('viewer').classList.contains('hidden')), 3000, 'viewer closed');
+  await (await rowBy('readme.md')).asElement().click();
+  await waitFor(async () => !!(await inspBtn('Properties\u2026')), 3000, 'properties verb');
+  await (await inspBtn('Properties\u2026')).asElement().click();
+  await ok('the properties verb opens the deep modal', waitFor(() => evalPage(() =>
+    !document.getElementById('modal-root').classList.contains('hidden')
+    && (document.getElementById('modal-root').textContent || '').includes('ETag')), 4000, 'deep modal'));
+  await page.keyboard.press('Escape');
+  await waitFor(() => evalPage(() => document.getElementById('modal-root').classList.contains('hidden')), 3000, 'modal closed');
+  // the pane: whichever grid spoke last owns the panel
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'pane root rows');
+  await waitFor(() => evalPage((nm) => {
+    const r = Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+      .find((x) => x.querySelector('.tname')?.textContent.trim() === nm);
+    if (!r) return false;
+    r.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    return true;
+  }, 'scan.png'), 6000, 'pane row click');
+  await ok('a pane selection takes the panel with the pane seat', waitFor(async () =>
+    (await txt('#insp-seat')) === 'Pane details'
+    && (await inspName()) === 'scan.png', 4000, 'pane seat'));
+  // both toolbars own the same panel — the mirror law
+  await page.click('#local-btn-inspector');
+  await ok('the pane mirror closes the same panel', waitFor(() => evalPage(() =>
+    document.getElementById('inspector').classList.contains('hidden')
+    && document.getElementById('local-btn-inspector').getAttribute('aria-pressed') === 'false'), 3000, 'mirror closes'));
+  await page.click('#btn-inspector');
+  await waitFor(() => evalPage(() => !document.getElementById('inspector').classList.contains('hidden')), 3000, 'panel back');
+  // F8 toggles both ways
+  await page.keyboard.press('F8');
+  await ok('F8 closes the panel', waitFor(() => evalPage(() =>
+    document.getElementById('inspector').classList.contains('hidden')), 3000, 'F8 closes'));
+  await page.keyboard.press('F8');
+  await ok('F8 seats the panel again', waitFor(() => evalPage(() =>
+    !document.getElementById('inspector').classList.contains('hidden')
+    && document.getElementById('btn-inspector').getAttribute('aria-pressed') === 'true'), 3000, 'F8 opens'));
+  // the preference survives a keep-staged reload (pane closed first)
+  await evalPage(() => document.getElementById('local-btn-close').click());
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for reload');
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE);
+  await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'boot after inspector reload');
+  await settleT1();
+  await ok('the preference re-seats the panel after a reload', waitFor(async () =>
+    (await evalPage(() => !document.getElementById('inspector').classList.contains('hidden')
+      && document.getElementById('btn-inspector').getAttribute('aria-pressed') === 'true'
+      && localStorage.getItem('s3b-inspector') === '1'))
+    && (await rowKeys()).includes('readme.md'), 8000, 'panel after boot'));
+  // leave the world canonical: panel closed, preference gone
+  await page.click('#btn-inspector');
+  await waitFor(() => evalPage(() => document.getElementById('inspector').classList.contains('hidden')), 3000, 'panel closed');
+  await evalPage(() => localStorage.removeItem('s3b-inspector'));
 });
 
 await step('toasts-cleanup', async () => {

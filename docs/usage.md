@@ -493,6 +493,19 @@ sources carry the
   walking visual order with Enter activating. The choice is a
   preference and persists across sessions; both views share one
   listing, so filters and sorts speak in either.
+- **Inspector** — F8, the ℹ toolbar button (the pane’s toolbar
+  carries its own, both toggling the same panel) or the View menu
+  seats a docked details panel on the right edge: whatever you
+  select shows its facts the instant the selection changes —
+  kind, size, modified, key — read from the row itself with no
+  round trip, quick verbs that follow the seat (Open, Preview,
+  Edit, Download…, Copy path, Properties…), a multi-selection
+  aggregated (items, total size, modified range), and with nothing
+  selected the panel summarizes the view — the location, item and
+  size counts, the source. The deep facts (ETag, encryption,
+  retention, usage) stay one Properties… click away. Whichever
+  grid spoke last owns the panel — the main view or the dual
+  pane — and the choice persists across sessions.
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
   *New file…* in the context menu opens a small dialog for a file name
   and type (a dozen common extensions, or none). The empty file is
@@ -907,6 +920,7 @@ you'll use daily:
 | Del / Shift+Del | delete window / permanent path |
 | F4 / Shift+F4 | edit the selected file / new file |
 | ← / → (viewer) | walk the folder’s previewable files while the preview is open |
+| F8 | inspector panel |
 | F9 | dual pane |
 | Ctrl+L | event log |
 | Ctrl+S | save workspace profile |

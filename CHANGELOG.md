@@ -417,6 +417,28 @@ follow [Semantic Versioning](https://semver.org/).
   Clear All. Underneath, the model hook widened: streamed pages
   (appendRows) fire the same on.model contract apply() always did,
   because a streamed page is a model change too.
+- **The inspector: the selection grows its own panel** — F8, the
+  ℹ toolbar button (the pane’s toolbar mirrors it, both toggling
+  the same panel; the View menu speaks it too) seats a docked
+  details column on the right edge that renders the selection the
+  instant it changes: a single row’s own facts — kind, size, last
+  modified, created, storage class, the source, the key or path —
+  read from the row itself, never a round trip (the deep facts —
+  ETag, SSE, retention, usage — stay a Properties… click away
+  through the same modal Alt+Enter always opened), a
+  multi-selection aggregated the way the Properties dialog
+  aggregates (items, total size, modified range), a view summary
+  when nothing is selected (the location named the way the
+  breadcrumb names it, item and size counts, the source with its
+  type), and quick verbs that follow the seat — Open for folders,
+  Preview and Edit for files, Download…, Copy path,
+  Properties… — each the exact verb the seat’s own menus
+  speak. Whichever grid spoke last owns the panel: a selection in
+  the dual pane hands it the seat (the pane’s button and verbs
+  speaking the binding, its summary naming the pane’s own
+  location), a closed pane hands the seat back to the main view,
+  and the preference (`s3b-inspector`) survives Clear All the way
+  every face preference does.
 
 ### Fixed
 
