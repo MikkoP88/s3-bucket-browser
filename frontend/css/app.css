@@ -1847,3 +1847,28 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .insp-btn:hover { background: var(--hover); border-color: var(--accent); }
 .insp-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Windows High Contrast (forced-colors): the mode strips author
+   backgrounds and box-shadows, so every state that spoke through
+   paint speaks through the system palette instead — selections
+   Highlight over HighlightText (search rows and the pane rows ride
+   the same .grid-row law), the walk seat an outline when it sits off
+   the selection, every menu seat an outline on :focus (any focus
+   road — the mode forgives the pointer), the disabled item GrayText,
+   the active tab a filled seat. The block sits last so it holds the
+   final word at equal specificity. */
+@media (forced-colors: active) {
+  .grid-row.sel, .tnode.sel, .g-tile.sel {
+    background: Highlight;
+    color: HighlightText;
+  }
+  .g-tile.sel { border-color: HighlightText; }
+  .grid-row.focus:not(.sel), .tnode.focus:not(.sel),
+  .mb-title:focus, .mb-item:focus, .ctxmenu .item:focus,
+  .picker-row:focus, .pane-dest .dest-opt:focus, .set-colrow:focus {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  .mb-item.disabled, .ctxmenu .item.disabled { color: GrayText; }
+  .tab.active { box-shadow: none; background: Highlight; color: HighlightText; }
+}

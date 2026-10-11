@@ -516,6 +516,43 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The app answers high contrast** — Windows High Contrast (forced
+  colors) strips author backgrounds and box-shadows, and six rounds of
+  keyboard grammar had left the app speaking ever more through paint:
+  selection fills, walk-seat shades, focus paints, active-tab shadows.
+  Under the mode every one of those states now speaks through the
+  system palette instead: selected rows, tree nodes and tiles (the
+  search results and pane rows ride the same .grid-row law) paint
+  Highlight over HighlightText with the tile border matching, the
+  keyboard walk seat paints a Highlight outline when it sits off the
+  selection (the Ctrl+arrow moveSel branch), every menu seat — menubar
+  titles and items, context menus, pickers, pane destinations, the
+  settings column rows — paints an outline on :focus (any focus road;
+  the mode forgives the pointer), disabled menu items dim to GrayText,
+  and the active tab (the guide's seven sections, the admin panel)
+  fills as a seat instead of the box-shadow underline the mode erases.
+  The block sits last in app.css so it holds the final word at equal
+  specificity, and the guide's Keyboard & access entry and usage.md's
+  new accessibility paragraph say the claim out loud. The battery grows
+  the forced-colors step with ten oks — the selected row painting
+  Highlight and reading HighlightText (probes resolve the system colors
+  in-page, so the pins hold whatever the emulated palette maps to), the
+  walk seat's outline through Home then Ctrl+ArrowDown (the seat off
+  the selection), the seated menu item's outline with the disabled item
+  GrayText beside it (Escape first — Cut is disabled at an empty
+  selection), the selected tile's fill and border, the selected tree
+  node, the active guide tab filling Highlight, and the mode dropping
+  with the theme paint returning to its exact pre-emulation value —
+  and the round taught a harness law: under forced-colors emulation an
+  entrance animation's first frame is also the style recalc that lands
+  the forced palette, so a computed-style read racing the .14s entrance
+  sees pre-adjustment values (opacity 0, transparent, black) — the leg
+  waits on the popout's opacity settle instead of a blind sleep. Gates:
+  js-check OK, provenance 9/9 (the main.js watermark undisturbed
+  through every node patch), the Go suite untouched by design — a
+  frontend-only round — and the full battery green at 1373/1373. Docs:
+  the CHANGELOG carries the bullet above the help round's, and
+  VERIFICATION the row (GUI-119).
 - **The in-app help catches up with the keyboard grammar** — the F1
   sheet and the user guide had fallen six rounds behind the keyboard
   surfaces the app grew. The sheet now carries the rows the faces own:

@@ -973,6 +973,14 @@ cascade or moves to the previous menu, Escape closes back onto
 the title, and Enter runs the seated verb (checked items speak
 their state and re-read it at every open).
 
+Accessibility beyond the keyboard: the app honors the OS "reduce
+motion" setting (transitions settle instantly, skeleton loaders rest,
+nothing that carries meaning depends on animation), and under Windows
+High Contrast (forced colors) every state keeps speaking — selections,
+the keyboard walk seat, open menus and the active guide tab paint in
+the system palette instead of the theme's, while disabled menu items
+dim to the system's gray.
+
 ---
 
 ## 9. CLI quick reference

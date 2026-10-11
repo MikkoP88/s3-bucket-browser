@@ -13238,6 +13238,132 @@ await step('theme-prepaint', async () => {
   await ok('theme restored to light', evalPage(() => document.documentElement.dataset.theme === 'light'));
 });
 
+// ---------- Windows High Contrast: forced-colors ----------
+await step('forced-colors', async () => {
+  // The mode strips author backgrounds and box-shadows, so every state
+  // that spoke through paint must speak through the system palette
+  // instead: selections Highlight over HighlightText, the walk seat and
+  // the menu seats an outline, the disabled item GrayText, the active
+  // guide tab a filled seat. The emulation drives the whole surface and
+  // is dropped before the step ends — it survives reloads, and
+  // settings-honor reloads right after.
+  const sysColor = (decl, prop) => evalPage((a) => {
+    const el = document.createElement('div');
+    el.style.cssText = 'position:absolute;visibility:hidden;' + a.d;
+    document.body.appendChild(el);
+    const v = getComputedStyle(el)[a.p];
+    el.remove();
+    return v;
+  }, { d: decl, p: prop });
+  const selRowBg = () => evalPage(() => {
+    const r = document.querySelector('#grid-body .grid-row.sel');
+    return r ? getComputedStyle(r).backgroundColor : null;
+  });
+  await navObjects('team-files');
+  await page.focus('#grid-body');
+  await clickRow('readme.md');
+  const baseBg = await selRowBg();
+  await ok('a row selection seated before the mode flips', !!baseBg && (await rowKeys()).includes('readme.md'));
+  await page.emulateMedia({ forcedColors: 'active' });
+  await sleep(120);
+  const hl = await sysColor('background:Highlight', 'backgroundColor');
+  const hlt = await sysColor('color:HighlightText', 'color');
+  await ok('the selected row paints Highlight under forced colors', (async () => {
+    const was = baseBg;
+    return await evalPage((a) => {
+      const r = document.querySelector('#grid-body .grid-row.sel');
+      return !!r && getComputedStyle(r).backgroundColor === a.want && getComputedStyle(r).backgroundColor !== a.was;
+    }, { want: hl, was });
+  })());
+  await ok('the selected row reads HighlightText under forced colors', evalPage((want) => {
+    const r = document.querySelector('#grid-body .grid-row.sel');
+    return !!r && getComputedStyle(r).color === want;
+  }, hlt));
+  // Home seats row 0 (sel + focus), then Ctrl+ArrowDown moves the walk
+  // seat off the selection — moveSel ctrl branch — the outline case
+  await page.keyboard.press('Home');
+  await sleep(40);
+  await page.keyboard.down('Control');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.up('Control');
+  await sleep(60);
+  await ok('the walk seat paints an outline under forced colors', evalPage((want) => {
+    const r = document.querySelector('#grid-body .grid-row.focus:not(.sel)');
+    if (!r) return false;
+    const cs = getComputedStyle(r);
+    return cs.outlineStyle === 'solid' && cs.outlineWidth === '2px' && cs.outlineColor === want;
+  }, hl));
+  // the menu seat paints on any focus road (:focus, not just
+  // :focus-visible — the mode forgives the pointer); the disabled item
+  // dims to GrayText (Escape first: Cut is disabled at an empty selection)
+  await page.keyboard.press('Escape');
+  await sleep(60);
+  await page.locator('#menubar .mb-title', { hasText: /edit/i }).first().click();
+  await sleep(80);
+  await ok('the seated menu item paints an outline under forced colors', evalPage(() => {
+    const el = document.activeElement;
+    if (!el || !el.classList.contains('mb-item')) return false;
+    const cs = getComputedStyle(el);
+    return cs.outlineStyle === 'solid' && cs.outlineWidth === '2px';
+  }));
+  const gray = await sysColor('color:GrayText', 'color');
+  await ok('the disabled menu item dims to GrayText under forced colors', evalPage((want) => {
+    const it = document.querySelector('#menubar .mb-dd:not(.hidden) .mb-item.disabled');
+    return !!it && getComputedStyle(it).color === want;
+  }, gray));
+  await page.keyboard.press('Escape');
+  await sleep(60);
+  // the tile face keeps its selection legible: Highlight fill with a
+  // HighlightText border
+  await page.click('#btn-gallery');
+  await waitFor(() => evalPage(() => !document.getElementById('gallery').classList.contains('hidden')
+    && document.querySelectorAll('#gallery .g-tile').length > 0), 4000, 'tiles under forced colors');
+  const tile = await elOrNull(() => document.querySelector('#gallery .g-tile') || null);
+  if (tile) await tile.asElement().click();
+  await sleep(60);
+  await ok('the selected tile paints Highlight with a HighlightText border under forced colors', evalPage((a) => {
+    const t = document.querySelector('#gallery .g-tile.sel');
+    if (!t) return false;
+    const cs = getComputedStyle(t);
+    return cs.backgroundColor === a.hl && cs.color === a.hlt && cs.borderColor === a.hlt;
+  }, { hl, hlt }));
+  await page.click('#btn-gallery');
+  await waitFor(() => evalPage(() => !document.getElementById('grid-body').classList.contains('hidden')), 4000, 'rows face back');
+  // the tree selection, then the guide tab strip
+  await clickTree('team-files');
+  await sleep(120);
+  await ok('the selected tree node paints Highlight under forced colors', evalPage((want) => {
+    const n = document.querySelector('#tree .tnode.sel');
+    return !!n && getComputedStyle(n).backgroundColor === want;
+  }, hl));
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  const gitem = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /user guide/i.test(i.textContent)) || null);
+  if (gitem) await gitem.asElement().click();
+  await waitFor(() => popoutVisible('guide'), 4000, 'guide popout under forced colors');
+  // the entrance animation's first frame is also the style recalc that
+  // lands the forced palette under emulation — poll the settle, never a
+  // blind sleep
+  await waitFor(() => evalPage(() => {
+    const pop = document.querySelector('#popout-root .popout[data-pop="guide"]');
+    return pop && getComputedStyle(pop).opacity === '1';
+  }), 4000, 'guide entrance settles under forced colors');
+  await ok('the active guide tab fills Highlight under forced colors', evalPage((a) => {
+    const t = document.querySelector('#popout-root .tabstrip .tab.active');
+    if (!t) return false;
+    const cs = getComputedStyle(t);
+    return cs.backgroundColor === a.hl && cs.color === a.hlt;
+  }, { hl, hlt }));
+  await closePopout('guide');
+  // drop the mode: the theme paint returns to the exact pre-emulation value
+  await page.emulateMedia({ forcedColors: null });
+  await sleep(120);
+  await clickRow('readme.md');
+  await ok('the mode drops and the theme paint returns', (await selRowBg()) === baseBg);
+  await page.focus('#grid-body');
+});
+
 // ---------- settings honor walk (every control + every default) ----------
 await step('settings-honor', async () => {
   // The whole-surface companion to settings-dialog: that step proves the
