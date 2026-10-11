@@ -936,6 +936,7 @@ you'll use daily:
 | Ctrl+L | event log |
 | Ctrl+S | save workspace profile |
 | F1 | help (in-app guide + key map) |
+| Menu / Shift+F10 | open the context menu of the seated row or tile |
 
 Keyboard walking is spoken as well as seen: every listing surface —
 the rows, both gallery faces, the search results, the tree — exposes
@@ -944,6 +945,13 @@ grids name the walked row or tile via `aria-activedescendant` (no
 per-row focus jumps), and the tree’s rows are `treeitem`s carrying
 their level and expansion state, so assistive technology announces
 the seat the keyboard moves to.
+
+Context menus are keyboard surfaces too: the Menu key (Shift+F10
+on keyboards without one) opens the verb menu of the walked row or
+tile on every face, an open menu seats focus on its first enabled
+item, the arrows walk it (Enter activates, Escape closes and
+returns focus to where you were), and ArrowRight / ArrowLeft open
+and fold the cascade flyouts.
 
 ---
 

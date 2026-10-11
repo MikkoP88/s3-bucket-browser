@@ -493,6 +493,29 @@ follow [Semantic Versioning](https://semver.org/).
   `aria-expanded` that claims expansion only where the twist
   itself does (an unloaded folder stays silent the way its hidden
   twist is).
+- **The menus answer the keyboard** — the Menu key (Shift+F10 its
+  laptop spelling) opens the verb menu of the walked row or tile on
+  every face the pointer can right-click (the rows, both gallery
+  faces, the pane bodies): the focus row is seated into the
+  selection exactly the way the row’s own contextmenu listener
+  seats it, and the pool row or tile rides the same `on.context`
+  seam as the anchor, so the menu opens beside the seat with no
+  pointer there. Every open menu is now a keyboard surface of its
+  own, mouse or Menu key alike: focus lands on the first enabled
+  item, the arrows walk the level with wrap, Home and End hold the
+  ends, Enter activates, Escape closes and hands focus back to the
+  opener (a picked verb restores it before the verb runs, so a
+  modal captures the seat as its own previous focus), and the
+  cascade flyouts open under ArrowRight and fold under ArrowLeft
+  with the parent item claiming `aria-expanded` while its flyout
+  stands. The menus speak their semantics for screen readers
+  (`menu`, `menuitem`, `separator`, `aria-haspopup`,
+  `aria-disabled`). And the round healed a long-standing trap the
+  toolbar leg caught: Enter on a focused control outside the
+  listing seats (a toolbar or menubar button, a modal foot
+  button, a crumb link) no longer falls through to the grid walk
+  under a `preventDefault` that swallowed the click — controls
+  keep their keys.
 
 ### Fixed
 

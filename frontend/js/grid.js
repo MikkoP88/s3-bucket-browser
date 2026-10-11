@@ -920,6 +920,16 @@ export class Grid {
     if (!n) return false;
     const idx = Math.max(0, this.rows.findIndex((r) => r.key === this.focusKey));
     let handled = true;
+    // the Menu key (Shift+F10 its laptop spelling) opens the walked
+    // row’s verb menu the way a right-click does — the seat, the
+    // selection law and the on.context seam are all the mouse event’s
+    // own; only the anchor differs: the row element stands in for the
+    // pointer, so the menu lands beside the row (openMenu anchors an
+    // element by its rect)
+    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+      this.menuSeat();
+      return true;
+    }
     switch (e.key) {
       case 'ArrowDown': this.moveSel(idx + 1, e); break;
       case 'ArrowUp': this.moveSel(idx - 1, e); break;
@@ -940,6 +950,25 @@ export class Grid {
         handled = false;
     }
     return handled;
+  }
+
+  // menuSeat opens the walked row’s context menu from the keyboard:
+  // the focus row is seated into the selection exactly the way the
+  // row’s own contextmenu listener seats it, and the anchor handed to
+  // on.context is the pool row carrying the model — the menu opens
+  // beside the row because there is no pointer to open it at.
+  menuSeat() {
+    const m = this.rowByKey(this.focusKey);
+    if (!m) return;
+    if (!this.sel.has(m.key)) {
+      this.sel.clear();
+      this.sel.add(m.key);
+      this.anchorKey = m.key;
+      this.render();
+      this.on.select?.(this.selectedRows());
+    }
+    const row = this.pool.find((r) => r._model && r._model.key === m.key);
+    if (row) this.on.context?.(row, this.selectedRows());
   }
 
   moveSel(idx, e) {

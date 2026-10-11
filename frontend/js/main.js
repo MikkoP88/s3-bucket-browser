@@ -2260,6 +2260,10 @@ function wireLocalPane() {
 // rect).
 function openMenu(anchor, items) {
   const menu = $('ctxmenu');
+  // the opener is whoever held focus when the menu opened — Escape
+  // (and a picked verb) hands the seat back to it, the same law the
+  // modal owns for its own close
+  menu._opener = document.activeElement || document.body;
   menu.replaceChildren(...menuItems(menu, items));
   menu.classList.remove('hidden');
   const r = anchor?.getBoundingClientRect?.();
@@ -2269,26 +2273,37 @@ function openMenu(anchor, items) {
   // (long labels + kbd hints) overflow the right edge anyway
   menu.style.left = `${Math.max(0, Math.min(x, innerWidth - menu.offsetWidth - 8))}px`;
   menu.style.top = `${Math.max(0, Math.min(y, innerHeight - menu.offsetHeight - 10))}px`;
+  // the APG law: focus lands on the first enabled item, mouse or Menu
+  // key alike — the arrows walk from there and Escape returns the seat
+  menu.querySelector('.item:not(.disabled)')?.focus();
 }
 
 // menuItems builds the item rows of one menu (or flyout) level; scope is
 // the element whose direct children these rows become, so closing a
 // flyout only ever touches the levels below it.
 function menuItems(scope, items) {
-  const closeSubs = () => scope.querySelectorAll('.submenu').forEach((s) => s.remove());
+  const closeSubs = () => scope.querySelectorAll('.submenu').forEach((s) => {
+    s.parentElement.removeAttribute('aria-expanded');
+    s.remove();
+  });
   return items.map((it) => {
-    if (!it) return el('div', { class: 'sep' });
+    if (!it) return el('div', { class: 'sep', role: 'separator' });
     const [label, kbd, fn, disabled, cls, sub] = it;
     const node = el('div', {
       class: `item${disabled ? ' disabled' : ''}${cls ? ` ${cls}` : ''}${sub?.length ? ' has-sub' : ''}`,
-      onclick: () => { if (disabled || !fn) return; hideContextMenu(); fn(); },
+      role: 'menuitem',
+      tabindex: '-1',
+      'aria-disabled': disabled ? 'true' : undefined,
+      ...(sub?.length && !disabled ? { 'aria-haspopup': 'menu' } : {}),
+      onclick: () => { if (disabled || !fn) return; hideContextMenu(true); fn(); },
     }, el('span', { text: label }), kbd ? el('span', { class: 'kbd', text: kbd }) : null);
     if (sub?.length && !disabled) {
       const open = () => {
         closeSubs();
-        const fly = el('div', { class: 'submenu' });
+        const fly = el('div', { class: 'submenu', role: 'menu' });
         fly.replaceChildren(...menuItems(fly, sub));
         node.appendChild(fly);
+        node.setAttribute('aria-expanded', 'true');
         if (fly.getBoundingClientRect().right > innerWidth - 8) fly.classList.add('flip');
       };
       node.addEventListener('mouseenter', open);
@@ -2929,7 +2944,16 @@ async function treeProperties(node) {
   }
 }
 
-function hideContextMenu() { $('ctxmenu').classList.add('hidden'); }
+// hideContextMenu closes the menu; restore hands focus back to the
+// opener (Escape and a picked verb) — click-away and window blur
+// close silently, because the pointer went somewhere else on purpose.
+function hideContextMenu(restore) {
+  const m = $('ctxmenu');
+  const opener = m._opener;
+  m._opener = null;
+  m.classList.add('hidden');
+  if (restore && opener) opener.focus?.();
+}
 // capture phase: grid checkboxes and the V/M badges stop mousedown
 // propagation, and a bubble-phase document listener never saw those —
 // the menu stayed open when the user clicked exactly them. Capture runs
@@ -2938,6 +2962,57 @@ document.addEventListener('mousedown', (e) => {
   if (!e.target.closest('#ctxmenu')) hideContextMenu();
 }, { capture: true });
 window.addEventListener('blur', hideContextMenu);
+// The open menu is a keyboard surface of its own: focus sits on its
+// first enabled item from the moment it opens (mouse or Menu key
+// alike), the arrows walk the level that owns the focused item,
+// Enter activates it (a flyout parent opens its cascade and seats
+// the walk inside), ArrowRight opens and ArrowLeft folds the
+// cascade, Home and End hold the ends, and Escape closes the whole
+// menu handing focus back to the opener. Every key the menu hears
+// is stopped here — the grid walk on the same document chain must
+// not move the selection under an open menu.
+$('ctxmenu').addEventListener('keydown', (e) => {
+  if ($('ctxmenu').classList.contains('hidden')) return;
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hideContextMenu(true); return; }
+  if (e.key === 'Tab') { e.stopPropagation(); hideContextMenu(); return; }
+  const it = e.target instanceof Element && e.target.closest('.item');
+  if (!it || it.classList.contains('disabled')) return;
+  e.stopPropagation();
+  const lvl = it.parentElement; // #ctxmenu, or the flyout that owns the item
+  const items = () => [...lvl.querySelectorAll(':scope > .item:not(.disabled)')];
+  switch (e.key) {
+    case 'ArrowDown': e.preventDefault(); items()[(items().indexOf(it) + 1) % items().length].focus(); break;
+    case 'ArrowUp': e.preventDefault(); items()[(items().indexOf(it) - 1 + items().length) % items().length].focus(); break;
+    case 'Home': e.preventDefault(); items()[0]?.focus(); break;
+    case 'End': e.preventDefault(); items()[items().length - 1]?.focus(); break;
+    case 'ArrowRight': {
+      let fly = it.querySelector(':scope > .submenu');
+      if (!fly && it.classList.contains('has-sub')) {
+        it.click(); // the flyout is BUILT by the click path — open it first
+        fly = it.querySelector(':scope > .submenu');
+      }
+      if (fly) { e.preventDefault(); fly.querySelector('.item:not(.disabled)')?.focus(); }
+      break;
+    }
+    case 'ArrowLeft': {
+      if (lvl.classList.contains('submenu')) {
+        e.preventDefault();
+        const parent = lvl.parentElement; // the has-sub item that opened this flyout
+        lvl.remove();
+        parent.removeAttribute('aria-expanded');
+        parent.focus();
+      }
+      break;
+    }
+    case 'Enter': case ' ': case 'Spacebar': {
+      e.preventDefault();
+      it.click();
+      const fly = it.querySelector(':scope > .submenu');
+      if (fly) fly.querySelector('.item:not(.disabled)')?.focus();
+      break;
+    }
+  }
+});
 
 // ============================ actions ============================
 // uploadPaths pushes local paths into an S3 bucket/prefix. The view source
@@ -3831,6 +3906,27 @@ function tileWalk(wrapId, face, g, e) {
   const tiles = [...$(wrapId).children];
   const idx = Math.max(0, rows.findIndex((r) => r.key === g.focusKey));
   let ni = null;
+  // the Menu key (Shift+F10 its laptop spelling) opens the walked
+  // tile’s verb menu the way the rows do — the tile is seated into
+  // the selection by the contextmenu law, and the TILE ELEMENT rides
+  // the shared on.context seam as the anchor (openMenu places it by
+  // rect, beside the tile, because no pointer is there)
+  if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+    const m = g.rowByKey(g.focusKey);
+    if (m) {
+      if (!g.sel.has(m.key)) {
+        g.sel.clear();
+        g.sel.add(m.key);
+        g.anchorKey = m.key;
+        face.syncSel();
+        g.on.select?.(g.selectedRows());
+      }
+      const tile = tiles[rows.indexOf(m)];
+      if (tile) g.on.context?.(tile, g.selectedRows());
+    }
+    e.preventDefault();
+    return true;
+  }
   switch (e.key) {
     case 'ArrowDown':
     case 'ArrowUp': {
@@ -6401,6 +6497,12 @@ function wireKeys() {
       grid.clearSelection(); return;
     }
 
+    // the listing walk is the seat’s own: when focus sits in a control
+    // outside the seats (a toolbar or menubar button, a modal foot
+    // button, a crumb link), the control keeps its keys — Enter must
+    // click the button, never activate the grid’s stale focus row
+    // under a preventDefault that would swallow the click
+    if (e.target instanceof Element && e.target.closest('button, a, input, select, textarea')) return;
     // grid navigation keys (arrows, Enter, type-to-jump) — the tile
     // face walks its own visual order when the gallery owns the view
     if (galleryOwnsView() ? galleryKeydown(e) : grid.keydown(e)) e.preventDefault();

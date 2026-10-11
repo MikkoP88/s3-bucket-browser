@@ -725,6 +725,7 @@ label.field { display: block; margin: 10px 0 4px; color: var(--text-dim); font-s
   padding: 6px 10px; border-radius: 4px; cursor: pointer; white-space: nowrap;
 }
 .ctxmenu .item:hover { background: var(--hover); }
+.ctxmenu .item:focus-visible { background: var(--hover); outline: none; }
 .ctxmenu .item.disabled { color: var(--text-dim); pointer-events: none; }
 .ctxmenu .item .kbd { margin-left: auto; color: var(--text-dim); font-size: 11px; }
 /* Cascading flyout (Explorer-style "Upload ▸"): the submenu lives inside

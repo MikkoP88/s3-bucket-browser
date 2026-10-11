@@ -12561,6 +12561,162 @@ await step('a11y-voice', async () => {
   await evalPage(() => { localStorage.removeItem('s3b-gallery'); localStorage.removeItem('s3b-gallery-pane'); });
 });
 
+// ---------- the menus answer the keyboard: Menu key + walking ----------
+await step('menu-keys', async () => {
+  // The verb menus are a keyboard surface: the Menu key (Shift+F10 its
+  // laptop spelling) opens the seated row’s or tile’s menu without a
+  // pointer on every face (rows, both galleries, the pane), every open
+  // menu seats focus on its first enabled item and walks with the
+  // arrows (Enter activates, Escape closes and hands focus back to the
+  // opener), and the cascade flyouts open under ArrowRight and fold
+  // under ArrowLeft. Leaves the world canonical: rows face, pane
+  // closed, no preferences seated.
+  const menuUp = () => evalPage(() => {
+    const m = document.getElementById('ctxmenu');
+    if (!m || m.classList.contains('hidden')) return false;
+    const a = document.activeElement;
+    return !!(a && a.closest && a.closest('#ctxmenu') && a.classList.contains('item'));
+  });
+  const focusItem = () => evalPage(() => {
+    const a = document.activeElement;
+    return a && a.classList && a.classList.contains('item') ? (a.textContent || '').trim() : '';
+  });
+  const menuClosed = () => evalPage(() => document.getElementById('ctxmenu').classList.contains('hidden'));
+  const walkTo = async (re) => {
+    for (let i = 0; i < 30; i++) {
+      const t = await focusItem();
+      if (re.test(t)) return t;
+      await page.keyboard.press('ArrowDown');
+      await sleep(30);
+    }
+    throw new Error(`menu walk never reached ${re}`);
+  };
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'menu-keys objects');
+  await resetCalls();
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for menu-keys');
+  await page.focus('#grid-body');
+  await page.keyboard.press('Home');
+  for (let i = 0; i < 12 && (await evalPage(() => window.__s3bGrid.focusKey)) !== 'readme.md'; i++) await page.keyboard.press('ArrowDown');
+  await waitFor(() => evalPage(() => window.__s3bGrid.focusKey === 'readme.md'), 4000, 'readme walked');
+  await page.keyboard.press('ContextMenu');
+  await ok('the Menu key opens the walked row’s verb menu with menu roles',
+    waitFor(async () => {
+      if (!(await menuUp())) return false;
+      const st = await evalPage(() => ({
+        role: document.getElementById('ctxmenu').getAttribute('role'),
+        arole: document.activeElement.getAttribute('role'),
+        first: (document.activeElement.textContent || '').trim(),
+      }));
+      return st.role === 'menu' && st.arole === 'menuitem' && /^preview/i.test(st.first);
+    }, 4000, 'menu open on Menu key'));
+  await page.keyboard.press('ArrowDown');
+  await ok('the arrows walk the open menu',
+    waitFor(async () => /^download/i.test(await focusItem()), 4000, 'menu walk moved'));
+  await page.keyboard.press('End');
+  await waitFor(async () => /properties/i.test(await focusItem()), 4000, 'End seats Properties');
+  await page.keyboard.press('Enter');
+  await ok('Enter runs the seated verb (Properties opens its modal)',
+    waitFor(modalVisible, 4000, 'properties modal'));
+  await closeModal();
+  await page.focus('#grid-body');
+  await page.keyboard.press('ContextMenu');
+  await waitFor(menuUp, 4000, 'menu reopened');
+  await page.keyboard.press('Escape');
+  await ok('Escape closes the menu and hands the focus back to the seat',
+    waitFor(async () => (await menuClosed())
+      && (await evalPage(() => document.activeElement === document.getElementById('grid-body'))), 4000, 'menu closed, focus home'));
+  await page.keyboard.press('Shift+F10');
+  await ok('Shift+F10 opens it too', waitFor(menuUp, 4000, 'menu open on Shift+F10'));
+  await page.keyboard.press('Escape');
+  await waitFor(menuClosed, 4000, 'closed after Shift+F10');
+  // the cascade: the empty-area menu’s Upload flyout under the arrows
+  await evalPage(() => {
+    document.getElementById('grid-body').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 300, clientY: 300 }));
+  });
+  await waitFor(menuUp, 4000, 'empty-area menu open');
+  await walkTo(/^upload/i);
+  await page.keyboard.press('ArrowRight');
+  await ok('the cascade opens under ArrowRight',
+    waitFor(async () => {
+      const st = await evalPage(() => {
+        const a = document.activeElement;
+        return { fly: !!document.querySelector('#ctxmenu .submenu'), in: !!(a && a.closest && a.closest('.submenu')), t: a ? (a.textContent || '').trim() : '' };
+      });
+      return st.fly && st.in && /^files/i.test(st.t);
+    }, 4000, 'flyout walked'));
+  await page.keyboard.press('ArrowLeft');
+  await ok('ArrowLeft folds the cascade back onto its parent',
+    waitFor(async () => {
+      const st = await evalPage(() => ({
+        fly: !!document.querySelector('#ctxmenu .submenu'),
+        t: (document.activeElement.textContent || '').trim(),
+      }));
+      return !st.fly && /^upload/i.test(st.t);
+    }, 4000, 'flyout folded'));
+  await page.keyboard.press('Escape');
+  await waitFor(menuClosed, 4000, 'cascade menu closed');
+  // the tile face
+  await evalPage(() => { if (document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => !document.getElementById('gallery').classList.contains('hidden')
+    && document.querySelectorAll('#gallery .g-tile').length === 7), 4000, 'menu-keys tiles');
+  await page.focus('#gallery');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ContextMenu');
+  await ok('the tile face answers the Menu key',
+    waitFor(async () => (await menuUp()) && /^open/i.test(await focusItem()), 4000, 'tile menu open'));
+  await page.keyboard.press('Escape');
+  await ok('the closed tile menu returns focus to the wrap',
+    waitFor(async () => (await menuClosed())
+      && (await evalPage(() => document.activeElement === document.getElementById('gallery'))), 4000, 'tile focus home'));
+  await evalPage(() => { if (!document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('gallery').classList.contains('hidden')), 4000, 'rows back');
+  // the pane rows body
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'menu-keys pane rows');
+  await page.focus('#local-grid-body');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ContextMenu');
+  await ok('the pane rows body answers the Menu key', waitFor(menuUp, 4000, 'pane menu open'));
+  await page.keyboard.press('Escape');
+  await ok('the pane menu closes onto its own body',
+    waitFor(async () => (await menuClosed())
+      && (await evalPage(() => document.activeElement === document.getElementById('local-grid-body'))), 4000, 'pane focus home'));
+  // the pane gallery
+  await evalPage(() => {
+    if (document.getElementById('local-btn-gallery').getAttribute('aria-pressed') !== 'true') document.getElementById('local-btn-gallery').click();
+  });
+  await waitFor(() => evalPage(() => !document.getElementById('local-gallery').classList.contains('hidden')
+    && document.querySelectorAll('#local-gallery .g-tile').length === 7), 4000, 'menu-keys pane tiles');
+  await page.focus('#local-gallery');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ContextMenu');
+  await ok('the pane gallery answers the Menu key', waitFor(menuUp, 4000, 'pane tile menu open'));
+  await page.keyboard.press('Escape');
+  await waitFor(menuClosed, 4000, 'pane tile menu closed');
+  // a toolbar menu walks the same grammar
+  await page.focus('#btn-upload');
+  await page.keyboard.press('Enter');
+  await ok('a toolbar menu walks the same grammar',
+    waitFor(async () => (await menuUp()) && /^files/i.test(await focusItem()), 4000, 'upload menu open'));
+  await page.keyboard.press('ArrowDown');
+  await waitFor(async () => /^folder/i.test(await focusItem()), 4000, 'upload walk');
+  await page.keyboard.press('Escape');
+  await ok('the closed toolbar menu hands focus back to its button',
+    waitFor(async () => (await menuClosed())
+      && (await evalPage(() => document.activeElement === document.getElementById('btn-upload'))), 4000, 'button focus home'));
+  // leave the world canonical
+  await evalPage(() => {
+    if (document.getElementById('local-btn-gallery').getAttribute('aria-pressed') === 'true') document.getElementById('local-btn-gallery').click();
+  });
+  await waitFor(() => evalPage(() => document.getElementById('local-gallery').classList.contains('hidden')), 4000, 'pane rows back');
+  await page.click('#local-btn-close');
+  await sleep(200);
+  await evalPage(() => { localStorage.removeItem('s3b-gallery'); localStorage.removeItem('s3b-gallery-pane'); });
+});
+
 // ---------- the inspector: the docked details panel ----------
 await step('inspector', async () => {
   // The selection's own facts the instant the selection changes — no
