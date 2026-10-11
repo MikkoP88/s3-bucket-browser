@@ -3337,11 +3337,11 @@ await step('help-guide', async () => {
   if (guide) {
     await guide.asElement().click();
     await waitFor(() => popoutVisible('guide'), 4000, 'guide popout');
-    await ok('guide has six section tabs', waitFor(async () => (await evalPage(() => document.querySelectorAll('#popout-root .tabstrip .tab').length)) === 6, 4000, 'guide tabs'));
+    await ok('guide has seven section tabs', waitFor(async () => (await evalPage(() => document.querySelectorAll('#popout-root .tabstrip .tab').length)) === 7, 4000, 'guide tabs'));
     await ok('getting-started content rendered', (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('Import existing credentials'));
     // tab switches must not resize the window: the tallest static section
     // is measured at open and pinned as the body's min-height
-    await ok('guide height pinned across all six tabs', evalPage(() => {
+    await ok('guide height pinned across all seven tabs', evalPage(() => {
       const modal = document.querySelector('#popout-root .popout[data-pop="guide"]');
       if (!modal) return false;
       const h0 = modal.getBoundingClientRect().height;
@@ -3350,7 +3350,7 @@ await step('help-guide', async () => {
         tb.click();
         hs.push(modal.getBoundingClientRect().height);
       }
-      return hs.length === 6 && Math.max(...hs, h0) - Math.min(...hs, h0) <= 1;
+      return hs.length === 7 && Math.max(...hs, h0) - Math.min(...hs, h0) <= 1;
     }));
     await shot('guide');
     const tab = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .tabstrip .tab'))
@@ -3365,6 +3365,12 @@ await step('help-guide', async () => {
       .find((t) => /^versions & safety$/i.test(t.textContent.trim())) || null);
     if (vtab) { await vtab.asElement().click(); await sleep(80); }
     await ok('guide covers the Delete Window', (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('The Delete Window'));
+    const ktab = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .tabstrip .tab'))
+      .find((t) => /^keyboard & access$/i.test(t.textContent.trim())) || null);
+    if (ktab) { await ktab.asElement().click(); await sleep(80); }
+    await ok('guide speaks the keyboard and screen-reader grammar',
+      (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('Shift+F10')
+        && (await evalPage(() => document.querySelector('#popout-root .popout[data-pop="guide"]').textContent)).includes('aria-activedescendant'));
     await closePopout('guide');
   }
   // Help → License: the single-source license identity (license.js)
@@ -3433,6 +3439,11 @@ await step('about-keysheet', async () => {
   await waitFor(() => popoutVisible('keys'), 4000, 'keysheet');
   await ok('keysheet lists shortcuts', waitFor(async () => (await evalPage(() => document.querySelectorAll('#popout-root .help-grid .row').length)) >= 18, 4000, 'keys rows'));
   await ok('keysheet covers search', evalPage(() => Array.from(document.querySelectorAll('#popout-root .help-grid .row kbd')).some((k) => k.textContent.includes('Ctrl+Shift+F'))));
+  await ok('keysheet carries the keyboard grammar the faces own', evalPage(() => {
+    const ks = Array.from(document.querySelectorAll('#popout-root .help-grid .row kbd')).map((k) => k.textContent);
+    return ks.some((k) => k.includes('Menu / Shift+F10')) && ks.some((k) => k.startsWith('Tree:'))
+      && ks.some((k) => k.startsWith('Menubar:')) && ks.some((k) => k.includes('PgUp / PgDn'));
+  }));
   await ok('keysheet uses the wide size class', evalPage(() => document.querySelector('#popout-root .popout.wide') !== null));
   await ok('keysheet layout clean', (await layoutAudit()).ok);
   await shot('keysheet');

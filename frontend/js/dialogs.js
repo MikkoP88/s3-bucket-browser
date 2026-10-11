@@ -3102,6 +3102,7 @@ export function helpSheet() {
     ['Alt+\u2190 / \u2192', 'Back / forward'],
     ['Alt+\u2191, Backspace', 'Go to parent'],
     ['Type letters', 'Jump to item'],
+    ['PgUp / PgDn', 'Jump a page in the listing (rows or tiles)'],
     ['Ctrl+Shift+N', 'New folder'],
     ['Shift+F4', 'New file'],
     ['Ctrl+U / Ctrl+D', 'Upload files / download selection'],
@@ -3109,6 +3110,9 @@ export function helpSheet() {
     ['F9', 'Toggle dual-pane local browser'],
     ['Ctrl+L', 'Toggle log area'],
     ['Ctrl+S', 'Save profile file'],
+    ['Menu / Shift+F10', 'Open the context menu of the seated row or tile'],
+    ['Tree: arrows / Enter / Space / Menu', 'Walk the sidebar tree, expand and fold, navigate, open the row’s verb menu'],
+    ['Menubar: Tab, arrows, Enter', 'Open the menus, walk them, stride the bar with the arrows while one is open'],
     ['Esc', 'Clear selection / close'],
     ['F1', 'This sheet'],
   ];
@@ -3132,7 +3136,7 @@ const GUIDE_SECTIONS = [
     ['Settings', 'The Settings menu opens one dialog with a page tree: theme (light/dark), 15 languages, view options, network timeouts and S3 retries, the transfer engine (multipart part size, parts in flight, stall threshold), delete gates and security — including the opt-in Secure Storage mode that encrypts the whole source store. Every change applies immediately; no restart.'],
   ]],
   ['Browsing', [
-    ['Sidebar tree', 'Sources → folders; an S3 source IS the bucket — nothing sits above a source’s root. Click to navigate; right-click a node for Properties, Admin panel, transfers and more.'],
+    ['Sidebar tree', 'Sources → folders; an S3 source IS the bucket — nothing sits above a source’s root. Click to navigate; right-click a node for Properties, Admin panel, transfers and more. It answers the keyboard too: click into it (or Tab to it) and the arrows walk the rows — Right expands a folder (an unloaded one loads it) and walks into an open one, Left folds or climbs to the parent, Enter navigates, Space toggles, and typing jumps by name prefix.'],
     ['Grid', 'Click, Ctrl+click and Shift+click to select, Ctrl+A for all, Ctrl+I to invert, drag a marquee, or just type to jump to an item. The funnel row under the header filters per column; right-click the header to pick columns; Ctrl+F focuses the quick filter.'],
     ['Path bar', 'The breadcrumb shows where you are; click it (or the edit icon) and the line turns editable holding the typed source address (s3://Name/contents — the scheme is the source type, visible only while editing; the workstation side stays a bare native path). Paste any address to jump straight there: that typed form, a plain Name/contents source path, an s3:// URI, a connection URL (sftp://user:pass@host:21/root — an unconfigured one is saved as a new source), a local folder (C:\Projects, \\server\share, ~) or a file:/// URL. Back / forward / up history works like Explorer.'],
     ['Dual pane', 'F9 opens a local-filesystem pane (or another source) beside the main view — drag between panes, and Compare Any color-codes newer/older/size-diff/only-here. The Home button on each pane toolbar jumps to its side home: the main pane returns to the open data source start view, the secondary pane lands on the workstation home folder.'],
@@ -3169,6 +3173,11 @@ const GUIDE_SECTIONS = [
     ['Local log', 'Ctrl+L toggles the event log; Settings can mirror it to a file.'],
     ['Portable mode', 'Drop an empty s3b-portable marker file next to the binary and all settings stay beside it — perfect for USB sticks.'],
     ['Same binary, full CLI', 's3b on the terminal drives the same engine: ls, cp, sync, find, doctor, bucket admin and more — see `s3b --help`.'],
+  ]],
+  ['Keyboard & access', [
+    ['Everything answers the keyboard', 'Every surface walks: the listing under the arrows, Home and End holding the ends and PgUp/PgDn paging; typing letters jumps to the first matching name on whichever face is seated — rows, tiles or the sidebar tree. The Menu key (Shift+F10 on keyboards without one) opens the verb menu of the seated row or tile on every face; an open menu walks under the arrows with Enter activating and Escape closing back to where you were; and the menu bar behaves like a desktop menubar — Tab reaches it, the arrows stride the bar, Enter opens and picks. F1 shows the full key map.'],
+    ['Spoken walking', 'Keyboard walking is announced as well as seen: every listing surface names its walked row or tile to screen readers through ARIA (aria-activedescendant — no per-row focus jumps), tree rows are treeitems carrying their level and expansion state, and the menus speak menu roles with their checked and disabled states.'],
+    ['Reduced motion', 'The app honors the OS “reduce motion” setting: transitions and spinners settle instantly and skeleton loaders rest, while nothing that carries meaning depends on animation.'],
   ]],
 ];
 

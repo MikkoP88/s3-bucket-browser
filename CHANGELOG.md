@@ -516,6 +516,30 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The in-app help catches up with the keyboard grammar** — the F1
+  sheet and the user guide had fallen six rounds behind the keyboard
+  surfaces the app grew. The sheet now carries the rows the faces own:
+  PgUp/PgDn paging the listing, the Menu key (Shift+F10) opening the
+  seated row's or tile's verb menu, the tree's arrow walk, and the
+  menubar's Tab-arrows-Enter grammar. The guide grows its seventh
+  section — Keyboard & access — speaking the whole law in prose: every
+  surface walks and answers typing (rows, tiles and the sidebar tree
+  alike), the menus and the menubar are keyboard surfaces with Escape
+  closing back to where you were, screen readers hear the seat through
+  aria-activedescendant (treeitems carrying level and expansion, menus
+  speaking their roles and checked states), and the OS "reduce motion"
+  setting is honored — transitions settle instantly and nothing that
+  carries meaning depends on animation. The Browsing section's sidebar
+  tree entry grows its keyboard sentence — the arrows walk, Right
+  expands (an unloaded folder loads), Left folds or climbs, Enter
+  navigates, Space toggles, typing jumps — so the pointer is no longer
+  the only documented road into the tree. Gates: js-check OK,
+  provenance 9/9 (the main.js watermark undisturbed through every
+  node patch), the Go suite untouched by design — a frontend-only
+  round — and the full battery green at 1363/1363 (the help-guide
+  step's two exact-six pins grown to seven with the new section's
+  content ok; the keysheet step's grammar-rows ok). Docs: VERIFICATION
+  the row (GUI-118).
 - **The menubar answers the keyboard** — the bar becomes a keyboard
   surface the way desktop menubars are: the titles are a roving tab
   stop (one seat in the Tab order, the arrows striding the closed bar
