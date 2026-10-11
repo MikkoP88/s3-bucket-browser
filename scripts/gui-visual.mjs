@@ -12324,6 +12324,90 @@ await step('gallery-parity', async () => {
   await evalPage(() => { localStorage.removeItem('s3b-gallery'); localStorage.removeItem('s3b-gallery-pane'); });
 });
 
+// ---------- type-ahead: the listing answers as you type ----------
+await step('typeahead', async () => {
+  // Typing letters into any listing jumps the selection to the first
+  // name that carries them (prefix, case-folded, a 600ms buffer, a
+  // refined miss keeps the seat) — the rows always owned the law, the
+  // tile faces learn it here, and the buffer speaks through a chip
+  // pinned into the corner of the listing being typed into. Leaves the
+  // world canonical: rows face, pane closed, no preferences seated.
+  const chipText = () => evalPage(() => document.getElementById('ta-hint')?.textContent || null);
+  const mainFocus = () => evalPage(() => window.__s3bGrid.focusKey);
+  await navObjects('team-files');
+  await resetCalls();
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for typeahead');
+  await evalPage(() => { if (!document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('gallery').classList.contains('hidden')
+    && window.__s3bGrid.rows.length === 7), 4000, 'typeahead rows seated');
+  await page.keyboard.press('r');
+  await ok('typing jumps the rows to the first matching name',
+    (await mainFocus()) === 'reports/');
+  await ok('the buffer chip says what is typed over the rows',
+    (await chipText()) === 'r');
+  await sleep(700);
+  await ok('the buffer expires and the chip leaves',
+    (await chipText()) === null && (await mainFocus()) === 'reports/');
+  await page.keyboard.press('S');
+  await ok('a capital letter folds to the same match',
+    (await mainFocus()) === 'scan.png' && (await chipText()) === 's');
+  await sleep(700);
+  await page.keyboard.press('b');
+  await page.keyboard.press('o');
+  await ok('a refined miss keeps the selection, the buffer holds the keys',
+    (await mainFocus()) === 'budget-2026.xlsx' && (await chipText()) === 'bo');
+  await sleep(700);
+  // the tile face answers as it types — through its wrap when focus
+  // sits inside it, through the global chain when it does not
+  await evalPage(() => { if (document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => !document.getElementById('gallery').classList.contains('hidden')
+    && document.querySelectorAll('#gallery .g-tile').length === 7), 4000, 'typeahead tiles seated');
+  await page.focus('#gallery');
+  await page.keyboard.press('d');
+  await ok('the tile face answers typing inside its wrap',
+    (await evalPage(() => document.querySelector('#gallery .g-tile.sel .g-cap')?.textContent)) === 'docs'
+      && (await chipText()) === 'd');
+  await sleep(700);
+  await page.focus('body');
+  await page.keyboard.press('s');
+  await ok('the tile face answers from the global chain',
+    (await evalPage(() => document.querySelector('#gallery .g-tile.sel .g-cap')?.textContent)) === 'scan.png');
+  await sleep(700);
+  // the pane faces own their own typing — the main view stands still
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'typeahead pane root rows');
+  await evalPage(() => {
+    if (document.getElementById('local-btn-gallery').getAttribute('aria-pressed') !== 'true') document.getElementById('local-btn-gallery').click();
+  });
+  await waitFor(() => evalPage(() => !document.getElementById('local-gallery').classList.contains('hidden')
+    && document.querySelectorAll('#local-gallery .g-tile').length === 7), 4000, 'typeahead pane tiles');
+  await evalPage(() => { const t = document.querySelector('#local-gallery .g-tile'); t.click(); t.focus(); });
+  await page.keyboard.press('r');
+  await ok('the pane tile face answers while the main view stands still',
+    (await evalPage(() => document.querySelector('#local-gallery .g-tile.sel .g-cap')?.textContent)) === 'reports'
+      && (await mainFocus()) === 'scan.png' && (await chipText()) === 'r');
+  await sleep(700);
+  await evalPage(() => {
+    if (document.getElementById('local-btn-gallery').getAttribute('aria-pressed') === 'true') document.getElementById('local-btn-gallery').click();
+  });
+  await waitFor(() => evalPage(() => document.getElementById('local-gallery').classList.contains('hidden')
+    && !document.getElementById('local-grid-body').classList.contains('hidden')), 4000, 'typeahead pane rows back');
+  await page.focus('#local-grid-body');
+  await page.keyboard.press('d');
+  await ok('the pane rows face answers through its own body',
+    (await evalPage(() => window.__s3bSidePane.grid.focusKey)) === 'docs/'
+      && (await mainFocus()) === 'scan.png' && (await chipText()) === 'd');
+  // leave the world canonical: chip gone, pane closed, rows face, no prefs
+  await sleep(700);
+  await page.click('#local-btn-close');
+  await sleep(200);
+  await evalPage(() => { if (!document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('gallery').classList.contains('hidden')
+    && !document.getElementById('grid-body').classList.contains('hidden')), 4000, 'typeahead rows back');
+  await evalPage(() => { localStorage.removeItem('s3b-gallery'); localStorage.removeItem('s3b-gallery-pane'); });
+});
+
 // ---------- the inspector: the docked details panel ----------
 await step('inspector', async () => {
   // The selection's own facts the instant the selection changes — no

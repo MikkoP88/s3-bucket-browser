@@ -959,18 +959,24 @@ export class Grid {
   }
 
   typeJump(ch) {
+    const i = this.typeFeed(ch);
+    if (i >= 0) this.moveSel(i, {});
+  }
+
+  // typeFeed folds one typed character into the type-ahead buffer and
+  // names the first row whose label carries it (prefix, case-folded) —
+  // the commit is the caller's, because the two faces seat the jump
+  // differently (rows scroll their body, tiles scroll their element).
+  // The buffer lives 600ms past the last key and says so through
+  // on.typeahead ('' when it expires) — the hook the buffer chip rides.
+  typeFeed(ch) {
     this.typeBuf += ch.toLowerCase();
     clearTimeout(this.typeTimer);
-    this.typeTimer = setTimeout(() => { this.typeBuf = ''; }, 600);
-    const i = this.rows.findIndex((r) => r.name.toLowerCase().startsWith(this.typeBuf));
-    if (i >= 0) {
-      this.sel.clear();
-      this.sel.add(this.rows[i].key);
-      this.focusKey = this.rows[i].key;
-      this.anchorKey = this.rows[i].key;
-      this.scrollTo(i);
-      this.render();
-      this.on.select?.(this.selectedRows());
-    }
+    this.typeTimer = setTimeout(() => {
+      this.typeBuf = '';
+      this.on.typeahead?.('');
+    }, 600);
+    this.on.typeahead?.(this.typeBuf);
+    return this.rows.findIndex((r) => r.name.toLowerCase().startsWith(this.typeBuf));
   }
 }

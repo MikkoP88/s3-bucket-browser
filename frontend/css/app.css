@@ -1077,6 +1077,16 @@ html[data-theme="dark"] .doc-pill.warn { background: rgba(253, 214, 99, .12); }
 .toast-x:hover { color: var(--text); }
 @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* the type-ahead buffer chip: pinned into the corner of the listing
+   being typed into, saying what the buffer holds while it holds it */
+.ta-hint {
+  position: fixed; z-index: 90; pointer-events: none;
+  background: var(--panel); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px; box-shadow: var(--shadow);
+  padding: 3px 8px; font-size: 12.5px;
+}
+
 /* Marquee */
 .marquee { position: fixed; z-index: 60; border: 1px solid var(--accent); background: var(--accent-soft); pointer-events: none; }
 

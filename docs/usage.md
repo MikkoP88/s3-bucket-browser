@@ -496,7 +496,10 @@ sources carry the
   default to a move, Shift forces one anywhere, Ctrl keeps a copy),
   and drag a tile out to another app through the OS gesture. The pane
   face carries the keyboard too: focus inside the pane and the keys
-  walk the pane tiles while the main view stands still. The choice is
+  walk the pane tiles while the main view stands still. Typing
+  answers in either face — letters jump to the first name that
+  carries them, and a small chip in the listing’s corner says what
+  the buffer holds while it lives. The choice is
   a preference and persists across sessions; both views share one
   listing, so filters and sorts speak in either.
 - **Inspector** — F8, the ℹ toolbar button (the pane’s toolbar
@@ -924,6 +927,7 @@ you'll use daily:
 | Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste (in-app paste runs the real transfer; copy also mirrors small selections onto Explorer's clipboard) |
 | Ctrl+A / Ctrl+I | select all / invert selection |
 | PgUp / PgDn | jump a page in the listing (rows or tiles) |
+| type letters | jump to the first name that starts with them (rows or tiles) |
 | Del / Shift+Del | delete window / permanent path |
 | F4 / Shift+F4 | edit the selected file / new file |
 | ← / → (viewer) | walk the folder’s previewable files while the preview is open |

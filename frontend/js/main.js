@@ -342,6 +342,10 @@ async function boot() {
   // takes the inspector with it (the grid that spoke last owns it)
   const paneSelect = localPane.grid.on.select;
   localPane.grid.on.select = (rows) => { paneSelect?.(rows); paneGallery.syncSel(); inspSeat = 'pane'; inspectorRender(); };
+  // the type-ahead buffer speaks through the chip over whichever face
+  // is seated — both grids, both faces, one anchor law
+  grid.on.typeahead = (buf) => taChip(buf, gallery.owns() ? $('gallery') : $('grid-body'));
+  localPane.grid.on.typeahead = (buf) => taChip(buf, paneGallery.owns() ? $('local-gallery') : $('local-grid-body'));
   gallery.apply(); // seat each tile face when its preference is on
   paneGallery.apply();
   if (localStorage.getItem('s3b-inspector') === '1') toggleInspector(true);
@@ -3779,6 +3783,23 @@ const paneGallery = makeGalleryFace({
   gridOf: () => localPane.grid, refOf: paneGalleryRef,
 });
 
+// taChip is the type-ahead’s visible buffer: a small chip pinned into
+// the corner of the listing being typed into, saying what the buffer
+// holds while it holds it and leaving when it expires. anchor is the
+// element whose corner it hugs — whichever face is seated.
+function taChip(buf, anchor) {
+  let chip = document.getElementById('ta-hint');
+  if (!buf) { chip?.remove(); return; }
+  if (!chip) {
+    chip = el('div', { id: 'ta-hint' });
+    document.body.appendChild(chip);
+  }
+  chip.textContent = buf;
+  const r = anchor.getBoundingClientRect();
+  chip.style.left = `${Math.round(r.right - chip.offsetWidth - 14)}px`;
+  chip.style.top = `${Math.round(r.bottom - chip.offsetHeight - 14)}px`;
+}
+
 // tileWalk is the tile face of the grid keyboard: arrows walk the
 // selection in visual order (Up and Down step by the laid-out column
 // count, computed from the geometry each press pays), PageUp and
@@ -3822,7 +3843,27 @@ function tileWalk(wrapId, face, g, e) {
       if (m) g.on.activate?.(m);
       return true;
     }
-    default: return false;
+    default: {
+      // type-ahead rides the tiles too: the shared buffer feeds the
+      // jump, the face seats it (its own sync and scroll), and a typed
+      // key is consumed either way — the rows’ own law. A miss moves
+      // nothing; the buffer still holds the key for the next one.
+      if (e.key.length === 1) {
+        const i = g.typeFeed(e.key);
+        if (i >= 0) {
+          g.sel.clear();
+          g.sel.add(rows[i].key);
+          g.focusKey = rows[i].key;
+          g.anchorKey = rows[i].key;
+          face.syncSel();
+          const tile = tiles[i];
+          if (tile) tile.scrollIntoView({ block: 'nearest' });
+          g.on.select?.(g.selectedRows());
+        }
+        return true;
+      }
+      return false;
+    }
   }
   e.preventDefault();
   ni = Math.max(0, Math.min(n - 1, ni));

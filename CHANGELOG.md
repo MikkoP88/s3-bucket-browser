@@ -461,6 +461,23 @@ follow [Semantic Versioning](https://semver.org/).
   focused pane), while modified keys (the Alt+arrows history walk) stay
   the global chain’s — a bare arrow walks tiles, a modified one walks
   history.
+- **The listing answers as you type, on every face** — type-ahead
+  grows from a rows-only privilege to the law of every face: the
+  same buffer (`grid.typeFeed`) folds each typed letter — 600ms,
+  case-folded, prefix — and names the first row that carries it, the
+  rows committing the jump as they always did and both tile faces
+  committing it their own way (selection, focus, anchor, the
+  face’s sync, a nearest scroll) through the walker’s printable
+  branch, reached by the face’s own wrap listener or the global
+  chain, whichever is seated. A miss moves nothing but the buffer
+  still holds the keys for the next letter — the rows’ own law,
+  now every face’s. And the buffer speaks: a small chip pinned
+  into the corner of the listing being typed into says what it
+  holds while it holds it and leaves when it expires, following
+  whichever grid and whichever face owns the keystroke — the pane
+  gallery answers a typed letter while the main view’s selection
+  stands still, the pane rows answer through their own body, and
+  the chip sits over the right listing each time.
 
 ### Fixed
 
