@@ -12867,6 +12867,172 @@ await step('tree-keys', async () => {
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'tree-keys world restored');
 });
 
+// ---------- the menubar answers the keyboard ----------
+await step('menubar-keys', async () => {
+  // The bar is a keyboard surface the way desktop menubars are: the
+  // titles are a roving tab stop (one seat in the Tab order, the arrows
+  // striding the closed bar), Enter / Space / ArrowDown opens and seats
+  // the first enabled item, the open menu walks under the arrows with
+  // the disabled skipped, End and Home hold the ends, the cascade opens
+  // under ArrowRight and folds under ArrowLeft, a plain leaf’s
+  // ArrowRight strides the bar onto the NEXT menu, Escape closes back
+  // onto the title, a picked verb restores the seat to the title before
+  // it runs, the checked leaves speak menuitemcheckbox with their state
+  // re-read at every open, and Tab closes the open menu. Leaves the
+  // world canonical (objects view team-files root, pane closed, rows
+  // face).
+  const mbState = () => evalPage(() => {
+    const mb = document.getElementById('menubar');
+    const a = document.activeElement;
+    const titles = [...mb.querySelectorAll('.mb-title')];
+    const dd = a && a.classList && a.classList.contains('mb-item') ? a.closest('.mb-dd') : null;
+    const items = a && a.classList && a.classList.contains('mb-item') && a.parentElement
+      ? [...a.parentElement.querySelectorAll(':scope > .mb-item:not(.disabled)')] : [];
+    return {
+      ti: titles.indexOf(a),
+      open: titles.findIndex((t) => t.classList.contains('open')),
+      expanded: titles.map((t) => t.getAttribute('aria-expanded')),
+      stops: titles.map((t) => t.tabIndex),
+      aRole: a ? a.getAttribute('role') : null,
+      aHas: a ? a.getAttribute('aria-haspopup') : null,
+      aChk: a ? a.getAttribute('aria-checked') : null,
+      aTxt: a ? (a.textContent || '').trim() : '',
+      aKbd: a && a.querySelector ? (a.querySelector('.mb-kbd')?.textContent || '') : '',
+      inSub: !!(a && a.closest && a.closest('.mb-dd.sub')),
+      subExp: a && a.closest ? (a.closest('.mb-item.has-sub')?.getAttribute('aria-expanded') || null) : null,
+      idx: items.indexOf(a),
+      n: items.length,
+      rootRole: mb.querySelector('.menubar')?.getAttribute('role') || '',
+      menuRole: dd ? dd.getAttribute('role') : null,
+      ddOpen: dd ? !dd.classList.contains('hidden') : false,
+      paneOpen: !document.getElementById('local-pane').classList.contains('hidden'),
+    };
+  });
+  const walkToKbd = async (code) => {
+    for (let i = 0; i < 30; i++) {
+      const s = await mbState();
+      if (s.aKbd === code) return;
+      await page.keyboard.press('ArrowDown');
+      await sleep(30);
+    }
+    throw new Error('menubar walk never reached ' + code);
+  };
+  const walkToSub = async () => {
+    for (let i = 0; i < 30; i++) {
+      const s = await mbState();
+      if (s.aHas === 'menu') return;
+      await page.keyboard.press('ArrowDown');
+      await sleep(30);
+    }
+    throw new Error('menubar walk never reached the cascade parent');
+  };
+  const closed = () => evalPage(() => [...document.querySelectorAll('#menubar .mb-title')]
+    .every((t) => t.getAttribute('aria-expanded') !== 'true'));
+  await page.focus('#menubar .mb-title');
+  await ok('the bar speaks menubar semantics and the titles are a roving tab stop',
+    waitFor(async () => {
+      const s = await mbState();
+      return s.rootRole === 'menubar' && s.ti === 0 && s.aRole === 'menuitem' && s.aHas === 'menu'
+        && s.stops[0] === 0 && s.stops.slice(1).every((v) => v === -1);
+    }, 4000, 'menubar roles'));
+  await page.keyboard.press('Enter');
+  await ok('Enter opens the menu and seats its first enabled item',
+    waitFor(async () => {
+      const s = await mbState();
+      return s.open === 0 && s.expanded[0] === 'true' && s.ti === -1
+        && s.aRole === 'menuitem' && s.menuRole === 'menu' && s.ddOpen && s.idx === 0;
+    }, 4000, 'file open seated'));
+  const firstTxt = (await mbState()).aTxt;
+  await page.keyboard.press('ArrowDown');
+  await ok('ArrowDown walks the open menu',
+    waitFor(async () => (await mbState()).aTxt !== firstTxt, 4000, 'menu walked'));
+  await page.keyboard.press('End');
+  await waitFor(async () => { const s = await mbState(); return s.idx === s.n - 1 && s.n > 1; }, 4000, 'End seated');
+  await page.keyboard.press('Home');
+  await ok('End and Home hold the ends of the open menu',
+    waitFor(async () => (await mbState()).idx === 0, 4000, 'Home seated'));
+  await page.keyboard.press('Escape');
+  await ok('Escape closes the menu and hands the seat back to its title',
+    waitFor(async () => {
+      const s = await mbState();
+      return (await closed()) && s.ti === 0;
+    }, 4000, 'escape to title'));
+  await page.keyboard.press('ArrowRight');
+  await ok('the arrows stride the closed bar between titles',
+    waitFor(async () => {
+      const s = await mbState();
+      return s.ti === 1 && s.open === -1 && s.stops[1] === 0 && s.stops[0] === -1;
+    }, 4000, 'title stride'));
+  await page.keyboard.press('ArrowDown');
+  await ok('ArrowDown opens the walked menu and the walk skips the disabled',
+    waitFor(async () => {
+      const s = await mbState();
+      const cut = await evalPage(() => {
+        const dd = [...document.querySelectorAll('#menubar .mb-dd')].find((d) => !d.classList.contains('hidden'));
+        if (!dd) return null;
+        const it = [...dd.querySelectorAll(':scope > .mb-item')].find((x) => x.querySelector('.mb-kbd')?.textContent === 'Ctrl+X');
+        return it ? { dis: it.classList.contains('disabled'), ad: it.getAttribute('aria-disabled') } : null;
+      });
+      return s.open === 1 && s.idx === 0 && s.n >= 3 && s.aHas === 'menu' && !!cut && cut.dis && cut.ad === 'true';
+    }, 4000, 'edit seated past the disabled'));
+  await page.keyboard.press('Escape');
+  await waitFor(closed, 4000, 'edit closed');
+  // the cascade lives on the View menu (its Auto-refresh options are
+  // always enabled — the Edit cascade rides canCopy)
+  await page.keyboard.press('ArrowRight');
+  await waitFor(async () => (await mbState()).ti === 2, 4000, 'stride to view');
+  await page.keyboard.press('ArrowDown');
+  await waitFor(async () => { const s = await mbState(); return s.open === 2 && s.idx === 0; }, 4000, 'view open');
+  await walkToSub();
+  await page.keyboard.press('ArrowRight');
+  await ok('ArrowRight opens the cascade and seats its first item',
+    waitFor(async () => {
+      const s = await mbState();
+      return s.inSub && s.aRole === 'menuitemcheckbox' && s.subExp === 'true' && s.idx === 0;
+    }, 4000, 'cascade seated'));
+  await page.keyboard.press('ArrowLeft');
+  await ok('ArrowLeft folds the cascade back onto its parent',
+    waitFor(async () => {
+      const s = await mbState();
+      return !s.inSub && s.aHas === 'menu' && s.subExp === 'false';
+    }, 4000, 'cascade folded'));
+  await walkToKbd('F5');
+  await page.keyboard.press('ArrowRight');
+  await ok('ArrowRight on a plain leaf strides the bar onto the next menu',
+    waitFor(async () => {
+      const s = await mbState();
+      return s.open === 3 && s.expanded[3] === 'true' && s.idx === 0 && s.aRole === 'menuitem';
+    }, 4000, 'strided to settings'));
+  await walkToKbd('F9');
+  await ok('the checked leaf speaks its state and Enter runs it',
+    waitFor(async () => {
+      const s = await mbState();
+      return s.aRole === 'menuitemcheckbox' && s.aChk === 'false' && s.aKbd === 'F9';
+    }, 4000, 'checked state spoken'));
+  await page.keyboard.press('Enter');
+  await waitFor(async () => {
+    const s = await mbState();
+    return s.paneOpen && (await closed()) && s.ti === 3;
+  }, 4000, 'panes opened');
+  await page.keyboard.press('ArrowDown');
+  await waitFor(async () => { const s = await mbState(); return s.open === 3 && s.idx === 0; }, 4000, 'settings reopened');
+  await walkToKbd('F9');
+  await ok('the reopened menu re-reads its checked state',
+    waitFor(async () => {
+      const s = await mbState();
+      return s.aRole === 'menuitemcheckbox' && s.aChk === 'true';
+    }, 4000, 'checked re-read'));
+  await page.keyboard.press('Enter');
+  await waitFor(async () => (await mbState()).paneOpen === false, 4000, 'panes closed');
+  await page.keyboard.press('ArrowDown');
+  await waitFor(async () => { const s = await mbState(); return s.open === 3; }, 4000, 'settings reopened for tab');
+  await page.keyboard.press('Tab');
+  await ok('Tab closes the open menu',
+    waitFor(closed, 4000, 'tab closed'));
+  // leave the world canonical
+  await page.focus('#grid-body');
+});
+
 // ---------- the inspector: the docked details panel ----------
 await step('inspector', async () => {
   // The selection's own facts the instant the selection changes — no

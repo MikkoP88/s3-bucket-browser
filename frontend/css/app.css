@@ -184,6 +184,9 @@ svg.flip { transform: scaleX(-1); }
 }
 .mb-item:hover { background: var(--hover); }
 .mb-item.disabled { color: var(--text-dim); opacity: .6; pointer-events: none; }
+/* the keyboard seat paints like the hover seat — the bar’s titles and the
+   open dropdown’s items share the focus grammar every surface owns */
+.mb-title:focus-visible, .mb-item:focus-visible { background: var(--hover); outline: none; }
 .mb-item .mb-kbd { margin-left: auto; color: var(--text-dim); font-size: 11px; }
 .mb-item .mb-check { flex: none; width: 14px; font-size: 11px; color: var(--ok); }
 .mb-item.has-sub { position: relative; }

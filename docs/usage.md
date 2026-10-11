@@ -938,6 +938,7 @@ you'll use daily:
 | F1 | help (in-app guide + key map) |
 | Menu / Shift+F10 | open the context menu of the seated row or tile |
 | Tree: arrows / Enter / Space / Menu | walk the tree, expand and fold, navigate, open the row’s verb menu |
+| Menubar: Tab, arrows, Enter | open the menus, walk them, stride the bar with the arrows while one is open |
 
 Keyboard walking is spoken as well as seen: every listing surface —
 the rows, both gallery faces, the search results, the tree — exposes
@@ -961,6 +962,16 @@ double-click owns) and walks into an open one, Left folds an open
 folder or climbs to the parent of a collapsed one, Enter
 navigates, Space toggles, and typing jumps by name prefix with
 the buffer chip pinned to the tree.
+
+The menu bar answers the keyboard like a desktop menubar: Tab
+reaches it (the titles are one roving stop — the arrows stride
+the closed bar), Enter, Space or ArrowDown opens a menu on its
+first enabled item, the arrows walk the open menu with the
+disabled skipped, ArrowRight opens a cascade — or, from a plain
+item, moves to the next menu on the bar — ArrowLeft folds a
+cascade or moves to the previous menu, Escape closes back onto
+the title, and Enter runs the seated verb (checked items speak
+their state and re-read it at every open).
 
 ---
 

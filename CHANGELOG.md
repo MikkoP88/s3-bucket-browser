@@ -516,6 +516,45 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The menubar answers the keyboard** — the bar becomes a keyboard
+  surface the way desktop menubars are: the titles are a roving tab
+  stop (one seat in the Tab order, the arrows striding the closed bar
+  between File and Help), Enter, Space or ArrowDown opens a menu and
+  the freshly opened dropdown seats focus on its first enabled item —
+  the APG law the context menus already own — with ArrowDown and
+  ArrowUp walking the items (the disabled skipped, wraparound, Home
+  and End holding the ends), ArrowRight opening a cascade or, from a
+  plain leaf, striding the bar onto the NEXT menu (the road every
+  desktop menubar owns), ArrowLeft folding an open cascade back onto
+  its parent or walking onto the previous menu, Enter running the
+  seated verb with the seat restored to the title BEFORE the action
+  runs (a modal the verb opens captures the bar as its previous
+  focus), Escape closing back onto the title, and Tab closing
+  silently because focus left on purpose. The menus speak their
+  semantics for the first time: the bar a `role="menubar"`, each
+  title a `menuitem` with `aria-haspopup` and `aria-expanded`, the
+  dropdowns and cascades `menu`s, every leaf a `menuitem` or — where
+  it carries a checked state — a `menuitemcheckbox` speaking
+  `aria-checked` re-read at every open (the dropdown re-renders the
+  way it always did), the disabled marked `aria-disabled`, and the
+  focus seat painted with the `:focus-visible` grammar every
+  surface owns. Every key the bar handles is stopped on its own
+  listeners — the listing walk on the document chain never moves
+  under the menubar, and a stray letter typed at a seated title or
+  item never falls through to the listing's type-ahead. The battery
+  grows the menubar-keys step with thirteen oks — the roles and the
+  roving tab stop, Enter opening and seating, the arrows walking,
+  End and Home, Escape back onto the title, the closed-bar stride,
+  the walk skipping the disabled (Cut at an empty selection), the
+  cascade opening and folding (View's Auto-refresh options), the
+  plain-leaf stride onto the next menu, the checked leaf running its
+  verb (Panes F9) with the state re-read on reopen, and Tab closing
+  the open menu. Gates: js-check OK, provenance 9/9 (the main.js
+  watermark undisturbed through every node patch), the Go suite
+  untouched by design — a frontend-only round — and the full battery
+  green at 1361/1361. Docs: the usage guide grows the keyboard-map
+  menubar row and a menubar-keyboard paragraph beside the tree's,
+  and VERIFICATION the row (GUI-117).
 - **The tree answers the keyboard** — the sidebar tree becomes a
   focus surface of its own (the container carries the seat,
   `tabindex` beside its `role="tree"`) and the walk grammar is the
