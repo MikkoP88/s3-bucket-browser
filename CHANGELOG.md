@@ -516,6 +516,28 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The listing at five thousand rows** — the battery’s worlds had
+  only ever spoken in tens of rows while production lists run to
+  thousands, so every grammar the listing owns now has a step that
+  seats it at scale: the new big-listing step seeds five thousand
+  objects into the once-empty archive-cold bucket (its emptiness is
+  load-bearing only in earlier steps, and the world is re-emptied
+  before the walk ends) and pins the whole ladder in one run — the
+  model seated at exactly five thousand, the row pool staying
+  bounded while the scroll extent covers every row (a handful of
+  rendered rows over a hundred-and-forty-thousand-pixel track), the
+  deep jump to the bottom rendering the model’s final row, the size
+  sort mirroring the model at both ends, the keyboard walk striding
+  twelve rows with the seat still named through
+  aria-activedescendant, the quick filter finding its ten needles in
+  the haystack, select-all seating all five thousand rows, and the
+  second click clearing them. The step taught a harness law the
+  slice run caught: a select-all click can race the filter-clear
+  debounce — the model was still the filtered ten when the head’s
+  verb fired — so the leg waits for the model to be the full five
+  thousand before it clicks. Validation-only by design: no product
+  line moved, the Go suite untouched, the 23 packages unmoved, and
+  the full battery green at 1419/1419.
 - **Nothing lies about being a button** — the access rounds had grown
   the walk, the menus and the sort seats while four old surfaces still
   told two lies: focusables the Tab key could reach but no grammar

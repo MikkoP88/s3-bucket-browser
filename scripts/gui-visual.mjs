@@ -13630,6 +13630,80 @@ await step('row-tabs', async () => {
     localStorage.getItem('s3b-show-versions') === null
     && localStorage.getItem('s3b-show-markers') === null));
 });
+// ---------- scale: the listing at five thousand rows ----------
+await step('big-listing', async () => {
+  // The battery’s worlds are tens of rows; production lists thousands.
+  // archive-cold seeds empty and nothing after this step reads its
+  // emptiness (empty-dir-ctxmenu and the size-bar walk sit earlier in
+  // file order), so it hosts the big world: five thousand rows in one
+  // listing page, the pool pinned bounded, the scroll extent, the sort /
+  // walk / filter / select-all grammars pinned against the model at
+  // scale. Leaves the world canonical: bucket re-emptied, filter clear.
+  await evalPage(() => {
+    const objs = [];
+    for (let i = 0; i < 5000; i += 1) {
+      objs.push({ key: `file-${String(i).padStart(4, '0')}.txt`,
+        size: 100 + ((i * 137) % 900000), lastModified: Date.now() - (i + 1) * 60000,
+        storageClass: 'STANDARD' });
+    }
+    window.__shim.world.objects['archive-cold'] = objs;
+  });
+  await clickTree('archive-cold');
+  await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 5000), 8000, '5000 rows');
+  await ok('five thousand rows seat the model', evalPage(() => window.__s3bGrid.rows.length === 5000));
+  await ok('the pool stays bounded while the scroll extent covers them all', evalPage(() => {
+    const vis = Array.from(document.querySelectorAll('#grid-body .grid-row'));
+    const body = document.getElementById('grid-body');
+    return vis.length > 0 && vis.length < 60 && body.scrollHeight > 130000;
+  }));
+  await evalPage(() => { const b = document.getElementById('grid-body'); b.scrollTop = b.scrollHeight; });
+  await ok('the deep scroll renders the final rows', waitFor(async () => evalPage(() => {
+    const vis = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .filter((r) => r.style.display !== 'none' && r._model);
+    return vis.length > 0 && vis[vis.length - 1]._model.key === window.__s3bGrid.rows[4999].key;
+  }), 5000, 'bottom rows'));
+  await evalPage(() => { document.getElementById('grid-body').scrollTop = 0; });
+  await page.click('#grid-head .gh[data-col="size"]');
+  await ok('sorting five thousand rows by size mirrors the model', waitFor(async () => evalPage(() => {
+    const rows = window.__s3bGrid.rows;
+    const vis = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .filter((r) => r.style.display !== 'none' && r._model);
+    return vis.length > 0 && vis[0]._model.key === rows[0].key
+      && rows[0].size <= rows[rows.length - 1].size;
+  }), 5000, 'sorted view'));
+  await evalPage(() => document.getElementById('grid-body').focus());
+  await page.keyboard.press('Home');
+  for (let i = 0; i < 12; i += 1) await page.keyboard.press('ArrowDown');
+  await ok('the walk strides twelve rows at scale with the seat named', evalPage(() => {
+    const g = window.__s3bGrid;
+    const want = g.rows[12].key;
+    const named = document.getElementById('grid-body').getAttribute('aria-activedescendant');
+    const seat = named ? document.getElementById(named) : null;
+    return g.focusKey === want && !!seat && seat._model && seat._model.key === want;
+  }));
+  await page.fill('#filter', 'file-049');
+  await ok('the quick filter finds its ten needles in the haystack', waitFor(async () => evalPage(() => {
+    const vis = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .filter((r) => r.style.display !== 'none' && r._model);
+    return vis.length === 10 && vis.every((r) => r._model.key.startsWith('file-049'));
+  }), 5000, 'filtered rows'));
+  await page.fill('#filter', '');
+  // the select-all click must not race the filter-clear debounce:
+  // wait for the model to be the full five thousand again first
+  await waitFor(() => evalPage(() => window.__s3bGrid.filter === ''
+    && window.__s3bGrid.rows.length === 5000), 3000, 'filter cleared at scale');
+  await evalPage(() => document.querySelector('#grid-head input[type=checkbox]').click());
+  await ok('select-all seats five thousand rows', waitFor(async () => evalPage(() =>
+    window.__s3bGrid.sel.size === 5000), 5000, 'selection'));
+  await evalPage(() => document.querySelector('#grid-head input[type=checkbox]').click());
+  await ok('select-all again clears the five thousand', waitFor(async () => evalPage(() =>
+    window.__s3bGrid.sel.size === 0), 5000, 'cleared'));
+  await evalPage(() => { window.__shim.world.objects['archive-cold'] = []; });
+  await ok('big-listing walk leaves the world canonical', evalPage(() =>
+    (window.__shim.world.objects['archive-cold'] || []).length === 0
+    && document.getElementById('filter').value === ''));
+});
+
 // ---------- settings honor walk (every control + every default) ----------
 await step('settings-honor', async () => {
   // The whole-surface companion to settings-dialog: that step proves the
