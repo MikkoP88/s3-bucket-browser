@@ -516,6 +516,39 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The search face survives its own hits** — the scale round had
+  pinned the main listing’s pool boundedness at five thousand rows, but
+  the search results grid still lived the old law: it rendered every
+  hit the run matched (the Limit field defaults to ALL, so a broad
+  pattern could seat tens of thousands of rows in the DOM at once),
+  rebuilt the entire list for every streamed page, and rebuilt it again
+  for every arrow key — a walk over a big result set re-rendered the
+  world per keypress. The results body now renders a growing window of
+  the model: five hundred rows to start, a thousand more per press of
+  the truthful strip that appears under the list when the model
+  outgrows the seat — the strip speaks how many rows are shown of how
+  many exist and carries the Show more verb (a real button, seated
+  outside the listbox because a button is not an option), it hides
+  entirely while everything fits so small worlds render exactly as
+  before, and the status bar keeps speaking the true count throughout.
+  Sorting still orders the whole model — the window re-renders over
+  the ordered list — and the walk both clamps itself to the rendered
+  window and patches its seat in place: selection, aria-selected, the
+  activedescendant name and the nearest-scroll all land on the seated
+  row without a rebuild, the click riding the same law, so a run of
+  twenty thousand hits sorts, speaks and walks as if it were twenty.
+  The battery grows the search-scale step with seven oks — the true
+  count spoken at twenty thousand hits, the body seating the
+  five-hundred-row window rather than the world, the strip’s whole
+  truth with its verb, the verb growing the seat a step, the size sort
+  mirroring the model at the window’s edge (the two smallest keys
+  computed from the seed law, never hardcoded), the walk striding in
+  place with no rebuild per keypress (element identity pinned through
+  page-side references), and the leave-clean tail re-emptying the
+  world. Gates: js-check OK, provenance 9/9 (the main.js watermark
+  undisturbed through every node patch), the Go suite untouched by
+  design — a frontend-only round, the 23 packages unmoved — and the
+  full battery green at 1426/1426.
 - **The listing at five thousand rows** — the battery’s worlds had
   only ever spoken in tens of rows while production lists run to
   thousands, so every grammar the listing owns now has a step that

@@ -5399,6 +5399,91 @@ await step('search-window', async () => {
   await page.goto(BASE);
 });
 
+// ---------- scale: the search face survives its own hits ----------
+await step('search-scale', async () => {
+  // A search run can match far more rows than any DOM should seat (the
+  // limit field defaults to ALL), and the results grid once rendered
+  // every hit — and re-rendered the whole list per arrow key. The face
+  // now seats a window of the model with a truthful strip beneath it,
+  // and the walk patches in place. archive-cold hosts the needle world
+  // (the big-listing step sits earlier in file order and re-empties its
+  // own seed; nothing after this step reads the bucket).
+  await evalPage(() => {
+    const objs = [];
+    for (let i = 0; i < 20000; i += 1) {
+      objs.push({ key: `needle-${String(i).padStart(5, '0')}.txt`,
+        size: 100 + ((i * 137) % 900000), lastModified: Date.now() - (i + 1) * 60000,
+        storageClass: 'STANDARD' });
+    }
+    window.__shim.world.objects['archive-cold'] = objs;
+  });
+  await page.click('#btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'search popout');
+  const S = '#popout-root .popout[data-pop="search"]';
+  await evalPage((s) => {
+    const inp = document.querySelector(s + ' .sr-name input.input');
+    inp.focus();
+    inp.value = 'needle';
+  }, S);
+  await page.keyboard.press('Enter');
+  await waitFor(() => evalPage((s) => /20,?000 match/.test(document.querySelector(s + ' .sr-status').textContent), S), 8000, 'done stats at scale');
+  await ok('twenty thousand hits land with the true count spoken', evalPage((s) =>
+    /20,?000 match/.test(document.querySelector(s + ' .sr-status').textContent), S));
+  await ok('the body seats the window, not the world', evalPage((s) =>
+    document.querySelectorAll(s + ' .sr-list .grid-row').length === 500, S));
+  await ok('the strip speaks the whole truth with its verb', evalPage((s) => {
+    const strip = document.querySelector(s + ' .sr-window');
+    return !!strip && !strip.classList.contains('hidden')
+      && strip.textContent.includes('Showing 500 of 20000')
+      && strip.querySelector('button').textContent.trim() === 'Show more';
+  }, S));
+  await evalPage((s) => document.querySelector(s + ' .sr-window button').click(), S);
+  await ok('Show more grows the window a step', evalPage((s) =>
+    document.querySelectorAll(s + ' .sr-list .grid-row').length === 1500
+    && document.querySelector(s + ' .sr-window').textContent.includes('Showing 1500 of 20000'), S));
+  // the size sort must mirror the model: compute the two smallest keys
+  // from the seed law itself, never hardcode a fixture name
+  const sizeAt = (i) => 100 + ((i * 137) % 900000);
+  let i1 = 0; let i2 = 1;
+  if (sizeAt(1) < sizeAt(0)) { i1 = 1; i2 = 0; }
+  for (let i = 2; i < 20000; i += 1) {
+    if (sizeAt(i) < sizeAt(i1)) { i2 = i1; i1 = i; } else if (sizeAt(i) < sizeAt(i2)) i2 = i;
+  }
+  const first = `needle-${String(i1).padStart(5, '0')}.txt`;
+  const second = `needle-${String(i2).padStart(5, '0')}.txt`;
+  await evalPage((s) => document.querySelector(s + ' .grid-head .gh[data-col="size"]').click(), S);
+  await ok('sorting twenty thousand hits mirrors the model at the window', evalPage(([s, a, b]) => {
+    const rows = document.querySelectorAll(s + ' .sr-list .grid-row');
+    return rows.length > 1 && rows[0].textContent.includes(a) && rows[1].textContent.includes(b);
+  }, [S, first, second]));
+  // the walk patches in place: no rebuild per keypress — element
+  // identity pinned through page-side references, not serialized handles
+  await evalPage((s) => {
+    const list = document.querySelector(s + ' .sr-list');
+    list.focus();
+    list.querySelector('.grid-row').click();
+    window.__srBefore = Array.from(list.children).slice(0, 6);
+  }, S);
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await ok('the walk strides in place at scale — no rebuild per keypress', evalPage((s) => {
+    const list = document.querySelector(s + ' .sr-list');
+    const rows = Array.from(list.children).filter((c) => c.classList.contains('grid-row'));
+    const sel = rows[3];
+    const named = list.getAttribute('aria-activedescendant');
+    return !!window.__srBefore && window.__srBefore[0] === rows[0]
+      && window.__srBefore[2] === rows[2] && window.__srBefore[5] === rows[5]
+      && window.__srBefore[3] === sel && sel.classList.contains('sel')
+      && named === sel.id;
+  }, S));
+  await closePopout('search');
+  await evalPage(() => { window.__shim.world.objects['archive-cold'] = []; });
+  await ok('search-scale leaves the world canonical', evalPage(() =>
+    (window.__shim.world.objects['archive-cold'] || []).length === 0
+    && !document.querySelector('#popout-root .popout[data-pop="search"]')));
+});
+
 await step('versions-diff', async () => {
   await navObjects('team-files');
   await clickRow('scan.png'); // single selection so the Versions entry is offered

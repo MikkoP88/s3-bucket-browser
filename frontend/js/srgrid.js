@@ -9,13 +9,24 @@
 // resize (pointer and keyboard, floor and ceiling clamped), header
 // drag-to-reorder, and the right-click column picker. The rows stay the
 // window's own contract — a plain streaming list, single select,
-// Enter/arrows — untouched.
+// Enter/arrows — now windowed: a run can match more rows than any DOM
+// should seat at once, so the body renders a growing window of the
+// model while the status bar keeps the true count.
 import { el, fmtBytes, fmtDate, fileIcon, srcIconEl } from './util.js';
 import { resizeDrag, resizeKeys, reorderDrag } from './coldrag.js';
 import { t } from './i18n.js';
 import { COLUMNS, DEFAULT_COLS, saveColState, loadColState, typeOf, MIN_COL_W, RZ_HIT_W } from './grid.js';
 
 const STORE_KEY = 's3b-cols-sr'; // beside 's3b-cols' / 's3b-cols-local'
+
+// A run can match far more rows than any DOM should seat at once (the
+// limit field defaults to ALL matches), so the body renders a window of
+// the model: SR_WINDOW rows to start, SR_GROW more per press of the
+// footer’s Show more. The model keeps every hit, the status bar keeps
+// the true count, and the footer speaks both — a world smaller than the
+// window sees nothing at all (the strip hides, every row renders).
+const SR_WINDOW = 500;
+const SR_GROW = 1000;
 
 // The search catalog: the app's global column set plus one search-only
 // column. Source is the auto column — it rides runs that span origins and
@@ -74,7 +85,15 @@ export function makeSearchGrid(opts = {}) {
   const head = el('div', { class: 'grid-head', role: 'row' });
   const headClip = el('div', { class: 'grid-headclip' }, head);
   const body = el('div', { class: 'grid-body sr-list', tabindex: '0', role: 'listbox' });
-  const area = el('div', { class: 'sr-results' }, headClip, body);
+  // the windowed tail: when the model outgrows the rendered window this
+  // strip speaks the whole truth — how many rows are shown, how many
+  // exist, and the verb that grows the window. It sits OUTSIDE the
+  // listbox (a real button is not an option), pinned under the list.
+  const moreText = el('span', { class: 'sr-window-text' });
+  const moreBtn = el('button', { class: 'btn', type: 'button' });
+  moreBtn.addEventListener('click', () => { cap += SR_GROW; renderRows(); });
+  const moreStrip = el('div', { class: 'sr-window hidden' }, moreText, moreBtn);
+  const area = el('div', { class: 'sr-results' }, headClip, body, moreStrip);
 
   let userCols = [...SR_DEFAULT_COLS]; // ordered catalog columns (never Source)
   let widths = {};                  // column id -> user-set pixel width
@@ -83,6 +102,7 @@ export function makeSearchGrid(opts = {}) {
   let sortKey = '';                 // '' = arrival order, the streaming default
   let sortDir = 1;
   let selKey = null;                // the one selected hit (click / arrows)
+  let cap = SR_WINDOW;               // the rendered window (Show more grows it)
   const hits = [];                  // streamed results, arrival order
   // sourceOf resolves a hit's source name to its {type, color} so the
   // Source column can wear the type badge; the window injects it from the
@@ -331,6 +351,7 @@ export function makeSearchGrid(opts = {}) {
       'aria-selected': r.key === selKey ? 'true' : 'false',
       id: `sr-row-${i}`, // the body’s activedescendant names the selected hit
     });
+    row.dataset.key = r.key; // the in-place walk finds its seat by key
     row.appendChild(el('div', { class: 'gc name' },
       el('span', { class: 'icon', text: fileIcon(r.key, isDirOf(r)) }),
       el('span', { class: 'tname', text: r.key })));
@@ -343,39 +364,59 @@ export function makeSearchGrid(opts = {}) {
       if (c.id === 'source') paintSourceCell(cell, r);
       row.appendChild(cell);
     }
-    row.addEventListener('click', () => {
-      if (selKey === r.key) return;
-      selKey = r.key;
-      for (const x of body.querySelectorAll('.grid-row')) {
-        const on = x === row;
-        x.classList.toggle('sel', on);
-        x.setAttribute('aria-selected', on ? 'true' : 'false');
-      }
-      body.setAttribute('aria-activedescendant', row.id);
-    });
+    row.addEventListener('click', () => selectRow(r));
     row.addEventListener('dblclick', () => opts.onActivate?.(r));
     return row;
   }
 
-  // the walk re-renders (renderRows), the click patches in place — both
-  // must keep the body naming its selected row for assistive tech
+  // every seat change patches in place (the walk and the click share one
+  // law) — and each must keep the body naming its selected row
   const syncActive = () => {
     const sel = body.querySelector('.grid-row.sel');
     if (sel) body.setAttribute('aria-activedescendant', sel.id);
     else body.removeAttribute('aria-activedescendant');
   };
-  const renderRows = () => { body.replaceChildren(...sorted().map(rowEl)); syncActive(); };
+  // the rendered window: the model may hold far more than the DOM seats.
+  // The strip hides while everything fits — small worlds render whole,
+  // exactly the old law
+  const renderRows = () => {
+    const list = sorted();
+    const shown = Math.min(list.length, cap);
+    body.replaceChildren(...list.slice(0, shown).map(rowEl));
+    syncActive();
+    if (shown < list.length) {
+      moreText.textContent = t('findShown', { shown, total: list.length });
+      moreBtn.textContent = t('findMore');
+      moreStrip.classList.remove('hidden');
+    } else moreStrip.classList.add('hidden');
+  };
 
+  // the walk and the click patch in place — a full rebuild per keypress
+  // would re-seat every row under the cursor at small scales and freeze
+  // outright at large ones. The seat scrolls into view and the body
+  // names it for assistive tech.
   const selectRow = (r) => {
     selKey = r.key;
-    renderRows();
-    body.querySelector('.grid-row.sel')?.scrollIntoView({ block: 'nearest' });
+    let seat = null;
+    for (const x of body.querySelectorAll('.grid-row')) {
+      const on = x.dataset.key === r.key;
+      x.classList.toggle('sel', on);
+      x.setAttribute('aria-selected', on ? 'true' : 'false');
+      if (on) seat = x;
+    }
+    if (seat) {
+      seat.scrollIntoView({ block: 'nearest' });
+      body.setAttribute('aria-activedescendant', seat.id);
+    } else body.removeAttribute('aria-activedescendant');
   };
 
   // Enter opens the selected hit, the arrows walk the list — the body is
   // focusable (tabindex 0) like the main grid
   body.addEventListener('keydown', (e) => {
-    const list = sorted();
+    // the walk speaks the rendered window — the footer’s verb is how the
+    // window grows, and a walk past the edge would name a row no reader
+    // could see
+    const list = sorted().slice(0, cap);
     if (e.key === 'Enter') {
       e.preventDefault();
       const r = hits.find((x) => x.key === selKey);
@@ -520,9 +561,9 @@ export function makeSearchGrid(opts = {}) {
     applyCols(ids) { setColumns(ids); persist(); },
     setShowSource(v) { if (v === showSource) return; showSource = v; buildHead(); renderRows(); },
     addPage(entries) { hits.push(...entries); renderRows(); },
-    clearHits() { hits.length = 0; selKey = null; renderRows(); },
+    clearHits() { hits.length = 0; selKey = null; cap = SR_WINDOW; renderRows(); },
     count: () => hits.length,
-    reset() { hits.length = 0; selKey = null; sortKey = ''; showSource = false; buildHead(); renderRows(); },
+    reset() { hits.length = 0; selKey = null; sortKey = ''; showSource = false; cap = SR_WINDOW; buildHead(); renderRows(); },
     // sizeDirs lists the folder hits whose recursive size no walk has
     // answered yet — the window's lazy fill walks those and hands the
     // answers back through setSizes

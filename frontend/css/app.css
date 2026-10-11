@@ -1273,6 +1273,12 @@ kbd {
    keeps the band at the height the head paints. */
 .sr-results .grid-headclip { flex: none; }
 .sr-list .gc.source { color: var(--text-dim); font-size: 12px; }
+/* the windowed tail (.sr-window): a run can match more rows than the
+   DOM should seat, so the list renders a window and the strip under it
+   speaks the whole truth — what is shown, what exists, the verb that
+   grows it */
+.sr-window { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 5px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); }
+.sr-window .btn { flex: none; padding: 2px 10px; font-size: 12px; }
 /* the idle / no-matches panel: the content area's empty state, scaled
    to the window — it anchors below the header row like the main one */
 .sr-results .empty-state { justify-content: flex-start; padding-top: 48px; }

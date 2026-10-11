@@ -436,7 +436,13 @@ directory compare) with S3 and the secondary pane.
   and never lists in the check-list — and a single-source run
   drops it; a
   double-click (or Enter)
-  jumps to the object and selects it. Only the results scroll —
+  jumps to the object and selects it. A run that matches more
+  rows than any DOM should seat renders a window of the model: the
+  status bar always speaks the true count, a strip under the list
+  speaks how many rows are shown of how many exist, and its **Show
+  more** button grows the window (sorting still orders the whole
+  model; the arrow walk speaks the rendered window). Only the results
+  scroll —
   the form stays put — and a running search can be stopped from
   the window.
   The secondary pane's own **Search** button opens the same window
