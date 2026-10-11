@@ -516,6 +516,34 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **Nothing lies about being a button** — the access rounds had grown
+  the walk, the menus and the sort seats while four old surfaces still
+  told two lies: focusables the Tab key could reach but no grammar
+  owned, and button roles with no focus path at all. The row
+  checkboxes were plain inputs — up to forty phantom Tab stops inside
+  a role=listbox whose options must own no focusable descendants (Tab
+  fell out of the listing body straight into checkbox #1); they now
+  sit at tabindex -1, pointer-only by law, because the walk’s Space
+  already owns keyboard selection and the head’s select-all stays the
+  one checkbox in the Tab order. The count badges (⟲ / ⛔) claimed
+  role=button with no focus and no keys — the verb already lives in
+  the row context menu (Versions, Content Versions, Delete Marker),
+  so the badges drop the role and stay what they work as: pointer
+  shortcuts whose counts read as plain text under their tooltips. The
+  gallery tiles were real buttons — natively tabbable, one stop per
+  pooled tile in a face whose wrap owns the walk and names the seated
+  tile through aria-activedescendant; the tiles now sit at -1 and
+  answer the walk alone. And the modal/popout close × carried the
+  same button role with no path — Escape owns the close verb
+  everywhere, so the × hides from readers (aria-hidden) and stays a
+  pointer glyph. The battery grows the row-tabs step with eight oks —
+  the checkboxes out of the Tab order, no tabbable descendant in any
+  rendered row (every focusable candidate pinned at tabIndex -1), the
+  badges reading their counts as text with no role, the head
+  select-all keeping its stop, Tab out of the listing body landing
+  beyond the rows, the gallery tiles answering the walk with the wrap
+  still the focus seat and activedescendant naming a tile, the modal
+  × hidden with no role, and the walk leaving the settings keys null.
 - **The headers answer the keyboard** — the last pointer-only verb in
   the listing was its oldest: sorting. The column headers sorted on
   click and nothing else — a bare div with an onclick, no role, no

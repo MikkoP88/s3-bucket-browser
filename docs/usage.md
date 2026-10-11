@@ -987,7 +987,12 @@ the keyboard walk seat, open menus and the active guide tab paint in
 the system palette instead of the theme's, while disabled menu items
 dim to the system's gray. Text size answers too: Ctrl+= / Ctrl+- /
 Ctrl+0 zoom the whole interface (Ctrl+wheel steps the same ladder),
-and the choice persists across boots and in floating windows.
+and the choice persists across boots and in floating windows. The
+Tab order keeps its economy everywhere: rows and gallery tiles own no
+stray stops (selection answers to Space on the walk), and nothing
+claims to be a button without a keyboard path — the count badges and
+the close × are pointer shortcuts whose verbs live in the row menu
+and the Escape key.
 
 ---
 

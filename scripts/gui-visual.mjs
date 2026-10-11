@@ -13551,6 +13551,85 @@ await step('header-keys', async () => {
   await page.focus('#grid-body');
 });
 
+// ---------- row tab stops + honest buttonhood ----------
+await step('row-tabs', async () => {
+  // Nothing inside a walked surface may claim the Tab key or buttonhood
+  // it cannot honor: the row checkboxes are pointer-only (the walk’s
+  // Space owns keyboard selection), the count badges are pointer
+  // shortcuts whose verb lives in the row context menu, the gallery tiles
+  // answer the wrap’s walk rather than owning Tab stops, and the modal ×
+  // hides from readers (Escape owns the close verb). The head select-all
+  // keeps its stop. Leaves the world canonical: rows face, toggles off,
+  // keys null, team-files seated.
+  await navObjects('team-files');
+  const vt = async (re) => {
+    await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+    await sleep(80);
+    await page.locator('#menubar .mb-dd:not(.hidden) .mb-item', { hasText: re }).first().click();
+    await sleep(120);
+  };
+  await ok('row checkboxes sit out of the Tab order (the walk owns selection)', evalPage(() => {
+    const cbs = Array.from(document.querySelectorAll('#grid-body .grid-row input[type=checkbox]'));
+    return cbs.length > 0 && cbs.every((c) => c.tabIndex === -1);
+  }));
+  await ok('no rendered row owns a tabbable descendant', evalPage(() =>
+    Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .every((r) => Array.from(r.querySelectorAll('button, input, select, textarea, a[href], [tabindex]'))
+        .every((x) => x.tabIndex === -1))));
+  await vt(/show version count icons/i);
+  await vt(/show delete marker icons/i);
+  await ok('count badges read as text and claim no buttonhood', waitFor(async () => evalPage(() => {
+    const r = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((x) => x.querySelector('.tname')?.textContent === 'readme.md');
+    const vb = r?.querySelector('.vbadge'); const mb = r?.querySelector('.mbadge');
+    return !!vb && !!mb && /⟲ 4/.test(vb.textContent) && /⛔/.test(mb.textContent)
+      && vb.getAttribute('role') === null && mb.getAttribute('role') === null;
+  }), 5000, 'badged row'));
+  await ok('the head select-all keeps its Tab stop', evalPage(() =>
+    document.querySelector('#grid-head input[type=checkbox]')?.tabIndex === 0));
+  await evalPage(() => document.getElementById('grid-body').focus());
+  await page.keyboard.press('Tab');
+  await ok('Tab out of the listing body lands beyond the rows', evalPage(() => {
+    const a = document.activeElement;
+    return !!a && a !== document.body && !a.closest('.grid-row')
+      && !(a.tagName === 'INPUT' && a.type === 'checkbox');
+  }));
+  await page.click('#btn-gallery');
+  await waitFor(() => evalPage(() => !document.getElementById('gallery').classList.contains('hidden')), 4000, 'gallery face');
+  await page.focus('#gallery');
+  await page.keyboard.press('ArrowDown');
+  await sleep(60);
+  await ok('gallery tiles answer the walk, never the Tab key', evalPage(() => {
+    const g = document.getElementById('gallery');
+    const tiles = Array.from(g.querySelectorAll('.g-tile'));
+    const named = g.getAttribute('aria-activedescendant');
+    return document.activeElement === g && g.tabIndex === 0
+      && tiles.length > 0 && tiles.every((t) => t.tabIndex === -1)
+      && !!named && !!document.getElementById(named);
+  }));
+  await page.click('#btn-gallery');
+  await waitFor(() => evalPage(() => !document.getElementById('grid-body').classList.contains('hidden')), 4000, 'rows face back');
+  await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+  await sleep(80);
+  await page.locator('#menubar .mb-dd:not(.hidden) .mb-item', { hasText: /about/i }).first().click();
+  await waitFor(modalVisible, 4000, 'about modal');
+  await ok('the modal × is a pointer shortcut hidden from readers (Escape owns the verb)', evalPage(() => {
+    const x = document.querySelector('#modal-root .modal-head .x');
+    return !!x && x.getAttribute('role') === null && x.getAttribute('aria-hidden') === 'true';
+  }));
+  await closeModal();
+  await vt(/show version count icons/i);
+  await vt(/show delete marker icons/i);
+  // the toggle writes '0' when off — settings-honor asserts NULL
+  // defaults later, so the keys come out explicitly
+  await evalPage(() => {
+    localStorage.removeItem('s3b-show-versions');
+    localStorage.removeItem('s3b-show-markers');
+  });
+  await ok('row-tabs walk leaves no trace', evalPage(() =>
+    localStorage.getItem('s3b-show-versions') === null
+    && localStorage.getItem('s3b-show-markers') === null));
+});
 // ---------- settings honor walk (every control + every default) ----------
 await step('settings-honor', async () => {
   // The whole-surface companion to settings-dialog: that step proves the

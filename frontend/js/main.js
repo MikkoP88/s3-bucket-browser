@@ -3738,7 +3738,11 @@ function makeGalleryFace(cfg) {
       }, { root: wrap, rootMargin: '160px' });
     }
     for (const m of g.rows) {
-      const tile = el('button', { class: 'g-tile', type: 'button', role: 'option' });
+      // a tile is a button for the pointer grammar only: the wrap owns the
+// walk seat and names the seated tile through aria-activedescendant,
+// so tiles sit out of the Tab order — a pooled face must not grow
+// one stop per tile
+const tile = el('button', { class: 'g-tile', type: 'button', role: 'option', tabindex: '-1' });
       tile.dataset.key = m.key;
       tile.id = `${cfg.wrapId}-t${wrap.children.length}`; // the wrap’s activedescendant names the focused tile
       if (g.focusKey == null) g.focusKey = m.key;

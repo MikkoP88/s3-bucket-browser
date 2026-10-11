@@ -762,14 +762,20 @@ export class Grid {
     // focused row — the pool index never changes, only the model under it
     row.id = `${this.body.id}-r${this.pool.length}`;
     row.style.gridTemplateColumns = this.gridTemplate();
-    row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox' })));
+    // the row checkbox is pointer-only by law: a listbox option owns no
+// focusable descendants, the walk’s Space owns keyboard selection,
+// and the head’s select-all stays the one checkbox in the Tab order
+row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox', tabindex: '-1' })));
     for (const c of this.cols) {
       if (c.id === 'name') {
+        // the badges are pointer shortcuts, not buttons — the verb lives
+        // in the row context menu and the counts read as plain text; a
+        // button role with no focus path would be a lie
         row.appendChild(el('div', { class: 'gc name' },
           el('span', { class: 'icon' }),
           el('span', { class: 'tname' }),
-          el('span', { class: 'vbadge', role: 'button' }),
-          el('span', { class: 'mbadge', role: 'button' })));
+          el('span', { class: 'vbadge' }),
+          el('span', { class: 'mbadge' })));
       } else {
         // columns beyond the default four carry their values on a quiet
         // gray wash so opt-in columns read as overlay data at a glance

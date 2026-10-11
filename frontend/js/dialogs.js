@@ -470,7 +470,10 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
   },
     el('div', { class: 'modal-head' },
       el('span', { text: title }),
-      el('span', { class: 'x', text: '\u00D7', role: 'button', 'aria-label': 'Close', onclick: () => close(null) }),
+      // the × is a pointer shortcut, not a button — Escape owns the close
+// verb, and a button role with no focus path would be a lie; hidden
+// from readers so the glyph never announces as content
+el('span', { class: 'x', text: '\u00D7', 'aria-hidden': 'true', onclick: () => close(null) }),
     ),
     el('div', { class: 'modal-body' }, body),
     foot,
@@ -593,7 +596,10 @@ function openPopout({ id, title, body, buttons = [], footLeft = null, wide = fal
   },
     el('div', { class: 'modal-head' },
       el('span', { text: title }),
-      el('span', { class: 'x', text: '\u00D7', role: 'button', 'aria-label': 'Close', onclick: () => close(null) }),
+      // the × is a pointer shortcut, not a button — Escape owns the close
+// verb, and a button role with no focus path would be a lie; hidden
+// from readers so the glyph never announces as content
+el('span', { class: 'x', text: '\u00D7', 'aria-hidden': 'true', onclick: () => close(null) }),
     ),
     el('div', { class: 'modal-body' }, body),
     buttons.length || footLeft ? foot : null,
@@ -3178,7 +3184,7 @@ const GUIDE_SECTIONS = [
   ]],
   ['Keyboard & access', [
     ['Everything answers the keyboard', 'Every surface walks: the listing under the arrows, Home and End holding the ends and PgUp/PgDn paging; typing letters jumps to the first matching name on whichever face is seated — rows, tiles or the sidebar tree. The Menu key (Shift+F10 on keyboards without one) opens the verb menu of the seated row or tile on every face; an open menu walks under the arrows with Enter activating and Escape closing back to where you were; and the menu bar behaves like a desktop menubar — Tab reaches it, the arrows stride the bar, Enter opens and picks. F1 shows the full key map.'],
-    ['Spoken walking', 'Keyboard walking is announced as well as seen: every listing surface names its walked row or tile to screen readers through ARIA (aria-activedescendant — no per-row focus jumps), tree rows are treeitems carrying their level and expansion state, and the menus speak menu roles with their checked and disabled states.'],
+    ['Spoken walking', 'Keyboard walking is announced as well as seen: every listing surface names its walked row or tile to screen readers through ARIA (aria-activedescendant — no per-row focus jumps), tree rows are treeitems carrying their level and expansion state, and the menus speak menu roles with their checked and disabled states. Nothing claims buttonhood it cannot honor: the count badges and the modal close × are pointer shortcuts (their verbs live in the row context menu and the Escape key), the row checkboxes sit out of the Tab order (the walk’s Space owns selection), and the gallery tiles answer the wrap’s walk rather than the Tab key.'],
     ['Text size', 'Ctrl+= zooms in, Ctrl+- out and Ctrl+0 resets, with Ctrl+wheel stepping the same ladder — the pinch grammar. The whole interface scales together, the choice persists across boots, and floating windows keep it too.'],
     ['Sorting by keyboard', 'Every listing header sorts from the keyboard: Tab seats the column sort row (one roving stop the arrows walk), and Enter or Space sorts the seated column — ascending first, again to reverse. The search results speak the same grammar, and their header cells also carry the sort state as aria-sort for screen readers.'],
     ['Reduced motion & high contrast', 'The app honors the OS “reduce motion” setting: transitions and spinners settle instantly and skeleton loaders rest, while nothing that carries meaning depends on animation. Under Windows High Contrast (forced colors) every state keeps speaking: selections, the keyboard seat, open menus and the active guide tab paint in the system palette instead of the theme’s.'],
