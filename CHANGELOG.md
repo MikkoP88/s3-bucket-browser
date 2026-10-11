@@ -516,6 +516,43 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The gallery face survives its own five thousand** — the rows face had
+  gotten its pool pinned at five thousand while the tile face over the
+  same model still seated one button per row: the thumbnails were lazy
+  but the DOM was not, so a big bucket meant thousands of tile nodes
+  (and their listeners) in one face, and every streamed page rebuilt
+  the whole grid of them. The gallery now renders a window of the
+  model — three hundred tiles to start, grown a page at a time over
+  three append-only roads: the scroll seam (an observer over the last
+  seated tile that grows the window before the eye arrives, honest
+  only to a true crossing — the observer’s own initial
+  non-intersecting report is not one, a bug the new battery step
+  caught in the product’s first cut), the walk itself (End, a
+  type-ahead jump or an arrow past the edge grows the seat it names,
+  so the keyboard never names a tile no reader can see), and a
+  truthful strip under the tiles — a real button seated OUTSIDE the
+  listbox, the same law the search face learned — speaking how many
+  tiles are shown of how many exist with a Show more verb, hidden
+  entirely while everything fits so small worlds render byte-for-byte
+  exactly as before. Selection keeps speaking the model (select-all
+  says five thousand while the window paints its three hundred — the
+  row pool’s own law), sorting still orders the whole model, and the
+  strip paints in the results area’s idiom across fifteen languages
+  (galleryShown/galleryMore, the checker green at 534 keys). The
+  battery grows the gallery-scale step with eight oks in one run:
+  five thousand objects seeded into archive-cold, the gallery seating
+  exactly the three-hundred-tile window rather than the world, the
+  strip speaking Showing 300 of 5000 with its verb, select-all
+  painting three hundred seats while the status bar speaks the five
+  thousand, the scroll seam growing the window a page, the verb
+  growing it another page with the truth re-spoken, End growing the
+  seat to the five-thousandth tile and naming it through
+  aria-activedescendant with Home walking back to the first, and the
+  leave-clean tail returning the rows face with the tail hidden, the
+  bucket re-emptied and the preference removed. Gates: js-check OK,
+  provenance 9/9 (the main.js watermark undisturbed through every
+  node patch), the Go suite untouched by design — a frontend-only
+  round — and the full battery green at 1434/1434.
 - **The search face survives its own hits** — the scale round had
   pinned the main listing’s pool boundedness at five thousand rows, but
   the search results grid still lived the old law: it rendered every

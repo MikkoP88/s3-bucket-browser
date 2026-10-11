@@ -13789,6 +13789,84 @@ await step('big-listing', async () => {
     && document.getElementById('filter').value === ''));
 });
 
+// ---------- scale: the gallery face survives its own five thousand ----------
+await step('gallery-scale', async () => {
+  // The rows face got its pool pinned at five thousand; the tile face
+  // over the same model once seated one button per row — the DOM, not
+  // the thumbnails, was the unbounded thing. The gallery now renders a
+  // window of the model: three hundred tiles to start, the strip under
+  // the wrap speaking the whole truth, and the scroll seam, the walk
+  // and the strip’s verb growing it append-only. archive-cold hosts
+  // the world again (nothing after this step reads it; the bucket is
+  // re-emptied at the tail).
+  await evalPage(() => {
+    const objs = [];
+    for (let i = 0; i < 5000; i += 1) {
+      objs.push({ key: `file-${String(i).padStart(4, '0')}.txt`,
+        size: 100 + ((i * 137) % 900000), lastModified: Date.now() - (i + 1) * 60000,
+        storageClass: 'STANDARD' });
+    }
+    window.__shim.world.objects['archive-cold'] = objs;
+  });
+  await clickTree('archive-cold');
+  await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 5000), 8000, '5000 rows for tiles');
+  await page.click('#btn-gallery');
+  await ok('the gallery seats a window of the five thousand, not the world', waitFor(async () => evalPage(() =>
+    !document.getElementById('gallery').classList.contains('hidden')
+    && document.querySelectorAll('#gallery .g-tile').length === 300), 4000, 'window seated'));
+  await ok('the strip under the wrap speaks the whole truth with its verb', evalPage(() => {
+    const s = document.querySelector('#gallery + .g-window');
+    return !!s && !s.classList.contains('hidden')
+      && s.textContent.includes('Showing 300 of 5000')
+      && s.querySelector('button').textContent.trim() === 'Show more';
+  }));
+  // selection speaks the model while the window seats its share — the
+  // pool’s own law
+  await page.keyboard.press('Control+a');
+  await ok('select-all speaks the five thousand while the window paints its three hundred', evalPage(() =>
+    document.querySelectorAll('#gallery .g-tile.sel').length === 300
+    && (document.getElementById('status-selection').textContent || '').trim().startsWith('5000 of')));
+  await page.keyboard.press('Escape');
+  await waitFor(() => evalPage(() => document.querySelectorAll('#gallery .g-tile.sel').length === 0), 3000, 'tiles cleared');
+  // the scroll seam grows the window a page as the scroll approaches the end
+  await evalPage(() => { const g = document.getElementById('gallery'); g.scrollTop = g.scrollHeight; });
+  await ok('the scroll seam grows the window a page', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#gallery .g-tile').length === 600), 5000, 'seam growth'));
+  await evalPage(() => document.querySelector('#gallery + .g-window button').click());
+  await ok('the strip’s verb grows the window another page', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#gallery .g-tile').length === 900
+    && document.querySelector('#gallery + .g-window').textContent.includes('Showing 900 of 5000')), 5000, 'verb growth'));
+  // the walk’s far jump grows the seat to the model end and names it
+  // (the strip button owns focus after its click — re-seat the wrap first)
+  await page.focus('#gallery');
+  await page.keyboard.press('End');
+  await ok('End grows the seat to the five thousandth tile and names it', waitFor(async () => evalPage(() => {
+    const g = window.__s3bGrid;
+    const want = g.rows[4999].key;
+    const named = document.getElementById('gallery').getAttribute('aria-activedescendant');
+    const seat = named ? document.getElementById(named) : null;
+    return document.querySelectorAll('#gallery .g-tile').length === 5000
+      && g.focusKey === want && !!seat && seat.dataset.key === want && seat.classList.contains('sel');
+  }), 8000, 'end walk'));
+  await page.keyboard.press('Home');
+  await ok('Home walks back to the first tile with the seat still named', evalPage(() => {
+    const g = window.__s3bGrid;
+    const named = document.getElementById('gallery').getAttribute('aria-activedescendant');
+    const seat = named ? document.getElementById(named) : null;
+    return g.focusKey === g.rows[0].key && !!seat && seat.dataset.key === g.rows[0].key
+      && document.querySelectorAll('#gallery .g-tile').length === 5000;
+  }));
+  // leave the world canonical: rows face, tail hidden, bucket empty
+  await page.click('#btn-gallery');
+  await evalPage(() => { window.__shim.world.objects['archive-cold'] = []; });
+  await ok('gallery-scale leaves the world canonical', waitFor(async () => evalPage(() =>
+    document.getElementById('gallery').classList.contains('hidden')
+    && !document.getElementById('grid-body').classList.contains('hidden')
+    && document.querySelector('#gallery + .g-window').classList.contains('hidden')
+    && (window.__shim.world.objects['archive-cold'] || []).length === 0), 4000, 'rows back'));
+  await evalPage(() => localStorage.removeItem('s3b-gallery'));
+});
+
 // ---------- settings honor walk (every control + every default) ----------
 await step('settings-honor', async () => {
   // The whole-surface companion to settings-dialog: that step proves the

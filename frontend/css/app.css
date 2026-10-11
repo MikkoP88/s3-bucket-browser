@@ -1820,6 +1820,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* the windowed tail (.g-window): a bucket can hold more pictures than
+   the DOM should seat, so the gallery renders a window of the model —
+   the strip under the scrolling wrap speaks what is shown of what
+   exists and carries the verb that grows the seat; the scroll seam
+   grows it first */
+.g-window {
+  flex: none; display: flex; align-items: center;
+  justify-content: space-between; gap: 10px; padding: 5px 12px;
+  border-top: 1px solid var(--border); background: var(--panel);
+  font-size: 12px; color: var(--text-dim);
+}
+.g-window .btn { flex: none; padding: 2px 10px; font-size: 12px; }
+
 /* ============ inspector: the docked details panel ============ */
 /* The right edge owns it: a column beside the panes that speaks the
    selection — the row's own facts (never a round trip), quick verbs

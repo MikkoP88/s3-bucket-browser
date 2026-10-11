@@ -511,7 +511,13 @@ sources carry the
   carries them, and a small chip in the listing’s corner says what
   the buffer holds while it lives. The choice is
   a preference and persists across sessions; both views share one
-  listing, so filters and sorts speak in either.
+  listing, so filters and sorts speak in either. A bucket with more
+  pictures than any DOM should seat renders a window of the model:
+  three hundred tiles to start, a strip under the tiles speaking how
+  many are shown of how many exist with a **Show more** button that
+  grows the window, the scroll itself growing it as the end comes
+  near, and the keyboard walk growing the seat it names (selection
+  still speaks the whole model, exactly as the row pool does).
 - **Inspector** — F8, the ℹ toolbar button (the pane’s toolbar
   carries its own, both toggling the same panel) or the View menu
   seats a docked details panel on the right edge: whatever you

@@ -3666,6 +3666,13 @@ const GALLERY_THUMB_BYTES = 192 * 1024; // a thumbnail sliver of the preview bou
 const GALLERY_POOL = 4;                 // thumb reads in flight (a pool, not a stampede)
 const GALLERY_CACHE_MAX = 240;          // data URLs kept across scrolls (a sweep, not a ledger)
 
+// A bucket can hold more pictures than any DOM should seat as tiles at
+// once, so the gallery renders a window of the model: GALLERY_WINDOW
+// tiles to start, grown a page at a time by the scroll seam, the walk
+// past the edge and the strip’s own verb — append-only, never a rebuild.
+const GALLERY_WINDOW = 300;
+const GALLERY_PAGE = 300;
+
 // wireGalleryToggle is the one wiring every face shares: the toggle
 // is a preference, not a session seat — it persists beside the
 // column layouts and survives Clear All the same way.
@@ -3687,6 +3694,7 @@ function makeGalleryFace(cfg) {
     io: null,         // IntersectionObserver over the visible tiles
     queue: [],        // tiles waiting for a thumb read
     inFlight: 0,
+    cap: 0,           // the rendered window (the growth roads widen it)
   };
 
   // seatKey names one thumbnail seat: the view it lives in plus the
@@ -3697,6 +3705,34 @@ function makeGalleryFace(cfg) {
     return `${loc.kind}|${loc.source || ''}|${loc.bucket || ''}|${loc.prefix || loc.path || loc.dir || ''}|${m.key}`;
   };
 
+  // the windowed tail (.g-window): when the model outgrows the rendered
+  // window the strip under the tiles speaks the whole truth — how many
+  // tiles are shown, how many exist — and carries the verb that grows
+  // the seat. It sits OUTSIDE the listbox (a real button is not an
+  // option), a sibling under the scrolling wrap.
+  const stripText = el('span', { class: 'g-window-text' });
+  const stripBtn = el('button', { class: 'btn', type: 'button' });
+  stripBtn.addEventListener('click', () => ensure(face.cap + GALLERY_PAGE));
+  const strip = el('div', { class: 'g-window hidden' }, stripText, stripBtn);
+  $(cfg.wrapId).after(strip);
+  // the scroll seam: the last seated tile is the sentinel — when the
+  // scroll brings it near, the window grows a page, landing before the
+  // eye arrives (the strip’s verb is the keyboard’s road; the walk and
+  // a type-ahead jump grow the seat themselves)
+  const growIo = new IntersectionObserver((ents) => {
+    // the observer speaks on every registration too — the initial
+    // non-intersecting report still invokes the callback — so only a
+    // true crossing grows the window; a blind grow would feed the seam
+    // its own echo at every re-observe and seat the whole model while
+    // the scroll still sits at the top
+    if (!ents.some((en) => en.isIntersecting)) return;
+    ensure(face.cap + GALLERY_PAGE);
+  }, { root: $(cfg.wrapId), rootMargin: '800px 0px' });
+  function watchSeam() {
+    growIo.disconnect();
+    if (face.cap < cfg.gridOf().rows.length) growIo.observe($(cfg.wrapId).lastElementChild);
+  }
+
   // apply seats the tile face or the rows face. The rows head and body
   // hide (the model underneath keeps running — filters, sorts and
   // selection all still speak), and returning to rows re-locks the
@@ -3705,19 +3741,23 @@ function makeGalleryFace(cfg) {
     const g = cfg.gridOf();
     $(cfg.btnId).setAttribute('aria-pressed', face.on ? 'true' : 'false');
     $(cfg.wrapId).classList.toggle('hidden', !face.on);
+    strip.classList.toggle('hidden', !face.on); // the tail hides with the face (render speaks the fits case)
     g.headClip.classList.toggle('hidden', face.on);
     g.body.classList.toggle('hidden', face.on);
     if (face.on) render();
     else { g.syncHeadWidth(); g.syncHeadScroll(); g.positionHandles(); }
   }
 
-  // render builds the tiles from the live rows model — every model
-  // change (data, filter, sort, selection prune) re-seats them through
-  // the on.model hook. Image tiles start as glyphs and fetch their
-  // sliver lazily as they scroll into view.
+  // render builds the windowed tile face from the live rows model —
+  // every model change (data, filter, sort, selection prune) re-seats
+  // it through the on.model hook, and a fresh model re-arms the window:
+  // the DOM seats GALLERY_WINDOW tiles to start while the strip under
+  // them speaks the whole truth, the growth roads extending it
+  // append-only. Image tiles start as glyphs and fetch their sliver
+  // lazily as they scroll into view.
   function render() {
     const g = cfg.gridOf();
-    const seq = ++face.seq;
+    ++face.seq;
     face.queue.length = 0;
     // a fresh model forgets the cached misses: a thumb a transient fault
     // starved retries on the next seating, while the hits stay instant
@@ -3726,6 +3766,7 @@ function makeGalleryFace(cfg) {
     const wrap = $(cfg.wrapId);
     wrap.replaceChildren();
     wrap.removeAttribute('aria-activedescendant'); // an emptied face names nothing
+    face.cap = Math.min(g.rows.length, GALLERY_WINDOW);
     if (!face.on) return;
     if (!face.io) {
       face.io = new IntersectionObserver((ents) => {
@@ -3737,14 +3778,28 @@ function makeGalleryFace(cfg) {
         }
       }, { root: wrap, rootMargin: '160px' });
     }
-    for (const m of g.rows) {
+    buildTiles(0, face.cap);
+    watchSeam();
+    syncStrip();
+    syncSel(); // the fresh tiles carry selection and the named focus
+  }
+
+  // buildTiles seats rows [from, to) of the model — the one law the
+  // first render and every growth road share, so a window widened by
+  // the seam, the walk or the verb never rebuilds what is already
+  // seated.
+  function buildTiles(from, to) {
+    const g = cfg.gridOf();
+    const wrap = $(cfg.wrapId);
+    for (let i = from; i < to; i += 1) {
+      const m = g.rows[i];
       // a tile is a button for the pointer grammar only: the wrap owns the
-// walk seat and names the seated tile through aria-activedescendant,
-// so tiles sit out of the Tab order — a pooled face must not grow
-// one stop per tile
-const tile = el('button', { class: 'g-tile', type: 'button', role: 'option', tabindex: '-1' });
+      // walk seat and names the seated tile through aria-activedescendant,
+      // so tiles sit out of the Tab order — a windowed face must not grow
+      // one stop per tile
+      const tile = el('button', { class: 'g-tile', type: 'button', role: 'option', tabindex: '-1' });
       tile.dataset.key = m.key;
-      tile.id = `${cfg.wrapId}-t${wrap.children.length}`; // the wrap’s activedescendant names the focused tile
+      tile.id = `${cfg.wrapId}-t${i}`; // the wrap’s activedescendant names the focused tile
       if (g.focusKey == null) g.focusKey = m.key;
       const sel = g.sel.has(m.key);
       tile.classList.toggle('sel', sel);
@@ -3815,7 +3870,38 @@ const tile = el('button', { class: 'g-tile', type: 'button', role: 'option', tab
       }
       wrap.appendChild(tile);
     }
-    syncSel(); // the fresh tiles carry selection and the named focus
+  }
+
+  // ensure seats at least n tiles, append-only: the growth roads (the
+  // scroll seam’s observer, the walk or a type-ahead jump past the
+  // edge, the strip’s own verb) widen the window without a re-render —
+  // a wider window is not a model change — rounding up to a whole page
+  // so a far walk lands on a page boundary.
+  function ensure(n) {
+    if (!face.on || n <= face.cap) return;
+    const g = cfg.gridOf();
+    const target = Math.min(g.rows.length, Math.ceil(n / GALLERY_PAGE) * GALLERY_PAGE);
+    if (target <= face.cap) return;
+    const wrap = $(cfg.wrapId);
+    const seated = wrap.querySelectorAll('.g-tile').length;
+    face.cap = target;
+    buildTiles(seated, Math.min(target, g.rows.length));
+    watchSeam();
+    syncStrip();
+  }
+
+  // syncStrip speaks the window’s own truth: hidden while everything
+  // fits — a small world renders whole, exactly the old law — naming
+  // what is shown of what exists the moment it does not.
+  function syncStrip() {
+    if (!face.on) { strip.classList.add('hidden'); return; }
+    const g = cfg.gridOf();
+    const shown = Math.min(g.rows.length, face.cap);
+    if (shown < g.rows.length) {
+      stripText.textContent = t('galleryShown', { shown, total: g.rows.length });
+      stripBtn.textContent = t('galleryMore');
+      strip.classList.remove('hidden');
+    } else strip.classList.add('hidden');
   }
 
   function seatThumb(thumb, url) {
@@ -3927,6 +4013,7 @@ const tile = el('button', { class: 'g-tile', type: 'button', role: 'option', tab
   face.apply = apply;
   face.render = render;
   face.syncSel = syncSel;
+  face.ensure = ensure; // the walk and a type-ahead jump grow the window through it
   face.owns = () => face.on && !$(cfg.wrapId).classList.contains('hidden');
   return face;
 }
@@ -4044,8 +4131,9 @@ function tileWalk(wrapId, face, g, e) {
           g.sel.add(rows[i].key);
           g.focusKey = rows[i].key;
           g.anchorKey = rows[i].key;
+          face.ensure(i + 1); // a jump past the window grows the seat
           face.syncSel();
-          const tile = tiles[i];
+          const tile = $(wrapId).children[i];
           if (tile) tile.scrollIntoView({ block: 'nearest' });
           g.on.select?.(g.selectedRows());
         }
@@ -4060,8 +4148,9 @@ function tileWalk(wrapId, face, g, e) {
   g.sel.add(rows[ni].key);
   g.focusKey = rows[ni].key;
   g.anchorKey = rows[ni].key;
+  face.ensure(ni + 1); // a walk past the window grows the seat it names
   face.syncSel();
-  const tile = tiles[ni];
+  const tile = $(wrapId).children[ni];
   if (tile) tile.scrollIntoView({ block: 'nearest' });
   g.on.select?.(g.selectedRows());
   return true;
