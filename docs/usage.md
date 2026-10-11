@@ -937,6 +937,7 @@ you'll use daily:
 | Ctrl+S | save workspace profile |
 | F1 | help (in-app guide + key map) |
 | Menu / Shift+F10 | open the context menu of the seated row or tile |
+| Tree: arrows / Enter / Space / Menu | walk the tree, expand and fold, navigate, open the row’s verb menu |
 
 Keyboard walking is spoken as well as seen: every listing surface —
 the rows, both gallery faces, the search results, the tree — exposes
@@ -952,6 +953,14 @@ tile on every face, an open menu seats focus on its first enabled
 item, the arrows walk it (Enter activates, Escape closes and
 returns focus to where you were), and ArrowRight / ArrowLeft open
 and fold the cascade flyouts.
+
+The sidebar tree is a keyboard surface of its own: click into it
+(or Tab to it) and the arrows walk the visible rows — Right
+expands a folder (an unloaded one loads it, the road a
+double-click owns) and walks into an open one, Left folds an open
+folder or climbs to the parent of a collapsed one, Enter
+navigates, Space toggles, and typing jumps by name prefix with
+the buffer chip pinned to the tree.
 
 ---
 

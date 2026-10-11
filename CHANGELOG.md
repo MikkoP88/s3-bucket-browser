@@ -516,6 +516,34 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The tree answers the keyboard** — the sidebar tree becomes a
+  focus surface of its own (the container carries the seat,
+  `tabindex` beside its `role="tree"`) and the walk grammar is the
+  tree’s own hierarchy: ArrowDown and ArrowUp stride the flat
+  visible order, ArrowRight expands a collapsed folder — an
+  unloaded one too, the same road a double-click and a click’s
+  reveal own — and walks into an open one’s first child,
+  ArrowLeft folds an open folder and climbs from a collapsed one
+  onto its parent, Home and End hold the ends, Enter navigates the
+  walked row exactly the way a click does, Space toggles expansion,
+  and the Menu key (Shift+F10) opens the row’s verb menu with the
+  row itself as the anchor (openMenu seats an element by its rect,
+  so the menu lands beside the row with no pointer there). The walk
+  paints its seat with the focused-row grammar the grid rows own
+  and names it through the container’s `aria-activedescendant`
+  (the rows already spoke treeitem, level and expansion; now the
+  tree says which one is seated), and navigation itself is a focus
+  move: `markCurrent` seats the walk on the current row through
+  every road that lands one (a click, Enter, a reveal from the
+  grid) — one choke point, the naming law the grids own.
+  Type-ahead joins the tree as the last face: the same 600ms
+  case-folded prefix buffer jumps the walk by label with the chip
+  pinned to the tree’s corner, and a refined miss holds the seat
+  with the keys kept for the next letter. Every key the walk
+  handles is stopped on the tree’s own listener — the listing
+  walk on the document chain never moves under a tree seat — and
+  a click on a tree row leaves focus on the tree, so a focused
+  tree owns its typing the way every focused surface does.
 
 ### Fixed
 

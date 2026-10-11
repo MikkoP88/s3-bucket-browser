@@ -322,6 +322,7 @@ svg.flip { transform: scaleX(-1); }
 }
 .tnode:hover { background: var(--hover); }
 .tnode.sel { background: var(--sel); }
+.tnode.focus { background: var(--sel-focus); }
 .tnode.drop-target { background: var(--accent-soft); outline: 1px dashed var(--accent); }
 .tnode .twist { width: 14px; text-align: center; color: var(--text-dim); flex: none; font-size: 9px; }
 /* the type slot is content-sized, not a shared column: each row parks

@@ -12341,6 +12341,10 @@ await step('typeahead', async () => {
   await evalPage(() => { if (!document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
   await waitFor(() => evalPage(() => document.getElementById('gallery').classList.contains('hidden')
     && window.__s3bGrid.rows.length === 7), 4000, 'typeahead rows seated');
+  // seat the grid before typing: navObjects clicks a TREE row, and the
+  // tree is a focus surface now — its own type-ahead owns the keys a
+  // click there leaves behind (the per-surface law)
+  await page.focus('#grid-body');
   await page.keyboard.press('r');
   await ok('typing jumps the rows to the first matching name',
     (await mainFocus()) === 'reports/');
@@ -12715,6 +12719,152 @@ await step('menu-keys', async () => {
   await page.click('#local-btn-close');
   await sleep(200);
   await evalPage(() => { localStorage.removeItem('s3b-gallery'); localStorage.removeItem('s3b-gallery-pane'); });
+});
+
+// ---------- the tree answers the keyboard: walk, expand, menus ----------
+await step('tree-keys', async () => {
+  // The tree is a keyboard surface: the container is one focus seat,
+  // the arrows walk the visible rows (Right expands then walks in, Left
+  // folds then climbs to the parent), Enter navigates, Space toggles,
+  // the Menu key opens the walked row’s verb menu with the row as the
+  // anchor, type-ahead jumps by label prefix with the chip pinned to
+  // the tree, and no key the walk handles ever reaches the grid below
+  // the document chain. Leaves the world canonical (objects view
+  // team-files root, rows face, pane closed).
+  const seatInfo = () => evalPage(() => {
+    const c = document.getElementById('tree');
+    const id = c.getAttribute('aria-activedescendant');
+    const r = id ? document.getElementById(id) : null;
+    return {
+      named: !!r && r.classList.contains('focus'),
+      label: r ? ((r.querySelector('.tlabel') || {}).textContent || '') : '',
+      exp: r ? r.getAttribute('aria-expanded') : null,
+      role: r ? r.getAttribute('role') : null,
+      level: r ? r.getAttribute('aria-level') : null,
+      tid: r ? r.dataset.tid : null,
+    };
+  });
+  const gridState = () => evalPage(() => ({ sel: window.__s3bGrid.sel.size, focus: window.__s3bGrid.focusKey }));
+  const walkToTree = async (label) => {
+    for (let i = 0; i < 20; i++) {
+      const s = await seatInfo();
+      if (s.label === label) return;
+      await page.keyboard.press('ArrowDown');
+      await sleep(30);
+    }
+    throw new Error(`tree walk never reached ${label}`);
+  };
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'tree-keys objects');
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for tree-keys');
+  // normalize the tree: fold everything so the walk pays its own way
+  await evalPage(() => window.__s3bTree.collapseAll());
+  await sleep(150);
+  const g0 = await gridState();
+  await page.focus('#tree');
+  await ok('focusing the tree seats the walk on the current row',
+    waitFor(async () => {
+      const s = await seatInfo();
+      return s.named && s.label === 'team-files' && s.role === 'treeitem' && s.level === '1';
+    }, 4000, 'tree seat on focus'));
+  await page.keyboard.press('ArrowRight');
+  await ok('ArrowRight expands the seated source into its folders',
+    waitFor(async () => {
+      const s = await seatInfo();
+      const rows = await evalPage(() => document.querySelectorAll('#tree .tnode').length);
+      return s.label === 'team-files' && s.exp === 'true' && rows > 1;
+    }, 4000, 'tree expanded'));
+  await walkToTree('docs');
+  await ok('ArrowDown walks the visible rows onto docs at its level',
+    waitFor(async () => {
+      const s = await seatInfo();
+      return s.label === 'docs' && s.level === '2' && s.named;
+    }, 4000, 'walked to docs'));
+  await page.keyboard.press('ArrowLeft');
+  await ok('ArrowLeft climbs from a collapsed folder onto its parent',
+    waitFor(async () => (await seatInfo()).label === 'team-files', 4000, 'climbed to parent'));
+  await walkToTree('docs');
+  await page.keyboard.press('ArrowRight');
+  await ok('ArrowRight expands the walked folder',
+    waitFor(async () => {
+      const s = await seatInfo();
+      return s.label === 'docs' && s.exp === 'true';
+    }, 4000, 'docs expanded'));
+  await page.keyboard.press('ArrowLeft');
+  await ok('ArrowLeft folds the open folder back onto itself',
+    waitFor(async () => {
+      const s = await seatInfo();
+      return s.label === 'docs' && s.exp === 'false';
+    }, 4000, 'docs folded'));
+  const gMid = await gridState();
+  await ok('the walk never moved the grid below the document chain',
+    waitFor(async () => {
+      const g = await gridState();
+      return g.sel === g0.sel && g.focus === g0.focus;
+    }, 1000, 'grid unmoved'));
+  await page.keyboard.press('Enter');
+  await ok('Enter navigates the walked folder the way a click does',
+    waitFor(async () => {
+      const s = await seatInfo();
+      const crumb = await evalPage(() => document.getElementById('breadcrumb').textContent);
+      return s.label === 'docs' && s.named && /docs/.test(crumb);
+    }, 6000, 'enter navigated'));
+  await page.keyboard.press('ContextMenu');
+  await ok('the Menu key opens the walked row’s verb menu beside the row',
+    waitFor(async () => {
+      const up = await evalPage(() => {
+        const m = document.getElementById('ctxmenu');
+        if (!m || m.classList.contains('hidden')) return false;
+        const a = document.activeElement;
+        return !!(a && a.closest && a.closest('#ctxmenu') && a.classList.contains('item'));
+      });
+      if (!up) return false;
+      const t = await evalPage(() => (document.activeElement.textContent || '').trim());
+      return /^open/i.test(t);
+    }, 4000, 'tree menu open'));
+  await page.keyboard.press('Escape');
+  await ok('the closed tree menu hands the focus back to the tree',
+    waitFor(async () => (await evalPage(() => document.getElementById('ctxmenu').classList.contains('hidden')))
+      && (await evalPage(() => document.activeElement === document.getElementById('tree'))), 4000, 'tree focus home'));
+  await page.keyboard.press('r');
+  await ok('type-ahead jumps the walk by label prefix',
+    waitFor(async () => {
+      const s = await seatInfo();
+      return /^r/i.test(s.label) && s.named;
+    }, 4000, 'typeahead jumped'));
+  await ok('the buffer chip follows the tree seat',
+    waitFor(() => evalPage(() => {
+      const c = document.getElementById('ta-hint');
+      return c ? c.textContent : '';
+    }).then((t) => t === 'r'), 4000, 'chip says r'));
+  await sleep(650);
+  await ok('the buffer expires and the chip leaves while the seat stands',
+    waitFor(async () => {
+      const gone = await evalPage(() => !document.getElementById('ta-hint'));
+      const s = await seatInfo();
+      return gone && /^r/i.test(s.label);
+    }, 4000, 'chip expired'));
+  await page.keyboard.press('End');
+  await ok('End seats the last visible row',
+    waitFor(async () => {
+      const last = await evalPage(() => {
+        const rs = [...document.querySelectorAll('#tree .tnode')];
+        return rs[rs.length - 1].dataset.tid;
+      });
+      const s = await seatInfo();
+      return s.tid === last;
+    }, 4000, 'end seated'));
+  await page.keyboard.press('Home');
+  await ok('Home seats the first visible row',
+    waitFor(async () => {
+      const first = await evalPage(() => document.querySelector('#tree .tnode').dataset.tid);
+      const s = await seatInfo();
+      return s.tid === first;
+    }, 4000, 'home seated'));
+  // leave the world canonical
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'tree-keys world restored');
 });
 
 // ---------- the inspector: the docked details panel ----------

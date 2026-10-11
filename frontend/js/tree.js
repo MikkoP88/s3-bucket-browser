@@ -19,7 +19,7 @@ export class Tree {
   // onFilterStatus({walking, scanning}) reports the deep-walk state so the
   // side footer can show progress and a Stop control; onRender() fires
   // after every render so the footer can recount the rows it just drew.
-  constructor({ onNavigate, onDropTo, onContext, guardOf, onGuardClick, onBuckets, onFilterStatus, onRender }) {
+  constructor({ onNavigate, onDropTo, onContext, guardOf, onGuardClick, onBuckets, onFilterStatus, onRender, onTypeahead }) {
     this.container = document.getElementById('tree');
     this.onNavigate = onNavigate;
     this.onDropTo = onDropTo;
@@ -29,6 +29,7 @@ export class Tree {
     this.onBuckets = onBuckets;
     this.onFilterStatus = onFilterStatus;
     this.onRender = onRender;
+    this.onTypeahead = onTypeahead;
     this.nodes = new Map(); // id -> node
     this.currentId = null;
     this.status = new Map(); // source name -> 'ok' | 'error' | 'busy'
@@ -46,6 +47,19 @@ export class Tree {
     this.visibleSet = null;
     this.visibleCount = 0;
     this.loading = new Set(); // node ids with a listing in flight
+    // keyboard walk state: walkId is the walked node (the tree’s
+    // focusKey — the seat the arrows move, named through the
+    // container’s aria-activedescendant), plus the type-ahead buffer
+    // every listing face owns
+    this.walkId = null;
+    this.taBuf = '';
+    this.taTimer = 0;
+    // the tree is a keyboard surface: the container is the focus seat
+    // (tabindex in the markup) and owns the walk grammar below — the
+    // listener sits under the document chain and stops every key it
+    // handles, so the grid walk never moves under a tree seat
+    this.container.addEventListener('keydown', (e) => this.keydown(e));
+    this.container.addEventListener('focusin', () => this.ensureSeat());
   }
 
   nodeKey(source, bucket, prefix) { return `bkt:${source}:${bucket}:${prefix}`; }
@@ -453,6 +467,147 @@ export class Tree {
     this.render();
   }
 
+  // ========================= the keyboard walk =========================
+  // The tree answers the keyboard the way every listing face does: the
+  // container is one focus seat (tabindex in the markup) and the walk
+  // moves a painted row — never per-row DOM focus — with the
+  // container naming the walked row through aria-activedescendant so
+  // the reader speaks the seat. The grammar is the tree’s own
+  // hierarchy: Down and Up stride the flat visible order, ArrowRight
+  // expands a collapsed folder and walks into an open one, ArrowLeft
+  // folds an open folder and climbs to the parent of a collapsed one,
+  // Enter navigates the row the way a click does, Space toggles
+  // expansion, the Menu key (Shift+F10) opens the row’s verb menu
+  // with the row itself as the anchor, and the type-ahead buffer
+  // jumps by label prefix — the same law every face owns.
+
+  visibleRows() {
+    return [...this.container.children].filter((r) => r.classList.contains('tnode'));
+  }
+
+  walkRow() {
+    return this.visibleRows().find((r) => r.dataset.tid === this.walkId) || null;
+  }
+
+  // ensureSeat seats the walk when it has no rendered row: the current
+  // row first (focus follows navigation), else the first visible row
+  ensureSeat() {
+    if (this.walkRow()) return;
+    const rows = this.visibleRows();
+    if (!rows.length) return;
+    this.seat(rows.find((r) => r.dataset.tid === this.currentId) || rows[0]);
+  }
+
+  seat(row) {
+    const prev = this.walkRow();
+    if (prev) prev.classList.remove('focus');
+    this.walkId = row.dataset.tid;
+    row.classList.add('focus');
+    this.container.setAttribute('aria-activedescendant', row.id);
+    row.scrollIntoView({ block: 'nearest' });
+  }
+
+  // typeFeed folds one typed letter into the buffer (600ms past the
+  // last key, case-folded, prefix on the label) and jumps to the next
+  // visible match from the seat — a miss holds the seat and keeps
+  // the keys for the next letter
+  typeFeed(ch, rows, from) {
+    this.taBuf = (this.taBuf + ch).toLowerCase().slice(-64);
+    clearTimeout(this.taTimer);
+    this.taTimer = setTimeout(() => {
+      this.taBuf = '';
+      this.onTypeahead?.('');
+    }, 600);
+    const labels = rows.map((r) => {
+      const nd = this.nodes.get(r.dataset.tid);
+      return nd ? nd.label.toLowerCase() : '';
+    });
+    for (let k = 1; k <= rows.length; k++) {
+      const j = (from + k) % rows.length;
+      if (labels[j].startsWith(this.taBuf)) { this.seat(rows[j]); break; }
+    }
+    this.onTypeahead?.(this.taBuf);
+  }
+
+  keydown(e) {
+    // modified keys are the app’s own (the Alt+arrow history walk
+    // rides the document chain above this listener) — pass them through
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const rows = this.visibleRows();
+    if (!rows.length) return;
+    this.ensureSeat();
+    const row = this.walkRow();
+    if (!row) return;
+    const i = rows.indexOf(row);
+    const n = this.nodes.get(row.dataset.tid);
+    if (!n) return;
+    const filtered = !!this.visibleSet;
+    const open = filtered ? !this.filterCollapsed.has(n.id) : n.expanded;
+    const hasKids = n.loaded && n.children.length > 0;
+    const expandable = hasKids || open; // the twist-visibility law
+    // ...but the keyboard keeps the pointer’s own expand roads: a click
+    // reveals (loads) and a double-click expands an unloaded folder, so
+    // ArrowRight owes the same parity — gated on the kinds loadChildren
+    // can fill (the menu-wiring predicate)
+    const loadable = n.bucket !== undefined || n.kind === 'rdir' || n.kind === 'source';
+    const toggle = (wantOpen) => {
+      // the twist click’s own body, routed from the keyboard
+      if (filtered) {
+        if (wantOpen) {
+          this.filterCollapsed.delete(n.id);
+          if (!n.loaded) this.loadChildren(n).then(() => this.render()).catch(() => {});
+        } else this.filterCollapsed.add(n.id);
+        this.render();
+      } else if (wantOpen) this.expand(n.id);
+      else this.collapse(n.id);
+    };
+    let handled = true;
+    switch (e.key) {
+      case 'ArrowDown': if (i < rows.length - 1) this.seat(rows[i + 1]); break;
+      case 'ArrowUp': if (i > 0) this.seat(rows[i - 1]); break;
+      case 'Home': this.seat(rows[0]); break;
+      case 'End': this.seat(rows[rows.length - 1]); break;
+      case 'ArrowRight': {
+        if (!expandable && !loadable) break; // a leaf keeps its seat — the key is still consumed
+        if (!open) toggle(true);
+        else {
+          const nx = rows[i + 1];
+          const nn = nx && this.nodes.get(nx.dataset.tid);
+          if (nn && nn.level > n.level) this.seat(nx); // the first child
+        }
+        break;
+      }
+      case 'ArrowLeft': {
+        if (open) { toggle(false); break; }
+        // climb: the nearest preceding row shallower than this one
+        let p = i - 1;
+        while (p >= 0) {
+          const pn = this.nodes.get(rows[p].dataset.tid);
+          if (pn && pn.level < n.level) { this.seat(rows[p]); break; }
+          p--;
+        }
+        break;
+      }
+      case 'Enter': this.navigate(n); break;
+      case ' ': case 'Spacebar': if (expandable || loadable) toggle(!open); break;
+      case 'ContextMenu':
+      case 'F10': {
+        if (e.key === 'F10' && !e.shiftKey) { handled = false; break; }
+        // the verb menu the right-click opens, the row itself the
+        // anchor (openMenu seats an element by its rect — the menu
+        // lands beside the row because there is no pointer there)
+        if (n.bucket !== undefined || n.kind === 'rdir' || n.kind === 'source') {
+          this.onContext?.(row, n);
+        }
+        break;
+      }
+      default:
+        if (e.key.length === 1) this.typeFeed(e.key, rows, i);
+        else handled = false;
+    }
+    if (handled) { e.preventDefault(); e.stopPropagation(); }
+  }
+
   markCurrent(loc) {
     if (loc && loc.kind === 'buckets') {
       this.currentId = loc.source ? this.srcKey(loc.source) : null;
@@ -469,6 +624,10 @@ export class Tree {
     } else {
       this.currentId = null;
     }
+    // navigation IS a focus move: the walk seat follows the current
+    // row through every road that seats it (a click, Enter, a reveal
+    // from the grid) — one choke point, the naming law the grids own
+    this.walkId = this.currentId;
     this.render();
   }
 
@@ -524,6 +683,12 @@ export class Tree {
       for (const r of roots) this.container.appendChild(this.renderNode(r));
       this.visibleCount = this.container.querySelectorAll('.tnode').length;
     }
+    // the container names the walked row the way every listing body
+    // does — the reader speaks the seat the walk or the navigation
+    // last seated
+    const wr = this.walkRow();
+    if (wr) this.container.setAttribute('aria-activedescendant', wr.id);
+    else this.container.removeAttribute('aria-activedescendant');
     this.onRender?.();
   }
 
@@ -603,7 +768,7 @@ export class Tree {
       ticon.appendChild(srcIconEl(n.stype, n.color));
     } else ticon.textContent = n.kind === 'rdir' ? '\u{1F4C1}' : n.prefix === '' ? '\u{1F5C0}' : '\u{1F4C1}';
     const row = el('div', {
-      class: `tnode${this.currentId === n.id ? ' sel' : ''}${filtered && !this.filter(n.label) ? ' dim' : ''}`,
+      class: `tnode${this.currentId === n.id ? ' sel' : ''}${n.id === this.walkId ? ' focus' : ''}${filtered && !this.filter(n.label) ? ' dim' : ''}`,
       style: `padding-left:${8 + n.level * 14}px`,
       // the tree is a flat DOM (depth is padding), so the treeitems
       // carry their own level and only expandable nodes claim expansion
@@ -628,6 +793,8 @@ export class Tree {
     // main.js resolves the node under the cursor from these). Attributes
     // are set only when defined — dataset assignment stringifies
     // undefined into "undefined" otherwise.
+    row.id = `tn-${n.id}`; // the activedescendant idref — id-keyed, stable across renders
+    row.dataset.tid = n.id; // the keyboard walk’s row→node map
     row.dataset.tkind = n.kind;
     if (n.bucket !== undefined) row.dataset.bucket = n.bucket;
     if (n.prefix !== undefined) row.dataset.prefix = n.prefix;

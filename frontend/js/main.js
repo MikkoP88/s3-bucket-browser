@@ -67,7 +67,9 @@ const tree = new Tree({
   onBuckets: (source, names) => ensureGuards(source, names),
   onFilterStatus: (st) => updateSideFoot(st.walking ? st.scanning : undefined),
   onRender: () => updateSideFoot(),
+  onTypeahead: (buf) => taChip(buf, $('tree')),
 });
+window.__s3bTree = tree; // battery handle: gui-visual drives the tree directly
 const logArea = createLogArea();
 
 setCommandContext({
