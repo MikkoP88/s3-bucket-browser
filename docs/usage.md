@@ -937,6 +937,14 @@ you'll use daily:
 | Ctrl+S | save workspace profile |
 | F1 | help (in-app guide + key map) |
 
+Keyboard walking is spoken as well as seen: every listing surface —
+the rows, both gallery faces, the search results, the tree — exposes
+its focused or selected item to screen readers through ARIA. The
+grids name the walked row or tile via `aria-activedescendant` (no
+per-row focus jumps), and the tree’s rows are `treeitem`s carrying
+their level and expansion state, so assistive technology announces
+the seat the keyboard moves to.
+
 ---
 
 ## 9. CLI quick reference

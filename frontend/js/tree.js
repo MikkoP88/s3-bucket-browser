@@ -605,6 +605,11 @@ export class Tree {
     const row = el('div', {
       class: `tnode${this.currentId === n.id ? ' sel' : ''}${filtered && !this.filter(n.label) ? ' dim' : ''}`,
       style: `padding-left:${8 + n.level * 14}px`,
+      // the tree is a flat DOM (depth is padding), so the treeitems
+      // carry their own level and only expandable nodes claim expansion
+      role: 'treeitem',
+      'aria-level': String(n.level + 1),
+      'aria-expanded': hasKids || open ? (open ? 'true' : 'false') : undefined,
       title: n.kind === 'source'
         ? (n.bucket !== undefined ? `${n.label} (s3 — bucket ${n.bucket})` : `${n.label} (${n.stype})`)
         : undefined,

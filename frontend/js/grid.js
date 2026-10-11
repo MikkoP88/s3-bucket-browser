@@ -687,6 +687,9 @@ export class Grid {
   // makeRow builds one pooled row against the current columns.
   makeRow() {
     const row = el('div', { class: 'grid-row', draggable: 'true', role: 'option' });
+    // a stable pool id lets the body’s aria-activedescendant name the
+    // focused row — the pool index never changes, only the model under it
+    row.id = `${this.body.id}-r${this.pool.length}`;
     row.style.gridTemplateColumns = this.gridTemplate();
     row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox' })));
     for (const c of this.cols) {
@@ -716,6 +719,7 @@ export class Grid {
     const last = Math.min(total - 1, Math.ceil((scrollTop + h) / ROW_H) + OVERSCAN);
 
     // recycle pool
+    let focusRowId = null; // the pool row holding focusKey, for activedescendant
     const need = Math.max(0, last - first + 1);
     while (this.pool.length < need) {
       const row = this.makeRow();
@@ -734,6 +738,7 @@ export class Grid {
       row.classList.toggle('focus', m.key === this.focusKey);
       row.classList.toggle('ghost', !!(m.ghost || m.dimmed));
       row.setAttribute('aria-selected', this.sel.has(m.key) ? 'true' : 'false');
+      if (m.key === this.focusKey) focusRowId = row.id;
       row.dataset.cmp = m.cmp || '';
       const cells = row.children;
       const cb = cells[0].children[0];
@@ -778,6 +783,12 @@ export class Grid {
         }
       }
     }
+    // aria-activedescendant names the focused row so assistive tech speaks
+    // the seat without per-row DOM focus — the walk, the click, the
+    // type-ahead jump and the drag all render, so this one write covers
+    // every path that can move focus
+    if (focusRowId) this.body.setAttribute('aria-activedescendant', focusRowId);
+    else this.body.removeAttribute('aria-activedescendant');
     // header checkbox reflects the full selection state
     if (this.headCb) {
       const n = this.rows.length;

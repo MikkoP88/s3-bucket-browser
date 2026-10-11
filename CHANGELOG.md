@@ -478,6 +478,21 @@ follow [Semantic Versioning](https://semver.org/).
   gallery answers a typed letter while the main view’s selection
   stands still, the pane rows answer through their own body, and
   the chip sits over the right listing each time.
+- **The walk speaks: screen readers name the seat** — every
+  walkable surface now carries `aria-activedescendant` naming the
+  row or tile the keyboard walk, the click, the type-ahead jump or
+  the drag last seated: the rows body (ids minted on the stable
+  pool position, so recycling never mints a new name), both gallery
+  wraps (the tile position, maintained by the same sync that paints
+  selection), and the search results list (the hit position, kept
+  honest through both the in-place click patch and the
+  re-rendering walk) — a screen reader speaks the listing the way
+  the status bar reads it, with no per-row DOM focus moved or
+  stolen. The tree joins the semantics its role always promised:
+  each flat row a `treeitem` carrying its own `aria-level` and an
+  `aria-expanded` that claims expansion only where the twist
+  itself does (an unloaded folder stays silent the way its hidden
+  twist is).
 
 ### Fixed
 

@@ -12408,6 +12408,159 @@ await step('typeahead', async () => {
   await evalPage(() => { localStorage.removeItem('s3b-gallery'); localStorage.removeItem('s3b-gallery-pane'); });
 });
 
+// ---------- the walk speaks: aria names the seat ----------
+await step('a11y-voice', async () => {
+  // Every walkable surface names its seat — the rows body, both gallery
+  // wraps and the search results list carry aria-activedescendant
+  // pointing at the focused/selected row or tile (ids minted on the
+  // pool position, the tile position, the hit position), and the tree’s
+  // flat rows speak treeitem semantics (role, level, expansion). Leaves
+  // the world canonical: rows face, pane closed, popout closed, no
+  // preferences seated, the docs folder folded.
+  const S = '#popout-root .popout[data-pop="search"]';
+  await navObjects('team-files');
+  await resetCalls();
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed for a11y');
+  await page.focus('#grid-body');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowDown');
+  await ok('the rows body names the row the walk seats',
+    await evalPage(() => {
+      const body = document.getElementById('grid-body');
+      const id = body.getAttribute('aria-activedescendant');
+      const row = id && document.getElementById(id);
+      return !!row && body.contains(row) && row.getAttribute('role') === 'option'
+        && row._model && row._model.key === 'photos/' && row.classList.contains('focus');
+    }));
+  await evalPage(() => {
+    const row = [...document.querySelectorAll('#grid-body .grid-row')].find((r) => r._model && r._model.key === 'readme.md');
+    if (row) row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+  });
+  await ok('a mouse press names its row',
+    await evalPage(() => {
+      const id = document.getElementById('grid-body').getAttribute('aria-activedescendant');
+      const row = id && document.getElementById(id);
+      return !!row && row._model && row._model.key === 'readme.md';
+    }));
+  await page.keyboard.press('Escape');
+  await ok('clearing the selection clears the name',
+    (await evalPage(() => document.getElementById('grid-body').getAttribute('aria-activedescendant'))) === null);
+  await evalPage(() => { if (document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => !document.getElementById('gallery').classList.contains('hidden')
+    && document.querySelectorAll('#gallery .g-tile').length === 7), 4000, 'a11y tiles seated');
+  await page.focus('#gallery');
+  await page.keyboard.press('Home');
+  await ok('the gallery wrap names the tile the walk seats',
+    await evalPage(() => {
+      const id = document.getElementById('gallery').getAttribute('aria-activedescendant');
+      const t = id && document.getElementById(id);
+      return !!t && t.classList.contains('g-tile') && t.parentElement === document.getElementById('gallery')
+        && t.dataset.key === 'docs/' && t.getAttribute('aria-selected') === 'true';
+    }));
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'a11y pane root rows');
+  await page.focus('#local-grid-body');
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowDown');
+  await ok('the pane rows body names its own walked row',
+    await evalPage(() => {
+      const body = document.getElementById('local-grid-body');
+      const id = body.getAttribute('aria-activedescendant');
+      const row = id && document.getElementById(id);
+      return !!row && body.contains(row) && row._model && row._model.key === 'photos/';
+    }));
+  await evalPage(() => {
+    if (document.getElementById('local-btn-gallery').getAttribute('aria-pressed') !== 'true') document.getElementById('local-btn-gallery').click();
+  });
+  await waitFor(() => evalPage(() => !document.getElementById('local-gallery').classList.contains('hidden')
+    && document.querySelectorAll('#local-gallery .g-tile').length === 7), 4000, 'a11y pane tiles');
+  await evalPage(() => { const t = document.querySelector('#local-gallery .g-tile'); t.click(); t.focus(); });
+  await page.keyboard.press('ArrowRight');
+  await ok('the pane gallery names its walked tile while the main stands still',
+    await evalPage(() => {
+      const pid = document.getElementById('local-gallery').getAttribute('aria-activedescendant');
+      const pt = pid && document.getElementById(pid);
+      const mid = document.getElementById('gallery').getAttribute('aria-activedescendant');
+      const mt = mid && document.getElementById(mid);
+      return !!pt && pt.dataset.key === 'photos/' && !!mt && mt.dataset.key === 'docs/';
+    }));
+  await page.click('#btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'a11y search popout');
+  await evalPage(([s]) => {
+    const inp = document.querySelector(s + ' .sr-name input.input');
+    inp.focus();
+    inp.value = '*.md';
+  }, [S]);
+  await page.keyboard.press('Enter');
+  await sleep(150);
+  await waitFor(() => evalPage(([s]) => document.querySelectorAll(s + ' .grid-row').length === 2, [S]), 4000, 'a11y search hits');
+  await evalPage(([s]) => { document.querySelector(s + ' .sr-list .grid-row').click(); }, [S]);
+  await ok('a clicked search hit names its row',
+    await evalPage(([s]) => {
+      const body = document.querySelector(s + ' .sr-list');
+      const id = body.getAttribute('aria-activedescendant');
+      const row = id && document.getElementById(id);
+      return !!row && row.parentElement === body && row.id === 'sr-row-0'
+        && row.classList.contains('sel') && row.getAttribute('aria-selected') === 'true';
+    }, [S]));
+  await evalPage(([s]) => { document.querySelector(s + ' .sr-list').focus(); }, [S]);
+  await page.keyboard.press('ArrowDown');
+  await ok('a walked search hit re-renders its name',
+    await evalPage(([s]) => {
+      const body = document.querySelector(s + ' .sr-list');
+      const id = body.getAttribute('aria-activedescendant');
+      const row = id && document.getElementById(id);
+      const first = document.getElementById('sr-row-0');
+      return !!row && row.id === 'sr-row-1' && row.classList.contains('sel')
+        && !!first && !first.classList.contains('sel');
+    }, [S]));
+  await closePopout('search');
+  // the tree speaks treeitem semantics — fold docs first so the leg is
+  // honest whatever earlier steps expanded (the first-match shadow law)
+  await evalPage(() => {
+    const docs = [...document.querySelectorAll('#tree .tnode')].find((r) => r.dataset.bucket === 'team-files' && r.dataset.prefix === 'docs/');
+    if (docs && docs.getAttribute('aria-expanded') === 'true') docs.querySelector('.twist').click();
+  });
+  await sleep(150);
+  await ok('the tree rows speak treeitem semantics',
+    await evalPage(() => {
+      const tree = document.getElementById('tree');
+      const rows = [...tree.querySelectorAll('.tnode')];
+      const src = rows.find((r) => r.dataset.tkind === 'source' && r.textContent.includes('team-files'));
+      const docs = rows.find((r) => r.dataset.bucket === 'team-files' && r.dataset.prefix === 'docs/');
+      return tree.getAttribute('role') === 'tree'
+        && src?.getAttribute('role') === 'treeitem' && src?.getAttribute('aria-level') === '1' && src?.getAttribute('aria-expanded') === 'true'
+        && docs?.getAttribute('role') === 'treeitem' && docs?.getAttribute('aria-level') === '2';
+    }));
+  await evalPage(() => {
+    const docs = [...document.querySelectorAll('#tree .tnode')].find((r) => r.dataset.bucket === 'team-files' && r.dataset.prefix === 'docs/');
+    if (docs) docs.querySelector('.twist').click();
+  });
+  await sleep(150);
+  await ok('an expanded folder claims its expansion',
+    (await evalPage(() => [...document.querySelectorAll('#tree .tnode')].find((r) => r.dataset.bucket === 'team-files' && r.dataset.prefix === 'docs/')?.getAttribute('aria-expanded'))) === 'true');
+  await evalPage(() => {
+    const docs = [...document.querySelectorAll('#tree .tnode')].find((r) => r.dataset.bucket === 'team-files' && r.dataset.prefix === 'docs/');
+    if (docs) docs.querySelector('.twist').click();
+  });
+  await sleep(150);
+  await ok('a collapsed folder claims its collapse',
+    (await evalPage(() => [...document.querySelectorAll('#tree .tnode')].find((r) => r.dataset.bucket === 'team-files' && r.dataset.prefix === 'docs/')?.getAttribute('aria-expanded'))) === 'false');
+  // leave the world canonical: pane face off, pane closed, rows face, no prefs
+  await evalPage(() => {
+    if (document.getElementById('local-btn-gallery').getAttribute('aria-pressed') === 'true') document.getElementById('local-btn-gallery').click();
+  });
+  await waitFor(() => evalPage(() => document.getElementById('local-gallery').classList.contains('hidden')
+    && !document.getElementById('local-grid-body').classList.contains('hidden')), 4000, 'a11y pane rows back');
+  await page.click('#local-btn-close');
+  await sleep(200);
+  await evalPage(() => { if (!document.getElementById('gallery').classList.contains('hidden')) document.getElementById('btn-gallery').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('gallery').classList.contains('hidden')
+    && !document.getElementById('grid-body').classList.contains('hidden')), 4000, 'a11y rows back');
+  await evalPage(() => { localStorage.removeItem('s3b-gallery'); localStorage.removeItem('s3b-gallery-pane'); });
+});
+
 // ---------- the inspector: the docked details panel ----------
 await step('inspector', async () => {
   // The selection's own facts the instant the selection changes — no

@@ -3571,6 +3571,7 @@ function makeGalleryFace(cfg) {
     if (face.io) face.io.disconnect();
     const wrap = $(cfg.wrapId);
     wrap.replaceChildren();
+    wrap.removeAttribute('aria-activedescendant'); // an emptied face names nothing
     if (!face.on) return;
     if (!face.io) {
       face.io = new IntersectionObserver((ents) => {
@@ -3585,6 +3586,7 @@ function makeGalleryFace(cfg) {
     for (const m of g.rows) {
       const tile = el('button', { class: 'g-tile', type: 'button', role: 'option' });
       tile.dataset.key = m.key;
+      tile.id = `${cfg.wrapId}-t${wrap.children.length}`; // the wrap’s activedescendant names the focused tile
       if (g.focusKey == null) g.focusKey = m.key;
       const sel = g.sel.has(m.key);
       tile.classList.toggle('sel', sel);
@@ -3655,6 +3657,7 @@ function makeGalleryFace(cfg) {
       }
       wrap.appendChild(tile);
     }
+    syncSel(); // the fresh tiles carry selection and the named focus
   }
 
   function seatThumb(thumb, url) {
@@ -3737,11 +3740,18 @@ function makeGalleryFace(cfg) {
 
   function syncSel() {
     const g = cfg.gridOf();
-    for (const tile of $(cfg.wrapId).children) {
+    const wrap = $(cfg.wrapId);
+    let active = null;
+    for (const tile of wrap.children) {
       const on = g.sel.has(tile.dataset.key);
       tile.classList.toggle('sel', on);
       tile.setAttribute('aria-selected', on ? 'true' : 'false');
+      if (tile.dataset.key === g.focusKey) active = tile.id;
     }
+    // the wrap names its focused tile so assistive tech speaks the walk —
+    // tileWalk, the click, the type-ahead jump and the drop all sync here
+    if (active) wrap.setAttribute('aria-activedescendant', active);
+    else wrap.removeAttribute('aria-activedescendant');
   }
 
   // the wrap owns the keys focus pays inside it: the arrows walk the

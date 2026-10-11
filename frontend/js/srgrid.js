@@ -278,11 +278,12 @@ export function makeSearchGrid(opts = {}) {
     if (!s) return;
     cell.replaceChildren(srcIconEl(s.type, s.color), document.createTextNode(originOf(r)));
   }
-  function rowEl(r) {
+  function rowEl(r, i) {
     const row = el('div', {
       class: `grid-row${r.key === selKey ? ' sel' : ''}`,
       role: 'option',
       'aria-selected': r.key === selKey ? 'true' : 'false',
+      id: `sr-row-${i}`, // the body’s activedescendant names the selected hit
     });
     row.appendChild(el('div', { class: 'gc name' },
       el('span', { class: 'icon', text: fileIcon(r.key, isDirOf(r)) }),
@@ -304,12 +305,20 @@ export function makeSearchGrid(opts = {}) {
         x.classList.toggle('sel', on);
         x.setAttribute('aria-selected', on ? 'true' : 'false');
       }
+      body.setAttribute('aria-activedescendant', row.id);
     });
     row.addEventListener('dblclick', () => opts.onActivate?.(r));
     return row;
   }
 
-  const renderRows = () => { body.replaceChildren(...sorted().map(rowEl)); };
+  // the walk re-renders (renderRows), the click patches in place — both
+  // must keep the body naming its selected row for assistive tech
+  const syncActive = () => {
+    const sel = body.querySelector('.grid-row.sel');
+    if (sel) body.setAttribute('aria-activedescendant', sel.id);
+    else body.removeAttribute('aria-activedescendant');
+  };
+  const renderRows = () => { body.replaceChildren(...sorted().map(rowEl)); syncActive(); };
 
   const selectRow = (r) => {
     selKey = r.key;
