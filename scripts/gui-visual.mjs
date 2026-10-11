@@ -13447,6 +13447,110 @@ await step('text-zoom', async () => {
   await page.focus('#grid-body');
 });
 
+// ---------- header keys: the columns sort from the keyboard ----------
+await step('header-keys', async () => {
+  // The sort verb rides a real button now: one roving tab stop for the
+  // header row, the arrows walk the seats, Enter cycles the seated
+  // column, and the accessible name carries the live sort state (the
+  // search heads already claim columnheader, so they also speak
+  // aria-sort). The step ends with the default name/ascending order
+  // restored and the search popout closed.
+  await navObjects('team-files');
+  await page.focus('#grid-body');
+  await clickRow('readme.md');
+  const seatSel = (col) => `#grid-head .gh-sort[data-col="${col}"]`;
+  const seatLabel = (col) => evalPage((s) => document.querySelector(s)?.getAttribute('aria-label') || '', seatSel(col));
+  const rowNames = () => evalPage(() => window.__s3bGrid.rows.map((r) => r.name));
+  const snap = await rowNames();
+  await ok('the header row carries one roving sort seat', evalPage(() => {
+    const seats = Array.from(document.querySelectorAll('#grid-head .gh-sort'));
+    return seats.length >= 4 && seats.filter((b) => b.tabIndex === 0).length === 1;
+  }));
+  await ok('the seated button names the live state', (await seatLabel('name')).includes('sorted ascending'));
+  await ok('an unsorted column names its verb', (await seatLabel('size')).includes('activate to sort ascending'));
+  const walkBefore = await evalPage(() => window.__s3bGrid.focusKey);
+  await page.focus(seatSel('name'));
+  await page.keyboard.press('ArrowRight');
+  await ok('ArrowRight walks onto the next seat', evalPage(() => {
+    const seats = Array.from(document.querySelectorAll('#grid-head .gh-sort'));
+    return document.activeElement === seats[1] && document.activeElement.tabIndex === 0;
+  }));
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
+  await ok('ArrowLeft wraps onto the last seat', evalPage(() => {
+    const seats = Array.from(document.querySelectorAll('#grid-head .gh-sort'));
+    return document.activeElement === seats[seats.length - 1];
+  }));
+  await page.keyboard.press('Home');
+  await ok('Home holds the first seat', evalPage(() =>
+    document.activeElement === document.querySelector('#grid-head .gh-sort')));
+  await ok('the listing walk never moves under the head', (await evalPage(() => window.__s3bGrid.focusKey)) === walkBefore
+    && (await evalPage(() => document.querySelectorAll('#grid-body .grid-row.focus').length)) <= 1);
+  // Enter sorts the seated column — the order pins against the model
+  // itself (names-reversed on the second press), never hardcoded
+  // fixture names
+  await page.focus(seatSel('size'));
+  await page.keyboard.press('Enter');
+  const ascNames = await rowNames();
+  await ok('Enter sorts the seated column ascending', waitFor(() => evalPage(() =>
+    document.activeElement?.classList.contains('gh-sort') && document.activeElement.dataset.col === 'size'), 2000, 'seat kept')
+    && (await seatLabel('size')).includes('sorted ascending')
+    && JSON.stringify(ascNames) !== JSON.stringify(snap));
+  await page.keyboard.press('Enter');
+  await ok('the reversed order is the mirror of the ascending one', evalPage((names) => {
+    const now = window.__s3bGrid.rows.map((r) => r.name);
+    return now.length === names.length && names.every((n, i) => now[now.length - 1 - i] === n);
+  }, ascNames)
+    && (await seatLabel('size')).includes('sorted descending'));
+  await page.focus(seatSel('name'));
+  await page.keyboard.press('Tab');
+  await ok('Tab leaves the head straight for the listing (one stop; hidden funnels and unseated columns skip)', evalPage(() =>
+    document.activeElement === document.getElementById('grid-body')));
+  // the search popout answers with the same grammar — its seats are
+  // button-scoped, so the popout's own document chain is irrelevant
+  await page.click('#btn-find');
+  await waitFor(() => popoutVisible('search'), 4000, 'search popout');
+  const S = '#popout-root .popout[data-pop="search"]';
+  await evalPage(([s, p]) => {
+    const inp = document.querySelector(s + ' .sr-name input.input');
+    inp.focus();
+    inp.value = p;
+  }, [S, '*.md']);
+  await page.keyboard.press('Enter');
+  await waitFor(() => evalPage((s) => document.querySelectorAll(s + ' .sr-list .grid-row').length >= 2, S), 4000, 'results');
+  await ok('the search seats speak their columnheader state', evalPage((s) => {
+    const seats = Array.from(document.querySelectorAll(s + ' .grid-head .gh-sort'));
+    const cells = Array.from(document.querySelectorAll(s + ' .grid-head .gh[data-col]'));
+    return seats.length >= 4 && seats.filter((b) => b.tabIndex === 0).length === 1
+      && cells.length === seats.length
+      && cells.every((c) => ['none', 'ascending', 'descending'].includes(c.getAttribute('aria-sort')));
+  }, S));
+  // the popout may carry a predecessor's sort — pin the TRANSITION LAW,
+  // not a hardcoded default (the cycle: none -> asc -> desc -> asc)
+  await evalPage((s) => document.querySelector(s + ' .gh-sort[data-col="size"]')?.focus(), S);
+  const srBefore = await evalPage((s) => document.querySelector(s + ' .gh[data-col="size"]')?.getAttribute('aria-sort'), S);
+  await page.keyboard.press('Enter');
+  const srAsc = await evalPage((s) => Array.from(document.querySelectorAll(s + ' .sr-list .grid-row')).map((r) => r.textContent), S);
+  const srNext = { none: 'ascending', ascending: 'descending', descending: 'ascending' }[srBefore];
+  await ok('Enter steps the search sort down its cycle', evalPage(([s, want]) =>
+    document.querySelector(s + ' .gh[data-col="size"]')?.getAttribute('aria-sort') === want, [S, srNext])
+    && (await evalPage((s) => document.querySelector(s + ' .gh-sort[data-col="size"]')?.getAttribute('aria-label') || '', S))
+      .includes(`sorted ${srNext}`));
+  await page.keyboard.press('Enter');
+  const srFlip = srNext === 'ascending' ? 'descending' : 'ascending';
+  await ok('Enter again reverses the search results', evalPage(([s, asc, want]) => {
+    const now = Array.from(document.querySelectorAll(s + ' .sr-list .grid-row')).map((r) => r.textContent);
+    return document.querySelector(s + ' .gh[data-col="size"]')?.getAttribute('aria-sort') === want
+      && now.length === asc.length && asc.every((n, i) => now[now.length - 1 - i] === n);
+  }, [S, srAsc, srFlip]));
+  await closePopout('search');
+  // canonical tail: the default name/ascending order restored
+  await page.click('#grid-head .gh[data-col="name"]');
+  await ok('the default order is restored', (await seatLabel('name')).includes('sorted ascending')
+    && JSON.stringify(await rowNames()) === JSON.stringify(snap));
+  await page.focus('#grid-body');
+});
+
 // ---------- settings honor walk (every control + every default) ----------
 await step('settings-honor', async () => {
   // The whole-surface companion to settings-dialog: that step proves the

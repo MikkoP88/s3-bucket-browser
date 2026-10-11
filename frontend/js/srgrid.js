@@ -148,17 +148,34 @@ export function makeSearchGrid(opts = {}) {
   const headerCell = (c) => {
     const ind = el('span', { class: 'sort-ind' });
     if (sortKey === c.id) ind.textContent = sortDir > 0 ? '▲' : '▼';
+    // the search head already speaks columnheader, so the sort state is
+    // aria-sort here — and the verb still rides a real button (the same
+    // roving grammar the main headers own: one tab stop, arrows, Enter)
+    const seatLabel = () => {
+      const l = t(c.labelKey);
+      if (sortKey !== c.id) return `${l}, activate to sort ascending`;
+      return `${l}, sorted ${sortDir > 0 ? 'ascending' : 'descending'}, activate to reverse`;
+    };
+    const seat = el('button', {
+      class: 'gh-sort', type: 'button', 'data-col': c.id, 'aria-label': seatLabel(),
+    }, el('span', { text: t(c.labelKey) }), ind);
+    seat.addEventListener('keydown', seatKeys);
+    seat.addEventListener('focus', () => seatSort(c.id));
     const cell = el('div', {
       class: `gh${c.num ? ' num' : ''}`,
       'data-col': c.id,
       role: 'columnheader',
+      'aria-sort': sortKey === c.id ? (sortDir > 0 ? 'ascending' : 'descending') : 'none',
       onclick: () => {
+        const held = document.activeElement && document.activeElement.classList.contains('gh-sort')
+          && head.contains(document.activeElement) ? document.activeElement.dataset.col : null;
         if (sortKey === c.id) sortDir = -sortDir;
         else { sortKey = c.id; sortDir = 1; }
         buildHead();
         renderRows();
+        if (held) head.querySelector(`.gh-sort[data-col="${held}"]`)?.focus();
       },
-    }, el('span', { text: t(c.labelKey) }), ind);
+    }, seat);
     // Source never reorders — it owns the row's far edge — so it carries
     // no drag affordance; the catalog columns all do.
     if (c.id !== 'source') {
@@ -219,10 +236,39 @@ export function makeSearchGrid(opts = {}) {
     });
   };
 
+  // the seat grammar, closure-shaped: one roving tab stop over the
+  // head's sort buttons (the sorted column by default), arrows with
+  // wraparound, Home and End at the ends — every owned key stopped, so
+  // nothing else in the popout hears it.
+  const seatKeys = (e) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const seats = Array.from(head.querySelectorAll('.gh-sort'));
+    const i = seats.indexOf(e.currentTarget);
+    let j = null;
+    if (e.key === 'ArrowRight') j = (i + 1) % seats.length;
+    else if (e.key === 'ArrowLeft') j = (i - 1 + seats.length) % seats.length;
+    else if (e.key === 'Home') j = 0;
+    else if (e.key === 'End') j = seats.length - 1;
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (seats[j]) seats[j].focus();
+  };
+  const seatSort = (id) => {
+    headCells.forEach((cell) => {
+      const b = cell.querySelector('.gh-sort');
+      if (b) b.tabIndex = cell.dataset.col === id ? 0 : -1;
+    });
+  };
+  const updateSeats = () => {
+    seatSort(sortKey && headCells.some((cell) => cell.dataset.col === sortKey) ? sortKey : headCells[0]?.dataset.col);
+  };
+
   const buildHead = () => {
     headCells = cols().map(headerCell);
     head.replaceChildren(handlesLayer(), ...headCells);
     applyTemplate();
+    updateSeats();
   };
 
   const sortVal = (r) => (sortKey === 'size' ? (isDirOf(r) ? (r.contentSize == null ? -1 : r.contentSize) : (r.size || 0))

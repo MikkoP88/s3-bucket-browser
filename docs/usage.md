@@ -417,7 +417,11 @@ directory compare) with S3 and the secondary pane.
   button resets the whole form. Results stream in as grid rows
   with type-matched icons (folder, image, video, archive,
   document …); clicking a column header sorts ascending, again
-  descending. The columns are the main view's own — the one
+  descending — and the headers answer the keyboard: Tab seats the
+  column sort row, the arrows walk the seats, Enter sorts the seated
+  column (the search results carry the same grammar, their header
+  cells also speaking the sort state to screen readers). The columns
+  are the main view's own — the one
   catalog seats both views — and carry its whole mechanics:
   drag a boundary to resize (arrow keys resize from the keyboard,
   a double-click hands a column its standard width back), drag a
@@ -936,6 +940,7 @@ you'll use daily:
 | Ctrl+L | event log |
 | Ctrl+S | save workspace profile |
 | Ctrl+= / Ctrl+- / Ctrl+0 | text size: zoom in / out / reset (Ctrl+wheel steps the same ladder) |
+| ← / → in a header | walk the column sort seats (Enter sorts the seated column) |
 | F1 | help (in-app guide + key map) |
 | Menu / Shift+F10 | open the context menu of the seated row or tile |
 | Tree: arrows / Enter / Space / Menu | walk the tree, expand and fold, navigate, open the row’s verb menu |

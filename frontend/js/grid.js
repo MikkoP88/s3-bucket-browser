@@ -360,6 +360,7 @@ export class Grid {
     // :last-child (its right border is dropped there)
     this.head.replaceChildren(this.handlesLayer(), el('div', { class: 'gh check' }, cb), ...this.headCols);
     this.updateHandleAria();
+    this.updateSortSeats();
     this.positionHandles();
   }
 
@@ -428,6 +429,51 @@ export class Grid {
     });
   }
 
+  // sortSeatLabel speaks the column's live sort state as the seat's
+  // accessible name — the rows are options (a listbox grammar), so the
+  // state rides the name rather than aria-sort.
+  sortSeatLabel(c) {
+    const label = t(c.labelKey);
+    if (this.sortKey !== c.id) return `${label}, activate to sort ascending`;
+    return `${label}, sorted ${this.sortDir > 0 ? 'ascending' : 'descending'}, activate to reverse`;
+  }
+
+  // seatSort walks the roving tab stop onto one column's seat — one
+  // stop for the whole header row, the menubar's law. Focus itself
+  // reseats: reaching a seat by pointer moves the stop with it.
+  seatSort(id) {
+    this.headCols.forEach((cell, i) => {
+      const b = cell.querySelector('.gh-sort');
+      if (b) b.tabIndex = this.cols[i] && this.cols[i].id === id ? 0 : -1;
+    });
+  }
+
+  // updateSortSeats seats the roving stop at the sorted column (the
+  // first column when nothing is sorted) — renderHead's tail.
+  updateSortSeats() {
+    const id = this.cols.some((c) => c.id === this.sortKey) ? this.sortKey : this.cols[0]?.id;
+    this.seatSort(id);
+  }
+
+  // sortSeatKeys walks the seats under the arrows (wraparound, Home and
+  // End at the ends) and stops every key it owns — the listing's
+  // document-level walk never moves under a seated header. Modified
+  // keys pass through untouched.
+  sortSeatKeys(e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const seats = Array.from(this.head.querySelectorAll('.gh-sort'));
+    const i = seats.indexOf(e.currentTarget);
+    let j = null;
+    if (e.key === 'ArrowRight') j = (i + 1) % seats.length;
+    else if (e.key === 'ArrowLeft') j = (i - 1 + seats.length) % seats.length;
+    else if (e.key === 'Home') j = 0;
+    else if (e.key === 'End') j = seats.length - 1;
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (seats[j]) seats[j].focus();
+  }
+
   // headerCell builds one column header: label + sort indicator + filter
   // funnel. Click cycles the sort; dragging the cell (6px+) reorders the
   // column. The resize handle is NOT here — see handlesLayer.
@@ -443,12 +489,25 @@ export class Grid {
       onclick: (e) => { e.stopPropagation(); this.editColumnFilter(c.id, funnel); },
     });
     funnel.innerHTML = '<svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true"><path d="M1 2h14l-5.5 6.2V14l-3-1.6V8.2Z" fill="currentColor"/></svg>';
+    // The sort verb rides a real button so the keyboard owns it: a
+    // click bubbles to the cell's own handler, Enter/Space fire the same
+    // click natively, and the roving seat (one tab stop for the whole
+    // row — updateSortSeats) walks between columns under the arrows. The
+    // accessible name carries the live sort state because the listing
+    // speaks a listbox grammar (role=option rows), not columnheaders —
+    // the state belongs in the name, not aria-sort.
+    const seat = el('button', {
+      class: 'gh-sort', type: 'button', 'data-col': c.id,
+      'aria-label': this.sortSeatLabel(c),
+    }, el('span', { text: label }), ind);
+    seat.addEventListener('keydown', (e) => this.sortSeatKeys(e));
+    seat.addEventListener('focus', () => this.seatSort(c.id));
     const cell = el('div', {
       class: `gh${c.num ? ' num' : ''}`,
       'data-col': c.id,
       title: t('col.dragTip'),
       onclick: () => this.cycleSort(c.id),
-    }, el('span', { text: label }), ind, funnel);
+    }, seat, funnel);
     cell.addEventListener('pointerdown', (e) => this.startColDrag(e, c, cell));
     return cell;
   }
@@ -484,10 +543,17 @@ export class Grid {
   }
 
   cycleSort(id) {
+    // a seated keyboard sort must survive its own head rebuild — the
+    // render below replaces the focused button, so the seat is captured
+    // and re-focused (pointer sorts never steal focus this way: the
+    // capture only fires when the seat itself already held it)
+    const held = document.activeElement && document.activeElement.classList.contains('gh-sort')
+      && this.head.contains(document.activeElement) ? document.activeElement.dataset.col : null;
     if (this.sortKey === id) this.sortDir = -this.sortDir;
     else { this.sortKey = id; this.sortDir = 1; }
     this.apply();
     this.renderHead();
+    if (held) this.head.querySelector(`.gh-sort[data-col="${held}"]`)?.focus();
   }
 
   // ---------- column drag: resize + reorder ----------

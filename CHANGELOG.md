@@ -516,6 +516,50 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The headers answer the keyboard** — the last pointer-only verb in
+  the listing was its oldest: sorting. The column headers sorted on
+  click and nothing else — a bare div with an onclick, no role, no
+  name, the sort state spoken nowhere — while the funnel beside it was
+  already a button and the resize separator even owned a keyboard
+  ladder. The sort verb now rides a real button in every header (the
+  main and local listings through grid.js, the search results through
+  srgrid.js — an S3-bound pane rides the local grid): a click still
+  bubbles to the cell's own handler so the pointer grammar is
+  unchanged, Enter and Space fire the same click natively, and the
+  header row becomes a roving keyboard surface the way the menubar
+  already is — ONE tab stop for the whole row (tabIndex 0 on the
+  sorted column's seat, -1 on the rest, focus reseating wherever it
+  lands), the arrows walking the seats with wraparound, Home and End
+  holding the ends, every owned key stopped on the seat's own listener
+  so the listing's document-level walk never moves under a seated
+  header, and cycleSort capturing and re-focusing the seat across its
+  own head rebuild (a keyboard sort no longer loses its seat to the
+  re-render; a pointer sort never steals one). The state speaks: the
+  seat's accessible name carries the live sort — "Name, sorted
+  ascending, activate to reverse" — because the listing speaks a
+  listbox grammar (role=option rows) where aria-sort has no home,
+  while the search heads already claim columnheader and speak
+  aria-sort too (none/ascending/descending, re-read at every build)
+  beside the same name law. The seat paints with the inset accent
+  outline the resize separators own, and under forced colors it joins
+  the outline group. The battery grows the header-keys step with
+  fourteen oks — the roving law (one tabbable seat), the sorted and
+  unsorted names, ArrowRight walking and ArrowLeft wrapping and Home
+  holding the ends, the listing walk unmoved throughout, Enter sorting
+  the seated column with the seat kept across the rebuild, the
+  descending press mirroring the ascending order exactly (pinned
+  against the model, never hardcoded fixture names), Tab leaving the
+  head straight for the listing (the one-stop economy — hidden funnels
+  skip), the search popout speaking its columnheader states, Enter
+  stepping the search sort down its cycle and the second press
+  mirroring the first, and the default order restored — the search
+  legs pinned as transition laws, not defaults, because the popout may
+  carry a predecessor's sort. Gates: js-check OK, provenance 9/9 (the
+  main.js watermark undisturbed through every node patch), the Go
+  suite untouched by design — a frontend-only round, the 23 packages
+  unmoved — and the full battery green at 1402/1402. Docs: the
+  CHANGELOG carries the bullet above the text-size round's, and
+  VERIFICATION the row (GUI-121).
 - **The app answers text size** — the fourth leg of the access arc
   (keyboard, spoken, contrast, size): Ctrl+= zooms in, Ctrl+- out,
   Ctrl+0 resets, and Ctrl+wheel steps the same ladder — the pinch

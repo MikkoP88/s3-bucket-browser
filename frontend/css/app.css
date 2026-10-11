@@ -396,6 +396,18 @@ svg.flip { transform: scaleX(-1); }
 .grid-head { position: relative; } /* anchors the handles layer + drag indicator */
 .gh { position: relative; }
 .gh span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the column sort seat: a real button so the keyboard owns sorting —
+   one roving tab stop for the header row (grid.js updateSortSeats),
+   arrows walk the seats, Enter/Space cycle the sort. Painted with the
+   inset accent outline the resize separators own; the label keeps its
+   ellipsis through the .gh span rule above. */
+.gh-sort {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: none; background: transparent; padding: 0; margin: 0;
+  font: inherit; color: inherit; min-width: 0; overflow: hidden;
+  cursor: pointer;
+}
+.gh-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .gh-handles {
   position: absolute; inset: 0; z-index: 3;
   pointer-events: none; /* the layer never blocks a cell; handles opt back in */
@@ -1865,7 +1877,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   .g-tile.sel { border-color: HighlightText; }
   .grid-row.focus:not(.sel), .tnode.focus:not(.sel),
   .mb-title:focus, .mb-item:focus, .ctxmenu .item:focus,
-  .picker-row:focus, .pane-dest .dest-opt:focus, .set-colrow:focus {
+  .gh-sort:focus, .picker-row:focus, .pane-dest .dest-opt:focus, .set-colrow:focus {
     outline: 2px solid Highlight;
     outline-offset: -2px;
   }
