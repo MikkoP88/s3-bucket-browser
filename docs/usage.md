@@ -935,6 +935,7 @@ you'll use daily:
 | F9 | dual pane |
 | Ctrl+L | event log |
 | Ctrl+S | save workspace profile |
+| Ctrl+= / Ctrl+- / Ctrl+0 | text size: zoom in / out / reset (Ctrl+wheel steps the same ladder) |
 | F1 | help (in-app guide + key map) |
 | Menu / Shift+F10 | open the context menu of the seated row or tile |
 | Tree: arrows / Enter / Space / Menu | walk the tree, expand and fold, navigate, open the row’s verb menu |
@@ -979,7 +980,9 @@ nothing that carries meaning depends on animation), and under Windows
 High Contrast (forced colors) every state keeps speaking — selections,
 the keyboard walk seat, open menus and the active guide tab paint in
 the system palette instead of the theme's, while disabled menu items
-dim to the system's gray.
+dim to the system's gray. Text size answers too: Ctrl+= / Ctrl+- /
+Ctrl+0 zoom the whole interface (Ctrl+wheel steps the same ladder),
+and the choice persists across boots and in floating windows.
 
 ---
 

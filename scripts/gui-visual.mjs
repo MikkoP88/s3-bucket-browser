@@ -13364,6 +13364,89 @@ await step('forced-colors', async () => {
   await page.focus('#grid-body');
 });
 
+// ---------- text zoom: the app answers size ----------
+await step('text-zoom', async () => {
+  // The desktop zoom grammar: Ctrl+= in, Ctrl+- out, Ctrl+0 reset,
+  // Ctrl+wheel the pinch ladder — root zoom scales the layout viewport
+  // itself, so the pool math, the drag handles and the gallery geometry
+  // keep their space. The level persists (s3b-zoom), rides a
+  // keep-staged reload at the boot seam, floats to the popout windows,
+  // and the step ends at zoom 1 with the key gone.
+  const zoomOf = (pg) => pg.evaluate(() => parseFloat(getComputedStyle(document.documentElement).zoom) || 0);
+  const zoomKey = () => evalPage(() => localStorage.getItem('s3b-zoom'));
+  await navObjects('team-files');
+  await page.focus('#grid-body');
+  await clickRow('readme.md');
+  await ok('the listing sits at zoom 1 before any step', (await zoomOf(page)) === 1);
+  await evalPage(() => { document.getElementById('toasts').innerHTML = ''; });
+  await page.keyboard.press('Control+=');
+  await ok('Ctrl+= steps the level to 1.1', (await zoomOf(page)) === 1.1);
+  await ok('the level persists to the store', (await zoomKey()) === '1.1');
+  await ok('the readout toast speaks the percent', waitFor(() => evalPage(() =>
+    document.getElementById('toasts').textContent.includes('Zoom 110%')), 4000, 'zoom toast'));
+  // the grammar answers from inside an input too — the desktop law
+  await page.focus('#filter');
+  await page.keyboard.press('Control+=');
+  await ok('Ctrl+= answers from inside the filter input', evalPage(() =>
+    parseFloat(getComputedStyle(document.documentElement).zoom) === 1.2
+    && document.activeElement === document.getElementById('filter')));
+  await page.focus('#grid-body');
+  // the ladder clamps at the ceiling without drift
+  for (let i = 0; i < 12; i++) await page.keyboard.press('Control+=');
+  await ok('the ladder clamps at 1.6', (await zoomOf(page)) === 1.6);
+  await page.keyboard.press('Control+0');
+  await ok('Ctrl+0 resets to 1 and clears the store', (await zoomOf(page)) === 1 && (await zoomKey()) === null);
+  // Ctrl+wheel steps the pinch ladder (5% a tick, the same store)
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -100);
+  await page.keyboard.up('Control');
+  await ok('Ctrl+wheel steps in by a tick', (await zoomOf(page)) === 1.05);
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, 100);
+  await page.keyboard.up('Control');
+  await ok('Ctrl+wheel steps back out', (await zoomOf(page)) === 1);
+  // the layout law: at a deeper zoom the pool still covers the whole
+  // listing — scroll to the bottom and the LAST row must be rendered
+  await page.keyboard.press('Control+=');
+  await page.keyboard.press('Control+=');
+  await evalPage(() => { const b = document.getElementById('grid-body'); b.scrollTop = b.scrollHeight; });
+  await ok('the pool covers the last row at 1.2', waitFor(() => evalPage(() => {
+    const g = window.__s3bGrid;
+    const last = g.rows[g.rows.length - 1];
+    const vis = [...document.querySelectorAll('#grid-body .grid-row')].filter((r) => r.style.display !== 'none');
+    const lastEl = vis[vis.length - 1];
+    return !!(last && lastEl && lastEl._model && lastEl._model.key === last.key);
+  }), 4000, 'last row rendered at 1.2'));
+  // persistence: the level rides a keep-staged reload and applies at
+  // the boot seam
+  await page.keyboard.press('Control+0');
+  await page.keyboard.press('Control+=');
+  await evalPage(() => localStorage.setItem('s3b-shim-keep', '1'));
+  await page.goto(BASE);
+  await waitFor(() => evalPage(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v')), 10000, 'zoom reload boot');
+  await ok('the saved level applies at boot', waitFor(() => evalPage(() =>
+    parseFloat(getComputedStyle(document.documentElement).zoom) === 1.1), 4000, 'boot zoom'));
+  await ok('the listing is back after the reload', waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'rows after zoom reload'));
+  await page.keyboard.press('Control+0');
+  // the floating windows keep the grammar: a ?popout page never runs
+  // the main chain — its own listener reads the same table
+  const zp = await context.newPage();
+  zp.on('pageerror', (e) => { pageErrors.push(String(e)); });
+  await zp.addInitScript(shim);
+  await zp.goto(BASE + '?popout=keys');
+  await zp.waitForFunction(() => !!document.querySelector('#popout-root .popout[data-pop="keys"] .help-grid .row'), null, { timeout: 8000 });
+  await zp.keyboard.press('Control+=');
+  await ok('the floating window answers the grammar too', waitFor(() => zp.evaluate(() =>
+    parseFloat(getComputedStyle(document.documentElement).zoom) === 1.1), 4000, 'popout zoom'));
+  await zp.keyboard.press('Control+0');
+  await ok('Ctrl+0 resets the floating window and the store', (await zp.evaluate(() =>
+    parseFloat(getComputedStyle(document.documentElement).zoom))) === 1
+    && (await zp.evaluate(() => localStorage.getItem('s3b-zoom'))) === null);
+  await zp.close();
+  await ok('the step leaves zoom 1 with a clean store', (await zoomOf(page)) === 1 && (await zoomKey()) === null);
+  await page.focus('#grid-body');
+});
+
 // ---------- settings honor walk (every control + every default) ----------
 await step('settings-honor', async () => {
   // The whole-surface companion to settings-dialog: that step proves the

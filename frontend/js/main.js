@@ -284,6 +284,7 @@ function applyColumnPrefs() {
 async function boot() {
   setLang(detectLang());
   initTheme();
+  initZoom();
   // The last-resort net: an async failure nobody caught — a bare api
   // call, a timer callback, a render pass — would otherwise die
   // silently inside the webview; production users see nothing at all.
@@ -312,6 +313,9 @@ async function boot() {
   if (popoutQS.get('popout')) {
     document.body.classList.add('popout-win');
     renderPopoutView(popoutQS.get('popout'), popoutQS);
+    // floating windows never run the main keydown chain — their own
+    // listener reads the same zoom table
+    document.addEventListener('keydown', (e) => { runZoomVerb(e); });
     return;
   }
   // Setup phase: a fresh install accepts the license before any chrome
@@ -504,6 +508,79 @@ function toggleTheme() {
   // The quick toggle always lands on an explicit theme (and switches an
   // 'auto' session to the opposite of what is on screen).
   setThemePref(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+}
+
+// ============================ text zoom ============================
+// The app answers text size the way desktop apps do: Ctrl+= zooms in,
+// Ctrl+- out, Ctrl+0 resets, and Ctrl+wheel steps the same ladder (the
+// pinch grammar trackpads already speak). Root-element zoom is the
+// mechanism because it scales the layout viewport itself — every CSS
+// pixel, scrollbar and scroll offset stays in one consistent space, so
+// the pool virtualization, the drag handles and the gallery geometry
+// keep their math (a wrapper-level zoom or a font ramp would descale
+// the fixed strides the grids walk on). Steps are 10% per key and 5%
+// per wheel tick, clamped to 0.7–1.6; the choice persists and floats
+// to the native popouts, which load this same page.
+const ZOOM_MIN = 0.7;
+const ZOOM_MAX = 1.6;
+const ZOOM_KEY_STEP = 0.1;
+const ZOOM_WHEEL_STEP = 0.05;
+let zoomToastTimer = null;
+
+function zoomNow() {
+  const z = parseFloat(document.documentElement.style.zoom);
+  return Number.isFinite(z) ? z : 1;
+}
+
+function applyZoom(z, quiet = false) {
+  z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100));
+  document.documentElement.style.zoom = String(z);
+  if (z === 1) localStorage.removeItem('s3b-zoom');
+  else localStorage.setItem('s3b-zoom', String(z));
+  // the readout coalesces: a wheel gesture fires many steps, and one
+  // toast must speak the landing value, not a burst of stale ones
+  if (!quiet) {
+    clearTimeout(zoomToastTimer);
+    zoomToastTimer = setTimeout(() => toast(`Zoom ${Math.round(z * 100)}%`), 150);
+  }
+  return z;
+}
+
+function zoomStep(dz) { return applyZoom(zoomNow() + dz); }
+
+// zoomKeyVerb reads the grammar off a keydown: the step it owns, 'reset',
+// or null when the key is not ours. One table, two windows — the main
+// chain embeds it above its inInput return, and popout windows (which
+// never run that chain) listen through their own tiny registration.
+function zoomKeyVerb(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey) return null;
+  if (e.key === '=' || e.key === '+') return ZOOM_KEY_STEP;
+  if (e.key === '-' || e.key === '_') return -ZOOM_KEY_STEP;
+  if (e.key === '0') return 'reset';
+  return null;
+}
+
+function runZoomVerb(e) {
+  const zv = zoomKeyVerb(e);
+  if (zv === null) return false;
+  e.preventDefault();
+  if (zv === 'reset') applyZoom(1); else zoomStep(zv);
+  return true;
+}
+
+// initZoom restores the saved level at the boot seam (before the first
+// paint grows a flash) and owns the wheel leg on every window: ctrl+wheel
+// is the pinch grammar, and the page handles it before the webview
+// default would. Popout windows reach here too — boot calls this before
+// the popout branch.
+function initZoom() {
+  const saved = parseFloat(localStorage.getItem('s3b-zoom'));
+  if (Number.isFinite(saved) && saved !== 1) applyZoom(saved, true);
+  window.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey) return;
+    e.preventDefault();
+    zoomStep(e.deltaY < 0 ? ZOOM_WHEEL_STEP : -ZOOM_WHEEL_STEP);
+  }, { passive: false });
 }
 
 // ============================ data sources (M8) ============================
@@ -6461,6 +6538,10 @@ function wireKeys() {
     // modal-open keys still work (Escape handled in dialogs)
     const inInput = e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA';
     if (e.key === 'F1') { e.preventDefault(); helpSheet(); return; }
+    // text size answers from anywhere — inputs included, the way every
+    // desktop app's zoom does; the verb sits above the inInput return
+    // the way F1 does
+    if (runZoomVerb(e)) return;
     if (inInput && e.key !== 'F5') return;
 
     const ctrl = e.ctrlKey || e.metaKey;

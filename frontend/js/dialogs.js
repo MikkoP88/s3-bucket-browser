@@ -3110,6 +3110,7 @@ export function helpSheet() {
     ['F9', 'Toggle dual-pane local browser'],
     ['Ctrl+L', 'Toggle log area'],
     ['Ctrl+S', 'Save profile file'],
+    ['Ctrl+= / Ctrl+- / Ctrl+0', 'Text size: zoom in, out, reset (Ctrl+wheel steps the same ladder)'],
     ['Menu / Shift+F10', 'Open the context menu of the seated row or tile'],
     ['Tree: arrows / Enter / Space / Menu', 'Walk the sidebar tree, expand and fold, navigate, open the row’s verb menu'],
     ['Menubar: Tab, arrows, Enter', 'Open the menus, walk them, stride the bar with the arrows while one is open'],
@@ -3177,6 +3178,7 @@ const GUIDE_SECTIONS = [
   ['Keyboard & access', [
     ['Everything answers the keyboard', 'Every surface walks: the listing under the arrows, Home and End holding the ends and PgUp/PgDn paging; typing letters jumps to the first matching name on whichever face is seated — rows, tiles or the sidebar tree. The Menu key (Shift+F10 on keyboards without one) opens the verb menu of the seated row or tile on every face; an open menu walks under the arrows with Enter activating and Escape closing back to where you were; and the menu bar behaves like a desktop menubar — Tab reaches it, the arrows stride the bar, Enter opens and picks. F1 shows the full key map.'],
     ['Spoken walking', 'Keyboard walking is announced as well as seen: every listing surface names its walked row or tile to screen readers through ARIA (aria-activedescendant — no per-row focus jumps), tree rows are treeitems carrying their level and expansion state, and the menus speak menu roles with their checked and disabled states.'],
+    ['Text size', 'Ctrl+= zooms in, Ctrl+- out and Ctrl+0 resets, with Ctrl+wheel stepping the same ladder — the pinch grammar. The whole interface scales together, the choice persists across boots, and floating windows keep it too.'],
     ['Reduced motion & high contrast', 'The app honors the OS “reduce motion” setting: transitions and spinners settle instantly and skeleton loaders rest, while nothing that carries meaning depends on animation. Under Windows High Contrast (forced colors) every state keeps speaking: selections, the keyboard seat, open menus and the active guide tab paint in the system palette instead of the theme’s.'],
   ]],
 ];

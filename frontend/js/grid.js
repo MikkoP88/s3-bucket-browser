@@ -185,10 +185,15 @@ export class Grid {
     this.body.addEventListener('scroll', () => { this.syncHeadScroll(); this.positionHandles(); this.render(); });
     // pane width changes (split drag, window resize) and the scrollbar
     // appearing/disappearing (row count changes) both re-lock the head width
-    // and re-seat the boundary handles
-    this.ro = new ResizeObserver(() => { this.syncHeadWidth(); this.positionHandles(); });
+    // and re-seat the boundary handles. A re-render rides the same observer
+    // now, and the body joins the watched set: the body's box changes with
+    // the window height AND with text zoom (root zoom scales the layout
+    // viewport itself), and a taller window — or a zoom step that fits more
+    // rows — must extend the pool exactly the way a scroll always did
+    this.ro = new ResizeObserver(() => { this.syncHeadWidth(); this.positionHandles(); this.render(); });
     this.ro.observe(this.headClip);
     this.ro.observe(this.canvas);
+    this.ro.observe(this.body);
     // Right-click on a header cell opens the column picker (same catalog as
     // Settings); wired by the host pane via on.headerMenu.
     this.head.addEventListener('contextmenu', (e) => {

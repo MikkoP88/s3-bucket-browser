@@ -516,6 +516,43 @@ follow [Semantic Versioning](https://semver.org/).
   button, a crumb link) no longer falls through to the grid walk
   under a `preventDefault` that swallowed the click — controls
   keep their keys.
+- **The app answers text size** — the fourth leg of the access arc
+  (keyboard, spoken, contrast, size): Ctrl+= zooms in, Ctrl+- out,
+  Ctrl+0 resets, and Ctrl+wheel steps the same ladder — the pinch
+  grammar trackpads speak. The mechanism is root-element zoom because
+  it scales the layout viewport itself: every CSS pixel, scrollbar and
+  scroll offset stays in one consistent space, so the pool
+  virtualization, the column-drag handles and the gallery geometry
+  keep their math (a standalone probe pinned the law before a line
+  shipped: at 1.3 the viewport's client height reads 462 of 600, the
+  row stride 37 of 29, and the bottom-of-scroll math still covers
+  every row). The grammar answers from anywhere — inputs included, the
+  branch sitting above the inInput return the way F1 does; floating
+  windows never run the main chain, so their own listener reads the
+  same table; steps are 10% per key and 5% per wheel tick, clamped
+  0.7–1.6, the choice persists across boots (and floats to the
+  popouts, which load the same page), and a coalesced readout toast
+  speaks the landing percent instead of a burst of stale ones. The
+  round healed a latent layout gap the zoom surfaced: the grids only
+  re-rendered on scroll, so a window grown taller — or a zoom step
+  that fits more rows — left the pool short at the bottom; the
+  ResizeObserver now re-renders and watches the body's box (window
+  height, zoom, pane split all land there). The F1 sheet grows the
+  Ctrl+= / Ctrl+- / Ctrl+0 row, the guide's Keyboard & access grows
+  its Text size entry, and usage.md's keyboard map and accessibility
+  paragraph speak the grammar. The battery grows the text-zoom step
+  with fifteen oks — the step ladder and store, the toast readout, the
+  grammar answering from inside the filter input with focus kept, the
+  ceiling clamp at 1.6, Ctrl+0 clearing the store, both wheel ticks,
+  the pool covering the last row at 1.2, the keep-staged reload
+  applying the saved level at the boot seam with the listing back, the
+  ?popout=keys window answering through its own listener and
+  resetting, and the step leaving zoom 1 with a clean store. Gates:
+  js-check OK, provenance 9/9 (the main.js watermark undisturbed
+  through every node patch), the Go suite untouched by design — a
+  frontend-only round, the 23 packages unmoved — and the full battery
+  green at 1388/1388. Docs: the CHANGELOG carries the bullet above the
+  high-contrast round's, and VERIFICATION the row (GUI-120).
 - **The app answers high contrast** — Windows High Contrast (forced
   colors) strips author backgrounds and box-shadows, and six rounds of
   keyboard grammar had left the app speaking ever more through paint:
