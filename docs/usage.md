@@ -193,7 +193,11 @@ directory compare) with S3 and the secondary pane.
   accent color — the same badge rides the breadcrumb roots and the
   source pickers. Click to navigate; right-click a node for
   Properties, the Admin panel, transfers and more. Folders expand
-  lazily; buckets with versioning carry a 🔄 icon,
+  lazily; a folder level that runs to thousands of rows renders a window
+  of it — four hundred rows to start, grown a page at a time by the
+  scroll seam, the walk or the strip under the tree whose **Show more**
+  verb speaks how many rows are shown of how many exist, hidden while
+  everything fits; buckets with versioning carry a 🔄 icon,
   object-lock buckets a 🔒 icon — hover one and its meaning surfaces
   as a soft tinted chip in the row's own color, never an underlined
   glyph (an underline strikes through an icon's feet and reads as an

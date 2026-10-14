@@ -1833,6 +1833,18 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .g-window .btn { flex: none; padding: 2px 10px; font-size: 12px; }
 
+/* the tree’s windowed tail (.t-window): the same law under the sidebar —
+   the strip below the scrolling tree speaks what is shown of what
+   exists and carries the verb that grows the seat; the scroll seam
+   grows it first */
+.t-window {
+  flex: none; display: flex; align-items: center;
+  justify-content: space-between; gap: 10px; padding: 5px 12px;
+  border-top: 1px solid var(--border); background: var(--panel);
+  font-size: 12px; color: var(--text-dim);
+}
+.t-window .btn { flex: none; padding: 2px 10px; font-size: 12px; }
+
 /* ============ inspector: the docked details panel ============ */
 /* The right edge owns it: a column beside the panes that speaks the
    selection — the row's own facts (never a round trip), quick verbs

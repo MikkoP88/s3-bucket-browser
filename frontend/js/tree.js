@@ -10,6 +10,15 @@ import { api, subscribeStream } from './api.js';
 import { el, srcIconEl } from './util.js';
 import { t } from './i18n.js';
 
+// A source can hold more folders than any sidebar should seat as rows
+// at once, so the tree renders a window of its flattened order:
+// TREE_WINDOW rows to start, grown a page at a time by the scroll
+// seam, the walk past the edge and the strip’s own verb —
+// append-only, never a rebuild. The side footer keeps speaking the
+// true count; the window never lies about the tree it seats.
+const TREE_WINDOW = 400;
+const TREE_PAGE = 400;
+
 export class Tree {
   // guardOf(bucket, source) returns the cached guard state for the bucket
   // row icons ({versioning, lockEnabled, lockMode, lockDays} or null);
@@ -54,12 +63,35 @@ export class Tree {
     this.walkId = null;
     this.taBuf = '';
     this.taTimer = 0;
+    // the rendered window over the flattened order (this.order): the
+    // growth roads widen it, a fresh render re-arms it
+    this.order = [];
+    this.win = 0;
     // the tree is a keyboard surface: the container is the focus seat
     // (tabindex in the markup) and owns the walk grammar below — the
     // listener sits under the document chain and stops every key it
     // handles, so the grid walk never moves under a tree seat
     this.container.addEventListener('keydown', (e) => this.keydown(e));
     this.container.addEventListener('focusin', () => this.ensureSeat());
+    // the windowed tail (.t-window): when the flattened order outgrows
+    // the rendered window the strip under the tree speaks the whole
+    // truth — how many rows are shown, how many exist — and carries the
+    // verb that grows the seat. It sits OUTSIDE the tree (a real button
+    // is not a treeitem), a sibling under the scrolling container.
+    this.stripText = el('span', { class: 't-window-text' });
+    this.stripBtn = el('button', { class: 'btn', type: 'button' });
+    this.stripBtn.addEventListener('click', () => this.ensure(this.win + TREE_PAGE));
+    this.strip = el('div', { class: 't-window hidden' }, this.stripText, this.stripBtn);
+    this.container.after(this.strip);
+    // the scroll seam: the last seated row is the sentinel — when the
+    // scroll brings it near, the window grows a page, landing before the
+    // eye arrives. An IntersectionObserver speaks on every registration
+    // too (the initial non-intersecting report still invokes the
+    // callback), so only a true crossing grows.
+    this.growIo = new IntersectionObserver((ents) => {
+      if (!ents.some((en) => en.isIntersecting)) return;
+      this.ensure(this.win + TREE_PAGE);
+    }, { root: this.container, rootMargin: '800px 0px' });
   }
 
   nodeKey(source, bucket, prefix) { return `bkt:${source}:${bucket}:${prefix}`; }
@@ -495,6 +527,9 @@ export class Tree {
     if (this.walkRow()) return;
     const rows = this.visibleRows();
     if (!rows.length) return;
+    const cn = this.nodes.get(this.currentId);
+    const ci = cn ? this.order.indexOf(cn) : -1;
+    if (ci >= this.win) { this.ensure(ci + 1); this.seat(this.visibleRows()[ci]); return; }
     this.seat(rows.find((r) => r.dataset.tid === this.currentId) || rows[0]);
   }
 
@@ -511,20 +546,24 @@ export class Tree {
   // last key, case-folded, prefix on the label) and jumps to the next
   // visible match from the seat — a miss holds the seat and keeps
   // the keys for the next letter
-  typeFeed(ch, rows, from) {
+  typeFeed(ch, from) {
     this.taBuf = (this.taBuf + ch).toLowerCase().slice(-64);
     clearTimeout(this.taTimer);
     this.taTimer = setTimeout(() => {
       this.taBuf = '';
       this.onTypeahead?.('');
     }, 600);
-    const labels = rows.map((r) => {
-      const nd = this.nodes.get(r.dataset.tid);
-      return nd ? nd.label.toLowerCase() : '';
-    });
-    for (let k = 1; k <= rows.length; k++) {
-      const j = (from + k) % rows.length;
-      if (labels[j].startsWith(this.taBuf)) { this.seat(rows[j]); break; }
+    // the buffer walks the whole order — a match past the window grows
+    // the seat it names (the seated rows are the order’s own prefix, so
+    // one index law serves both)
+    const labels = this.order.map((nd) => nd.label.toLowerCase());
+    for (let k = 1; k <= labels.length; k += 1) {
+      const j = (from + k) % labels.length;
+      if (labels[j].startsWith(this.taBuf)) {
+        this.ensure(j + 1);
+        this.seat(this.visibleRows()[j]);
+        break;
+      }
     }
     this.onTypeahead?.(this.taBuf);
   }
@@ -563,15 +602,29 @@ export class Tree {
     };
     let handled = true;
     switch (e.key) {
-      case 'ArrowDown': if (i < rows.length - 1) this.seat(rows[i + 1]); break;
+      case 'ArrowDown': {
+        if (i < rows.length - 1) this.seat(rows[i + 1]);
+        // a walk off the seated edge grows the window to the row it names
+        else if (rows.length < this.order.length) {
+          this.ensure(i + 2);
+          this.seat(this.visibleRows()[i + 1]);
+        }
+        break;
+      }
       case 'ArrowUp': if (i > 0) this.seat(rows[i - 1]); break;
       case 'Home': this.seat(rows[0]); break;
-      case 'End': this.seat(rows[rows.length - 1]); break;
+      case 'End': {
+        this.ensure(this.order.length); // the far end seats the whole order
+        const rs = this.visibleRows();
+        this.seat(rs[rs.length - 1]);
+        break;
+      }
       case 'ArrowRight': {
         if (!expandable && !loadable) break; // a leaf keeps its seat — the key is still consumed
         if (!open) toggle(true);
         else {
-          const nx = rows[i + 1];
+          this.ensure(i + 2); // the first child past the window grows the seat
+          const nx = this.visibleRows()[i + 1];
           const nn = nx && this.nodes.get(nx.dataset.tid);
           if (nn && nn.level > n.level) this.seat(nx); // the first child
         }
@@ -602,7 +655,7 @@ export class Tree {
         break;
       }
       default:
-        if (e.key.length === 1) this.typeFeed(e.key, rows, i);
+        if (e.key.length === 1) this.typeFeed(e.key, i);
         else handled = false;
     }
     if (handled) { e.preventDefault(); e.stopPropagation(); }
@@ -657,12 +710,22 @@ export class Tree {
     const roots = [...this.nodes.values()].filter((n) => n.kind === 'source');
     roots.sort((a, b) => (a.label.toLowerCase() < b.label.toLowerCase() ? -1 : 1));
     this.container.replaceChildren();
+    // the flattened order every law shares (the walk, the window, the
+    // footer’s truth): roots sorted, depth-first through open nodes —
+    // under a filter only visible rows and their subtrees survive (the
+    // same gate renderNode seats, mirrored here so the order can never
+    // drift from the rows)
+    const order = [];
+    const flat = (n) => {
+      if (this.visibleSet && !this.visibleSet.has(n.id)) return;
+      order.push(n);
+      const open = this.visibleSet ? !this.filterCollapsed.has(n.id) : n.expanded;
+      if (open) for (const c of n.children) flat(c);
+    };
     if (this.filter) {
       this.visibleSet = this.computeVisibility();
-      for (const r of roots) {
-        if (this.visibleSet.has(r.id)) this.container.appendChild(this.renderNode(r));
-      }
-      if (!this.container.children.length) {
+      for (const r of roots) flat(r);
+      if (!order.length) {
         const note = el('div', {
           class: 'tree-empty-note',
           text: t('treeFilterNone', { q: this.filterQuery }),
@@ -677,12 +740,21 @@ export class Tree {
         }
         this.container.appendChild(note);
       }
-      this.visibleCount = this.container.querySelectorAll('.tnode').length;
     } else {
       this.visibleSet = null;
-      for (const r of roots) this.container.appendChild(this.renderNode(r));
-      this.visibleCount = this.container.querySelectorAll('.tnode').length;
+      for (const r of roots) flat(r);
     }
+    this.order = order;
+    this.visibleCount = order.length; // the footer speaks the truth, never the seat
+    // a fresh render re-arms the window — a viewport, not state — but the
+    // current row always seats: navigation IS a focus move, and the
+    // container cannot name a row that does not exist
+    this.win = Math.min(order.length, TREE_WINDOW);
+    const cur = this.nodes.get(this.currentId);
+    const ci = cur ? order.indexOf(cur) : -1;
+    if (ci >= this.win) this.win = Math.min(order.length, Math.ceil((ci + 1) / TREE_PAGE) * TREE_PAGE);
+    for (let i = 0; i < this.win; i += 1) this.container.appendChild(this.renderNode(order[i]));
+    this.syncWindow();
     // the container names the walked row the way every listing body
     // does — the reader speaks the seat the walk or the navigation
     // last seated
@@ -690,6 +762,36 @@ export class Tree {
     if (wr) this.container.setAttribute('aria-activedescendant', wr.id);
     else this.container.removeAttribute('aria-activedescendant');
     this.onRender?.();
+  }
+
+  // ensure seats at least n rows of the flattened order, append-only:
+  // the growth roads (the scroll seam, the walk past the edge, the
+  // strip’s own verb) widen the window without a re-render — a wider
+  // window is not a model change — rounding up to a whole page so a far
+  // walk lands on a page boundary.
+  ensure(n) {
+    if (n <= this.win) return;
+    const target = Math.min(this.order.length, Math.ceil(n / TREE_PAGE) * TREE_PAGE);
+    if (target <= this.win) return;
+    for (let i = this.win; i < target; i += 1) this.container.appendChild(this.renderNode(this.order[i]));
+    this.win = target;
+    this.syncWindow();
+  }
+
+  // syncWindow speaks the window’s own truth: hidden while everything
+  // fits — a small world renders whole, exactly the old law — naming
+  // what is shown of what exists the moment it does not, and keeping
+  // the seam’s sentinel honest (the last seated row).
+  syncWindow() {
+    this.growIo.disconnect();
+    if (this.win >= this.order.length) {
+      this.strip.classList.add('hidden');
+      return;
+    }
+    this.stripText.textContent = t('treeShown', { shown: this.win, total: this.order.length });
+    this.stripBtn.textContent = t('treeMore');
+    this.strip.classList.remove('hidden');
+    this.growIo.observe(this.container.lastElementChild);
   }
 
   // guardIcons builds the versioning / object-lock indicators shown after a
@@ -845,12 +947,9 @@ export class Tree {
     }
 
     n.el = row;
-    const frag = document.createDocumentFragment();
-    frag.appendChild(row);
-    if (open && n.children.length) {
-      for (const c of n.children) frag.appendChild(this.renderNode(c));
-    }
-    return frag;
+    // row-only: render() seats the flattened order (the window’s law),
+    // so the recursion that once lived here is the flatten’s job now
+    return row;
   }
 
   // Reveal + expand the path to a location (after navigation from grid).

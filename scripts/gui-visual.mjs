@@ -13867,6 +13867,110 @@ await step('gallery-scale', async () => {
   await evalPage(() => localStorage.removeItem('s3b-gallery'));
 });
 
+// ---------- scale: the tree face survives its own five thousand ----------
+await step('tree-scale', async () => {
+  // The rows, search and tile faces all learned the window law; the
+  // sidebar never did — one expansion of a date-partitioned bucket
+  // seated every folder row at once. The tree now renders a window of
+  // its flattened order: four hundred rows to start, the strip under
+  // the tree speaking the whole truth, the scroll seam, the walk and
+  // the strip’s verb growing it append-only, and the side footer
+  // always speaking the true count. archive-cold hosts the world
+  // again (empty by boot law; nothing after this step reads it, and
+  // the bucket is re-emptied and the source re-folded at the tail).
+  await evalPage(() => {
+    const objs = [];
+    for (let i = 0; i < 5000; i += 1) {
+      objs.push({ key: `folder-${String(i).padStart(4, '0')}/`, isDir: true,
+        lastModified: Date.now() - (i + 1) * 60000, storageClass: 'STANDARD' });
+    }
+    window.__shim.world.objects['archive-cold'] = objs;
+  });
+  const foldTwist = () => evalPage(() => {
+    const row = [...document.querySelectorAll('#tree .tnode')]
+      .find((r) => (r.querySelector('.tlabel') || {}).textContent === 'archive-cold');
+    if (row) row.querySelector('.twist').click();
+    return !!row;
+  });
+  // the row click is the road: the view re-lists archive-cold and the
+  // tree follows (updateObjectsDir seats the folder level expanded) —
+  // and the current row lands at the order's head, index 0, so the
+  // window is not forced open by a late current row (the ensure-current
+  // law would rightly grow the seat to reach a current row buried
+  // behind five thousand siblings)
+  await clickTree('archive-cold');
+  await waitFor(() => evalPage(() => window.__s3bTree.order.length === 5011
+    && window.__s3bTree.win === 400), 8000, 'window seated');
+  await ok('the tree seats a window of the five thousand folders, not the world', evalPage(() =>
+    document.querySelectorAll('#tree .tnode').length === 400
+    && window.__s3bTree.order.length === 5011));
+  await ok('the strip under the tree speaks the whole truth with its verb', evalPage(() => {
+    const s = document.querySelector('#tree + .t-window');
+    return !!s && !s.classList.contains('hidden')
+      && s.textContent.includes(`Showing 400 of ${window.__s3bTree.order.length}`)
+      && s.querySelector('button').textContent.trim() === 'Show more';
+  }));
+  await ok('the side footer keeps speaking the true count, never the seat', evalPage(() => {
+    const f = document.getElementById('side-foot');
+    const c = document.getElementById('side-foot-count');
+    return !f.classList.contains('hidden')
+      && (c.textContent || '').trim() === `${window.__s3bTree.order.length} items`;
+  }));
+  // the scroll seam grows the window a page as the scroll approaches the end
+  await evalPage(() => { const tr = document.getElementById('tree'); tr.scrollTop = tr.scrollHeight; });
+  await ok('the scroll seam grows the window a page', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#tree .tnode').length === 800), 5000, 'seam growth'));
+  await evalPage(() => document.querySelector('#tree + .t-window button').click());
+  await ok('the strip’s verb grows the window another page', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#tree .tnode').length === 1200
+    && document.querySelector('#tree + .t-window').textContent.includes('Showing 1200 of 5011')), 5000, 'verb growth'));
+  // the walk’s far jump seats the whole order and names its end (the
+  // strip button owns focus after its click — re-seat the tree first)
+  await page.focus('#tree');
+  await page.keyboard.press('End');
+  await ok('End grows the seat to the last row of the order and names it', waitFor(async () => evalPage(() => {
+    const g = window.__s3bTree;
+    if (document.querySelectorAll('#tree .tnode').length !== g.order.length) return false;
+    const named = document.getElementById('tree').getAttribute('aria-activedescendant');
+    const last = g.order[g.order.length - 1];
+    const seat = named ? document.getElementById(named) : null;
+    return !!seat && seat.dataset.tid === last.id && seat.classList.contains('focus');
+  }), 8000, 'end walk'));
+  await page.keyboard.press('Home');
+  await ok('Home walks back to the first row with the seat still named', evalPage(() => {
+    const g = window.__s3bTree;
+    const named = document.getElementById('tree').getAttribute('aria-activedescendant');
+    const seat = named ? document.getElementById(named) : null;
+    return g.win === g.order.length && !!seat && seat.dataset.tid === g.order[0].id
+      && document.querySelectorAll('#tree .tnode').length === g.order.length;
+  }));
+  // the filter narrows the world: the window hides when everything
+  // fits (the law is the same under a filter), and the dim-ancestor
+  // law survives the scale
+  await page.click('#sidebar-head .side-filter');
+  await page.fill('#tree-filter-input', 'folder-49');
+  await page.press('#tree-filter-input', 'Enter');
+  await ok('the filter narrows the five thousand to its hundred needles and the window hides', waitFor(async () => evalPage(() => {
+    const g = window.__s3bTree;
+    return g.order.length === 101 && document.querySelectorAll('#tree .tnode').length === 101
+      && document.querySelector('#tree + .t-window').classList.contains('hidden');
+  }), 5000, 'filter narrows'));
+  await ok('the dim ancestor law survives the scale', evalPage(() =>
+    !!document.querySelector('#tree .tnode.dim')));
+  // leave the world canonical: filter cleared and the panel closed,
+  // the source re-folded, the bucket re-emptied
+  await page.fill('#tree-filter-input', '');
+  await page.press('#tree-filter-input', 'Enter');
+  await waitFor(() => evalPage(() => window.__s3bTree.order.length === 5011), 5000, 'filter cleared');
+  await page.click('#sidebar-head .side-filter');
+  await foldTwist();
+  await evalPage(() => { window.__shim.world.objects['archive-cold'] = []; });
+  await ok('tree-scale leaves the world canonical', waitFor(async () => evalPage(() =>
+    document.querySelectorAll('#tree .tnode').length === 11
+    && document.querySelector('#tree + .t-window').classList.contains('hidden')
+    && (window.__shim.world.objects['archive-cold'] || []).length === 0), 4000, 'tree folded'));
+});
+
 // ---------- settings honor walk (every control + every default) ----------
 await step('settings-honor', async () => {
   // The whole-surface companion to settings-dialog: that step proves the
