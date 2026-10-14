@@ -1,9 +1,9 @@
 // Package doctor runs connection diagnostics against an S3 endpoint.
 //
 // The check pipeline (DNS → TCP → TLS → clock skew → auth → policy/ACL with
-// plain-language remediation) is ported from s3-bucket-tester; the S3 API
-// checks now run through the official SDK instead of hand-rolled signed
-// requests.
+// plain-language remediation, plus the account-level identity and write
+// round-trip probes) is ported from s3-bucket-tester; the S3 API checks now
+// run through the official SDK instead of hand-rolled signed requests.
 package doctor
 
 import (
@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -62,12 +63,19 @@ type CheckResult struct {
 
 // Report is the full doctor output.
 type Report struct {
-	Endpoint string        `json:"endpoint"`
-	Bucket   string        `json:"bucket,omitempty"`
-	Provider string        `json:"provider"`
-	Checks   []CheckResult `json:"checks"`
-	Warnings []string      `json:"warnings,omitempty"`
-	Summary  Summary       `json:"summary"`
+	Endpoint string `json:"endpoint"`
+	Bucket   string `json:"bucket,omitempty"`
+	Provider string `json:"provider"`
+	// Context the checks ran under: the GUI and the CLI both print these
+	// beside the verdicts, so a saved report names its own world.
+	Region    string        `json:"region,omitempty"`
+	AccessKey string        `json:"accessKey,omitempty"` // masked (first/last 4)
+	PathStyle bool          `json:"pathStyle,omitempty"`
+	TotalMs   int64         `json:"totalMs,omitempty"`
+	RanAt     time.Time     `json:"ranAt"`
+	Checks    []CheckResult `json:"checks"`
+	Warnings  []string      `json:"warnings,omitempty"`
+	Summary   Summary       `json:"summary"`
 }
 
 // Summary aggregates outcomes.
@@ -83,10 +91,16 @@ func (r *Report) ExitWorthy() bool { return r.Summary.Fail > 0 }
 
 // Run executes all checks for the client and optional bucket.
 func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS bool) *Report {
+	started := time.Now()
 	r := &Report{
-		Endpoint: c.Endpoint,
-		Bucket:   bucket,
-		Provider: c.ProviderKey,
+		Endpoint:  c.Endpoint,
+		Bucket:    bucket,
+		Provider:  c.ProviderKey,
+		Region:    c.Region,
+		PathStyle: c.PathStyle,
+	}
+	if k := c.Profile.AccessKeyID; k != "" {
+		r.AccessKey = maskKey(k)
 	}
 	if c.Endpoint == "" {
 		r.Endpoint = "https://s3." + c.Region + ".amazonaws.com (AWS default)"
@@ -121,9 +135,12 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 		}))
 	}
 
+	// Authentication only meaningfully succeeded with a bucket in hand.
+	authFailed := bucket == ""
 	if bucket != "" {
 		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkAuth(ctx, c, bucket) }))
 		if last(r.Checks).Status != StatusFail {
+			authFailed = false
 			r.Checks = append(r.Checks,
 				timedCheck(func() CheckResult { return checkPolicy(ctx, c, bucket) }),
 				timedCheck(func() CheckResult { return checkACL(ctx, c, bucket) }))
@@ -132,6 +149,19 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 				timedCheck(func() CheckResult { return skip("Bucket Policy Check", "authentication failed") }),
 				timedCheck(func() CheckResult { return skip("Bucket ACL Check", "authentication failed") }))
 		}
+	}
+
+	// Identity is account-level: ListBuckets names the owner behind the
+	// credentials even when no bucket is selected.
+	r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkIdentity(ctx, c) }))
+
+	switch {
+	case bucket == "":
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return skip("Write Round-trip Check", "no bucket selected") }))
+	case authFailed:
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return skip("Write Round-trip Check", "authentication failed") }))
+	default:
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkWriteRoundTrip(ctx, c, bucket) }))
 	}
 
 	for _, chk := range r.Checks {
@@ -146,6 +176,8 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 			r.Summary.Skip++
 		}
 	}
+	r.RanAt = started.UTC()
+	r.TotalMs = time.Since(started).Milliseconds()
 	return r
 }
 
@@ -456,6 +488,112 @@ func checkACL(ctx context.Context, c *s3client.Client, bucket string) CheckResul
 	return ares
 }
 
+// checkIdentity asks the account who it is: ListBuckets needs no bucket and
+// answers with the canonical owner, so the report can name the identity
+// behind the credentials. Keys scoped away from listing warn rather than
+// fail — they may still work perfectly against a pinned bucket.
+func checkIdentity(ctx context.Context, c *s3client.Client) CheckResult {
+	start := time.Now()
+	res := CheckResult{Check: "Credential Identity Check", Status: StatusPass}
+
+	if c.S3 == nil {
+		// Mirror of RunCheck's nil-client guard: a client without an SDK
+		// connection cannot answer who it is.
+		res.Status = StatusSkip
+		res.Detail = "no S3 client available"
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+
+	out, err := c.S3.ListBuckets(ctx, &s3.ListBucketsInput{})
+	if err != nil {
+		var httpErr *awshttp.ResponseError
+		if errors.As(err, &httpErr) && httpErr.HTTPStatusCode() == 403 {
+			res.Status = StatusWarn
+			res.Error = "credentials cannot list buckets (403)"
+			res.Detail = "access may be scoped to a single bucket"
+		} else {
+			res.Status = StatusFail
+			res.Error = err.Error()
+		}
+		res.Advice = errhelp.ForError(err)
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+
+	owner := "unknown"
+	if o := out.Owner; o != nil {
+		switch {
+		case o.DisplayName != nil && *o.DisplayName != "":
+			owner = *o.DisplayName
+		case o.ID != nil && *o.ID != "":
+			owner = *o.ID
+		}
+	}
+	info, _ := json.Marshal(map[string]any{"owner": owner, "buckets": len(out.Buckets)})
+	res.Info = info
+	res.Detail = fmt.Sprintf("owner %s, %d bucket(s) visible", owner, len(out.Buckets))
+	res.Duration = ms(time.Since(start))
+	return res
+}
+
+// checkWriteRoundTrip proves the credentials can actually land data: a
+// zero-byte probe object is written and deleted again. A read-only policy
+// warns (browsing still works); a probe that cannot be cleaned up warns
+// separately so the leftover .s3b-doctor-probe-* key is no surprise.
+func checkWriteRoundTrip(ctx context.Context, c *s3client.Client, bucket string) CheckResult {
+	start := time.Now()
+	res := CheckResult{Check: "Write Round-trip Check", Status: StatusPass}
+
+	if c.S3 == nil {
+		res.Status = StatusSkip
+		res.Detail = "no S3 client available"
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+
+	probe := fmt.Sprintf(".s3b-doctor-probe-%d", time.Now().UnixNano())
+	_, err := c.S3.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(probe),
+		Body:   strings.NewReader(""),
+	})
+	if err != nil {
+		res.Status = StatusWarn
+		res.Error = "could not write probe object: " + err.Error()
+		res.Advice = errhelp.ForError(err)
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+
+	_, derr := c.S3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(probe)})
+	if derr != nil {
+		res.Status = StatusWarn
+		res.Error = "probe written but not deleted: " + derr.Error()
+		res.Detail = "the probe key remains in the bucket"
+		res.Advice = errhelp.ForError(derr)
+		info, _ := json.Marshal(map[string]any{"probeKey": probe, "wrote": true, "deleted": false})
+		res.Info = info
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+
+	info, _ := json.Marshal(map[string]any{"probeKey": probe, "wrote": true, "deleted": true})
+	res.Info = info
+	res.Detail = "wrote and deleted " + probe
+	res.Duration = ms(time.Since(start))
+	return res
+}
+
+// maskKey renders an access key ID with only its first and last four
+// characters visible — enough to recognize, never enough to reuse.
+func maskKey(k string) string {
+	if len(k) <= 8 {
+		return strings.Repeat("*", len(k))
+	}
+	return k[:4] + "…" + k[len(k)-4:]
+}
+
 // CheckNames returns the full list of check names in execution order (stable).
 // The GUI uses this to render the available checks before running them.
 func CheckNames() []string {
@@ -467,6 +605,8 @@ func CheckNames() []string {
 		"Bucket Authentication Check",
 		"Bucket Policy Check",
 		"Bucket ACL Check",
+		"Credential Identity Check",
+		"Write Round-trip Check",
 	}
 }
 
@@ -508,6 +648,13 @@ func RunCheck(ctx context.Context, c *s3client.Client, bucket, name string, inse
 		return timedCheck(func() CheckResult { return checkPolicy(ctx, c, bucket) }), nil
 	case "Bucket ACL Check":
 		return timedCheck(func() CheckResult { return checkACL(ctx, c, bucket) }), nil
+	case "Credential Identity Check":
+		return timedCheck(func() CheckResult { return checkIdentity(ctx, c) }), nil
+	case "Write Round-trip Check":
+		if bucket == "" {
+			return timedCheck(func() CheckResult { return skip("Write Round-trip Check", "no bucket selected") }), nil
+		}
+		return timedCheck(func() CheckResult { return checkWriteRoundTrip(ctx, c, bucket) }), nil
 	default:
 		// Unreachable (name was validated above), but satisfy the compiler.
 		return CheckResult{}, fmt.Errorf("unknown check: %s", name)
@@ -516,12 +663,7 @@ func RunCheck(ctx context.Context, c *s3client.Client, bucket, name string, inse
 
 // knownCheck reports whether name is a check RunCheck can run.
 func knownCheck(name string) bool {
-	for _, n := range CheckNames() {
-		if n == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(CheckNames(), name)
 }
 
 // isNoSuchPolicyError matches the NoSuchBucketPolicy response.

@@ -1704,6 +1704,18 @@ export function doctorDialog(bucket) {
   const warnBox = el('div', {});
   const meta = el('div', { class: 'kv' });
 
+  // Check groups: the registry's names arranged in three categories; names a
+  // newer backend adds land in a trailing catch-all instead of disappearing.
+  const DOC_GROUPS = [
+    ['Connectivity', ['DNS Resolution Check', 'TCP Connectivity Check', 'TLS Certificate Check', 'Clock Skew Check']],
+    ['Bucket access', ['Bucket Authentication Check', 'Bucket Policy Check', 'Bucket ACL Check']],
+    ['Identity & writes', ['Credential Identity Check', 'Write Round-trip Check']],
+  ];
+  const groupOf = (name) => {
+    for (const [g, names] of DOC_GROUPS) if (names.includes(name)) return g;
+    return 'More checks';
+  };
+
   const fmtDur = (c) => (c && typeof c.durationMs === 'number' ? `${c.durationMs} ms` : '');
 
   // detail body for one check: advice, error, info (each hidden if absent).
@@ -1781,10 +1793,29 @@ export function doctorDialog(bucket) {
   }
 
   const rows = new Map();
+  const verdict = el('div', { class: 'doc-verdict' });
+  let lastReport = null;
   const setSummary = (s) => {
     summary.textContent = s
       ? t('doctor.summary', { pass: s.pass, warn: s.warn, fail: s.fail, skip: s.skip })
       : '';
+    // the verdict banner speaks the run's shape before any row is read
+    verdict.className = 'doc-verdict';
+    verdict.replaceChildren();
+    if (!s) return;
+    if (s.fail > 0) {
+      verdict.classList.add('danger');
+      verdict.textContent = `${s.fail} failing check(s) — see details below`;
+    } else if (s.warn > 0) {
+      verdict.classList.add('warn');
+      verdict.textContent = `${s.warn} warning(s) — everything else passed`;
+    } else if (s.pass > 0) {
+      verdict.classList.add('ok');
+      verdict.textContent = 'All checks passed';
+    } else {
+      verdict.classList.add('skip');
+      verdict.textContent = `${s.skip} check(s) skipped`;
+    }
   };
 
   async function rerun(name) {
@@ -1805,11 +1836,16 @@ export function doctorDialog(bucket) {
     for (const r of rows.values()) r.setRunning(true);
     try {
       const rep = await api.RunDoctor(bucket);
-      meta.replaceChildren(
+      lastReport = rep;
+      const metaRows = [
         el('div', { class: 'k', text: 'Endpoint' }), el('div', { class: 'v mono', text: rep.endpoint }),
         el('div', { class: 'k', text: 'Provider' }), el('div', { class: 'v', text: rep.provider }),
         el('div', { class: 'k', text: 'Bucket' }), el('div', { class: 'v mono', text: rep.bucket || '—' }),
-      );
+      ];
+      if (rep.region) metaRows.push(el('div', { class: 'k', text: 'Region' }), el('div', { class: 'v mono', text: rep.region }));
+      if (rep.accessKey) metaRows.push(el('div', { class: 'k', text: 'Access key' }), el('div', { class: 'v mono', text: rep.accessKey }));
+      if (rep.totalMs) metaRows.push(el('div', { class: 'k', text: 'Total' }), el('div', { class: 'v mono', text: `${rep.totalMs} ms` }));
+      meta.replaceChildren(...metaRows);
       for (const c of rep.checks || []) rows.get(c.check)?.update(c);
       warnBox.replaceChildren(...(rep.warnings || []).map((w) =>
         el('div', { class: 'banner warn', text: w })));
@@ -1820,10 +1856,28 @@ export function doctorDialog(bucket) {
     for (const r of rows.values()) r.setRunning(false);
   }
 
+  const copyBtn = el('button', {
+    class: 'btn',
+    text: 'Copy report',
+    title: 'Copy the full report as JSON',
+    onclick: async () => {
+      if (!lastReport) return;
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(lastReport, null, 2));
+        copyBtn.textContent = 'Copied \u2713';
+        setTimeout(() => { copyBtn.textContent = 'Copy report'; }, 1500);
+      } catch {
+        toast('Clipboard unavailable', 'error');
+      }
+    },
+  });
+
   const pop = openPopout({
     id: `doctor${bucket ? `:${bucket}` : ''}`,
     title: `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`,
-    body: el('div', {}, summary, meta, el('div', { style: 'height:10px' }), list, warnBox),
+    body: el('div', {},
+      el('div', { class: 'doc-top' }, verdict, copyBtn),
+      summary, meta, el('div', { style: 'height:10px' }), list, warnBox),
     wide: true,
     buttons: [
       { label: t('doctor.runAll'), class: 'primary', onclick: () => runAll() },
@@ -1832,10 +1886,25 @@ export function doctorDialog(bucket) {
 
   // already floating: focus() did the work — don't re-fetch the check list
   if (pop.fresh) api.DoctorChecks().then((names) => {
-    for (const name of names) {
-      const r = makeRow(name);
-      rows.set(name, r);
-      list.appendChild(r.row);
+    // grouped fill: registry order within each group, groups in their own
+    // order, unknown names trailing under the catch-all label
+    const seated = [];
+    const seen = new Set();
+    for (const [g, groupNames] of DOC_GROUPS) {
+      const inGroup = names.filter((n) => groupNames.includes(n));
+      if (!inGroup.length) continue;
+      inGroup.forEach((n) => seen.add(n));
+      seated.push([g, inGroup]);
+    }
+    const rest = names.filter((n) => !seen.has(n));
+    if (rest.length) seated.push([groupOf(rest[0]), rest]);
+    for (const [g, groupNames] of seated) {
+      list.appendChild(el('div', { class: 'doc-group', text: g }));
+      for (const name of groupNames) {
+        const r = makeRow(name);
+        rows.set(name, r);
+        list.appendChild(r.row);
+      }
     }
   }).catch((err) => toast(`Doctor: ${err}`, 'error'));
 }
@@ -3170,9 +3239,9 @@ const GUIDE_SECTIONS = [
     ['The Delete Window', 'Every destructive action — selection deletes, bucket deletes, version purges, force-emptying — confirms in the same window: it counts first (what, how many, how big), states the consequence in plain language, and asks you to type for the biggest ones (removing a bucket means typing its name). On versioned buckets you choose between a restorable delete marker, clearing old versions, or permanent deletion. Settings → Deleting tunes the gates.'],
   ]],
   ['Administration', [
-    ['Admin panel', 'Right-click a bucket → Admin panel: versioning, policy, ACL, CORS, lifecycle, encryption, public-access block, website, tags, versions and lock — one tabbed dialog.'],
+    ['Admin panel', 'Right-click a bucket → Admin panel: versioning, policy, ACL, CORS, lifecycle, encryption, public-access block, website, tags, versions and lock — one dialog with the tabs grouped into General, Security & access and Data & content, an Overview dashboard of stat cards, and arrows walking the rail.'],
     ['New bucket, one step', 'New bucket… on the sidebar’s background menu or an S3 source’s context menu creates the bucket and seats its data source in one gesture — the newborn source appears in the tree and its empty contents open. Deleting a bucket removes its data source with it. Account-wide S3 sources from older workspaces split into one source per bucket automatically the first time the account is reachable (on demand too: the source editor’s Split button, or s3b source split on the CLI).'],
-    ['Doctor', 'Help → Doctor opens a picker of your S3 sources — choose one and it runs a guided diagnosis: DNS → TCP → TLS → clock → auth → permissions, with one-click re-runs of individual checks. Right-clicking a bucket → Doctor… goes straight there.'],
+    ['Doctor', 'Help → Doctor opens a picker of your S3 sources — choose one and it runs a guided diagnosis: DNS → TCP → TLS → clock → auth → permissions → credential identity → a write round-trip, grouped by category under a verdict banner, with one-click re-runs of individual checks and Copy report for the full JSON. Right-clicking a bucket → Doctor… goes straight there.'],
     ['Presign & storage class', 'The context menu creates time-limited pre-signed URLs and converts objects between storage classes (server-side copy).'],
     ['Properties', 'Context menu → Properties shows full metadata for buckets, folders, objects and sources — provider, region, versioning, lock, encryption, policy state.'],
   ]],
@@ -3953,10 +4022,83 @@ function renderDiff(box, aText, bText) {
 // ---------- bucket admin panel (M3) ----------
 export function adminDialog(bucket, onChanged) {
   const TABS = ['Overview', 'Security', 'Policy', 'ACL', 'CORS', 'Lifecycle', 'Encryption', 'Website', 'Tags', 'Versions', 'Lock'];
-  const strip = el('div', { class: 'tabstrip' });
+  // The rail: the same eleven tabs arranged in three categories (rail order
+  // is the groups' own; TABS stays the flat registry).
+  const GROUPS = [
+    ['General', ['Overview', 'Versions', 'Tags']],
+    ['Security & access', ['Security', 'Policy', 'ACL', 'Encryption', 'Lock']],
+    ['Data & content', ['CORS', 'Lifecycle', 'Website']],
+  ];
+  // completeness guard: a TABS name no group seats lands in a trailing
+  // group instead of vanishing from the dialog
+  {
+    const seatedNames = GROUPS.flatMap(([, names]) => names);
+    if (seatedNames.length !== TABS.length || TABS.some((x) => !seatedNames.includes(x))) {
+      GROUPS.push(['More', TABS.filter((x) => !seatedNames.includes(x))]);
+    }
+  }
+  const TAB_DESC = {
+    Overview: 'Identity and protection at a glance',
+    Security: 'Public access block — the four gates',
+    Policy: 'The bucket policy document and its risks',
+    ACL: 'Access control lists (read-only)',
+    CORS: 'Which browsers may call this bucket',
+    Lifecycle: 'Transition and expiration rules',
+    Encryption: 'Default at-rest encryption for new objects',
+    Website: 'Static website hosting',
+    Tags: 'Cost-allocation tags',
+    Versions: 'Version statistics and cleanup tools',
+    Lock: 'Object lock (WORM) retention',
+  };
+  const strip = el('div', { class: 'tabstrip', role: 'tablist', 'aria-orientation': 'vertical' });
+  const navBucket = el('div', { class: 'admin-nav-bucket mono', text: bucket });
+  const navRegion = el('div', { class: 'admin-nav-region', text: 'region: …' });
+  const tabBtns = {};
+  strip.appendChild(el('div', { class: 'admin-nav-head' }, navBucket, navRegion));
+  for (const [g, names] of GROUPS) {
+    strip.appendChild(el('div', { class: 'tabgroup', text: g }));
+    for (const t of names) {
+      const b = el('button', {
+        class: 'tab', type: 'button', role: 'tab', 'data-tab': t,
+        text: t, onclick: () => select(t),
+      });
+      b.tabIndex = -1;
+      b.setAttribute('aria-selected', 'false');
+      tabBtns[t] = b;
+      strip.appendChild(b);
+    }
+  }
+  // the rail walks: arrows/Home/End move the selection with focus (roving
+  // tabindex — one tab stop for the whole strip)
+  strip.addEventListener('keydown', (e) => {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    const order = GROUPS.flatMap(([, names]) => names);
+    const i = order.indexOf(active);
+    let j = null;
+    if (e.key === 'ArrowDown') j = Math.min(order.length - 1, i + 1);
+    else if (e.key === 'ArrowUp') j = Math.max(0, i - 1);
+    else if (e.key === 'Home') j = 0;
+    else if (e.key === 'End') j = order.length - 1;
+    if (j === null || j === i) return;
+    e.preventDefault();
+    select(order[j]);
+    tabBtns[order[j]].focus();
+  });
+  const seatTab = (name) => {
+    for (const [t, b] of Object.entries(tabBtns)) {
+      const on = t === name;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+      b.tabIndex = on ? 0 : -1;
+    }
+  };
+  const tabheadT = el('div', { class: 'tabhead-t' });
+  const tabheadD = el('div', { class: 'tabhead-d' });
+  const tabhead = el('div', { class: 'tabhead' }, tabheadT, tabheadD);
   const content = el('div', { class: 'tabbody' });
   let panel = null;
   let active = 'Overview';
+  seatTab(active);
 
   const errBox = (e) => el('div', { class: 'banner warn', text: String(e) });
 
@@ -3973,39 +4115,64 @@ export function adminDialog(bucket, onChanged) {
   async function reload() {
     content.replaceChildren(el('div', { class: 'field', text: 'Loading…' }));
     panel = await api.GetBucketAdmin(bucket);
+    navRegion.textContent = `region: ${panel.region || '—'}`;
     drawTab(active);
   }
   function select(name) {
     active = name;
-    strip.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+    seatTab(name);
     drawTab(name);
   }
 
   function drawTab(name) {
     if (!panel) return;
+    tabheadT.textContent = name;
+    tabheadD.textContent = TAB_DESC[name] || '';
     switch (name) {
       case 'Overview': {
+        const pabOn = panel.pab
+          ? ['blockPublicAcls', 'ignorePublicAcls', 'blockPublicPolicy', 'restrictPublicBuckets'].filter((k) => panel.pab[k]).length : 0;
+        const card = (title, value, hint, tone) => el('div', { class: `stat-card${tone ? ` ${tone}` : ''}` },
+          el('div', { class: 'stat-k', text: title }),
+          el('div', { class: 'stat-v', text: value }),
+          hint ? el('div', { class: 'stat-h', text: hint }) : null,
+        );
         content.replaceChildren(
           panel.publicWarning ? el('div', { class: 'banner danger', text: `\u26A0 ${panel.publicWarning}` }) : null,
-          el('div', { class: 'kv' },
+          el('div', { class: 'stat-grid' },
+            card('Versioning', panel.versions || 'off',
+              panel.versions === 'Enabled' ? 'versions retained' : 'never configured',
+              panel.versions === 'Enabled' ? 'ok' : 'warn'),
+            card('Public access block', panel.pab ? `${pabOn} of 4 on` : '—',
+              pabOn === 4 ? 'all gates closed' : 'some gates open',
+              pabOn === 4 ? 'ok' : 'danger'),
+            card('Default encryption', panel.encryption?.algorithm || 'none',
+              panel.encryption?.kmsKeyId ? `KMS key: ${panel.encryption.kmsKeyId}` : 'applied to new objects',
+              panel.encryption?.algorithm ? 'ok' : 'warn'),
+            card('Object lock', panel.lock?.enabled ? 'enabled' : 'off',
+              panel.lock?.enabled ? `permanent — ${panel.lock.mode || 'on'}${panel.lock.days ? `, ${panel.lock.days}d` : ''}` : 'WORM protection available',
+              panel.lock?.enabled ? 'ok' : ''),
+          ),
+          el('div', { class: 'kv', style: 'margin-top:12px' },
             el('div', { class: 'k', text: 'Bucket' }), el('div', { class: 'v mono', text: bucket }),
             el('div', { class: 'k', text: 'Region' }), el('div', { class: 'v mono', text: panel.region || '—' }),
-            el('div', { class: 'k', text: 'Versioning' }), el('div', { class: 'v', text: panel.versions || 'off (never configured)' }),
-            el('div', { class: 'k', text: 'Object Lock' }), el('div', { class: 'v', text: panel.lock?.enabled
-              ? `enabled — ${panel.lock.mode || 'on'}${panel.lock.days ? `, ${panel.lock.days}d default retention` : ''}` : 'off' }),
-            el('div', { class: 'k', text: 'Default encryption' }), el('div', { class: 'v', text: panel.encryption?.algorithm
-              ? `${panel.encryption.algorithm}${panel.encryption.kmsKeyId ? ` (${panel.encryption.kmsKeyId})` : ''}` : 'none set' }),
-            el('div', { class: 'k', text: 'Public access block' }), el('div', { class: 'v', text: panel.pab
-              ? `${['blockPublicAcls', 'ignorePublicAcls', 'blockPublicPolicy', 'restrictPublicBuckets'].filter((k) => panel.pab[k]).length} of 4 on`
-              : '—' }),
             el('div', { class: 'k', text: 's3:// URI' }), el('div', { class: 'v mono', text: `s3://${bucket}` }),
           ),
-          el('div', { style: 'margin-top:12px' },
+          el('div', { style: 'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap' },
             el('button', {
               class: 'btn',
               text: panel.versions === 'Enabled' ? 'Suspend versioning' : 'Enable versioning',
               onclick: () => save(() => api.SetBucketVersioning(bucket, panel.versions !== 'Enabled'), 'Versioning updated'),
-            })),
+            }),
+            el('button', {
+              class: 'btn',
+              text: 'Copy s3:// URI',
+              onclick: async () => {
+                try { await navigator.clipboard.writeText(`s3://${bucket}`); toast(`Copied s3://${bucket}`, 'ok'); }
+                catch { toast('Clipboard unavailable', 'error'); }
+              },
+            }),
+          ),
         );
         break;
       }
@@ -4055,8 +4222,22 @@ export function adminDialog(bucket, onChanged) {
           ) : null,
           ...(s?.warnings || []).map((w) => el('div', { class: 'banner warn', text: w })),
           raw,
-          el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
-            el('button', { class: 'btn primary', text: 'Save policy', onclick: () => save(() => api.PutBucketPolicy(bucket, raw.value), 'Policy saved') }),
+          el('div', { style: 'display:flex;gap:8px;margin-top:10px;flex-wrap:wrap' },
+            el('button', {
+              class: 'btn', text: 'Format JSON',
+              onclick: () => {
+                try { raw.value = JSON.stringify(JSON.parse(raw.value), null, 2); }
+                catch (e) { toast(`Invalid JSON: ${e}`, 'error'); }
+              },
+            }),
+            el('button', {
+              class: 'btn primary', text: 'Save policy',
+              onclick: () => {
+                try { JSON.parse(raw.value); }
+                catch (e) { toast(`Invalid JSON — not saved: ${e}`, 'error'); return; }
+                save(() => api.PutBucketPolicy(bucket, raw.value), 'Policy saved');
+              },
+            }),
             el('button', { class: 'btn danger', text: 'Delete policy', onclick: () => save(() => api.DeleteBucketPolicy(bucket), 'Policy removed') }),
           ),
         );
@@ -4383,10 +4564,9 @@ export function adminDialog(bucket, onChanged) {
     }
   }
 
-  strip.replaceChildren(...TABS.map((t) => el('div', { class: 'tab', 'data-tab': t, text: t, onclick: () => select(t) })));
   openModal({
     title: `Admin panel — ${bucket}`,
-    body: el('div', { class: 'admin' }, strip, content),
+    body: el('div', { class: 'admin' }, strip, el('div', { class: 'admin-main' }, tabhead, content)),
     cls: 'admin-modal',
     buttons: [{ label: 'Close' }],
   });

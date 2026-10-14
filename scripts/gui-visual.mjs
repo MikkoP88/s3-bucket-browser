@@ -1061,17 +1061,23 @@ function shim() {
     PickSaveProfileFile: () => 'C:\\Users\\demo\\Documents\\saved.s3bprofile',
     PickFolder: () => 'C:\\Users\\demo\\Downloads',
     TestProfile: () => ({ ok: true, message: 'OK — visual shim' }),
-    DoctorChecks: () => ['Connectivity', 'Authentication', 'Clock skew', 'TLS handshake', 'List permission'],
+    DoctorChecks: () => ['DNS Resolution Check', 'TCP Connectivity Check', 'TLS Certificate Check', 'Clock Skew Check', 'Bucket Authentication Check', 'Bucket Policy Check', 'Bucket ACL Check', 'Credential Identity Check', 'Write Round-trip Check'],
     RunDoctor: (bucket) => ({
       endpoint: 's3.visual.shim', provider: 'aws', bucket: bucket || '',
+      region: 'eu-central-1', accessKey: 'AKIA…DEMO', pathStyle: false,
+      totalMs: 312, ranAt: daysAgo(0),
       warnings: [],
-      summary: { pass: 4, warn: 1, fail: 0, skip: 0 },
+      summary: { pass: 8, warn: 1, fail: 0, skip: 0 },
       checks: [
-        { check: 'Connectivity', status: 'pass', durationMs: 42, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'TCP+TLS to s3.visual.shim:443' },
-        { check: 'Authentication', status: 'pass', durationMs: 61, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'SigV4 accepted' },
-        { check: 'Clock skew', status: 'warn', durationMs: 5, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'Skew 310 s — inside the 900 s SigV4 window but drifting' },
-        { check: 'TLS handshake', status: 'pass', durationMs: 88, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'TLS 1.3' },
-        { check: 'List permission', status: 'pass', durationMs: 70, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'ListBuckets ok' },
+        { check: 'DNS Resolution Check', status: 'pass', durationMs: 12, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 's3.visual.shim resolved' },
+        { check: 'TCP Connectivity Check', status: 'pass', durationMs: 21, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'TCP to s3.visual.shim:443' },
+        { check: 'TLS Certificate Check', status: 'pass', durationMs: 88, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'TLS 1.3' },
+        { check: 'Clock Skew Check', status: 'warn', durationMs: 5, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'Skew 310 s — inside the 900 s SigV4 window but drifting' },
+        { check: 'Bucket Authentication Check', status: 'pass', durationMs: 61, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'SigV4 accepted' },
+        { check: 'Bucket Policy Check', status: 'pass', durationMs: 34, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'no public statements' },
+        { check: 'Bucket ACL Check', status: 'pass', durationMs: 18, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'ACLs private' },
+        { check: 'Credential Identity Check', status: 'pass', durationMs: 40, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'owner visual-shim-owner, 3 bucket(s) visible', info: { owner: 'visual-shim-owner', buckets: 3 } },
+        { check: 'Write Round-trip Check', status: 'pass', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'probe written and deleted', info: { probeKey: '.s3b-doctor-probe-1234', wrote: true, deleted: true } },
       ],
     }),
     RunDoctorCheck: (name) => ({ check: name, status: 'pass', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 're-run ok' }),
@@ -4583,6 +4589,41 @@ await step('doctor', async () => {
     await waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop^="doctor"]').textContent)).includes('warn'), 4000, 'report');
     const call = await findCall('RunDoctor');
     await ok('RunDoctor addressed the picked bucket', call && call.args[0] === 'www-assets');
+    // v2: the report meta names region / masked key / total, the checks sit
+    // in their three groups, the verdict banner speaks the warn, Copy report
+    // flips, and the identity row expands to its owner info
+    await ok('doctor meta names region, masked key and total', waitFor(async () => {
+      const txt = await evalPage(() => document.querySelector('#popout-root .popout[data-pop^="doctor"]').textContent);
+      return txt.includes('eu-central-1') && txt.includes('AKIA…DEMO') && txt.includes('312 ms');
+    }, 4000, 'doctor meta'));
+    await ok('checks grouped by category', waitFor(async () => {
+      const gs = await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop^="doctor"] .doc-group')).map((g) => g.textContent.trim()));
+      return gs.join('|') === 'Connectivity|Bucket access|Identity & writes';
+    }, 4000, 'doctor groups'));
+    await ok('verdict banner warns', waitFor(async () => await evalPage(() => {
+      const v = document.querySelector('#popout-root .doc-verdict');
+      return !!v && v.classList.contains('warn') && v.textContent.includes('warning');
+    }), 4000, 'doctor verdict'));
+    await evalPage(() => { navigator.clipboard.writeText = async () => {}; });
+    const copyBtn = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop^="doctor"] button'))
+      .find((b) => /copy report/i.test(b.textContent)) || null);
+    if (copyBtn) {
+      await copyBtn.asElement().click();
+      await ok('copy report flips to Copied', waitFor(async () => (await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop^="doctor"] button')).some((b) => b.textContent.includes('Copied \u2713')))), 4000, 'copy flip'));
+    } else {
+      await ok('copy report flips to Copied', false);
+    }
+    const idRow = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop^="doctor"] .doc-row'))
+      .find((r) => (r.querySelector('.doc-name')?.textContent || '') === 'Credential Identity Check') || null);
+    if (idRow) {
+      await idRow.asElement().click();
+      await ok('identity row expands to owner info', waitFor(async () => await evalPage(() => {
+        const d = document.querySelector('#popout-root .popout[data-pop^="doctor"] .doc-row .doc-detail:not(.hidden)');
+        return !!d && d.textContent.includes('owner');
+      }), 4000, 'identity detail'));
+    } else {
+      await ok('identity row expands to owner info', false);
+    }
   }
   await shotOf('doctor', '#popout-root .popout[data-pop^="doctor"]');
   await closePopout('doctor');
@@ -4611,6 +4652,21 @@ await step('admin-panel', async () => {
       return tr.width > 0 && tr.left >= r.left - 0.5 && tr.right <= r.right + 0.5;
     });
   }));
+  // v2 rail: three category groups, real tab buttons under a vertical
+  // tablist with roving selection, the Overview dashboard, and the walk
+  await ok('rail groups the tabs in three categories', (await evalPage(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tabgroup')).map((g) => g.textContent.trim()))).join('|') === 'General|Security & access|Data & content');
+  await ok('rail is a vertical tablist of real tab buttons', evalPage(() => {
+    const s = document.querySelector('#modal-root .tabstrip');
+    if (!s || s.getAttribute('role') !== 'tablist' || s.getAttribute('aria-orientation') !== 'vertical') return false;
+    const tabs = Array.from(s.querySelectorAll('.tab'));
+    return tabs.length === 11 && tabs.every((t) => t.tagName === 'BUTTON' && t.getAttribute('role') === 'tab')
+      && tabs.filter((t) => t.getAttribute('aria-selected') === 'true').length === 1;
+  }));
+  await ok('overview dashboard seats four stat cards', evalPage(() => document.querySelectorAll('#modal-root .stat-card').length === 4));
+  await ok('overview head named', (await evalPage(() => document.querySelector('#modal-root .tabhead-t')?.textContent.trim() || '')) === 'Overview');
+  await evalPage(() => { const b = document.querySelector('#modal-root .tabstrip .tab[aria-selected="true"]'); if (b) b.focus(); });
+  await page.keyboard.press('ArrowDown');
+  await ok('arrow walks the rail', waitFor(async () => (await evalPage(() => document.querySelector('#modal-root .tabstrip .tab[aria-selected="true"]')?.dataset.tab || '')) === 'Versions', 4000, 'rail walk'));
   await shotOf('admin-panel', '#modal-root .modal.admin-modal');
   // walk ALL 11 tabs: each must render real content (not stuck on Loading…)
   // and keep the geometry audit clean — tabs render synchronously from the
@@ -4626,6 +4682,7 @@ await step('admin-panel', async () => {
       const t = await evalPage(() => document.querySelector('#modal-root .tabbody')?.textContent || '');
       return t.length > 0 && !t.trimStart().startsWith('Loading');
     }, 3000, `tab ${name} content`));
+    await ok(`tab "${name}" head named`, (await evalPage(() => document.querySelector('#modal-root .tabhead-t')?.textContent.trim() || '')) === name);
     await ok(`tab "${name}" layout clean`, (await layoutAudit()).ok);
   }
   // shots of two denser tabs (policy JSON, lifecycle rules); the Policy stop

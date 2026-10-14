@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/doctor"
@@ -61,7 +62,7 @@ func presignCmd() *cobra.Command {
 func doctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:               "doctor [s3://bucket]",
-		Short:             "Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, bucket policy, ACL",
+		Short:             "Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, policy, ACL, credential identity, write round-trip",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -99,6 +100,12 @@ func printDoctorReport(rep *doctor.Report) {
 	if rep.Bucket != "" {
 		fmt.Printf("bucket:   %s\n", rep.Bucket)
 	}
+	if rep.Region != "" {
+		fmt.Printf("region:   %s\n", rep.Region)
+	}
+	if rep.AccessKey != "" {
+		fmt.Printf("key:      %s\n", rep.AccessKey)
+	}
 	fmt.Println()
 	for _, chk := range rep.Checks {
 		switch chk.Status {
@@ -134,6 +141,9 @@ func printDoctorReport(rep *doctor.Report) {
 	fmt.Println()
 	fmt.Printf("summary: %d pass, %d warn, %d fail, %d skip\n",
 		rep.Summary.Pass, rep.Summary.Warn, rep.Summary.Fail, rep.Summary.Skip)
+	if rep.TotalMs > 0 {
+		fmt.Printf("total:   %d ms (ran at %s)\n", rep.TotalMs, rep.RanAt.Format(time.RFC3339))
+	}
 }
 
 func versionCmd() *cobra.Command {

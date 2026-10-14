@@ -1056,6 +1056,24 @@ html[data-theme="dark"] .doc-pill.warn { background: rgba(253, 214, 99, .12); }
   padding: 8px; overflow: auto; max-height: 220px; white-space: pre;
 }
 .doc-cmd { margin-top: 4px; font-size: 12px; }
+/* Doctor v2 extras: verdict banner, grouped rows, copy-report row */
+.doc-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.doc-top .btn { flex: none; }
+.doc-verdict {
+  font-weight: 600; font-size: 12.5px; border-radius: 6px; padding: 6px 10px;
+  border: 1px solid var(--border-soft);
+}
+.doc-verdict:empty { display: none; }
+.doc-verdict.ok { border-color: rgba(27, 127, 59, .4); background: rgba(27, 127, 59, .08); color: var(--ok); }
+.doc-verdict.warn { border-color: rgba(154, 103, 0, .4); background: rgba(154, 103, 0, .08); color: var(--warn); }
+html[data-theme="dark"] .doc-verdict.warn { background: rgba(253, 214, 99, .10); border-color: rgba(253, 214, 99, .35); }
+.doc-verdict.danger { border-color: rgba(179, 38, 30, .4); background: rgba(179, 38, 30, .08); color: var(--danger); }
+.doc-verdict.skip { color: var(--text-dim); }
+.doc-group {
+  color: var(--text-dim); font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; margin: 10px 0 4px;
+}
+.doc-list .doc-group:first-child { margin-top: 0; }
 
 /* Doctor source picker (Help → Doctor): one row per S3 source */
 .picker-hint { color: var(--text-dim); font-size: 12.5px; margin-bottom: 10px; }
@@ -1393,6 +1411,39 @@ kbd {
 .tab:hover { background: var(--hover); }
 .tab.active { color: var(--text); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
 .tabbody { padding-top: 12px; min-height: 320px; }
+/* Admin panel v2: a vertical rail — the same tabs grouped in three
+   categories, real buttons with a roving tabindex, bucket + region head */
+.admin { flex-direction: row; align-items: stretch; }
+.admin .tabstrip {
+  flex: 0 0 184px; flex-direction: column; flex-wrap: nowrap;
+  border-bottom: none; border-right: 1px solid var(--border);
+  padding: 10px 6px; gap: 1px; overflow-y: auto;
+}
+.admin .tab {
+  background: none; border: none; font: inherit; text-align: left;
+  width: 100%; border-radius: 4px; padding: 6px 10px;
+}
+.admin .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.admin .tab.active { box-shadow: inset 2px 0 0 var(--accent); }
+.admin-nav-head { padding: 2px 10px 10px; border-bottom: 1px solid var(--border-soft); margin-bottom: 6px; }
+.admin-nav-bucket { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-nav-region { color: var(--text-dim); font-size: 11.5px; margin-top: 2px; }
+.tabgroup {
+  color: var(--text-dim); font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; padding: 10px 10px 4px;
+}
+.admin-main { flex: 1; min-width: 0; padding-left: 14px; }
+.tabhead { padding: 2px 0 10px; border-bottom: 1px solid var(--border-soft); margin-bottom: 12px; }
+.tabhead-t { font-weight: 700; font-size: 14px; }
+.tabhead-d { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.stat-card { border: 1px solid var(--border-soft); border-radius: 6px; padding: 10px; min-width: 0; }
+.stat-card.ok { border-left: 3px solid var(--ok); }
+.stat-card.warn { border-left: 3px solid var(--warn); }
+.stat-card.danger { border-left: 3px solid var(--danger); }
+.stat-k { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+.stat-v { font-weight: 700; font-size: 14px; margin-top: 3px; overflow-wrap: anywhere; }
+.stat-h { color: var(--text-dim); font-size: 11.5px; margin-top: 3px; }
 
 /* Usage guide / supported-sources dialogs */
 .guide { max-width: 640px; }

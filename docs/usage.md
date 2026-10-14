@@ -884,7 +884,17 @@ source whose bucket is gone never lingers.
 
 ![New bucket — the newborn source's empty landing](screenshots/new-bucket.png)
 
-Right-click a bucket → **Admin panel**: one tabbed dialog for
+Right-click a bucket → **Admin panel**: one dialog whose tabs sit in a
+category rail — General, Security & access, Data & content — real
+buttons under a vertical tablist the arrow keys walk, with the bucket
+name and its region headed above them and every pane opening under its
+own title and one-line description. The Overview tab is a dashboard:
+four stat cards (versioning, public-access block, default encryption,
+object lock) tinted by their tone, the bucket identity with its s3://
+URI one click from the clipboard, and the versioning toggle where it
+always lived; the Policy tab adds a Format JSON button and refuses to
+save a policy that does not parse. The rest of the dialog rides
+unchanged —
 versioning, policy, ACL, CORS, lifecycle rules, default encryption,
 public-access block, static website and tags — plus a versions overview
 and the object-lock tab. Everything the CLI's `s3b bucket …` tree
@@ -898,11 +908,16 @@ the job's own source.
 
 - **Doctor** — Help → Doctor opens a picker of your S3 sources — pick one
   and the guided diagnosis runs: DNS → TCP → TLS → clock → auth →
-  permissions (the clock check compares your system time against the
+  permissions → credential identity → a write round-trip (the clock check
+  compares your system time against the
   server's Date header and names the RequestTimeTooSkewed rejection
   before it ever fires), with plain-language remediation and one-click
   re-runs of individual checks — in a floating window that doesn't
-  block the app while it runs.
+  block the app while it runs. The checks sit grouped by category under
+  a verdict banner (failing count, warning count, all-clear), the
+  report header carries the region, the masked access key and the total
+  run time, and a Copy report button puts the full JSON on the
+  clipboard.
   Right-clicking a bucket or data source → **Doctor…** skips the picker
   and diagnoses that target directly (same window, same checks).
 - **License** — Help → License shows the app's license identity (PolyForm
