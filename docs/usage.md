@@ -66,6 +66,12 @@ or the welcome screen) reads:
 - **KMS / secrets services** — HashiCorp Vault, AWS Secrets Manager,
   Azure Key Vault, GCP Secret Manager — including fully custom HTTP
   endpoints (URL / JSON path / headers)
+- **Manual entry** — *Enter manually…* types the fields directly: S3
+  (endpoint, region, access keys, session token, an optional pinned
+  bucket) or any remote protocol (host, port, username, password,
+  start directory). Required fields are marked; the secret is stashed
+  on the Go side like every other candidate, so the live test and the
+  import path are exactly the file and service roads.
 
 Every candidate is listed with a live **bucket-count test** before you
 commit. Picks accumulate: add from several files and services in one
@@ -573,7 +579,12 @@ sources carry the
   Any source type binds to it — S3, SFTP, FTP, WebDAV, local drives —
   and inside the run it remembers where you left it, reopening
   there (closing the app forgets: the next run starts over at the
-  home folder). Drag between
+  home folder). The pane’s empty-area **Paste** works even where the
+  pane sits at an empty location: an S3 binding with no bucket open
+  asks which bucket should take the paste (the pick navigates the pane
+  there and the transfer lands in it; Cancel pastes nowhere), and a
+  directory-less workstation side lands the paste in the workstation
+  home. Drag between
   panes transfers, and **Compare** — on the global bar, since it
   needs both sides — color-codes newer / older / size-diff /
   only-here between the two sides, with the strip under the toolbar

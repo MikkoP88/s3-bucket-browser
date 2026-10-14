@@ -3138,7 +3138,7 @@ export function helpSheet() {
 const GUIDE_SECTIONS = [
   ['Getting started', [
     ['Add a data source', 'Click the + button next to DATA SOURCES on the left (or the button on the empty state). Every connection is a data source — an S3 source is one bucket, a remote source one server root, a local source one folder; click one to browse it in the main view.'],
-    ['Import existing credentials', '"Import S3 Credential" (File menu or the empty state) reads credential files — AWS INI (~/.aws/credentials), rclone, JSON, .env, encrypted .s3bprofile — or a KMS service (Vault, AWS SM, Azure, GCP). Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3. Test each candidate before importing. Picks accumulate — add from several files and services, remove any row (or clear all), then import the checked ones.'],
+    ['Import existing credentials', '"Import S3 Credential" (File menu or the empty state) reads credential files — AWS INI (~/.aws/credentials), rclone, JSON, .env, encrypted .s3bprofile — or a KMS service (Vault, AWS SM, Azure, GCP), or typed by hand (Enter manually…). Profiles with an endpoint_url become MinIO/R2/Wasabi/… sources; plain profiles connect to Amazon S3. Test each candidate before importing. Picks accumulate — add from several files and services, remove any row (or clear all), then import the checked ones.'],
     ['Save your workspace', 'Data sources live in the session until saved. Ctrl+S / File → Save profile file writes an encrypted .s3bprofile you can reopen, keep or share (unsaved sessions land in Save-as); the status bar counts unsaved sources.'],
     ['Secrets', 'Keys and passwords are stored in the OS keyring (Windows Credential Manager, macOS Keychain, Linux SecretService) when available, with a 0600-permission file fallback on headless hosts.'],
     ['Settings', 'The Settings menu opens one dialog with a page tree: theme (light/dark), 15 languages, view options, network timeouts and S3 retries, the transfer engine (multipart part size, parts in flight, stall threshold), delete gates and security — including the opt-in Secure Storage mode that encrypts the whole source store. Every change applies immediately; no restart.'],
@@ -5531,6 +5531,96 @@ function kmsFetchDialog(onCandidates) {
   });
 }
 
+// MANUAL_CRED_KINDS lists what the Go side accepts from AddCredentialDraft.
+const MANUAL_CRED_KINDS = [
+  ['s3', 'S3 / object storage'],
+  ['sftp', 'SFTP'],
+  ['scp', 'SCP'],
+  ['ftp', 'FTP'],
+  ['ftps', 'FTPS'],
+  ['webdav', 'WebDAV'],
+  ['webdavs', 'WebDAVS (HTTPS)'],
+];
+
+// MANUAL_CRED_DEFS speaks the parser alias grammar: every key is a name
+// the Go side already resolves, so one flat map builds the Source the
+// same way an INI section would. Fields marked * are required.
+const MANUAL_CRED_DEFS = {
+  s3: [
+    ['name', 'Name (optional)', ''],
+    ['endpoint', 'Endpoint (optional for AWS)', 'https://s3.example.com'],
+    ['region', 'Region (optional)', 'us-east-1'],
+    ['accessKey', 'Access key ID *', ''],
+    ['secretKey', 'Secret access key *', ''],
+    ['sessionToken', 'Session token (optional)', ''],
+    ['bucket', 'Bucket to pin (optional)', ''],
+  ],
+  remote: [
+    ['name', 'Name (optional)', ''],
+    ['host', 'Host *', 'storage.example.com'],
+    ['port', 'Port (optional)', '22'],
+    ['user', 'Username *', ''],
+    ['password', 'Password', ''],
+    ['root', 'Start directory (optional)', '/data'],
+  ],
+};
+
+// manualCredDialog collects one typed credential and stages it through
+// AddCredentialDraft — the third origin beside files and services. The
+// secret crosses the bridge only inside the call and lands in the stash
+// like every other candidate, so Test/Import/Discard ride unchanged.
+function manualCredDialog(onAdd) {
+  const kind = el('select', { class: 'input' }, MANUAL_CRED_KINDS.map(([v, l]) => el('option', { value: v }, l)));
+  const holder = el('div', { style: 'margin-top:4px' });
+  const status = el('div', { class: 'dlg-status' });
+  const inputs = {};
+  const defs = () => (kind.value === 's3' ? MANUAL_CRED_DEFS.s3 : MANUAL_CRED_DEFS.remote);
+  const drawFields = () => {
+    holder.replaceChildren(...defs().flatMap(([key, label, ph]) => {
+      const inp = inputs[key] || (inputs[key] = el('input', {
+        class: `input${/key|token|secret|password/i.test(key) ? ' mono' : ''}`,
+        type: /secret|password|token/i.test(key) ? 'password' : 'text',
+        placeholder: ph, spellcheck: 'false', autocomplete: 'off',
+      }));
+      return [el('label', { class: 'field', text: label }), inp];
+    }));
+  };
+  kind.onchange = drawFields;
+  drawFields();
+  openModal({
+    title: 'Enter credentials manually',
+    body: el('div', {},
+      el('label', { class: 'field', text: 'Type' }), kind,
+      holder,
+      el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'Fields marked * are required; the rest are optional. The secret is stashed on the Go side and never shown again — Test and Import work exactly like file and service candidates.' }),
+      status,
+    ),
+    buttons: [
+      { label: 'Cancel' },
+      {
+        label: 'Add', class: 'primary',
+        onclick: async () => {
+          const fields = {};
+          for (const def of defs()) {
+            const v = (inputs[def[0]]?.value || '').trim();
+            if (v) fields[def[0]] = v;
+          }
+          status.textContent = 'Adding\u2026';
+          status.style.color = 'var(--text-dim)';
+          try {
+            const cs = await api.AddCredentialDraft(kind.value, fields);
+            document.querySelector('#modal-root .modal-head .x')?.click();
+            onAdd(cs);
+          } catch (e) {
+            status.textContent = String(e);
+            status.style.color = 'var(--danger)';
+          }
+        },
+      },
+    ],
+  });
+}
+
 // importCredsDialog (the "Import S3 Credential" dialog): pick credential
 // files and fetch from KMS services — several picks accumulate in one
 // list, any row can be removed (or the whole list cleared), and closing
@@ -5578,7 +5668,7 @@ export function importCredsDialog(onImported) {
       ));
     }
     if (!candidates.length) {
-      list.appendChild(el('div', { class: 'cred-empty', text: 'No candidates yet — pick a credential file or fetch from a secrets service.' }));
+      list.appendChild(el('div', { class: 'cred-empty', text: 'No candidates yet — pick a file, fetch from a secrets service, or enter credentials manually.' }));
       return;
     }
     for (const c of candidates) {
@@ -5675,7 +5765,7 @@ export function importCredsDialog(onImported) {
     title: 'Import S3 Credential',
     onClose: () => api.DiscardCredentialDrafts(candidates.map((c) => c.id)),
     body: el('div', {},
-      el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'Turn connection credentials into data sources. Files: AWS CLI INI, rclone.conf, JSON (any shape), .env, or an exported .s3bprofile. Services: Vault, AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or any custom HTTP endpoint.' }),
+      el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'Turn connection credentials into data sources. Files: AWS CLI INI, rclone.conf, JSON (any shape), .env, or an exported .s3bprofile. Services: Vault, AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or any custom HTTP endpoint. Manual: type the fields directly.' }),
       list,
       status,
     ),
@@ -5683,6 +5773,12 @@ export function importCredsDialog(onImported) {
     buttons: [
       { label: 'From file\u2026', onclick: async () => { await fromFiles(); } },
       { label: 'From service\u2026', onclick: () => kmsFetchDialog((cs) => {
+        const { added, refreshed } = add(cs);
+        status.textContent = `Added ${added} candidate(s)` +
+          (refreshed ? ` \u2014 ${refreshed} refreshed (already listed)` : '');
+        status.style.color = 'var(--text-dim)';
+      }) },
+      { label: 'Enter manually\u2026', onclick: () => manualCredDialog((cs) => {
         const { added, refreshed } = add(cs);
         status.textContent = `Added ${added} candidate(s)` +
           (refreshed ? ` \u2014 ${refreshed} refreshed (already listed)` : '');

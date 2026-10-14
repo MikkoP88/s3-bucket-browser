@@ -315,6 +315,7 @@ function shim() {
     importBuckets: {
       'cand-file1': ['from-file-photos', 'from-file-logs'],
       'cand-kms1': ['hetzner-kms'],
+      'cand-manual1': ['team-files'],
     },
     objects: {
       'team-files': [
@@ -522,6 +523,7 @@ function shim() {
   world.kmsCandidates = [
     { id: 'cand-kms1', name: 'hetzner-kms', type: 's3', endpoint: 'hel1.your-objectstorage.com', host: '', username: '', hasSecret: true, origin: 'http://kms.local/secret/s3' },
   ];
+  world.manualCandidates = [];
 
   // children of a key-space (S3 prefix or anchored remote dir)
   function children(all, prefix, anchored) {
@@ -1578,13 +1580,23 @@ function shim() {
     PickCredentialFiles: () => ['C:\\Users\\demo\\Downloads\\credentials'],
     TestCredentialDraft: () => ({ ok: true, message: 'connected — 2 bucket(s) visible' }),
     KmsFetch: (service) => JSON.parse(JSON.stringify(world.kmsCandidates)),
+    // manual entry: the typed flat map comes back as one stashed candidate
+    // (the real backend validates and derives names — the shim mirrors the
+    // happy path; the refusal grammar lives in the Go rig)
+    AddCredentialDraft: (kind, fields) => {
+      world.manualCandidates = [{
+        id: 'cand-manual1', name: (fields && fields.name) || 'manual-s3', type: kind || 's3',
+        endpoint: (fields && fields.endpoint) || '', host: '', username: '', hasSecret: true, origin: 'manual entry',
+      }];
+      return JSON.parse(JSON.stringify(world.manualCandidates));
+    },
     // the backend contract: per-bucket expansion + idempotent re-import —
     // an existing bucket-scoped source is UPDATED in place, never duplicated
     ImportCredentials: (ids) => {
       const imported = [];
       const updated = [];
       for (const id of ids || []) {
-        const c = [...world.credCandidates, ...world.kmsCandidates].find((x) => x.id === id);
+        const c = [...world.credCandidates, ...world.kmsCandidates, ...(world.manualCandidates || [])].find((x) => x.id === id);
         if (!c) continue;
         for (const b of world.importBuckets[c.id] || []) {
           if (world.sources.some((s) => s.name === b)) {
@@ -9335,6 +9347,61 @@ await step('import-creds-kms', async () => {
   await ok('KMS-imported source appears in the tree', true);
 });
 
+await step('import-creds-manual', async () => {
+  // the third origin: typed fields. Enter manually opens its own modal
+  // (nested over the import dialog), one flat map of friendly names
+  // reaches AddCredentialDraft, the candidate returns for review with the
+  // manual-entry origin, and Import rides the same stash law — the
+  // re-import of an existing bucket-scoped source updates in place, so
+  // the tree gains no new root (the tree-scale pin downstream stays whole)
+  await resetCalls();
+  await page.locator('#menubar .mb-title').first().click(); // File
+  await sleep(80);
+  const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+    .find((i) => /import s3 credential/i.test(i.textContent)) || null);
+  await ok('File→Import S3 Credential present', !!item);
+  if (!item) return;
+  await item.asElement().click();
+  await waitFor(modalVisible, 4000, 'import dialog');
+  const em = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^enter manually/i.test(b.textContent.trim())) || null);
+  await ok('Enter manually… button present beside the file and service roads', !!em);
+  if (!em) return;
+  await em.asElement().click();
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent))
+    .includes('Enter credentials manually'), 4000, 'manual dialog');
+  await ok('manual dialog opened over the import dialog', true);
+  // the s3 form reads its values at Add time, so setting them directly is
+  // the honest fill: name, endpoint, access key, secret key
+  await evalPage(() => {
+    const inp = Array.from(document.querySelectorAll('#modal-root input'));
+    inp[0].value = 'manual-test';
+    inp[1].value = 'https://manual.example.com';
+    inp[3].value = 'AKIAMANUAL';
+    inp[4].value = 'manual-secret';
+  });
+  const add = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^add$/i.test(b.textContent.trim())) || null);
+  if (add) await add.asElement().click();
+  await waitFor(async () => (await findCall('AddCredentialDraft')) !== null, 4000, 'AddCredentialDraft');
+  const c = await findCall('AddCredentialDraft');
+  await ok('typed fields reach the backend as one flat map', !!c && c.args[0] === 's3'
+    && c.args[1].name === 'manual-test' && c.args[1].endpoint === 'https://manual.example.com'
+    && c.args[1].accessKey === 'AKIAMANUAL' && c.args[1].secretKey === 'manual-secret');
+  // the manual dialog closes and the import dialog comes back with the row
+  await waitFor(async () => !!(await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row'))
+    .find((r) => r.textContent.includes('manual-test') && r.textContent.includes('manual entry')) || null)), 4000, 'manual candidate row');
+  await ok('import dialog re-shown with the typed candidate for review', true);
+  const imp = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^import$/i.test(b.textContent.trim())) || null);
+  if (imp) await imp.asElement().click();
+  await waitFor(async () => (await findCall('ImportCredentials')) !== null, 4000, 'import call');
+  const ic = await findCall('ImportCredentials');
+  await ok('imports the manual candidate like any other', ic && JSON.stringify(ic.args[0]) === '["cand-manual1"]');
+  await sleep(200);
+  await ok('no new tree root: the existing bucket source updates in place', await evalPage(() => Array.from(document.querySelectorAll('#tree .tlabel'))
+    .filter((l) => l.textContent === 'team-files').length) === 1);
+});
 await step('search-samename-source', async () => {
   // a source named after its bucket (the credential import's own naming)
   // reads once: the Search window's Source column shows the name alone,
@@ -9419,6 +9486,104 @@ await step('pane-search-names', async () => {
   });
 });
 
+await step('pane-empty-paste', async () => {
+  // a paste aimed at a pane sitting at an empty location finds the pane
+  // a home — the pane’s own empty-area verb routes through the pane’s
+  // destination instead of being carried off by the document chain’s
+  // main-view preference. A local binding with no directory open (the
+  // roots view) lands the paste in the workstation home; an S3 binding
+  // sitting on its bucket list asks which bucket, cancels honestly, and
+  // lands the pick in the pane itself
+  await resetCalls();
+  // idle the transfer queue so nothing floats a window over the work
+  // below (the os-clipboard steps’ own dance)
+  await evalPage(() => { window.__shim.world.transfers = []; });
+  // seed the app clipboard: one selected row in team-files, copied for
+  // real (trusted click — a synthetic click would leave the selection
+  // empty and make the copy a silent no-op)
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'team-files rows');
+  {
+    const h = await page.evaluateHandle(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === 'readme.md') || null);
+    const rowEl = h.asElement();
+    if (!rowEl) throw new Error('no readme.md row');
+    await rowEl.click();
+  }
+  await page.keyboard.press('Control+c');
+  await waitFor(async () => evalPage(() => (window.__shim.calls || []).some((x) => x.m === 'OsClipboardSetFiles')), 6000, 'copy mirror');
+  // leg 1: the pane’s local binding at the roots view — a real grid
+  // (the drives), but no directory open, so the pane has no destination
+  // of its own. The empty-area menu’s Paste lands in the workstation
+  // home, the same place a fresh pane navigates to
+  await evalPage(() => {
+    const p = window.__s3bSidePane;
+    p.show({ drive: false });
+    p.bindTo(null);
+    return p.refresh(); // !dir → LocalRoots + the This PC view
+  });
+  await waitFor(async () => evalPage(() => document.querySelectorAll('#local-grid-body .grid-row').length > 0), 4000, 'pane roots view');
+  await evalPage(() => { window.__shim.calls.length = 0; });
+  await evalPage(() => {
+    document.getElementById('toasts')?.replaceChildren();
+    document.getElementById('local-grid-body')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: innerWidth - 120, clientY: 260 }));
+  });
+  await ctxItem(/^paste/i);
+  await waitFor(async () => (await findCall('TransferCross')) !== null, 6000, 'home fallback transfer');
+  const c1 = await findCall('TransferCross');
+  await ok('a directory-less local pane accepts the paste into the workstation home', !!c1 && c1.args[2].kind === 'local'
+    && c1.args[2].dir === 'C:\\Users\\demo');
+  // leg 2: the pane’s S3 binding on its bucket list — the source is
+  // open, no bucket is. The empty-area Paste asks which bucket; a
+  // cancel is honest — no transfer, no lingering modal
+  await evalPage(() => {
+    const p = window.__s3bSidePane;
+    p.bindTo({ id: 'src-hetzner', name: 'hetzner', type: 's3', bucket: '' });
+    return p.start();
+  });
+  await waitFor(async () => !!(await sideRow('logs-2026')), 6000, 'pane bucket list');
+  await evalPage(() => { window.__shim.calls.length = 0; });
+  await evalPage(() => {
+    document.getElementById('toasts')?.replaceChildren();
+    document.getElementById('local-grid-body')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: innerWidth - 120, clientY: 300 }));
+  });
+  await ctxItem(/^paste/i);
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent || ''))
+    .includes('Paste into which bucket?'), 4000, 'bucket picker');
+  await ok('bucket picker lists the source buckets', evalPage(() => document.querySelectorAll('#modal-root .picker-row').length >= 3));
+  const cancel = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^cancel$/i.test(b.textContent.trim())) || null);
+  if (cancel) await cancel.asElement().click();
+  await sleep(250);
+  await ok('canceling the picker pastes nowhere', (await findCall('TransferCross')) === null && !(await modalVisible()));
+  // leg 3: pick a bucket — the pane navigates there and the transfer
+  // lands in it
+  await evalPage(() => {
+    document.getElementById('toasts')?.replaceChildren();
+    document.getElementById('local-grid-body')
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: innerWidth - 120, clientY: 300 }));
+  });
+  await ctxItem(/^paste/i);
+  await waitFor(async () => (await evalPage(() => document.getElementById('modal-root').textContent || ''))
+    .includes('Paste into which bucket?'), 4000, 'bucket picker again');
+  const bk = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .picker-row'))
+    .find((r) => r.textContent.includes('logs-2026')) || null);
+  if (bk) await bk.asElement().click();
+  await waitFor(async () => (await findCall('TransferCross')) !== null, 6000, 'bucket-pick transfer');
+  const c2 = await findCall('TransferCross');
+  await ok('picking a bucket pastes into it', !!c2 && c2.args[2].kind === 's3' && c2.args[2].source === 'src-hetzner'
+    && c2.args[2].bucket === 'logs-2026' && c2.args[2].dir === '');
+  await waitFor(async () => (await txt('#local-crumb')).includes('logs-2026'), 6000, 'pane navigated');
+  await ok('the pane itself navigates to the chosen bucket', true);
+  // leave-clean: pane hidden, remembered pane state cleared
+  await evalPage(() => {
+    window.__s3bSidePane.hide();
+    localStorage.removeItem('s3b-side-src');
+    localStorage.removeItem('s3b-side-loc');
+  });
+});
 await step('view-source-switch', async () => {
   // 'from-file-photos' is a bucket-scoped imported source: opening it pins
   // the engine to it (SetViewSource), mirrors it in the content bottom

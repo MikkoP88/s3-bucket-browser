@@ -157,6 +157,83 @@ func serviceLabel(service string, params map[string]string) string {
 	}
 }
 
+// AddCredentialDraft stages a manually-entered credential for review in
+// the import dialog — the third origin beside files and secrets services.
+// fields speaks the parsers own alias grammar (name, endpoint, region,
+// accessKey, secretKey, sessionToken, bucket for S3; host, port, user,
+// password, root for remote types), so one flat map builds the Source the
+// same way an INI section would. The secret never crosses the bridge: the
+// candidate is stashed like every other, and Test/Import/Discard ride the
+// stash law unchanged. One call, one candidate.
+func (a *App) AddCredentialDraft(kind string, fields map[string]string) ([]CredCandidate, error) {
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	var required []string
+	switch kind {
+	case profile.TypeS3:
+		required = []string{"access", "secret"}
+	case profile.TypeSFTP, profile.TypeSCP, profile.TypeFTP, profile.TypeFTPS, profile.TypeWebDAV, profile.TypeWebDAVS:
+		required = []string{"host", "user"}
+	default:
+		return nil, fmt.Errorf("unsupported credential type %q", kind)
+	}
+	for _, k := range required {
+		if strings.TrimSpace(firstVal(fields, credAliases[k]...)) == "" {
+			return nil, fmt.Errorf("%s is required", manualFieldLabel(k))
+		}
+	}
+	name := strings.TrimSpace(firstVal(fields, credAliases["name"]...))
+	if name == "" {
+		name = manualDefaultName(kind, fields)
+	}
+	src := sourceFromFlat(kind, name, fields)
+	if src.Type == profile.TypeS3 && src.S3 != nil && src.S3.Endpoint == "" {
+		// the manual form allows the endpoint under its friendly name too
+		src.S3.Endpoint = firstVal(fields, "server", "s3Url")
+	}
+	a.emitLog(LogInfo, "import", fmt.Sprintf("added manual %s candidate %q", kind, name))
+	return []CredCandidate{a.candOf(src, "manual entry")}, nil
+}
+
+// manualFieldLabel names a required field in the error the dialog shows.
+func manualFieldLabel(k string) string {
+	switch k {
+	case "access":
+		return "access key"
+	case "secret":
+		return "secret key"
+	case "user":
+		return "username"
+	default:
+		return k
+	}
+}
+
+// manualDefaultName derives a source name from what was typed when the
+// optional name field was left empty: the endpoint or host (scheme and
+// path stripped), the region for AWS-default S3, else the kind itself.
+func manualDefaultName(kind string, fields map[string]string) string {
+	if kind == profile.TypeS3 {
+		ep := firstVal(fields, credAliases["endpoint"]...)
+		if ep == "" {
+			ep = firstVal(fields, "server", "s3Url")
+		}
+		if ep != "" {
+			return hostLabel(ep)
+		}
+		if r := firstVal(fields, credAliases["region"]...); r != "" {
+			return "s3-" + r
+		}
+		return "manual-s3"
+	}
+	if h := firstVal(fields, credAliases["host"]...); h != "" {
+		return hostLabel(h)
+	}
+	return "manual-" + kind
+}
+
 // TestCredentialDraft verifies one stashed candidate without importing it
 // (S3: bucket count; remote: root listing).
 func (a *App) TestCredentialDraft(id string) TestResult {

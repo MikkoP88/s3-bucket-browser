@@ -2303,7 +2303,7 @@ function wireLocalPane() {
     if (localPane.binding.kind === 's3') { sideS3EmptyMenu(e); return; }
     const st = commandState();
     openMenu(e, [
-      ['Paste', 'Ctrl+V', () => paste(), !st.canPaste],
+      ['Paste', 'Ctrl+V', () => panePasteScoped(), !st.canPaste],
       null,
       ['Select all', 'Ctrl+A', () => localPane.grid.selectAll()],
       ['Refresh', '', () => localPane.refresh()],
@@ -3320,6 +3320,85 @@ function sidePaneDest() {
       : null;
   }
   return localPane.dir ? { kind: 'local', dir: localPane.dir } : null;
+}
+
+// paneEmptyDest answers where a paste should land when the side pane sits
+// at an empty location (no bucket open, no directory). The pane owns a
+// home even there: an S3 binding without a bucket asks which bucket to
+// target (pickPaneBucket below), and a local binding or a fresh unbound
+// pane falls back to the workstation home folder — the same place a
+// fresh pane navigates to. A hidden pane stays honestly null.
+async function paneEmptyDest() {
+  const d = sidePaneDest();
+  if (d) return d;
+  if (!localPane.visible) return null;
+  if (localPane.binding.kind === 's3') {
+    const bucket = await pickPaneBucket(localPane.binding.source);
+    return bucket ? { kind: 's3', source: localPane.binding.source, bucket, dir: '' } : null;
+  }
+  try {
+    const home = await api.LocalHome();
+    if (home) return { kind: 'local', dir: home };
+  } catch { /* no home answer — refuse below */ }
+  return null;
+}
+
+// pickPaneBucket asks which bucket of an S3-bound pane source a paste
+// should target, and navigates the pane there so the landing is visible.
+// Resolves the bucket name, or null when canceled or unavailable.
+function pickPaneBucket(source) {
+  return new Promise((resolve) => {
+    const list = el('div', { class: 'picker-list' });
+    let settled = false;
+    let modal;
+    const done = (bucket) => {
+      if (settled) return;
+      settled = true;
+      modal?.close();
+      if (bucket) localPane.openAt({ kind: 's3', source, bucket, prefix: '' });
+      resolve(bucket || null);
+    };
+    modal = openModal({
+      title: 'Paste into which bucket?',
+      body: el('div', {},
+        el('div', { class: 'picker-hint', text: 'The pane has no bucket open — pick where the paste should land.' }),
+        list,
+      ),
+      onClose: () => { if (!settled) { settled = true; resolve(null); } },
+      buttons: [{ label: 'Cancel', onclick: () => done(null) }],
+    });
+    (async () => {
+      let buckets = [];
+      try { buckets = await api.ListSourceBuckets(source); } catch { /* shown below */ }
+      if (!buckets?.length) {
+        list.appendChild(el('div', { class: 'picker-hint', text: 'No buckets visible for this source.' }));
+        return;
+      }
+      list.replaceChildren(...buckets.map((b) => {
+        const name = b.name || String(b);
+        return el('div', {
+          class: 'picker-row', role: 'button', tabindex: '0',
+          onclick: () => done(name),
+          onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') done(name); },
+        },
+        el('div', { class: 'picker-main' },
+          el('div', { class: 'picker-name', text: name }),
+          el('div', { class: 'picker-sub', text: `s3://${name}` }),
+        ));
+      }));
+    })();
+  });
+}
+
+// panePasteScoped routes the paste verb from a pane surface (its
+// empty-area menus) through the pane’s own destination, so a
+// pane-invoked verb is never carried off by the document chain’s
+// main-view preference — and an empty pane resolves a home through
+// paneEmptyDest instead of refusing outright.
+async function panePasteScoped() {
+  const dest = await paneEmptyDest();
+  if (!dest) return; // canceled picker, or nothing honest to target
+  paste(null, null, dest);
 }
 
 // startTransfer runs one background TransferCross job; resolves false when
@@ -4912,7 +4991,7 @@ async function paste(prefixOverride, bucketOverride, destOverride) {
   if (destOverride) dest = destOverride; // explicit target (side-pane/tree menus)
   else if (bucketOverride) dest = { kind: 's3', source: viewSource, bucket: bucketOverride, dir: prefixOverride !== undefined ? prefixOverride : '' };
   else if (prefixOverride !== undefined && loc?.kind === 'remote') dest = { kind: 'remote', source: loc.source, dir: prefixOverride };
-  else dest = xferDestOf(loc) || sidePaneDest();
+  else dest = xferDestOf(loc) || (await paneEmptyDest());
 
   // A winning Explorer payload is a copy and supersedes the app clipboard
   // (from here on the Explorer copy IS the clipboard, Explorer-style).
@@ -5726,7 +5805,7 @@ function sideS3EmptyMenu(e) {
   const dest = { kind: 's3', source: b.source, bucket: localPane.bucket, dir };
   const inBucket = !!localPane.bucket;
   openMenu(e, [
-    ['Paste', 'Ctrl+V', () => paste(null, null, dest), !pasteReady() || !inBucket],
+    ['Paste', 'Ctrl+V', () => panePasteScoped(), !pasteReady()],
     null,
     ...uploadMenu(
       async () => { const paths = await api.PickUploadFiles(); if (paths?.length) startTransfer({ localPaths: paths, dest }); },
