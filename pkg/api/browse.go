@@ -442,16 +442,22 @@ func (a *App) createFileC(ctx context.Context, c *s3client.Client, bucket, prefi
 // RunDoctor runs the deep diagnosis for a bucket and returns the report.
 // Tracked as a task: a full diagnosis dials the bucket a dozen times and
 // can crawl on a slow endpoint — the Running-tasks row watches and kills it.
-func (a *App) RunDoctor(bucket string) (rep *doctor.Report, err error) {
+// The write round-trip only runs when the caller allowed it (allowWrite):
+// a diagnosis must never write to the user's data unasked.
+func (a *App) RunDoctor(bucket string, allowWrite bool) (rep *doctor.Report, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return nil, err
 	}
-	a.emitLogSrc(LogInfo, "doctor", bucket, "running all checks")
+	if allowWrite {
+		a.emitLogSrc(LogInfo, "doctor", bucket, "running all checks (write test on)")
+	} else {
+		a.emitLogSrc(LogInfo, "doctor", bucket, "running all checks (write test off)")
+	}
 	task := a.tasks.add("doctor", fmt.Sprintf("s3://%s — all checks", bucket))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
-	rep = doctor.Run(ctx, c, bucket, c.Profile.Insecure)
+	rep = doctor.Run(ctx, c, bucket, c.Profile.Insecure, allowWrite)
 	if ctx.Err() != nil {
 		err = ctx.Err() // canceled mid-run: stamp the task row, not just its checks
 	}
@@ -477,8 +483,9 @@ func (a *App) DoctorChecks() []string {
 
 // RunDoctorCheck runs a single doctor check by name for a bucket and returns
 // the result (same shape as each entry of a full Report). Tracked like the
-// full run — single checks dial out too.
-func (a *App) RunDoctorCheck(bucket, name string) (res *doctor.CheckResult, err error) {
+// full run — single checks dial out too. The write round-trip honors the
+// same opt-in law (allowWrite) as the full run.
+func (a *App) RunDoctorCheck(bucket, name string, allowWrite bool) (res *doctor.CheckResult, err error) {
 	c, err := a.client("")
 	if err != nil {
 		return nil, err
@@ -486,7 +493,7 @@ func (a *App) RunDoctorCheck(bucket, name string) (res *doctor.CheckResult, err 
 	task := a.tasks.add("doctor", fmt.Sprintf("s3://%s — check %s", bucket, name))
 	ctx := task.ctx
 	defer func() { task.finish(err, false) }()
-	r, err := doctor.RunCheck(ctx, c, bucket, name, c.Profile.Insecure)
+	r, err := doctor.RunCheck(ctx, c, bucket, name, c.Profile.Insecure, allowWrite)
 	if err != nil {
 		a.emitLogSrc(LogError, "doctor", bucket, fmt.Sprintf("check %s failed to run: %v", name, err))
 		return nil, err

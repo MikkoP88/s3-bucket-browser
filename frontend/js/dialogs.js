@@ -454,12 +454,15 @@ export function openModal({ title, body, buttons = [], wide = false, cls = '', o
   document.addEventListener('keydown', trap, true);
 
   const foot = el('div', { class: 'modal-foot' },
-    buttons.map((b) => el('button', {
-      class: `btn ${b.class || ''}`,
-      text: b.label,
-      disabled: !!b.disabled,
-      onclick: () => b.onclick ? b.onclick(close) : close(null),
-    })),
+    buttons.map((b) => {
+      const btn = el('button', {
+        class: `btn ${b.class || ''}`,
+        text: b.label,
+        disabled: !!b.disabled,
+      });
+      btn.onclick = () => wireBusy(btn, () => (b.onclick ? b.onclick(close) : close(null)));
+      return btn;
+    }),
   );
 
   const box = el('div', {
@@ -556,6 +559,32 @@ function clampPop(box) {
 // footLeft: element pinned to the left end of the footer bar — style it
 // with class 'left' (see .modal-foot .left) so its margin-right:auto keeps
 // the action buttons on the right. Rendered even with no buttons.
+// wireBusy: a button whose click starts async work wears its pending
+// state — disabled, a spinner in place of the label — until the promise
+// settles. One law for every modal footer and popout action button; the
+// click's own error handling is untouched (this chain only watches).
+function wireBusy(btn, run) {
+  const r = run();
+  if (r && typeof r.then === 'function') {
+    btn.disabled = true;
+    btn.classList.add('busy');
+    Promise.resolve(r).catch(() => {}).finally(() => {
+      btn.disabled = false;
+      btn.classList.remove('busy');
+    });
+  }
+  return r;
+}
+
+// loadingBlock: the shared pending face for panel bodies — a spinner
+// beside its label instead of a bare "Loading…" string, so a slow dial
+// reads as work in flight, not a blank page.
+function loadingBlock(label) {
+  return el('div', { class: 'loading-block', role: 'status' },
+    el('span', { class: 'load-ring', 'aria-hidden': 'true' }),
+    el('span', { text: label || 'Loading…' }));
+}
+
 function openPopout({ id, title, body, buttons = [], footLeft = null, wide = false, cls = '', autoH = null, onClose }) {
   const existing = popouts.get(id);
   if (existing) { existing.focus(); return { ...existing, fresh: false }; }
@@ -583,12 +612,15 @@ function openPopout({ id, title, body, buttons = [], footLeft = null, wide = fal
 
   const foot = el('div', { class: 'modal-foot' },
     footLeft || null,
-    buttons.map((b) => el('button', {
-      class: `btn ${b.class || ''}`,
-      text: b.label,
-      disabled: !!b.disabled,
-      onclick: () => b.onclick ? b.onclick(close) : close(null),
-    })));
+    buttons.map((b) => {
+      const pb = el('button', {
+        class: `btn ${b.class || ''}`,
+        text: b.label,
+        disabled: !!b.disabled,
+      });
+      pb.onclick = () => wireBusy(pb, () => (b.onclick ? b.onclick(close) : close(null)));
+      return pb;
+    }));
 
   const box = el('div', {
     class: `popout${wide ? ' wide' : ''}${autoH ? ' autoh' : ''}${cls ? ' ' + cls : ''}`,
@@ -1701,6 +1733,12 @@ export function doctorDialog(bucket) {
   })) return;
   const summary = el('div', { class: 'doc-summary' });
   const list = el('div', { class: 'doc-list' });
+  // The write round-trip is opt-in and stays off until asked: a
+  // diagnosis must never put a probe object into the user’s data
+  // uninvited. Both the single-check rerun and Run all read the box at
+  // call time, so ticking it mid-session widens the next run honestly.
+  const allowWrite = el('input', { type: 'checkbox' });
+  const allowRow = el('label', { class: 'doc-allow' }, allowWrite, ' ', t('doctor.allowWrite'));
   const warnBox = el('div', {});
   const meta = el('div', { class: 'kv' });
 
@@ -1823,7 +1861,7 @@ export function doctorDialog(bucket) {
     if (!r) return;
     r.setRunning(true);
     try {
-      const c = await api.RunDoctorCheck(bucket, name);
+      const c = await api.RunDoctorCheck(bucket, name, allowWrite.checked);
       r.update(c);
     } catch (err) {
       r.update({ check: name, status: 'fail', error: String(err), durationMs: 0, started_at: '', finished_at: '' });
@@ -1835,7 +1873,7 @@ export function doctorDialog(bucket) {
   async function runAll() {
     for (const r of rows.values()) r.setRunning(true);
     try {
-      const rep = await api.RunDoctor(bucket);
+      const rep = await api.RunDoctor(bucket, allowWrite.checked);
       lastReport = rep;
       const metaRows = [
         el('div', { class: 'k', text: 'Endpoint' }), el('div', { class: 'v mono', text: rep.endpoint }),
@@ -1877,7 +1915,7 @@ export function doctorDialog(bucket) {
     title: `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`,
     body: el('div', {},
       el('div', { class: 'doc-top' }, verdict, copyBtn),
-      summary, meta, el('div', { style: 'height:10px' }), list, warnBox),
+      summary, meta, el('div', { style: 'height:10px' }), allowRow, list, warnBox),
     wide: true,
     buttons: [
       { label: t('doctor.runAll'), class: 'primary', onclick: () => runAll() },
@@ -1885,7 +1923,10 @@ export function doctorDialog(bucket) {
   });
 
   // already floating: focus() did the work — don't re-fetch the check list
-  if (pop.fresh) api.DoctorChecks().then((names) => {
+  if (pop.fresh) {
+    list.replaceChildren(loadingBlock(t('loading')));
+    api.DoctorChecks().then((names) => {
+    list.replaceChildren();
     // grouped fill: registry order within each group, groups in their own
     // order, unknown names trailing under the catch-all label
     const seated = [];
@@ -1907,6 +1948,7 @@ export function doctorDialog(bucket) {
       }
     }
   }).catch((err) => toast(`Doctor: ${err}`, 'error'));
+  }
 }
 
 // ---------- view history (transfers / running tasks share it) ----------
@@ -4021,12 +4063,12 @@ function renderDiff(box, aText, bText) {
 
 // ---------- bucket admin panel (M3) ----------
 export function adminDialog(bucket, onChanged) {
-  const TABS = ['Overview', 'Security', 'Policy', 'ACL', 'CORS', 'Lifecycle', 'Encryption', 'Website', 'Tags', 'Versions', 'Lock'];
+  const TABS = ['Overview', 'Security', 'Policy', 'ACL', 'CORS', 'Lifecycle', 'Encryption', 'Website', 'Tags', 'Versions', 'Object lock'];
   // The rail: the same eleven tabs arranged in three categories (rail order
   // is the groups' own; TABS stays the flat registry).
   const GROUPS = [
     ['General', ['Overview', 'Versions', 'Tags']],
-    ['Security & access', ['Security', 'Policy', 'ACL', 'Encryption', 'Lock']],
+    ['Security & access', ['Security', 'Policy', 'ACL', 'Encryption', 'Object lock']],
     ['Data & content', ['CORS', 'Lifecycle', 'Website']],
   ];
   // completeness guard: a TABS name no group seats lands in a trailing
@@ -4038,7 +4080,7 @@ export function adminDialog(bucket, onChanged) {
     }
   }
   const TAB_DESC = {
-    Overview: 'Identity and protection at a glance',
+    Overview: 'The bucket at a glance — every card opens its own page',
     Security: 'Public access block — the four gates',
     Policy: 'The bucket policy document and its risks',
     ACL: 'Access control lists (read-only)',
@@ -4047,8 +4089,8 @@ export function adminDialog(bucket, onChanged) {
     Encryption: 'Default at-rest encryption for new objects',
     Website: 'Static website hosting',
     Tags: 'Cost-allocation tags',
-    Versions: 'Version statistics and cleanup tools',
-    Lock: 'Object lock (WORM) retention',
+    Versions: 'Version statistics, the versioning switch and cleanup tools',
+    'Object lock': 'WORM retention — permanent once enabled',
   };
   const strip = el('div', { class: 'tabstrip', role: 'tablist', 'aria-orientation': 'vertical' });
   const navBucket = el('div', { class: 'admin-nav-bucket mono', text: bucket });
@@ -4102,7 +4144,8 @@ export function adminDialog(bucket, onChanged) {
 
   const errBox = (e) => el('div', { class: 'banner warn', text: String(e) });
 
-  async function save(fn, okMsg) {
+  async function save(fn, okMsg, btn) {
+    if (btn) { btn.disabled = true; btn.classList.add('busy'); }
     try {
       await fn();
       toast(okMsg, 'ok');
@@ -4110,10 +4153,12 @@ export function adminDialog(bucket, onChanged) {
       onChanged?.();
     } catch (e) {
       toast(`Failed: ${e}`, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.classList.remove('busy'); }
     }
   }
   async function reload() {
-    content.replaceChildren(el('div', { class: 'field', text: 'Loading…' }));
+    content.replaceChildren(loadingBlock('Loading bucket configuration…'));
     panel = await api.GetBucketAdmin(bucket);
     navRegion.textContent = `region: ${panel.region || '—'}`;
     drawTab(active);
@@ -4132,26 +4177,67 @@ export function adminDialog(bucket, onChanged) {
       case 'Overview': {
         const pabOn = panel.pab
           ? ['blockPublicAcls', 'ignorePublicAcls', 'blockPublicPolicy', 'restrictPublicBuckets'].filter((k) => panel.pab[k]).length : 0;
-        const card = (title, value, hint, tone) => el('div', { class: `stat-card${tone ? ` ${tone}` : ''}` },
+        // Every card is a door: clicking it opens the page that edits the
+        // value it speaks — the overview shows, the pages change.
+        const card = (title, value, hint, tone, tab) => el('button', {
+          class: `stat-card${tone ? ` ${tone}` : ''}`, type: 'button', title: `Open ${tab}`,
+          onclick: () => select(tab),
+        },
           el('div', { class: 'stat-k', text: title }),
           el('div', { class: 'stat-v', text: value }),
           hint ? el('div', { class: 'stat-h', text: hint }) : null,
+          el('span', { class: 'stat-go', 'aria-hidden': 'true', text: '›' }),
         );
+        // Contents fills when the version statistics land: the panel is
+        // drawn from GetBucketAdmin, the statistics are their own scan —
+        // the card seats immediately and speaks its numbers when ready.
+        const contentsV = el('div', { class: 'stat-v', text: '…' });
+        const contentsH = el('div', { class: 'stat-h', text: 'counting…' });
+        api.BucketVersionStats(bucket).then((st) => {
+          contentsV.textContent = `${st.currentObjects} object(s)`;
+          contentsH.textContent = `${st.versions} version(s)${st.deleteMarkers ? ` · ${st.deleteMarkers} delete marker(s)` : ''}`;
+        }).catch(() => {
+          contentsV.textContent = '—';
+          contentsH.textContent = 'statistics unavailable';
+        });
+        // The remaining config surfaces as chips: presence at a glance,
+        // each one a door to its own page.
+        const chip = (label, sub, on, tab) => el('button', {
+          class: `admin-chip${on ? ' on' : ''}`, type: 'button', title: `Open ${tab}`,
+          onclick: () => select(tab),
+        },
+          el('span', { text: label }),
+          el('span', { class: 'chip-v', text: sub }),
+        );
+        const stPol = panel.policy?.summary?.statementCount || 0;
+        const webOn = panel.website && (panel.website.indexSuffix || panel.website.errorKey || panel.website.redirectHost);
         content.replaceChildren(
           panel.publicWarning ? el('div', { class: 'banner danger', text: `\u26A0 ${panel.publicWarning}` }) : null,
           el('div', { class: 'stat-grid' },
             card('Versioning', panel.versions || 'off',
               panel.versions === 'Enabled' ? 'versions retained' : 'never configured',
-              panel.versions === 'Enabled' ? 'ok' : 'warn'),
+              panel.versions === 'Enabled' ? 'ok' : 'warn', 'Versions'),
             card('Public access block', panel.pab ? `${pabOn} of 4 on` : '—',
               pabOn === 4 ? 'all gates closed' : 'some gates open',
-              pabOn === 4 ? 'ok' : 'danger'),
+              pabOn === 4 ? 'ok' : 'danger', 'Security'),
             card('Default encryption', panel.encryption?.algorithm || 'none',
               panel.encryption?.kmsKeyId ? `KMS key: ${panel.encryption.kmsKeyId}` : 'applied to new objects',
-              panel.encryption?.algorithm ? 'ok' : 'warn'),
+              panel.encryption?.algorithm ? 'ok' : 'warn', 'Encryption'),
             card('Object lock', panel.lock?.enabled ? 'enabled' : 'off',
               panel.lock?.enabled ? `permanent — ${panel.lock.mode || 'on'}${panel.lock.days ? `, ${panel.lock.days}d` : ''}` : 'WORM protection available',
-              panel.lock?.enabled ? 'ok' : ''),
+              panel.lock?.enabled ? 'ok' : '', 'Object lock'),
+            el('button', { class: 'stat-card', type: 'button', title: 'Open Versions', onclick: () => select('Versions') },
+              el('div', { class: 'stat-k', text: 'Contents' }),
+              contentsV, contentsH,
+              el('span', { class: 'stat-go', 'aria-hidden': 'true', text: '›' }),
+            ),
+          ),
+          el('div', { class: 'admin-chips' },
+            chip('Policy', stPol ? `${stPol} statement(s)` : 'none', !!stPol, 'Policy'),
+            chip('CORS', (panel.cors || []).length ? `${panel.cors.length} rule(s)` : 'none', !!(panel.cors || []).length, 'CORS'),
+            chip('Lifecycle', (panel.lifecycle || []).length ? `${panel.lifecycle.length} rule(s)` : 'none', !!(panel.lifecycle || []).length, 'Lifecycle'),
+            chip('Website', webOn ? 'hosted' : 'off', !!webOn, 'Website'),
+            chip('Tags', (panel.tags || []).length ? `${panel.tags.length} tag(s)` : 'none', !!(panel.tags || []).length, 'Tags'),
           ),
           el('div', { class: 'kv', style: 'margin-top:12px' },
             el('div', { class: 'k', text: 'Bucket' }), el('div', { class: 'v mono', text: bucket }),
@@ -4159,11 +4245,6 @@ export function adminDialog(bucket, onChanged) {
             el('div', { class: 'k', text: 's3:// URI' }), el('div', { class: 'v mono', text: `s3://${bucket}` }),
           ),
           el('div', { style: 'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap' },
-            el('button', {
-              class: 'btn',
-              text: panel.versions === 'Enabled' ? 'Suspend versioning' : 'Enable versioning',
-              onclick: () => save(() => api.SetBucketVersioning(bucket, panel.versions !== 'Enabled'), 'Versioning updated'),
-            }),
             el('button', {
               class: 'btn',
               text: 'Copy s3:// URI',
@@ -4199,12 +4280,12 @@ export function adminDialog(bucket, onChanged) {
             el('button', {
               class: 'btn primary',
               text: 'Save',
-              onclick: () => save(() => api.PutBucketPAB(bucket, {
+              onclick: (e) => save(() => api.PutBucketPAB(bucket, {
                 blockPublicAcls: boxes.blockPublicAcls.checked,
                 ignorePublicAcls: boxes.ignorePublicAcls.checked,
                 blockPublicPolicy: boxes.blockPublicPolicy.checked,
                 restrictPublicBuckets: boxes.restrictPublicBuckets.checked,
-              }), 'Public access block saved'),
+              }), 'Public access block saved', e.currentTarget),
             })),
         );
         break;
@@ -4238,7 +4319,7 @@ export function adminDialog(bucket, onChanged) {
                 save(() => api.PutBucketPolicy(bucket, raw.value), 'Policy saved');
               },
             }),
-            el('button', { class: 'btn danger', text: 'Delete policy', onclick: () => save(() => api.DeleteBucketPolicy(bucket), 'Policy removed') }),
+            el('button', { class: 'btn danger', text: 'Delete policy', onclick: (e) => save(() => api.DeleteBucketPolicy(bucket), 'Policy removed', e.currentTarget) }),
           ),
         );
         break;
@@ -4296,8 +4377,8 @@ export function adminDialog(bucket, onChanged) {
           rowsBox,
           el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
             el('button', { class: 'btn', text: '+ Add rule', onclick: () => { rules.push({ origins: ['*'], methods: ['GET'] }); drawRules(); } }),
-            el('button', { class: 'btn primary', text: 'Save', onclick: () => save(() => api.PutBucketCORS(bucket, rules), 'CORS saved') }),
-            el('button', { class: 'btn danger', text: 'Delete all', onclick: () => save(() => api.DeleteBucketCORS(bucket), 'CORS removed') }),
+            el('button', { class: 'btn primary', text: 'Save', onclick: (e) => save(() => api.PutBucketCORS(bucket, rules), 'CORS saved', e.currentTarget) }),
+            el('button', { class: 'btn danger', text: 'Delete all', onclick: (e) => save(() => api.DeleteBucketCORS(bucket), 'CORS removed', e.currentTarget) }),
           ),
         );
         break;
@@ -4353,8 +4434,8 @@ export function adminDialog(bucket, onChanged) {
           rowsBox,
           el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
             el('button', { class: 'btn', text: '+ Add rule', onclick: () => { rules.push({ id: `rule-${rules.length + 1}`, enabled: true }); drawRules(); } }),
-            el('button', { class: 'btn primary', text: 'Save', onclick: () => save(() => api.PutBucketLifecycle(bucket, rules), 'Lifecycle saved') }),
-            el('button', { class: 'btn danger', text: 'Delete all', onclick: () => save(() => api.DeleteBucketLifecycle(bucket), 'Lifecycle removed') }),
+            el('button', { class: 'btn primary', text: 'Save', onclick: (e) => save(() => api.PutBucketLifecycle(bucket, rules), 'Lifecycle saved', e.currentTarget) }),
+            el('button', { class: 'btn danger', text: 'Delete all', onclick: (e) => save(() => api.DeleteBucketLifecycle(bucket), 'Lifecycle removed', e.currentTarget) }),
           ),
         );
         break;
@@ -4372,8 +4453,8 @@ export function adminDialog(bucket, onChanged) {
           el('label', { class: 'field', text: 'Algorithm' }), algo,
           el('label', { class: 'field', text: 'KMS key' }), kms,
           el('div', { style: 'display:flex;gap:8px;margin-top:12px' },
-            el('button', { class: 'btn primary', text: 'Save', onclick: () => save(() => api.PutBucketEncryption(bucket, algo.value, kms.value.trim()), 'Default encryption saved') }),
-            el('button', { class: 'btn danger', text: 'Disable', onclick: () => save(() => api.DeleteBucketEncryption(bucket), 'Default encryption removed') }),
+            el('button', { class: 'btn primary', text: 'Save', onclick: (e) => save(() => api.PutBucketEncryption(bucket, algo.value, kms.value.trim()), 'Default encryption saved', e.currentTarget) }),
+            el('button', { class: 'btn danger', text: 'Disable', onclick: (e) => save(() => api.DeleteBucketEncryption(bucket), 'Default encryption removed', e.currentTarget) }),
           ),
         );
         break;
@@ -4396,14 +4477,14 @@ export function adminDialog(bucket, onChanged) {
             el('button', {
               class: 'btn primary',
               text: 'Save',
-              onclick: () => save(() => api.PutBucketWebsite(bucket, {
+              onclick: (e) => save(() => api.PutBucketWebsite(bucket, {
                 indexSuffix: index.value.trim(),
                 errorKey: errorKey.value.trim(),
                 redirectHost: host.value.trim(),
                 redirectProtocol: host.value.trim() ? proto.value : '',
-              }), 'Website configuration saved'),
+              }), 'Website configuration saved', e.currentTarget),
             }),
-            el('button', { class: 'btn danger', text: 'Disable', onclick: () => save(() => api.DeleteBucketWebsite(bucket), 'Website hosting disabled') }),
+            el('button', { class: 'btn danger', text: 'Disable', onclick: (e) => save(() => api.DeleteBucketWebsite(bucket), 'Website hosting disabled', e.currentTarget) }),
           ),
         );
         break;
@@ -4428,14 +4509,14 @@ export function adminDialog(bucket, onChanged) {
           box,
           el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
             el('button', { class: 'btn', text: '+ Add tag', onclick: () => { tags.push({ key: '', value: '' }); drawTags(); } }),
-            el('button', { class: 'btn primary', text: 'Save', onclick: () => save(() => api.PutBucketTags(bucket, tags), 'Tags saved') }),
-            el('button', { class: 'btn danger', text: 'Delete all', onclick: () => save(() => api.DeleteBucketTags(bucket), 'Tags removed') }),
+            el('button', { class: 'btn primary', text: 'Save', onclick: (e) => save(() => api.PutBucketTags(bucket, tags), 'Tags saved', e.currentTarget) }),
+            el('button', { class: 'btn danger', text: 'Delete all', onclick: (e) => save(() => api.DeleteBucketTags(bucket), 'Tags removed', e.currentTarget) }),
           ),
         );
         break;
       }
       case 'Versions': {
-        content.replaceChildren(el('div', { class: 'field', text: 'Loading version statistics…' }));
+        content.replaceChildren(loadingBlock('Loading version statistics…'));
         api.BucketVersionStats(bucket).then((st) => {
           const purge = async (mode, label) => {
             try {
@@ -4468,6 +4549,14 @@ export function adminDialog(bucket, onChanged) {
               el('div', { class: 'k', text: 'Total versions' }), el('div', { class: 'v', text: String(st.versions) }),
               el('div', { class: 'k', text: 'Delete markers' }), el('div', { class: 'v', text: String(st.deleteMarkers) }),
               el('div', { class: 'k', text: 'Noncurrent versions' }), el('div', { class: 'v', text: `${st.noncurrent} (${fmtBytes(st.noncurrentBytes)})` }),
+            ),
+            el('div', { style: 'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center' },
+              el('button', {
+                class: `btn${panel.versions === 'Enabled' ? '' : ' primary'}`,
+                text: panel.versions === 'Enabled' ? 'Suspend versioning' : 'Enable versioning',
+                onclick: (e) => save(() => api.SetBucketVersioning(bucket, panel.versions !== 'Enabled'), 'Versioning updated', e.currentTarget),
+              }),
+              el('span', { style: 'color:var(--text-dim);font-size:12px', text: 'While enabled, every save of an object keeps its prior version.' }),
             ),
             el('div', { class: 'field', style: 'margin-top:12px', text: 'Cleanup tools (bucket-wide, permanent)' }),
             el('div', { style: 'display:flex;flex-direction:column;gap:8px;align-items:flex-start' },
@@ -4509,7 +4598,7 @@ export function adminDialog(bucket, onChanged) {
         }).catch((e) => content.replaceChildren(errBox(e)));
         break;
       }
-      case 'Lock': {
+      case 'Object lock': {
         if (panel.lockErr) { content.replaceChildren(errBox(panel.lockErr)); break; }
         const lock = panel.lock || {};
         const mode = el('select', { class: 'input', style: 'width:auto' },
@@ -4529,7 +4618,7 @@ export function adminDialog(bucket, onChanged) {
               mode, days,
               el('button', {
                 class: 'btn primary', text: 'Save rule',
-                onclick: () => save(() => api.PutBucketLockConfig(bucket, true, mode.value, parseInt(days.value, 10) || 0), 'Default retention updated'),
+                onclick: (e) => save(() => api.PutBucketLockConfig(bucket, true, mode.value, parseInt(days.value, 10) || 0), 'Default retention updated', e.currentTarget),
               }),
             ),
             el('div', { class: 'field', style: 'margin-top:10px;color:var(--text-dim)', text: 'Per-object retention and legal holds: right-click an object \u2192 Object lock\u2026' }),
@@ -5801,17 +5890,58 @@ function manualCredDialog(onAdd) {
   });
 }
 
-// importCredsDialog (the "Import S3 Credential" dialog): pick credential
+// importCredsDialog (the "S3 Credential" dialog): manage the S3 data
+// sources credentials become, and add new ones — pick credential
 // files and fetch from KMS services — several picks accumulate in one
 // list, any row can be removed (or the whole list cleared), and closing
 // the dialog discards whatever is left. Review + test the parsed
 // candidates (bucket counts), then import the checked ones as data
 // sources. Secrets never leave the Go side — the dialog only sees
 // metadata.
-export function importCredsDialog(onImported) {
+export function importCredsDialog(onImported, opts = {}) {
   let candidates = [];
   const list = el('div', { class: 'cred-list' });
   const status = el('div', { class: 'dlg-status' });
+
+  // The manager face: an imported credential IS a data source, so the
+  // dialog that adds them also seats the ones already here — each row
+  // named and pointed, each with its Remove (the same confirm the Data
+  // Sources dialog carries). opts brings the live S3 source list and
+  // the remove/refresh verbs from main.js; a caller that passes none
+  // keeps the old add-only face.
+  const srcList = el('div', { class: 'cred-src-list' });
+  const drawSources = () => {
+    const srcs = opts.sources ? opts.sources() : [];
+    srcList.replaceChildren();
+    if (!srcs.length) {
+      if (opts.sources) srcList.appendChild(el('div', { class: 'cred-src-empty', text: 'No S3 data sources yet \u2014 add one below.' }));
+      return;
+    }
+    srcList.appendChild(el('div', { class: 'field', text: `Your S3 data sources (${srcs.length})` }));
+    for (const s of srcs) {
+      srcList.appendChild(el('div', { class: 'cred-src-row' },
+        el('div', { class: 'cred-src-main' },
+          el('div', { class: 'cred-src-name', text: s.name || '(unnamed)' }),
+          el('div', { class: 'cred-src-sub', text: `${s.s3?.endpoint || 'AWS default endpoint'}${s.bucket ? ` \u00b7 bucket ${s.bucket}` : ' \u00b7 all buckets'}` }),
+        ),
+        el('button', {
+          class: 'btn danger', text: 'Remove',
+          title: `Remove the ${s.name} data source`,
+          onclick: async (e) => {
+            const b = e.currentTarget;
+            b.disabled = true; b.classList.add('busy');
+            try {
+              await opts.onRemove?.(s, s.name);
+              await opts.onChanged?.();
+            } finally {
+              b.disabled = false; b.classList.remove('busy');
+            }
+            drawSources();
+          },
+        }),
+      ));
+    }
+  };
 
   // fp fingerprints a candidate's metadata (the dialog never sees the
   // secret itself): re-picking the same file or re-fetching the same
@@ -5899,6 +6029,7 @@ export function importCredsDialog(onImported) {
     }
   };
   draw();
+  drawSources();
 
   const fromFiles = async () => {
     const tally = { files: 0, added: 0, refreshed: 0 };
@@ -5942,9 +6073,10 @@ export function importCredsDialog(onImported) {
   // left in the list: rejected secrets must not sit in the stash out
   // the 30-minute TTL.
   const show = () => openModal({
-    title: 'Import S3 Credential',
+    title: 'S3 Credential',
     onClose: () => api.DiscardCredentialDrafts(candidates.map((c) => c.id)),
     body: el('div', {},
+      srcList,
       el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'Turn connection credentials into data sources. Files: AWS CLI INI, rclone.conf, JSON (any shape), .env, or an exported .s3bprofile. Services: Vault, AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or any custom HTTP endpoint. Manual: type the fields directly.' }),
       list,
       status,

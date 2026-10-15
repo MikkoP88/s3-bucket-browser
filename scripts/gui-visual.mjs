@@ -1062,12 +1062,12 @@ function shim() {
     PickFolder: () => 'C:\\Users\\demo\\Downloads',
     TestProfile: () => ({ ok: true, message: 'OK — visual shim' }),
     DoctorChecks: () => ['DNS Resolution Check', 'TCP Connectivity Check', 'TLS Certificate Check', 'Clock Skew Check', 'Bucket Authentication Check', 'Bucket Policy Check', 'Bucket ACL Check', 'Credential Identity Check', 'Write Round-trip Check'],
-    RunDoctor: (bucket) => ({
+    RunDoctor: (bucket, allowWrite) => ({
       endpoint: 's3.visual.shim', provider: 'aws', bucket: bucket || '',
       region: 'eu-central-1', accessKey: 'AKIA…DEMO', pathStyle: false,
       totalMs: 312, ranAt: daysAgo(0),
       warnings: [],
-      summary: { pass: 8, warn: 1, fail: 0, skip: 0 },
+      summary: allowWrite ? { pass: 8, warn: 1, fail: 0, skip: 0 } : { pass: 7, warn: 1, fail: 0, skip: 1 },
       checks: [
         { check: 'DNS Resolution Check', status: 'pass', durationMs: 12, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 's3.visual.shim resolved' },
         { check: 'TCP Connectivity Check', status: 'pass', durationMs: 21, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'TCP to s3.visual.shim:443' },
@@ -1077,10 +1077,16 @@ function shim() {
         { check: 'Bucket Policy Check', status: 'pass', durationMs: 34, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'no public statements' },
         { check: 'Bucket ACL Check', status: 'pass', durationMs: 18, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'ACLs private' },
         { check: 'Credential Identity Check', status: 'pass', durationMs: 40, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'owner visual-shim-owner, 3 bucket(s) visible', info: { owner: 'visual-shim-owner', buckets: 3 } },
-        { check: 'Write Round-trip Check', status: 'pass', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'probe written and deleted', info: { probeKey: '.s3b-doctor-probe-1234', wrote: true, deleted: true } },
+        { check: 'Write Round-trip Check', status: allowWrite ? 'pass' : 'skip', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0),
+          detail: allowWrite ? 'probe written and deleted' : 'write test disabled — enable Allow write test to run it',
+          info: allowWrite ? { probeKey: '.s3b-doctor-probe-1234', wrote: true, deleted: true } : undefined },
       ],
     }),
-    RunDoctorCheck: (name) => ({ check: name, status: 'pass', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 're-run ok' }),
+    RunDoctorCheck: (bucket, name, allowWrite) => ({ check: name,
+      status: name === 'Write Round-trip Check' && !allowWrite ? 'skip' : 'pass',
+      durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0),
+      detail: name === 'Write Round-trip Check' && !allowWrite
+        ? 'write test disabled — enable Allow write test to run it' : 're-run ok' }),
     ActiveTransfers: () => JSON.parse(JSON.stringify(world.transfers)),
     TransferItems: (id) => JSON.parse(JSON.stringify((world.transferItems || {})[id] || [])),
     // Running tasks = transfer jobs merged with the tracked-task registry
@@ -1581,7 +1587,7 @@ function shim() {
       { key: '/draft-up/', isDir: true, name: 'draft-up' },
       { key: '/seed.txt', isDir: false, name: 'seed.txt', size: 12 },
     ],
-    // ---- Import S3 Credential (files + KMS) ----
+    // ---- S3 Credential (files + KMS) ----
     ParseCredentialFile: () => JSON.parse(JSON.stringify(world.credCandidates)),
     PickCredentialFiles: () => ['C:\\Users\\demo\\Downloads\\credentials'],
     TestCredentialDraft: () => ({ ok: true, message: 'connected — 2 bucket(s) visible' }),
@@ -4584,11 +4590,21 @@ await step('doctor', async () => {
   const run = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop^="doctor"] button'))
     .find((b) => /run all/i.test(b.textContent)) || null);
   await ok('Run all button present', !!run);
+  await ok('write test opt-in seats unchecked by default', await evalPage(() => {
+    const c = document.querySelector('#popout-root .doc-allow input');
+    return !!c && c.checked === false;
+  }));
   if (run) {
     await run.asElement().click();
     await waitFor(async () => (await evalPage(() => document.querySelector('#popout-root .popout[data-pop^="doctor"]').textContent)).includes('warn'), 4000, 'report');
     const call = await findCall('RunDoctor');
     await ok('RunDoctor addressed the picked bucket', call && call.args[0] === 'www-assets');
+    await ok('Run all runs without write consent by default', call && call.args[1] === false);
+    await ok('write round-trip row skips honestly without consent', waitFor(async () => await evalPage(() => {
+      const r = Array.from(document.querySelectorAll('#popout-root .doc-row'))
+        .find((x) => (x.querySelector('.doc-name')?.textContent || '') === 'Write Round-trip Check');
+      return !!r && (r.querySelector('.doc-pill')?.className || '').includes('skip');
+    }), 4000, 'write skip pill'));
     // v2: the report meta names region / masked key / total, the checks sit
     // in their three groups, the verdict banner speaks the warn, Copy report
     // flips, and the identity row expands to its owner info
@@ -4624,6 +4640,22 @@ await step('doctor', async () => {
     } else {
       await ok('identity row expands to owner info', false);
     }
+    // consent: ticking the box widens the next single-check rerun
+    await evalPage(() => { const c = document.querySelector('#popout-root .doc-allow input'); if (c) c.click(); });
+    await evalPage(() => {
+      const r = Array.from(document.querySelectorAll('#popout-root .doc-row'))
+        .find((x) => (x.querySelector('.doc-name')?.textContent || '') === 'Write Round-trip Check');
+      const b = r?.querySelector('.doc-rerun');
+      if (b) b.click();
+    });
+    await ok('consented rerun passes the write consent through', waitFor(async () => {
+      const c = await findCall('RunDoctorCheck');
+      return !!c && c.args[2] === true;
+    }, 4000, 'consented rerun') && waitFor(async () => await evalPage(() => {
+      const r = Array.from(document.querySelectorAll('#popout-root .doc-row'))
+        .find((x) => (x.querySelector('.doc-name')?.textContent || '') === 'Write Round-trip Check');
+      return !!r && (r.querySelector('.doc-pill')?.className || '').includes('pass');
+    }), 4000, 'write pass pill'));
   }
   await shotOf('doctor', '#popout-root .popout[data-pop^="doctor"]');
   await closePopout('doctor');
@@ -4662,8 +4694,38 @@ await step('admin-panel', async () => {
     return tabs.length === 11 && tabs.every((t) => t.tagName === 'BUTTON' && t.getAttribute('role') === 'tab')
       && tabs.filter((t) => t.getAttribute('aria-selected') === 'true').length === 1;
   }));
-  await ok('overview dashboard seats four stat cards', evalPage(() => document.querySelectorAll('#modal-root .stat-card').length === 4));
+  // v3 dashboard: five door-cards (the four tones + the async Contents
+  // card), the chips row, and the versioning switch living on Versions —
+  // the overview shows, the pages change
+  await ok('overview dashboard seats five stat cards', evalPage(() => document.querySelectorAll('#modal-root .stat-card').length === 5));
+  await ok('every card is a real button that names its door', evalPage(() => {
+    const cs = Array.from(document.querySelectorAll('#modal-root button.stat-card'));
+    return cs.length === 5 && cs.every((c) => (c.title || '').startsWith('Open '));
+  }));
+  await ok('config chips seat five doors with configured tone', evalPage(() => {
+    const ch = Array.from(document.querySelectorAll('#modal-root .admin-chip'));
+    return ch.length === 5 && ch.some((c) => c.classList.contains('on'));
+  }));
+  await ok('contents card fills from the version statistics', waitFor(async () => await evalPage(() => {
+    const cs = Array.from(document.querySelectorAll('#modal-root button.stat-card'));
+    const c = cs.find((x) => x.textContent.includes('Contents'));
+    return !!c && /object\(s\)/.test(c.textContent);
+  }), 4000, 'contents fill'));
+  // chips live on the Overview seat — prove their door FIRST, because the
+  // card-door leg below navigates away and destroys the seat they live in
+  await evalPage(() => { const c = Array.from(document.querySelectorAll('#modal-root .admin-chip')).find((x) => x.textContent.includes('Policy')); if (c) c.click(); });
+  await ok('clicking a chip opens its page', (await evalPage(() => document.querySelector('#modal-root .tabhead-t')?.textContent.trim() || '')) === 'Policy');
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).find((t) => t.textContent.trim() === 'Overview'); if (b) b.click(); });
+  await evalPage(() => { const c = Array.from(document.querySelectorAll('#modal-root button.stat-card')).find((x) => x.textContent.includes('Versioning')); if (c) c.click(); });
+  await ok('clicking the Versioning card opens the Versions page', waitFor(async () => (await evalPage(() => document.querySelector('#modal-root .tabhead-t')?.textContent.trim() || '')) === 'Versions', 4000, 'card door'));
+  await ok('the versioning switch lives on the Versions page', evalPage(() => Array.from(document.querySelectorAll('#modal-root .tabbody button')).some((b) => /(enable|suspend) versioning/i.test(b.textContent))));
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).find((t) => t.textContent.trim() === 'Overview'); if (b) b.click(); });
   await ok('overview head named', (await evalPage(() => document.querySelector('#modal-root .tabhead-t')?.textContent.trim() || '')) === 'Overview');
+  await ok('overview carries no versioning switch anymore', evalPage(() => !Array.from(document.querySelectorAll('#modal-root .tabbody button')).some((b) => /(enable|suspend) versioning/i.test(b.textContent))));
+  // the curated Overview frame for the docs — cards and chips on screen,
+  // seated BEFORE the rail walk leaves the page (admin-panel below lands
+  // on Versions by design; the docs face is the dashboard)
+  await shotOf('admin-overview', '#modal-root .modal.admin-modal');
   await evalPage(() => { const b = document.querySelector('#modal-root .tabstrip .tab[aria-selected="true"]'); if (b) b.focus(); });
   await page.keyboard.press('ArrowDown');
   await ok('arrow walks the rail', waitFor(async () => (await evalPage(() => document.querySelector('#modal-root .tabstrip .tab[aria-selected="true"]')?.dataset.tab || '')) === 'Versions', 4000, 'rail walk'));
@@ -8832,7 +8894,7 @@ await step('log-area', async () => {
 
 await step('file-menu', async () => {
   // the File menu new shape: the workspace front doors (Data Sources,
-  // Import S3 Credential), the profile-file open/save pair, and Clear All
+  // S3 Credential), the profile-file open/save pair, and Clear All
   // (the as-if-reopened sweep). Upload left with the view verbs (toolbar,
   // context menus, empty states); New / Save-as / Close profile file live
   // on the profile surfaces (Ctrl+S keeps its seat here).
@@ -8965,7 +9027,7 @@ await step('onboarding-empty', async () => {
   await p2.waitForFunction(() => (document.getElementById('status-version')?.textContent || '').includes('s3b v'), null, { timeout: 10000 });
   await ok('empty state visible', p2.evaluate(() => !document.getElementById('empty-state').classList.contains('hidden')));
   await ok('simplified onboarding copy', p2.evaluate(() => document.getElementById('empty-state').textContent.includes('Amazon S3 or any S3-compatible storage')));
-  await ok('Import S3 Credential button present', p2.evaluate(() => document.getElementById('empty-actions').textContent.toLowerCase().includes('import s3 credential')));
+  await ok('S3 Credential button present', p2.evaluate(() => document.getElementById('empty-actions').textContent.toLowerCase().includes('s3 credential')));
   await ok('empty actions offer add-source', p2.evaluate(() => document.getElementById('empty-actions').textContent.length > 0));
   await ok('upload greyed without sources', p2.evaluate(() => document.getElementById('btn-upload').disabled));
   await ok('doctor greyed without sources', p2.evaluate(() => window.__s3bCmdState?.canDoctor === false));
@@ -8995,7 +9057,7 @@ await step('onboarding-empty', async () => {
   // exists ("No data source yet" was sticking around before)
   await p2.evaluate(() => {
     const b = Array.from(document.querySelectorAll('#empty-actions button'))
-      .find((x) => /import s3 credential/i.test(x.textContent));
+      .find((x) => /^s3 credential/i.test(x.textContent));
     b?.click();
   });
   await p2.waitForFunction(() => !document.getElementById('modal-root').classList.contains('hidden'), null, { timeout: 8000 });
@@ -9304,11 +9366,30 @@ await step('import-creds-file', async () => {
   await page.locator('#menubar .mb-title').first().click(); // File
   await sleep(80);
   const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
-    .find((i) => /import s3 credential/i.test(i.textContent)) || null);
-  await ok('File→Import S3 Credential present', !!item);
+    .find((i) => /^s3 credential/i.test(i.textContent)) || null);
+  await ok('File→S3 Credential present', !!item);
   if (!item) return;
   await item.asElement().click();
   await waitFor(modalVisible, 4000, 'import dialog');
+  // the manager face: the S3 data sources credentials became seat above
+  // the import face, each with its Remove — and Remove asks first
+  await ok('manager seats the existing S3 data sources', waitFor(async () => await evalPage(() => {
+    const rows = document.querySelectorAll('#modal-root .cred-src-row').length;
+    const h = document.querySelector('#modal-root .cred-src-list .field')?.textContent || '';
+    return rows >= 1 && /your s3 data sources/i.test(h);
+  }), 4000, 'manager rows'));
+  const preN = (await calls()).length;
+  const srcN = await evalPage(() => document.querySelectorAll('#modal-root .cred-src-row').length);
+  await evalPage(() => { const b = document.querySelector('#modal-root .cred-src-row .btn.danger'); if (b) b.click(); });
+  const cancel = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^cancel$/i.test(b.textContent.trim())) || null);
+  await ok('Remove asks with a confirm before taking a source down', !!cancel);
+  if (cancel) await cancel.asElement().click();
+  await sleep(150);
+  const post = (await calls()).slice(preN);
+  await ok('an honest Cancel keeps the source and never calls RemoveSource',
+    post.every((x) => x.m !== 'RemoveSource')
+    && (await evalPage(() => document.querySelectorAll('#modal-root .cred-src-row').length)) === srcN);
   // From file… → OS picker + parse (no nested modal on a plain INI file)
   const ff = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
     .find((b) => /^from file/i.test(b.textContent.trim())) || null);
@@ -9341,8 +9422,8 @@ await step('import-creds-file', async () => {
   await page.locator('#menubar .mb-title').first().click(); // File
   await sleep(80);
   const item2 = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
-    .find((i) => /import s3 credential/i.test(i.textContent)) || null);
-  await ok('File→Import S3 Credential reachable again', !!item2);
+    .find((i) => /^s3 credential/i.test(i.textContent)) || null);
+  await ok('File→S3 Credential reachable again', !!item2);
   if (item2) {
     await item2.asElement().click();
     await waitFor(modalVisible, 4000, 'import dialog again');
@@ -9365,7 +9446,7 @@ await step('import-creds-kms', async () => {
   await page.locator('#menubar .mb-title').first().click(); // File
   await sleep(80);
   const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
-    .find((i) => /import s3 credential/i.test(i.textContent)) || null);
+    .find((i) => /^s3 credential/i.test(i.textContent)) || null);
   await ok('menu item still present', !!item);
   if (!item) return;
   await item.asElement().click();
@@ -9415,8 +9496,8 @@ await step('import-creds-manual', async () => {
   await page.locator('#menubar .mb-title').first().click(); // File
   await sleep(80);
   const item = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
-    .find((i) => /import s3 credential/i.test(i.textContent)) || null);
-  await ok('File→Import S3 Credential present', !!item);
+    .find((i) => /^s3 credential/i.test(i.textContent)) || null);
+  await ok('File→S3 Credential present', !!item);
   if (!item) return;
   await item.asElement().click();
   await waitFor(modalVisible, 4000, 'import dialog');

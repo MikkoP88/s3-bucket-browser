@@ -609,10 +609,14 @@ async function cliS3() {
     return 'filters + limits correct';
   });
 
-  await verify({ id: 'CLI-S3-20', area: 'admin', action: 'Doctor diagnosis', ds: 'S3 (MinIO)', scenario: 'doctor s3://bucket runs the check ladder', face: 'CLI' }, async () => {
-    const r = await cli(['doctor', B]);
+  await verify({ id: 'CLI-S3-20', area: 'admin', action: 'Doctor diagnosis', ds: 'S3 (MinIO)', scenario: 'doctor s3://bucket runs the check ladder; the write round-trip is opt-in — skipped with its reason by default, passed with --write', face: 'CLI' }, async () => {
+    let r = await cli(['doctor', B]);
     need(r.code === 0 && /DNS Resolution Check/.test(r.out), `doctor: ${r.out}${r.err}`);
-    return 'check ladder ran';
+    need(/SKIP\s+Write Round-trip Check/.test(r.out), `default skips the write round-trip: ${r.out}${r.err}`);
+    need(/opt-in/.test(r.out), `the skip speaks its reason: ${r.out}${r.err}`);
+    r = await cli(['doctor', B, '--write']);
+    need(r.code === 0 && /PASS\s+Write Round-trip Check/.test(r.out), `doctor --write: ${r.out}${r.err}`);
+    return 'check ladder ran; write round-trip opt-in honored';
   });
 
   await verify({ id: 'CLI-S3-21', area: 'admin', action: 'Bucket admin: info / tags / policy', ds: 'S3 (MinIO)', scenario: 'info shows versioning; tags put/get; policy put/get round-trip (cors/encryption tolerate provider gaps)', face: 'CLI' }, async () => {
@@ -3854,7 +3858,7 @@ async function guiBattery() {
     return 'version-choice dialog + background job carried the whole 3-version timeline across buckets';
   });
 
-  await verify({ id: 'GUI-32', area: 'admin', action: 'Admin panel mutations: versioning toggle + tags', ds: 'S3 (MinIO)', scenario: 'a scratch bucket driven ENTIRELY through the Admin panel: Overview suspends versioning (CLI reads it back suspended), re-enables it (CLI reads enabled); Tags saves a pair (CLI reads it back) then deletes all — every GUI mutation verified out-of-band', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-32', area: 'admin', action: 'Admin panel mutations: versioning toggle + tags', ds: 'S3 (MinIO)', scenario: 'a scratch bucket driven ENTIRELY through the Admin panel: the Versions page suspends versioning (CLI reads it back suspended), re-enables it (CLI reads enabled); Tags saves a pair (CLI reads it back) then deletes all — every GUI mutation verified out-of-band', face: 'GUI' }, async () => {
     const AB = `${BUCKET}-adm`;
     let r = await s3(['mb', `s3://${AB}`]);
     need(r.code === 0, `mb: ${r.out}${r.err}`);
@@ -3870,6 +3874,10 @@ async function guiBattery() {
       b.click();
       return true;
     }, re);
+    // the versioning switch lives on the Versions page (the Overview is a
+    // dashboard of doors now) — walk there before the toggle gestures
+    await page.locator('#modal-root .tab[data-tab="Versions"]').click();
+    await sleep(300);
     await waitFor(() => clickBtn('^suspend versioning$'), 5000, 'Suspend versioning button');
     await waitFor(async () => /suspended/i.test((await s3(['bucket', 'info', `s3://${AB}`])).out), 20000, 'CLI to read suspended');
     await waitFor(() => clickBtn('^enable versioning$'), 5000, 'Enable versioning button');
@@ -6155,7 +6163,7 @@ async function guiBattery() {
     }
   });
 
-  await verify({ id: 'GUI-73', area: 'security', action: 'Lock tab: the typed enable gate, and a default-retention rule that really arms WORM', ds: 'S3 (MinIO)', scenario: 'the admin Lock tab is where bucket-level WORM is configured — a silent failure here means data believed undeletable is not, or a healthy bucket gets bricked: on a plain bucket the typed Enable (L2 — the bucket\'s own name) with a wrong word must fire nothing, and with the right word the provider refusal must surface while the bucket stays writable; on a lock-enabled bucket the saved default rule (GOVERNANCE 1 day) must be read back by the engine, applied to a NEW object, and DEFEAT a GUI permanent delete; Clear re-arms the destroy', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-73', area: 'security', action: 'Object lock tab: the typed enable gate, and a default-retention rule that really arms WORM', ds: 'S3 (MinIO)', scenario: 'the admin Object lock tab is where bucket-level WORM is configured — a silent failure here means data believed undeletable is not, or a healthy bucket gets bricked: on a plain bucket the typed Enable (L2 — the bucket\'s own name) with a wrong word must fire nothing, and with the right word the provider refusal must surface while the bucket stays writable; on a lock-enabled bucket the saved default rule (GOVERNANCE 1 day) must be read back by the engine, applied to a NEW object, and DEFEAT a GUI permanent delete; Clear re-arms the destroy', face: 'GUI' }, async () => {
     const NB = `${BUCKET}-n73`, LB = `${BUCKET}-l73`, K = 'l73.txt';
     await s3(['rb', `s3://${NB}`, '--force']).catch(() => {});
     await s3(['rb', `s3://${LB}`, '--force']).catch(() => {});
@@ -6176,9 +6184,9 @@ async function guiBattery() {
     await treeMenu(NB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
-    await page.locator('#modal-root .tab[data-tab="Lock"]').click();
+    await page.locator('#modal-root .tab[data-tab="Object lock"]').click();
     await sleep(400);
-    await waitFor(async () => /enable object lock/i.test(await modalText()), 5000, 'the Lock tab enable form');
+    await waitFor(async () => /enable object lock/i.test(await modalText()), 5000, 'the Object lock tab enable form');
     const clickText = (label) => evalPage((src) => {
       const b = Array.from(document.querySelectorAll('#modal-root button'))
         .find((x) => (x.textContent || '').trim() === src);
@@ -6226,7 +6234,7 @@ async function guiBattery() {
     await treeMenu(LB);
     await ctxItem(/admin panel/i);
     await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the lock admin panel');
-    await page.locator('#modal-root .tab[data-tab="Lock"]').click();
+    await page.locator('#modal-root .tab[data-tab="Object lock"]').click();
     await sleep(400);
     await waitFor(async () => /enabled \(permanent\)/i.test(await modalText()), 5000, 'the lock-enabled view');
     await clearToasts();

@@ -978,13 +978,16 @@ function renderOnboardingPanel() {
   renderBreadcrumb();
   showEmpty(t('noSources'), t('noSourcesSub'), [
     el('button', { class: 'btn primary', text: `+ ${t('addSource')}`, onclick: () => sourceEditor(null, afterSourceSaved) }),
-    el('button', { class: 'btn', text: 'Import S3 Credential\u2026', onclick: importCredsUi }),
+    el('button', { class: 'btn', text: 'S3 Credential\u2026', onclick: importCredsUi }),
   ]);
 }
 
-// importCredsUi opens the Import S3 Credential dialog: candidates from local
-// credential files (AWS INI/rclone/JSON/.env/.s3bprofile) or a KMS service
-// (Vault, AWS SM, Azure, GCP, custom HTTP), each testable before import.
+// importCredsUi opens the S3 Credential dialog: the manager face seats
+// the S3 data sources a credential became (each removable in place, the
+// Data Sources dialog’s own remove law) beside the import face —
+// candidates from local credential files (AWS INI/rclone/JSON/.env/
+// .s3bprofile), a KMS service (Vault, AWS SM, Azure, GCP, custom HTTP)
+// or manual entry, each testable before import.
 async function importCredsUi() {
   await importCredsDialog(async (res) => {
     if (res?.imported?.length) {
@@ -998,6 +1001,9 @@ async function importCredsUi() {
         if (first) nav.to(sourceHomeLoc(first));
       }
     }
+  }, {
+    sources: () => sources.filter((s) => s.type === 's3'),
+    onRemove: (src, name) => doRemoveSource(src, name),
   });
 }
 
@@ -2229,7 +2235,7 @@ function wireGrid() {
       [t('addSource'), '', () => sourceEditor(null, afterSourceSaved)],
       [t('createBucket') + '\u2026', '', () => newBucketUi(), !sources.some((s) => s.type === 's3')],
       null,
-      ['Import S3 Credential\u2026', '', () => importCredsUi()],
+      ['S3 Credential\u2026', '', () => importCredsUi()],
       null,
       [t('pf.new'), '', newProfileFileUi],
       [t('pf.open'), '', openProfileFileUi],
@@ -6308,7 +6314,7 @@ function mountMenubar() {
         // verb; New/Save-as/Close profile file stay on pf.open's own
         // window (Save keeps its Ctrl+S seat here).
         { label: t('menu.dataSources'), action: dataSourcesUi },
-        { label: 'Import S3 Credential\u2026', action: importCredsUi },
+        { label: 'S3 Credential\u2026', action: importCredsUi },
         null,
         { label: t('pf.open'), action: openProfileFileUi },
         { label: t('pf.save'), kbd: 'Ctrl+S', action: saveProfileFileUi, enabled: () => pfState.open || pfState.sourceCount > 0 },

@@ -44,7 +44,7 @@ func TestCheckNames_RegistryCompleteness(t *testing.T) {
 	}
 
 	// Every reported check from Run must be a known registry entry.
-	r := Run(context.Background(), hermeticClient(), "", false)
+	r := Run(context.Background(), hermeticClient(), "", false, false)
 	for _, chk := range r.Checks {
 		if !knownCheck(chk.Check) {
 			t.Errorf("Run produced check %q which CheckNames does not list", chk.Check)
@@ -70,7 +70,7 @@ func TestCheckNames_RegistryCompleteness(t *testing.T) {
 func TestRunCheck_UnknownName(t *testing.T) {
 	// Unknown names must be rejected before any client dereference, so a
 	// nil client is safe here and proves the error comes from validation.
-	_, err := RunCheck(context.Background(), nil, "bucket", "no such check", false)
+	_, err := RunCheck(context.Background(), nil, "bucket", "no such check", false, false)
 	if err == nil {
 		t.Fatal("expected error for unknown check name, got nil")
 	}
@@ -84,7 +84,7 @@ func TestRunCheck_UnknownName(t *testing.T) {
 
 func TestRunCheck_TimestampsSetAndOrdered(t *testing.T) {
 	// DNS against an IP host is fully hermetic (no resolver, no network).
-	res, err := RunCheck(context.Background(), hermeticClient(), "", "DNS Resolution Check", false)
+	res, err := RunCheck(context.Background(), hermeticClient(), "", "DNS Resolution Check", false, false)
 	if err != nil {
 		t.Fatalf("RunCheck: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestRunCheck_TimestampsSetAndOrdered(t *testing.T) {
 }
 
 func TestRun_FillsTimestampsPerCheck(t *testing.T) {
-	r := Run(context.Background(), hermeticClient(), "", false)
+	r := Run(context.Background(), hermeticClient(), "", false, false)
 	if len(r.Checks) == 0 {
 		t.Fatal("Run produced no checks")
 	}
@@ -194,7 +194,7 @@ func TestRunCheck_ClockSkew(t *testing.T) {
 	// and the Info payload all land.
 	srv := skewServer(t, time.Now())
 	c := &s3client.Client{ProviderKey: "minio", Endpoint: srv.URL, Region: "us-east-1"}
-	res, err := RunCheck(context.Background(), c, "", "Clock Skew Check", false)
+	res, err := RunCheck(context.Background(), c, "", "Clock Skew Check", false, false)
 	if err != nil {
 		t.Fatalf("RunCheck: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestRunCheck_ClockSkew(t *testing.T) {
 
 	// Unreachable endpoint: the probe cannot complete, and reachability is
 	// owned by the TCP/TLS checks — the honest verdict is skip.
-	res, err = RunCheck(context.Background(), hermeticClient(), "", "Clock Skew Check", false)
+	res, err = RunCheck(context.Background(), hermeticClient(), "", "Clock Skew Check", false, false)
 	if err != nil {
 		t.Fatalf("RunCheck: %v", err)
 	}
@@ -395,12 +395,59 @@ func TestCheckWriteRoundTrip_UndeletedProbeWarns(t *testing.T) {
 
 func TestRunCheck_WriteProbeNeedsBucket(t *testing.T) {
 	srv := fakeS3Server(t, &fakeS3Store{}, false, false)
-	res, err := RunCheck(context.Background(), sdkClient(srv.URL), "", "Write Round-trip Check", false)
+	res, err := RunCheck(context.Background(), sdkClient(srv.URL), "", "Write Round-trip Check", false, false)
 	if err != nil {
 		t.Fatalf("RunCheck: %v", err)
 	}
 	if res.Status != StatusSkip || !strings.Contains(res.Detail, "no bucket selected") {
 		t.Errorf("status = %q detail = %q, want skip/no bucket selected", res.Status, res.Detail)
+	}
+}
+
+// The write test is opt-in on every surface: neither Run nor RunCheck may
+// put so much as one probe object unless the caller explicitly allowed it.
+func TestRunCheck_WriteCheckOptIn(t *testing.T) {
+	store := &fakeS3Store{}
+	srv := fakeS3Server(t, store, false, false)
+	res, err := RunCheck(context.Background(), sdkClient(srv.URL), "probe-bucket", "Write Round-trip Check", false, false)
+	if err != nil {
+		t.Fatalf("RunCheck: %v", err)
+	}
+	if res.Status != StatusSkip || !strings.Contains(res.Detail, "write test disabled") {
+		t.Fatalf("status = %q detail = %q, want skip/write test disabled", res.Status, res.Detail)
+	}
+	if len(store.puts) != 0 {
+		t.Errorf("server saw puts=%v, want none (write not allowed)", store.puts)
+	}
+	// the explicit ask runs it for real
+	res, err = RunCheck(context.Background(), sdkClient(srv.URL), "probe-bucket", "Write Round-trip Check", false, true)
+	if err != nil {
+		t.Fatalf("RunCheck(allowWrite): %v", err)
+	}
+	if res.Status != StatusPass {
+		t.Errorf("status = %q, want pass against the writable fake (error %q)", res.Status, res.Error)
+	}
+}
+
+func TestRun_WriteCheckDisabledByDefault(t *testing.T) {
+	store := &fakeS3Store{}
+	srv := fakeS3Server(t, store, false, false)
+	r := Run(context.Background(), sdkClient(srv.URL), "probe-bucket", false, false)
+	found := map[string]CheckResult{}
+	for _, chk := range r.Checks {
+		found[chk.Check] = chk
+	}
+	wr := found["Write Round-trip Check"]
+	if wr.Status != StatusSkip || !strings.Contains(wr.Detail, "write test disabled") {
+		t.Errorf("write check = %+v, want the opt-in skip", wr)
+	}
+	if len(store.puts) != 0 {
+		t.Errorf("server saw puts=%v, want none (write not allowed)", store.puts)
+	}
+	// two skips are honest here: the write check (opt-in) and TLS (the
+	// plain-HTTP fake cannot speak it)
+	if r.Summary.Skip != 2 {
+		t.Errorf("summary skip = %d, want write + TLS (summary %+v)", r.Summary.Skip, r.Summary)
 	}
 }
 
@@ -426,7 +473,7 @@ func TestRun_ReportMeta(t *testing.T) {
 	srv := fakeS3Server(t, &fakeS3Store{}, false, false)
 	c := sdkClient(srv.URL)
 	c.Profile.AccessKeyID = "AKIAIOSFODNN7EXAMPLE"
-	r := Run(context.Background(), c, "", false)
+	r := Run(context.Background(), c, "", false, false)
 	if r.AccessKey != "AKIA…MPLE" {
 		t.Errorf("AccessKey = %q, want the masked form", r.AccessKey)
 	}
@@ -469,7 +516,7 @@ func TestRun_WriteProbeAgainstLiveFake(t *testing.T) {
 	srv := fakeS3Server(t, store, false, false)
 	c := sdkClient(srv.URL)
 	c.Profile.AccessKeyID = "AKIAIOSFODNN7EXAMPLE"
-	r := Run(context.Background(), c, "probe-bucket", false)
+	r := Run(context.Background(), c, "probe-bucket", false, true)
 	if r.Summary.Fail != 0 {
 		t.Fatalf("summary fails = %d, want 0 (checks: %+v)", r.Summary.Fail, r.Checks)
 	}

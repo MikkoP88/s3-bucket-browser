@@ -89,8 +89,10 @@ type Summary struct {
 // ExitWorthy reports whether the report contains failures.
 func (r *Report) ExitWorthy() bool { return r.Summary.Fail > 0 }
 
-// Run executes all checks for the client and optional bucket.
-func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS bool) *Report {
+// Run executes all checks for the client and optional bucket. The write
+// round-trip is opt-in (allowWrite): a diagnosis must never put a probe
+// object into the user's data unless they explicitly asked for it.
+func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS, allowWrite bool) *Report {
 	started := time.Now()
 	r := &Report{
 		Endpoint:  c.Endpoint,
@@ -160,6 +162,10 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS boo
 		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return skip("Write Round-trip Check", "no bucket selected") }))
 	case authFailed:
 		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return skip("Write Round-trip Check", "authentication failed") }))
+	case !allowWrite:
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult {
+			return skip("Write Round-trip Check", "write test disabled — it is opt-in because it writes (and deletes) a tiny probe object")
+		}))
 	default:
 		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkWriteRoundTrip(ctx, c, bucket) }))
 	}
@@ -611,8 +617,10 @@ func CheckNames() []string {
 }
 
 // RunCheck runs a single doctor check by name for the given bucket.
-// Returns an error if the check name is unknown.
-func RunCheck(ctx context.Context, c *s3client.Client, bucket, name string, insecureTLS bool) (CheckResult, error) {
+// Returns an error if the check name is unknown. The write round-trip
+// honors the same opt-in law as Run (allowWrite) — asking for one check
+// never grants a write the user did not ask to test.
+func RunCheck(ctx context.Context, c *s3client.Client, bucket, name string, insecureTLS, allowWrite bool) (CheckResult, error) {
 	// Validate name before any client dereference.
 	if !knownCheck(name) {
 		return CheckResult{}, fmt.Errorf("unknown check: %s", name)
@@ -653,6 +661,11 @@ func RunCheck(ctx context.Context, c *s3client.Client, bucket, name string, inse
 	case "Write Round-trip Check":
 		if bucket == "" {
 			return timedCheck(func() CheckResult { return skip("Write Round-trip Check", "no bucket selected") }), nil
+		}
+		if !allowWrite {
+			return timedCheck(func() CheckResult {
+				return skip("Write Round-trip Check", "write test disabled — it is opt-in because it writes (and deletes) a tiny probe object")
+			}), nil
 		}
 		return timedCheck(func() CheckResult { return checkWriteRoundTrip(ctx, c, bucket) }), nil
 	default:

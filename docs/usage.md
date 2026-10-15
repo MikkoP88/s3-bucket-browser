@@ -88,8 +88,8 @@ row, Remove beside it, Add starting a fresh one.
 
 ### Import existing credentials
 
-Don't retype what you already have. **Import S3 Credential** (File menu
-or the welcome screen) reads:
+Don't retype what you already have. **S3 Credential** (File menu or
+the welcome screen) reads:
 
 - **AWS INI** — `~/.aws/credentials` + `~/.aws/config`; profiles with an
   `endpoint_url` become MinIO / R2 / Wasabi / … sources, plain profiles
@@ -110,6 +110,12 @@ Every candidate is listed with a live **bucket-count test** before you
 commit. Picks accumulate: add from several files and services in one
 go, remove any row (or clear the list), then import the checked ones
 — the imported bucket's content opens immediately.
+
+The dialog is a manager in the Data Source idea: the S3 data sources
+you already have seat at the top — endpoint and bucket scope on every
+row — and **Remove** asks before it takes a source down (Cancel keeps
+it), so a credential that outlived its usefulness leaves the same way
+it arrived.
 
 ![Credential import with live test](screenshots/import-credentials.png)
 
@@ -921,16 +927,21 @@ Right-click a bucket → **Admin panel**: one dialog whose tabs sit in a
 category rail — General, Security & access, Data & content — real
 buttons under a vertical tablist the arrow keys walk, with the bucket
 name and its region headed above them and every pane opening under its
-own title and one-line description. The Overview tab is a dashboard:
-four stat cards (versioning, public-access block, default encryption,
-object lock) tinted by their tone, the bucket identity with its s3://
-URI one click from the clipboard, and the versioning toggle where it
-always lived; the Policy tab adds a Format JSON button and refuses to
+own title and one-line description. The Overview tab is a dashboard
+of doors: five stat cards — versioning, public-access block, default
+encryption, object lock (each tinted by its tone) and a Contents card
+that fills from the bucket's version statistics — where every card is
+a button that opens the page it describes, and a chips row beneath
+them (Policy with its statement count, CORS, Lifecycle, Website,
+Tags) lights the configured ones, each chip a door too. The bucket
+identity keeps its Copy s3:// URI row; the versioning toggle lives on
+the Versions page now, beside the versions it produces and the cleanup
+tools; the Policy tab adds a Format JSON button and refuses to
 save a policy that does not parse. The rest of the dialog rides
 unchanged —
 versioning, policy, ACL, CORS, lifecycle rules, default encryption,
 public-access block, static website and tags — plus a versions overview
-and the object-lock tab. Everything the CLI's `s3b bucket …` tree
+and the Object lock tab. Everything the CLI's `s3b bucket …` tree
 offers, same confirm gates. Every change lands in the activity log —
 one line per verb, scoped *admin*, sourced to the bucket: info for
 what changed, warn for what was removed, error when the wire refuses
@@ -946,7 +957,11 @@ the job's own source.
   server's Date header and names the RequestTimeTooSkewed rejection
   before it ever fires), with plain-language remediation and one-click
   re-runs of individual checks — in a floating window that doesn't
-  block the app while it runs. The checks sit grouped by category under
+  block the app while it runs. The write round-trip is opt-in, because
+  it is the one check that writes: unticked by default, consented by
+  its own checkbox or by `s3b doctor --write` on the terminal, and a
+  run without consent reports the check as SKIP with its reason
+  instead of touching the bucket. The checks sit grouped by category under
   a verdict banner (failing count, warning count, all-clear), the
   report header carries the region, the masked access key and the total
   run time, and a Copy report button puts the full JSON on the
@@ -1095,6 +1110,7 @@ s3b find s3://b --name 'backup*' --older 90d
 s3b find s3://b --ext pdf,csv --path docs --larger 1MB
 s3b find vault://media --name '*.md'        # any saved source, same filters
 s3b doctor s3://my-bucket
+s3b doctor s3://my-bucket --write       # include the opt-in write round-trip
 
 s3b versions ls s3://b/docs/report.pdf      # timeline, newest first
 s3b versions undo s3://b/docs/report.pdf --version-id MARKER

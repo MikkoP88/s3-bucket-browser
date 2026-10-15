@@ -60,9 +60,13 @@ func presignCmd() *cobra.Command {
 }
 
 func doctorCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:               "doctor [s3://bucket]",
-		Short:             "Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, policy, ACL, credential identity, write round-trip",
+	var allowWrite bool
+	cmd := &cobra.Command{
+		Use:   "doctor [s3://bucket]",
+		Short: "Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, policy, ACL, credential identity; --write adds the write round-trip",
+		Long: "Diagnose connectivity: DNS resolution, TCP, TLS, clock skew, bucket auth, policy, ACL and\n" +
+			"credential identity — all read-only. The write round-trip (it writes and deletes a tiny\n" +
+			"probe object) is opt-in: pass --write to include it.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -81,7 +85,7 @@ func doctorCmd() *cobra.Command {
 				}
 				bucket = u.Bucket
 			}
-			rep := doctor.Run(cmd.Context(), c, bucket, c.Profile.Insecure)
+			rep := doctor.Run(cmd.Context(), c, bucket, c.Profile.Insecure, allowWrite)
 			if flagJSON {
 				return printJSON(rep)
 			}
@@ -92,6 +96,8 @@ func doctorCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&allowWrite, "write", false, "include the write round-trip check (writes and deletes a tiny probe object)")
+	return cmd
 }
 
 func printDoctorReport(rep *doctor.Report) {
