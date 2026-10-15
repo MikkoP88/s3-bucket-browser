@@ -32,6 +32,39 @@ The same binary also builds windowless — the app served over HTTP
 and driven from a browser tab on any machine — see the
 [server mode guide](server.md).
 
+### Who gets the app: install scope
+
+The Windows setup wizard asks who the install is for — **Current user
+only** (recommended: `%LOCALAPPDATA%`, the user's own Start menu, no
+administrator rights to install *or* uninstall) or **All users of this
+computer** (Program Files and the all-users Start menu; Windows asks
+for administrator approval once). The uninstaller follows the recorded
+selection, so uninstalling a per-user install never asks for elevation.
+Silent deploys: `/S /CURRENTUSER` or `/S /ALLUSERS` picks the scope
+explicitly (a silent run with no flag still defaults to all users, the
+behavior of every version before the choice existed), `/D=<dir>` names
+the directory, and an existing install is upgraded in place — same
+scope, same directory — unless a flag overrides.
+
+The terminal face of the same law is `s3b setup`, on every supported
+platform:
+
+```bash
+s3b setup install --user     # default — %LOCALAPPDATA%\s3b / ~/.local/bin
+s3b setup install --system   # Program Files\s3b / /usr/local/bin (elevated)
+s3b setup uninstall          # removes the install the same selection made
+s3b setup status             # both seats, the PATH winner, foreign installs
+```
+
+An install replaces an existing seat in place; uninstall removes only
+the binary and the directory when that directory is the app's own and
+ends up empty (nothing parked next to the binary is touched). Windows
+registers the seat with App Paths, so Win+R and ShellExecute find `s3b`
+without touching PATH. `S3B_SETUP_USER_DIR=<dir>` relocates the user
+seat (portable use, CI) and skips shell registration for it. The CLI
+never touches the wizard's installs: `setup status` names a foreign
+registration without following it, and an uninstall leaves it standing.
+
 Reopening the app picks up where browsing left off: the main view
 re-seats the last location — a bucket, one of its folders, a remote
 directory, a workstation folder — while its source still exists; a

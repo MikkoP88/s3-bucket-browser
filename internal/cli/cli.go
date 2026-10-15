@@ -147,6 +147,7 @@ func NewRoot() *cobra.Command {
 		versionCmd(),
 		licenseCmd(),
 		provenanceCmd(),
+		setupCmd(),
 	)
 	root.CompletionOptions.HiddenDefaultCmd = false
 	// --profile completes the saved profile names on every subcommand.

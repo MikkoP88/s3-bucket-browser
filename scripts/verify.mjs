@@ -187,14 +187,14 @@ function need(cond, what) { if (!cond) throw new Error(what); }
 // sharing a name with the shared faces — profile keyring slots are keyed
 // by NAME ONLY (pkg/core/profile/keyring.go), so a plain add in a scratch
 // config would silently overwrite/delete the live face's global slot.
-function cli(args, { timeout = 120000, cfg = CFG, nokeyring = false } = {}) {
+function cli(args, { timeout = 120000, cfg = CFG, nokeyring = false, env = {} } = {}) {
   return new Promise((resolve) => {
     execFile(CLI_EXE, args, {
       cwd: ROOT,
       windowsHide: true,
       timeout,
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, S3B_CONFIG: cfg, NO_COLOR: '1', TERM: 'dumb', ...(nokeyring ? { S3B_NO_KEYRING: '1' } : {}) },
+      env: { ...process.env, S3B_CONFIG: cfg, NO_COLOR: '1', TERM: 'dumb', ...(nokeyring ? { S3B_NO_KEYRING: '1' } : {}), ...env },
     }, (err, stdout, stderr) => {
       resolve({ code: err ? (err.code ?? 1) : 0, out: String(stdout || ''), err: String(stderr || '') });
     });
@@ -1370,7 +1370,7 @@ async function cliS3() {
     await cli(['rm', '-r', `${P}/`, '--force']);
     return 'skips protected the local bytes; mv never deleted a skipped source; fresh moves complete';
   });
-  await verify({ id: 'CLI-S3-47', area: 'transfers', action: 'sync S3→local: repair, and --delete aims ONLY at the extra local file', ds: 'S3 (MinIO)', scenario: 'the download direction points --delete at the LOCAL tree — the side with no version history to recover from: a drifted prefix repairs byte-identical; without --delete a local-only file SURVIVES; --dry-run plans the removal but touches nothing on disk; the real --delete removes exactly the extra file while every synced file and an out-of-scope sibling directory stay intact; both-s3:// and both-local operand pairs are refused as usage errors; a --delete that would remove 55 local files refuses without --force and obeys it', face: 'CLI' }, async () => {
+  await verify({ id: 'CLI-S3-47', area: 'transfers', action: 'sync S3→local: repair, and --delete aims ONLY at the extra local file', ds: 'S3 (MinIO)', scenario: 'the download direction points --delete at the LOCAL tree — the side with no version history to recover from: a drifted prefix repairs byte-identical; without --delete a local-only file SURVIVES; --dry-run plans the removal but touches nothing on disk; the real --delete removes exactly the extra file while every synced file and an out-of-scope sibling directory stay intact; a pair naming ONE location twice (both-s3:// or both-local) is refused as a usage error while the matrix pairs plan and run lawfully; a --delete that would remove 55 local files refuses without --force and obeys it', face: 'CLI' }, async () => {
     const d = path.join(ART, 'syncdl'), sib = path.join(ART, 'syncdl-sib'), P = `${B}/syncdl/`;
     const exists = async (p) => { try { await readFile(p, 'utf8'); return true; } catch { return false; } };
     await rm(d, { recursive: true, force: true });
@@ -1425,13 +1425,17 @@ async function cliS3() {
     need(dr.code === 0 && /"deleted":\s*55/.test(dr.out), `local gate --force: ${dr.out}${dr.err}`);
     need((await readdir(df)).length === 0, '--force left local files behind');
     await rm(df, { recursive: true, force: true });
-    // operand-kind gate: never two s3:// or two local operands
-    r = await cli(['sync', P, `${B}/other/`]);
-    need(r.code !== 0 && /exactly one/i.test(r.out + r.err), `two s3:// operands accepted: exit ${r.code} ${r.out}${r.err}`);
-    r = await cli(['sync', d, sib]);
-    need(r.code !== 0 && /exactly one/i.test(r.out + r.err), `two local operands accepted: exit ${r.code} ${r.out}${r.err}`);
+    // operand gate, matrix law: any two sides seat — the degenerate pair
+    // naming ONE location twice refuses; s3-to-s3 and local-to-local are
+    // lawful pairs that plan (dry-run) without moving anything
+    r = await cli(['sync', P, P]);
+    need(r.code !== 0 && /two different locations/i.test(r.out + r.err), `same s3:// pair accepted: exit ${r.code} ${r.out}${r.err}`);
+    r = await cli(['sync', d, d]);
+    need(r.code !== 0 && /two different locations/i.test(r.out + r.err), `same local pair accepted: exit ${r.code} ${r.out}${r.err}`);
+    r = await cli(['sync', d, sib, '--dry-run', '--json']);
+    need(r.code === 0 && /"transferred":\s*3/.test(r.out), `local-to-local pair refused by the matrix: exit ${r.code} ${r.out}${r.err}`);
     await cli(['rm', '-r', P, '--force']);
-    return 'download repair exact; --delete removed exactly the extra local file; dry-run, operand, and 55-file force gates held';
+    return 'download repair exact; --delete removed exactly the extra local file; dry-run, same-location, matrix and 55-file force gates held';
   });
 
 }
@@ -2266,8 +2270,8 @@ async function cliMeta() {
     return `${N1} dials through the keyring-held secret; ${N2}'s token reached the signature (refused as synthetic); no keyring residue`;
   });
 
-  await verify({ id: 'CLI-M-07', area: 'meta', action: '--help contract: every command self-documents', ds: '—', scenario: 'every top-level command (22) plus the root: --help exits 0, prints a Usage: block and lists its subcommands where it has any — a missing or crashing help page is a broken contract for scripting humans', face: 'CLI' }, async () => {
-    const CMDS = ['source', 'profile', 'ls', 'tree', 'du', 'stat', 'mb', 'rb', 'mkdir', 'cp', 'mv', 'rm', 'sync', 'presign', 'doctor', 'versions', 'bucket', 'find', 'sc', 'lock', 'log', 'version', 'license'];
+  await verify({ id: 'CLI-M-07', area: 'meta', action: '--help contract: every command self-documents', ds: '—', scenario: 'every top-level command (24) plus the root: --help exits 0, prints a Usage: block and lists its subcommands where it has any — a missing or crashing help page is a broken contract for scripting humans', face: 'CLI' }, async () => {
+    const CMDS = ['source', 'profile', 'ls', 'tree', 'du', 'stat', 'mb', 'rb', 'mkdir', 'cp', 'mv', 'rm', 'sync', 'presign', 'doctor', 'versions', 'bucket', 'find', 'sc', 'lock', 'log', 'version', 'license', 'setup'];
     for (const c of CMDS) {
       const r = await cli([c, '--help']);
       need(r.code === 0, `${c} --help exited ${r.code}: ${(r.out + r.err).slice(0, 120)}`);
@@ -2297,6 +2301,33 @@ async function cliMeta() {
     r = await cli(['license', 'status'], { cfg: dir });
     need(r.code === 0 && r.out.includes('not accepted'), `status after decline: ${r.out}`);
     return 'status/accept/decline round-trip clean';
+  });
+  await verify({ id: 'CLI-M-09', area: 'meta', action: 'setup face: install/status/uninstall by scope', ds: '—', scenario: 'S3B_SETUP_USER_DIR redirects the user seat into the scratch tree (the real LOCALAPPDATA seat is never touched): install lands the running binary with the portable-seat note, status names the seat in the human and --json faces, --user --system together is a usage error, uninstall removes the exe and the emptied dir, a second uninstall is honest that nothing is left, and an un-redirected status is read-only — the real seat dir is unchanged by the look', face: 'CLI' }, async () => {
+    const seat = path.join(ART, 'm09-seat', 'bin');
+    await rm(path.join(ART, 'm09-seat'), { recursive: true, force: true });
+    let r = await cli(['setup', 'install'], { env: { S3B_SETUP_USER_DIR: seat } });
+    need(r.code === 0 && r.out.includes('installed:'), `install: ${r.out}${r.err}`);
+    need(r.out.includes('portable seat'), `portable note missing: ${r.out}`);
+    const exe = path.join(seat, process.platform === 'win32' ? 's3b.exe' : 's3b');
+    need(fs.existsSync(exe) && fs.statSync(exe).size > 0, 'installed exe missing at the redirected seat');
+    r = await cli(['setup', 'status'], { env: { S3B_SETUP_USER_DIR: seat } });
+    need(r.code === 0 && /user:\s+.*m09-seat/.test(r.out) && r.out.includes('portable:'), `status: ${r.out}`);
+    r = await cli(['setup', 'status', '--json'], { env: { S3B_SETUP_USER_DIR: seat } });
+    const j = JSON.parse(r.out);
+    need(j.user.installed === true && j.user.redirected === true && String(j.user.dir).replaceAll('\\', '/').endsWith('m09-seat/bin'), `json status: ${JSON.stringify(j.user).slice(0, 140)}`);
+    r = await cli(['setup', 'install', '--user', '--system'], { env: { S3B_SETUP_USER_DIR: seat } });
+    need(r.code === 2, `--user --system must be a usage error, got exit ${r.code}`);
+    r = await cli(['setup', 'uninstall'], { env: { S3B_SETUP_USER_DIR: seat } });
+    need(r.code === 0 && r.out.includes('removed:'), `uninstall: ${r.out}${r.err}`);
+    need(!fs.existsSync(exe) && !fs.existsSync(seat), 'exe or emptied dir survived the uninstall');
+    r = await cli(['setup', 'uninstall'], { env: { S3B_SETUP_USER_DIR: seat } });
+    need(r.code !== 0 && /nothing to remove/.test(r.out + r.err), `second uninstall must be honest: ${r.out}${r.err}`);
+    const realSeat = path.join(process.env.LOCALAPPDATA || os.homedir(), 's3b');
+    const before = fs.existsSync(realSeat);
+    r = await cli(['setup', 'status']);
+    need(r.code === 0 && r.out.includes('system:'), `un-redirected status: ${r.out}`);
+    need(fs.existsSync(realSeat) === before, 'a status look created the real seat dir');
+    return 'redirected install→status→uninstall round-trip clean; the usage refusal and the empty-uninstall verdict are honest; the un-redirected look touches nothing';
   });
 }
 
@@ -6901,7 +6932,7 @@ async function guiBattery() {
     }
   });
 
-  await verify({ id: 'GUI-84', area: 'objects', action: 'Editor concurrent-change race on a versioned bucket: last-writer-wins, but the loser stays recoverable', ds: 'S3 (MinIO)', scenario: 'an editor session stages v1 while a CONCURRENT writer outside the app lands v2; the editor then pushes v3: the push must land as current (honest last-writer-wins), the timeline must hold every version, and restoring the clobbered concurrent v2 by id must bring its exact bytes back — on unversioned buckets this race would destroy the concurrent change, so recoverability here is the pinned guarantee', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-84', area: 'objects', action: 'Editor concurrent-change race on a versioned bucket: last-writer-wins, but the loser stays recoverable', ds: 'S3 (MinIO)', scenario: 'an editor session stages v1 while a CONCURRENT writer outside the app lands v2; the editor then saves v3: the guarded save refuses the concurrent change (the lost-update cure — no silent clobber, the session survives stale), PushEdit force — the dialog Push anyway — is the informed consent that lands v3 current (honest last-writer-wins), the timeline must hold every version, and restoring the clobbered concurrent v2 by id must bring its exact bytes back — on unversioned buckets this race would destroy the concurrent change, so recoverability here is the pinned guarantee', face: 'GUI' }, async () => {
     const K = 'verify-gui/edit-race.txt';
     const V1 = 'editor race v1 — staged by the session\n';
     const V2 = 'CONCURRENT writer v2 — landed while the editor held the file\n';
@@ -6921,9 +6952,17 @@ async function guiBattery() {
     const vids = [...j.out.matchAll(/"versionId":\s*"([^"]+)"/g)].map((m) => m[1]);
     need(vids.length >= 2, `the concurrent write did not version: ${j.out.slice(0, 160)}`);
     const v2id = vids[0]; // versions ls lists newest first — v2 right now
-    // the editor pushes v3 on top — honest last-writer-wins
+    // the editor saves v3 — the guarded save refuses the concurrent change
+    // (the lost-update cure; the session survives stale), and the dialog
+    // Push anyway (PushEdit force) is the informed consent that lands it
     await writeFile(local, V3);
-    await call('StopEdit', BUCKET, K, true);
+    let refused = '';
+    try { await call('StopEdit', BUCKET, K, true); } catch (e) { refused = String(e); }
+    need(/changed on the server/.test(refused), `the guarded Stop and upload must refuse the concurrent change: ${refused}`);
+    const liveRows = (await call('EditingFiles')).filter((f) => f.key === K);
+    need(liveRows.length === 1 && liveRows[0].stale === true, `the refused session must survive stale: ${JSON.stringify(liveRows)}`);
+    await call('PushEdit', BUCKET, K, true);
+    await call('StopEdit', BUCKET, K, false);
     const back = path.join(ART, 'edit-race-back.txt');
     await rm(back, { force: true });
     let r = await s3(['cp', `s3://${BUCKET}/${K}`, back]);
@@ -6940,7 +6979,7 @@ async function guiBattery() {
     need(r.code === 0 && (await readFile(back, 'utf8')) === V2, 'the clobbered concurrent change was NOT recoverable — silent data loss');
     await s3(['rm', `s3://${BUCKET}/${K}`]).catch(() => {});
     await s3(['versions', 'purge', `s3://${BUCKET}/${K}`, '--mode', 'all', '--force']).catch(() => {});
-    return `editor race: v3 won current honestly, ${now.length} versions retained, clobbered v2 restored byte-exact by id`;
+    return `editor race: the guarded save refused the clobber, the consented push won current honestly, ${now.length} versions retained, clobbered v2 restored byte-exact by id`;
   });
 
   await verify({ id: 'GUI-85', area: 'sources', action: 'Bucket-scoped paths: Name/contents — the bucket never repeats after the source name', ds: 'S3 (MinIO)', scenario: 'one data source = one bucket: the breadcrumb carries NO bucket segment and its root crumb stays inside the source (never the account bucket list); the editable path bar reads scheme://Name/prefix/; the normalized Name/prefix/, typed scheme:// and legacy doubled pastes all navigate to the same place; the dual-pane crumb matches', face: 'GUI' }, async () => {
