@@ -88,6 +88,35 @@ func TestDialogGatePassesErrorsThroughAndReopens(t *testing.T) {
 	}
 }
 
+// DialogBusy is the window layer's oracle for the picker law: a group
+// raise must never lift app windows above an open OS dialog, so the flag
+// must mirror the gate exactly — up while a picker is up, down the moment
+// it closes, and never touched by the seams that bypass the gate.
+func TestDialogBusyMirrorsGate(t *testing.T) {
+	a := newTestApp(t)
+	entered, release := installBlockingShell(t)
+
+	if DialogBusy() {
+		t.Fatal("DialogBusy true with no dialog up")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.PickUploadFiles()
+		done <- err
+	}()
+	<-entered
+	if !DialogBusy() {
+		t.Fatal("DialogBusy false while the picker is up")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("picker after unblock: %v", err)
+	}
+	if DialogBusy() {
+		t.Fatal("DialogBusy stayed true after the dialog closed")
+	}
+}
+
 func TestDialogGateSeamsBypassIt(t *testing.T) {
 	a := newTestApp(t)
 	if shell != nil {

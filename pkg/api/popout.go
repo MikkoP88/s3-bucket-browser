@@ -34,11 +34,18 @@ type PopoutSpec struct {
 	// on the display carrying the app's main window; "app" centers it on
 	// the main window itself. Anything but "app" means "display".
 	Center string `json:"center"`
+	// Reseat marks a window whose scope can change between asks: when the
+	// window already floats and Query differs from what it loaded, it
+	// reloads onto the new query instead of just focusing — one Doctor
+	// window, whatever bucket it was asked about last. Without it a reopen
+	// is a plain focus, so a running search never loses its state.
+	Reseat bool `json:"reseat"`
 }
 
 // OpenPopout creates the native popout window for spec.ID, or focuses the
-// existing one. Returns true when a window was created, false when one
-// already floated (it was focused instead).
+// existing one (a Reseat spec whose query changed reloads it first — see
+// PopoutSpec.Reseat). Returns true when a window was created, false when
+// one already floated (it was focused instead).
 func (a *App) OpenPopout(spec PopoutSpec) (bool, error) {
 	if shell == nil {
 		return false, errNoShell
@@ -54,6 +61,7 @@ func (a *App) OpenPopout(spec PopoutSpec) (bool, error) {
 		W: spec.W, H: spec.H,
 		Center: center,
 		MinW:   spec.MinW, MinH: spec.MinH, MaxH: spec.MaxH,
+		Reseat: spec.Reseat,
 	}), nil
 }
 

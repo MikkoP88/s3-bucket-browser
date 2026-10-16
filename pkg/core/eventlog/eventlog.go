@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/lockfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
@@ -244,6 +245,17 @@ func Append(level, scope, source, msg string) {
 	if !ok {
 		return
 	}
+	// The sink is shared by every app window (multi-instance), and Go's
+	// O_APPEND is seek-then-write on Windows, not atomic — two writers
+	// would interleave half-lines into a tail every reader chokes on. The
+	// cross-process lock serializes rotation and append alike; a contended
+	// budget drops THIS line instead of blocking the app (best effort, the
+	// same law the whole sink rides).
+	release, lerr := lockfile.TryLockBounded(p+".lock", 150*time.Millisecond)
+	if lerr != nil {
+		return
+	}
+	defer release()
 	if err := rotateIfBig(p); err != nil {
 		return // unwritable config dir — the GUI drawer still works
 	}

@@ -179,7 +179,16 @@ another (its path stays locked while open — two windows can never edit
 the same container), and each window opens one OS file/folder dialog
 at a time — a second picker in the same window is refused until the
 first closes, so two explorers can never overlap and trick a pick
-into the wrong one.
+into the wrong one. The pickers also know where they belong now:
+every OS file/folder dialog opens centered on the app's window and
+stays above it (owned by it — no more hunting for the explorer on
+another monitor), and while one is up the app's other windows stand
+back so a click meant for the dialog lands in the dialog. The shared
+log files serialize the same honest way: every window appends to the
+same events.jsonl and transfers.log, and the writes take turns
+through a lock file beside the sink — under contention a line is
+dropped rather than the app blocked, so two windows can never
+interleave half-lines into the log.
 
 Windows Server needs one thing client Windows has by default: the app’s
 window is an Edge WebView2 view, and Server SKUs (and stripped-down
@@ -982,7 +991,10 @@ the job's own source.
   run time, and a Copy report button puts the full JSON on the
   clipboard.
   Right-clicking a bucket or data source → **Doctor…** skips the picker
-  and diagnoses that target directly (same window, same checks).
+  and diagnoses that target directly (same checks). One Doctor window
+  serves every ask: picking another source focuses the same window and
+  re-seats it onto the new bucket — the checks boot afresh for it, and
+  a second Doctor window never opens.
 - **License** — Help → License shows the app's license identity (PolyForm
   Internal Use 1.0.0) and a third-party attribution summary pointing at
   the NOTICE file and release SBOM; the About box carries the same

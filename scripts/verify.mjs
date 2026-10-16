@@ -3642,6 +3642,16 @@ async function guiBattery() {
     await waitFor(() => evalPage(() => /pass/i.test(document.querySelector('#popout-root .doc-summary')?.textContent || '')), 60000, 'doctor summary');
     const tasks = JSON.stringify(await call('RunningTasks'));
     need(tasks.includes('doctor'), 'no doctor task recorded');
+    // one Doctor window, whatever bucket: asking Doctor again re-seats
+    // the same window — never a second one — and the checks re-boot
+    await menuClick(/help/i, /doctor/i);
+    await waitFor(() => evalPage(() => document.querySelectorAll('#modal-root .picker-row').length > 0), 5000, 'doctor picker again');
+    const row2 = await elOrNull((want) => Array.from(document.querySelectorAll('#modal-root .picker-row'))
+      .find((r) => r.textContent.includes(want)) || null, SRCNAME);
+    need(row2, 'doctor picker missing the source on the second ask');
+    await row2.asElement().click();
+    await waitFor(() => evalPage(() => document.querySelectorAll('#popout-root .popout').length === 1
+      && (document.querySelector('#popout-root .popout')?.textContent || '').includes('Connectivity')), 10000, 'the one doctor window re-seated');
     await shot('15-doctor');
     await page.keyboard.press('Escape').catch(() => {});
     return 'ladder ran, summary pass';
@@ -8217,10 +8227,10 @@ async function guiBattery() {
     const deskCfg = path.join(ART, 'desk-config');
     await mkdir(deskCfg, { recursive: true });
     const kids = [];
-    const launch = (multi) => {
+    const launch = (multi, extra = {}) => {
       const ch = spawn(DESK, [], {
         cwd: ROOT, windowsHide: true, stdio: 'ignore',
-        env: { ...process.env, S3B_CONFIG: deskCfg, S3B_NO_KEYRING: '1', ...(multi ? { S3B_MULTI_INSTANCE: '1' } : {}) },
+        env: { ...process.env, S3B_CONFIG: deskCfg, S3B_NO_KEYRING: '1', ...(multi ? { S3B_MULTI_INSTANCE: '1' } : {}), ...extra },
       });
       const st = { ch, code: null };
       ch.on('exit', (c) => { st.code = c ?? -1; });
@@ -8258,7 +8268,48 @@ async function guiBattery() {
         d.ch.on('exit', (c2) => { clearTimeout(t); res(c2 ?? -1); });
       });
       need(dCode === 0, `a second default launch must focus the running instance and exit 0, got ${dCode}`);
-      return 'two opted-out windows side by side on their own per-PID webview profiles; a default launch boots beside them; a second default launch focuses and exits 0';
+      // leg 5: the popout singleton law on the real window face — one
+      // Doctor window, whatever bucket. A CDP-seated instance answers the
+      // bridge directly: the first OpenPopout creates (true), a second
+      // ask with a different bucket and reseat re-seats the SAME window
+      // (false, its page reloading onto the new bucket), the plain id is
+      // the only one PopoutOpen answers for, and ClosePopout takes it
+      // down. A silent CDP endpoint skips the leg honestly.
+      const port = await new Promise((res) => {
+        const s = net.createServer();
+        s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); });
+      });
+      launch(true, { S3B_RIG_CDP_PORT: String(port) });
+      const cdpUp = await waitFor(async () => {
+        try { const r = await fetch(`http://127.0.0.1:${port}/json/version`); return r.ok; } catch { return false; }
+      }, 30000, 'WebView2 CDP endpoint').catch(() => false);
+      if (!cdpUp) {
+        return skip('side-by-side legs green; the CDP endpoint stayed silent — the popout singleton leg skipped');
+      }
+      const { chromium } = await import('playwright-core');
+      const cdp = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+      try {
+        const ctx = cdp.contexts()[0];
+        const main = await waitFor(() => ctx.pages().find((p) => p.url().includes('wails.localhost')) || false, 20000, 'CDP main page');
+        // the URL match can win while the page is still loading on a cold
+        // per-PID profile — the runtime script seats window.wails.Call only
+        // once it has run, so the bridge waits for it honestly
+        await waitFor(() => main.evaluate(() => !!(window.wails && window.wails.Call && window.wails.Call.ByName)), 20000, 'CDP page wails runtime');
+        const bcall = (m, ...args) => main.evaluate((c) => window.wails.Call.ByName(`github.com/MikkoP88/s3-bucket-browser/pkg/api.App.${c.m}`, ...c.args), { m, args });
+        need(await bcall('OpenPopout', { id: 'doctor', title: 'Doctor — s3://alpha', query: 'popout=doctor&bucket=alpha', w: 420, h: 320, reseat: true }) === true, 'first OpenPopout must create the window');
+        // the create path answers the moment the window is BORN; visible is
+      // asynchronous on a cold per-PID profile — poll the same oracle the
+      // frontend's verifyNativePopout polls
+      await waitFor(async () => (await bcall('PopoutOpen', 'doctor')) === true, 10000, 'the created popout answers PopoutOpen');
+        need(await bcall('OpenPopout', { id: 'doctor', title: 'Doctor — s3://beta', query: 'popout=doctor&bucket=beta', w: 420, h: 320, reseat: true }) === false, 'a reseat reopen must re-use the same window');
+        need(await bcall('PopoutOpen', 'doctor:alpha') === false && await bcall('PopoutOpen', 'doctor:beta') === false, 'bucket-scoped popout ids must not exist');
+        await waitFor(() => ctx.pages().some((p) => p.url().includes('popout=doctor&bucket=beta')), 10000, 'the re-seated window reloaded onto bucket beta');
+        await bcall('ClosePopout', 'doctor');
+        await waitFor(async () => (await bcall('PopoutOpen', 'doctor')) === false, 10000, 'the popout closed');
+      } finally {
+        await cdp.close().catch(() => {});
+      }
+      return 'two opted-out windows side by side on their own per-PID webview profiles; a default launch boots beside them; a second default launch focuses and exits 0; the Doctor popout re-seats one window across buckets';
     } finally {
       for (const st of kids) { try { st.ch.kill(); } catch { /* already gone */ } }
     }

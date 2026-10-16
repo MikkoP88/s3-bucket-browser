@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestTryLockExcludesAndReleases(t *testing.T) {
@@ -31,6 +32,49 @@ func TestTryLockExcludesAndReleases(t *testing.T) {
 		t.Fatalf("TryLock after release must succeed, got %v", err)
 	}
 	relaunch()
+}
+
+func TestTryLockBounded(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "shared.log.lock")
+
+	// free: answers at once with the lock in hand
+	release, err := TryLockBounded(name, time.Second)
+	if err != nil {
+		t.Fatalf("TryLockBounded on a free lock: %v", err)
+	}
+	release()
+
+	// held for the whole budget (a sibling app window mid-append): the
+	// answer is ErrLocked at the deadline, not a hang
+	held, err := TryLock(name)
+	if err != nil {
+		t.Fatalf("seeding holder: %v", err)
+	}
+	start := time.Now()
+	if _, err := TryLockBounded(name, 60*time.Millisecond); !errors.Is(err, ErrLocked) {
+		t.Fatalf("bounded wait on a held lock: got %v, want ErrLocked", err)
+	}
+	if d := time.Since(start); d < 50*time.Millisecond {
+		t.Fatalf("budget not honored: returned after %v", d)
+	}
+	held()
+
+	// held then released mid-budget: the wait outlasts the holder and
+	// wins the lock
+	mid, err := TryLock(name)
+	if err != nil {
+		t.Fatalf("seeding mid holder: %v", err)
+	}
+	go func() {
+		time.Sleep(40 * time.Millisecond)
+		mid()
+	}()
+	won, err := TryLockBounded(name, 5*time.Second)
+	if err != nil {
+		t.Fatalf("TryLockBounded after the holder released: %v", err)
+	}
+	won()
 }
 
 func TestTryLockOverLeftoverLockFile(t *testing.T) {

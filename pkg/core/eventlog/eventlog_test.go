@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/lockfile"
 )
 
 func eventEnv(t *testing.T) string {
@@ -283,5 +286,41 @@ func TestRotationKeepsNewestHalf(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(p)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAppendDropsLineWhenSinkLockHeld(t *testing.T) {
+	eventEnv(t)
+	if err := SaveSettings(Settings{Mode: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// an external holder — a sibling app window mid-append — holds the
+	// cross-process lock past the budget: this window's line is dropped,
+	// bounded, and the app never blocks on a log write
+	release, err := lockfile.TryLock(p + ".lock")
+	if err != nil {
+		t.Fatalf("seeding holder: %v", err)
+	}
+	start := time.Now()
+	Append("info", "test", "", "contended line")
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("contended append blocked for %v — the budget must bound it", d)
+	}
+	release()
+
+	// after the holder leaves, appends land again — and the contended
+	// line never half-landed
+	Append("warn", "test", "", "settled line")
+	lines, err := Tail(0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0].Message != "settled line" {
+		t.Fatalf("append after contention wrong: %+v", lines)
 	}
 }

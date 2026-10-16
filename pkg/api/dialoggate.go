@@ -33,3 +33,12 @@ func withDialogGate[T any](fn func() (T, error)) (T, error) {
 	defer dialogBusy.Store(false)
 	return fn()
 }
+
+// DialogBusy reports whether a native OS file dialog is up in this app
+// instance. The window layer consults it so a group raise never lifts app
+// windows above an open picker — the picker owns the foreground until it
+// closes (an owned OS dialog stays above its owner on its own; the gate
+// covers the siblings).
+func DialogBusy() bool {
+	return dialogBusy.Load()
+}

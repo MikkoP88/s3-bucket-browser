@@ -610,9 +610,11 @@ function openPopout({ id, title, body, buttons = [], footLeft = null, wide = fal
   };
   document.addEventListener('keydown', esc, true);
 
-  const foot = el('div', { class: 'modal-foot' },
-    footLeft || null,
-    buttons.map((b) => {
+  // buildFoot is factored so reseat can rebuild the bar under a new
+  // button set without re-opening anything
+  const buildFoot = (left, btns) => el('div', { class: 'modal-foot' },
+    left || null,
+    btns.map((b) => {
       const pb = el('button', {
         class: `btn ${b.class || ''}`,
         text: b.label,
@@ -621,6 +623,7 @@ function openPopout({ id, title, body, buttons = [], footLeft = null, wide = fal
       pb.onclick = () => wireBusy(pb, () => (b.onclick ? b.onclick(close) : close(null)));
       return pb;
     }));
+  let foot = buildFoot(footLeft, buttons);
 
   const box = el('div', {
     class: `popout${wide ? ' wide' : ''}${autoH ? ' autoh' : ''}${cls ? ' ' + cls : ''}`,
@@ -645,6 +648,29 @@ el('span', { class: 'x', text: '\u00D7', 'aria-hidden': 'true', onclick: () => c
     btns: [...foot.children].filter((n) => n.tagName === 'BUTTON'),
     body: box.querySelector('.modal-body'),
     focus() { handle.z = ++popZ; box.style.zIndex = handle.z; },
+    // reseat swaps the window's content in place — title, body, foot —
+    // while the geometry, the z-order seat and the close plumbing all
+    // stand: one singleton window can host different scopes this way (one
+    // Doctor window, whatever bucket it was asked about last)
+    reseat({ title: newTitle, body: newBody, buttons: newBtns = [], footLeft: newLeft = null }) {
+      if (newTitle !== undefined) {
+        box.setAttribute('aria-label', newTitle);
+        const head = box.querySelector('.modal-head > span:not(.x)');
+        if (head) head.textContent = newTitle;
+      }
+      if (newBody !== undefined) handle.body.replaceChildren(newBody);
+      const nf = buildFoot(newLeft, newBtns);
+      if (foot.parentNode) {
+        foot.replaceWith(nf);
+      } else if (nf.children.length) {
+        // the popout was created footless — mount the new bar where the
+        // builder would have put it (before the grip), not nowhere
+        box.insertBefore(nf, box.querySelector('.pop-grip') || null);
+      }
+      foot = nf;
+      handle.btns = [...nf.children].filter((n) => n.tagName === 'BUTTON');
+      handle.focus();
+    },
   };
   popouts.set(id, handle);
   // any pointer press raises the window above its siblings
@@ -845,23 +871,9 @@ function domFallbackOpen(thunk) {
 // centered on the display the app is on by default (multi-monitor
 // aware), or on the app window when Settings → View says so
 // (s3b-popout-center).
-function maybeNativePopout({ id, query, title, w, h, minW = 0, minH = 0, maxH = 0, domOpen }) {
+function maybeNativePopout({ id, query, title, w, h, minW = 0, minH = 0, maxH = 0, domOpen, reseat = false }) {
   if (!nativeWindows() || nativeBroken || inDomFallback) return false; // harness / browser / broken
   if (document.body.classList.contains('popout-win')) return false;    // we ARE the popout
-  if (nativeOpen.has(id)) {
-    // The flag can be stale — a window can die without a popout:closed
-    // event, and then every click would FocusPopout into nothing. Ask
-    // the backend: a live window focuses, a dead id releases the flag
-    // and the DOM continuation takes over.
-    api.PopoutOpen(id).then((open) => {
-      if (open) { api.FocusPopout(id); return; }
-      nativeOpen.delete(id);
-      if (id === 'transfers') xferAutoReset();
-      if (domOpen) domFallbackOpen(domOpen);
-    }).catch(() => api.FocusPopout(id)); // binding gone: trust the flag
-    return true;
-  }
-  nativeOpen.add(id);
   // auto-height windows (minH > 0) always open at their profile default:
   // the height tracks the content afresh (a remembered height would only
   // flash before the content fit overrides it), and the backend skips its
@@ -874,30 +886,48 @@ function maybeNativePopout({ id, query, title, w, h, minW = 0, minH = 0, maxH = 
   if (!auto && popoutsRemembered()) {
     try { geo = JSON.parse(localStorage.getItem(`s3b-popout-${id}`) || 'null'); } catch { geo = null; }
   }
-  api.OpenPopout({
-    id, title, query,
+  // One call serves both roads: a live window is focused (and re-seated
+  // onto the new query when the spec asks), a dead or unknown id is
+  // created — the backend is the singleton authority, so a stale flag
+  // heals into a real window instead of a DOM box beside nothing.
+  const attempt = () => api.OpenPopout({
+    id, title, query, reseat,
     w: Math.max(0, geo?.w || w || 0), h: Math.max(0, geo?.h || h || 0),
     minW, minH, maxH,
     center: localStorage.getItem('s3b-popout-center') === 'app' ? 'app' : 'display',
-  }).then(() => {
+  }).then((created) => {
     // A resolved OpenPopout should mean a window, but verify after a
-    // grace period — the whole session rides on this promise.
-    setTimeout(() => verifyNativePopout(id, domOpen), 400);
+    // grace period when one was really created — the whole session
+    // rides on this promise.
+    if (created) setTimeout(() => verifyNativePopout(id, domOpen), 400);
   }).catch((err) => {
     nativeOpen.delete(id);
     toast(`Popout: ${err}`, 'error');
     if (domOpen) domFallbackOpen(domOpen);
   });
+  if (nativeOpen.has(id)) {
+    attempt(); // live or stale — the backend answers either way
+    return true;
+  }
+  nativeOpen.add(id);
+  attempt();
   return true;
 }
 
 // verifyNativePopout asks the backend whether the promised window is
 // alive; a no means the native path is unusable — downgrade the session
 // to DOM popouts and float this one in-page.
-function verifyNativePopout(id, domOpen) {
+function verifyNativePopout(id, domOpen, attempt = 0) {
   if (!nativeOpen.has(id)) return; // closed or already fallen back
   api.PopoutOpen(id).then((open) => {
     if (open || !nativeOpen.has(id)) return;
+    // a cold first window (a fresh per-instance browser profile) can be
+    // slow to report — poll a few times before concluding anything, so a
+    // slow boot never costs the session its native windows
+    if (attempt < 4) {
+      setTimeout(() => verifyNativePopout(id, domOpen, attempt + 1), 400);
+      return;
+    }
     nativeOpen.delete(id);
     nativeBroken = true;
     if (id === 'transfers') xferAutoReset();
@@ -986,7 +1016,10 @@ const searchPresetFromQS = (qs) => {
 
 export function renderPopoutView(kind, qs) {
   const bucket = qs.get('bucket') || '';
-  const id = kind === 'doctor' ? `doctor${bucket ? `:${bucket}` : ''}` : kind;
+  // Doctor is one window whatever bucket it serves (a second bucket ask
+  // re-seats the same window), so its id is just the kind — every other
+  // popout already seats one id per view
+  const id = kind;
   // the auto-height windows never persist a size: their height tracks
   // the content afresh on every open, and their default size is the
   // profile's — the backend's session memory keeps the placement
@@ -1723,7 +1756,8 @@ const docTime = (iso) => {
 
 export function doctorDialog(bucket) {
   if (maybeNativePopout({
-    id: `doctor${bucket ? `:${bucket}` : ''}`,
+    id: 'doctor',
+    reseat: true,
     query: bucket ? `popout=doctor&bucket=${encodeURIComponent(bucket)}` : 'popout=doctor',
     title: `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`,
     w: 780, h: 640,
@@ -1910,22 +1944,21 @@ export function doctorDialog(bucket) {
     },
   });
 
-  const pop = openPopout({
-    id: `doctor${bucket ? `:${bucket}` : ''}`,
-    title: `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`,
-    body: el('div', {},
-      el('div', { class: 'doc-top' }, verdict, copyBtn),
-      summary, meta, el('div', { style: 'height:10px' }), allowRow, list, warnBox),
-    wide: true,
-    buttons: [
-      { label: t('doctor.runAll'), class: 'primary', onclick: () => runAll() },
-    ],
-  });
+  const title = `${t('doctor.title')}${bucket ? ` — s3://${bucket}` : ''}`;
+  const body = el('div', {},
+    el('div', { class: 'doc-top' }, verdict, copyBtn),
+    summary, meta, el('div', { style: 'height:10px' }), allowRow, list, warnBox);
+  const buttons = [
+    { label: t('doctor.runAll'), class: 'primary', onclick: () => runAll() },
+  ];
+  const pop = openPopout({ id: 'doctor', title, body, wide: true, buttons });
+  // already floating: the same window re-seats to this bucket (title, body
+  // and foot swapped in place) — then the check list boots afresh either
+  // way, because a re-seated window is a new scope
+  if (!pop.fresh) pop.reseat({ title, body, buttons });
 
-  // already floating: focus() did the work — don't re-fetch the check list
-  if (pop.fresh) {
-    list.replaceChildren(loadingBlock(t('loading')));
-    api.DoctorChecks().then((names) => {
+  list.replaceChildren(loadingBlock(t('loading')));
+  api.DoctorChecks().then((names) => {
     list.replaceChildren();
     // grouped fill: registry order within each group, groups in their own
     // order, unknown names trailing under the catch-all label
@@ -1948,7 +1981,6 @@ export function doctorDialog(bucket) {
       }
     }
   }).catch((err) => toast(`Doctor: ${err}`, 'error'));
-  }
 }
 
 // ---------- view history (transfers / running tasks share it) ----------

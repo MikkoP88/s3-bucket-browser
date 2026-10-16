@@ -65,6 +65,11 @@ type popoutRect struct{ x, y, w, h int }
 var (
 	popoutMu    sync.Mutex
 	popoutGeoms = map[string]popoutRect{}
+	// popoutQueries remembers each live popout window's current query
+	// so a Reseat reopen can tell "same scope, just focus" from "new
+	// scope, reload onto it" (one Doctor window, whatever bucket it
+	// serves).
+	popoutQueries = map[string]string{}
 	// groupOrder remembers the app windows' stacking as top-first names
 	// (see raiseWindowGroup): a group raise must re-stack the siblings in
 	// their previous relative order, and Windows offers no cheap query
@@ -418,39 +423,71 @@ func installShell(app3 *application.App, a *api.App) {
 			}
 			return nil
 		},
+		// Every picker rides one owner and one modality ring: owned by the
+		// main window the OS dialog centers on it and stays above it (never
+		// lost on some other monitor's corner), and while it is up the ring
+		// keeps every sibling window from taking the clicks meant for it.
 		OpenFiles: func(d api.ShellDialog) ([]string, error) {
-			return app3.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
-				CanChooseFiles:  true,
-				ShowHiddenFiles: d.ShowHidden,
-				Title:           d.Title,
-				Filters:         toFilters(d.Filters),
-			}).PromptForMultipleSelection()
+			owner := pickerOwner(app3)
+			return withPickerModality(app3, owner, func() ([]string, error) {
+				return app3.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
+					CanChooseFiles:  true,
+					ShowHiddenFiles: d.ShowHidden,
+					Title:           d.Title,
+					Filters:         toFilters(d.Filters),
+					Window:          owner,
+				}).PromptForMultipleSelection()
+			})
 		},
 		OpenFile: func(d api.ShellDialog) (string, error) {
-			return app3.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
-				CanChooseFiles:  true,
-				ShowHiddenFiles: d.ShowHidden,
-				Title:           d.Title,
-				Filters:         toFilters(d.Filters),
-			}).PromptForSingleSelection()
+			owner := pickerOwner(app3)
+			return withPickerModality(app3, owner, func() (string, error) {
+				return app3.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
+					CanChooseFiles:  true,
+					ShowHiddenFiles: d.ShowHidden,
+					Title:           d.Title,
+					Filters:         toFilters(d.Filters),
+					Window:          owner,
+				}).PromptForSingleSelection()
+			})
 		},
 		SaveFile: func(d api.ShellDialog) (string, error) {
-			return app3.Dialog.SaveFileWithOptions(&application.SaveFileDialogOptions{
-				Title:    d.Title,
-				Filename: d.DefaultName,
-				Filters:  toFilters(d.Filters),
-			}).PromptForSingleSelection()
+			owner := pickerOwner(app3)
+			return withPickerModality(app3, owner, func() (string, error) {
+				return app3.Dialog.SaveFileWithOptions(&application.SaveFileDialogOptions{
+					Title:    d.Title,
+					Filename: d.DefaultName,
+					Filters:  toFilters(d.Filters),
+					Window:   owner,
+				}).PromptForSingleSelection()
+			})
 		},
 		OpenDir: func(title string) (string, error) {
-			return app3.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
-				CanChooseDirectories: true,
-				CanChooseFiles:       false,
-				Title:                title,
-			}).PromptForSingleSelection()
+			owner := pickerOwner(app3)
+			return withPickerModality(app3, owner, func() (string, error) {
+				return app3.Dialog.OpenFileWithOptions(&application.OpenFileDialogOptions{
+					CanChooseDirectories: true,
+					CanChooseFiles:       false,
+					Title:                title,
+					Window:               owner,
+				}).PromptForSingleSelection()
+			})
 		},
 		Quit: app3.Quit,
 		OpenPopout: func(id, title, query string, geo api.ShellGeometry) bool {
 			if w, ok := app3.Window.GetByName(popoutPrefix + id); ok {
+				// Reopen law: the window is the singleton — focus it, keep
+				// its title honest, and reload it onto the new query only
+				// when the spec asks (Reseat) and the scope really changed;
+				// a same-scope reopen is a plain focus, so a running search
+				// never loses its state.
+				popoutMu.Lock()
+				last := popoutQueries[id]
+				popoutMu.Unlock()
+				if geo.Reseat && last != query {
+					w.SetURL("/?" + query)
+				}
+				w.SetTitle(title)
 				w.Focus()
 				return false
 			}
@@ -540,12 +577,18 @@ func installShell(app3 *application.App, a *api.App) {
 				opts.InitialPosition = application.WindowXY
 			}
 			w := app3.Window.NewWithOptions(opts)
+			popoutMu.Lock()
+			popoutQueries[id] = query
+			popoutMu.Unlock()
 			// Tell the main window when a popout closes so its bookkeeping
 			// (per-id singletons, onClose callbacks) stays correct. Runs
 			// for user closes and ClosePopout alike — and snapshots the
 			// rect so the next open lands where this one was left.
 			w.OnWindowEvent(events.Common.WindowClosing, func(*application.WindowEvent) {
 				rememberPopout(id, w)
+				popoutMu.Lock()
+				delete(popoutQueries, id)
+				popoutMu.Unlock()
 				app3.Event.Emit(api.EventPopoutClosed, map[string]string{"id": id})
 			})
 			return true
@@ -606,6 +649,49 @@ func installShell(app3 *application.App, a *api.App) {
 	})
 }
 
+// pickerOwner returns the app's main window — the owner every native OS
+// file/folder picker is attached to. An owned picker centers on its owner
+// and stays above it (the Windows IFileDialog parents itself to the owner
+// handle), so the dialog can never open on some other monitor's corner or
+// slide under the app. A missing main window (nil) falls back to today's
+// unowned dialog.
+func pickerOwner(app3 *application.App) application.Window {
+	if w, ok := app3.Window.GetByName("main"); ok && w != nil {
+		return w
+	}
+	return nil
+}
+
+// withPickerModality runs a native picker under the modality ring: every
+// OTHER app window is disabled (EnableWindow) while the picker is up, so
+// a click meant for the dialog can never land in a popout behind it — one
+// interactive surface per window, the same law the dialog gate keeps per
+// instance. The picker's own modal loop disables its owner; the ring
+// covers the siblings, and the restore re-enables only the windows the
+// ring itself disabled (a window already disabled for its own reasons
+// stays that way).
+func withPickerModality[T any](app3 *application.App, owner application.Window, fn func() (T, error)) (T, error) {
+	var ring []uintptr
+	for _, wn := range app3.Window.GetAll() {
+		if wn == owner || wn.Name() == "" {
+			continue
+		}
+		h := wn.NativeWindow()
+		if h == nil {
+			continue
+		}
+		if disableWindow(uintptr(h)) {
+			ring = append(ring, uintptr(h))
+		}
+	}
+	defer func() {
+		for _, h := range ring {
+			enableWindow(h)
+		}
+	}()
+	return fn()
+}
+
 // installGroupRaise hooks the window-group behavior: when ANY app window
 // (main or a popout) is clicked or otherwise focused, every app window
 // comes forward as a group — the way classic multi-window tools behave —
@@ -633,6 +719,9 @@ func installGroupRaise(app3 *application.App) {
 // callbacks on goroutines (not the main thread), so the InvokeSync-backed
 // window calls and the cross-thread SetWindowPos are both safe here.
 func raiseWindowGroup(app3 *application.App, focused string) {
+	if api.DialogBusy() {
+		return // a picker is up: the group must not bury the OS dialog
+	}
 	hwnds := map[string]uintptr{}
 	var names []string
 	for _, wn := range app3.Window.GetAll() {

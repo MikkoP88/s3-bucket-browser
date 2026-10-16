@@ -31,3 +31,30 @@ func raiseNoActivate(hwnd uintptr) {
 	pSetWindowPos.Call(hwnd, zHwndTop, 0, 0, 0, 0,
 		zSWPNosize|zSWPNomove|zSWPNoactivate|zSWPNoownerzorder)
 }
+
+// The picker-modality ring (see pickerModalityRing in gui.go) is Win32
+// too: EnableWindow is not in golang.org/x/sys/windows, so it rides the
+// same LazyDLL door as the raise above.
+var pEnableWindow = syscall.NewLazyDLL("user32.dll").NewProc("EnableWindow")
+
+// disableWindow marks hwnd unable to take input while a native OS picker
+// is up (its owner is disabled by the picker's own modal loop). It reports
+// whether THIS call did the disabling — a window already disabled by
+// someone else must not be re-enabled by the ring's restore.
+func disableWindow(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	// EnableWindow returns nonzero when the window WAS enabled — exactly
+	// the "we disabled it, remember to re-enable" answer.
+	r, _, _ := pEnableWindow.Call(hwnd, 0)
+	return r != 0
+}
+
+// enableWindow gives a ring-disabled window its input back (picker closed).
+func enableWindow(hwnd uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	pEnableWindow.Call(hwnd, 1)
+}

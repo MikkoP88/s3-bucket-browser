@@ -46,7 +46,8 @@
 ### ✔ A second window when you want one
 - **File → New window** (Ctrl+N) or `s3b --new-instance` opens another full window beside the first, each on its own browser profile  
 - A profile file open in one window is refused in another — two windows never edit the same container  
-- One OS file/folder dialog per window: a second picker waits until the first closes  
+- One OS file/folder dialog per window: a second picker waits until the first closes — and every picker opens centered on the app and stays above it  
+- Shared logs serialize: windows appending to one events.jsonl / transfers.log take turns through a lock file — never interleaved lines, never a blocked app  
 - Without the verb, a second launch still just raises the running app
 
 ### ✔ Deep search, one window

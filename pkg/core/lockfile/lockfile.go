@@ -12,8 +12,33 @@
 // instants (see the release note); they are inert and get reused.
 package lockfile
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // ErrLocked reports that another process (or another handle in this one)
 // holds the lock right now.
 var ErrLocked = errors.New("locked by another process")
+
+// TryLockBounded retries a contended TryLock for up to budget. The shared
+// log sinks use it (two app windows appending to one file): a sibling
+// instance holding the lock costs a bounded wait, never a blocked app.
+// ErrLocked comes back when the budget runs out; any other error (an
+// unusable directory, permissions) is the lock's own and returns at once.
+func TryLockBounded(name string, budget time.Duration) (func(), error) {
+	deadline := time.Now().Add(budget)
+	for {
+		release, err := TryLock(name)
+		if err == nil {
+			return release, nil
+		}
+		if !errors.Is(err, ErrLocked) {
+			return nil, err
+		}
+		if !time.Now().Before(deadline) {
+			return nil, ErrLocked
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}

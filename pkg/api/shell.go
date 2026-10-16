@@ -55,6 +55,11 @@ type ShellGeometry struct {
 	MinW   int
 	MinH   int
 	MaxH   int
+	// Reseat marks a popout whose reopen may change scope: when the window
+	// already floats and query differs from what it loaded, the shell
+	// reloads it onto the new query instead of just focusing it. Without
+	// it a reopen is a plain focus (see PopoutSpec.Reseat).
+	Reseat bool
 }
 
 // DesktopShell is the full desktop capability set. InstallDesktopShell
@@ -74,8 +79,9 @@ type DesktopShell struct {
 	OpenDir       func(title string) (string, error)
 	Quit          func()
 	// OpenPopout creates the native popout window for id (or focuses the
-	// existing one) and reports whether a window was created. query is the
-	// URL query after the app root ("/?<query>") without the leading '?'.
+	// existing one; a Reseat geometry whose query changed reloads it onto
+	// the new query first) and reports whether a window was created. query
+	// is the URL query after the app root ("/?<query>") without the '?'.
 	OpenPopout  func(id, title, query string, geo ShellGeometry) bool
 	ClosePopout func(id string)
 	FocusPopout func(id string)

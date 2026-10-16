@@ -8,3 +8,15 @@ package gui
 func raiseNoActivate(hwnd uintptr) {
 	_ = hwnd
 }
+
+// The picker-modality ring (see pickerModalityRing in gui.go) is Win32
+// EnableWindow; elsewhere no window is ever ringed, so disableWindow
+// answers false (nothing to remember) and enableWindow is a no-op.
+func disableWindow(hwnd uintptr) bool {
+	_ = hwnd
+	return false
+}
+
+func enableWindow(hwnd uintptr) {
+	_ = hwnd
+}

@@ -1799,8 +1799,9 @@ async function modalVisible() {
   return evalPage(() => !document.getElementById('modal-root').classList.contains('hidden'));
 }
 // ---------- floating popouts (transfers / help views) ----------
-// id match is exact-or-prefixed: the doctor window ids itself
-// "doctor:<bucket>" when a bucket is open
+// id match is exact-or-prefixed (the prefix leg is history's habit —
+// the doctor window now ids itself plain "doctor", one window whatever
+// bucket it serves)
 const popSel = (i) => `#popout-root .popout[data-pop="${i}"], #popout-root .popout[data-pop^="${i}:"]`;
 async function popoutVisible(id) {
   return evalPage((s) => !!document.querySelector(s), popSel(id));
@@ -4683,6 +4684,36 @@ await step('doctor', async () => {
         .find((x) => (x.querySelector('.doc-name')?.textContent || '') === 'Write Round-trip Check');
       return !!r && (r.querySelector('.doc-pill')?.className || '').includes('pass');
     }), 4000, 'write pass pill'));
+    // v3: the singleton law — asking Doctor about another source re-seats
+    // the SAME window (one Doctor window, whatever bucket): title and
+    // content swap in place, no second window appears, and the fresh
+    // scope's Run all addresses the new bucket
+    await page.locator('#menubar .mb-title', { hasText: /help/i }).first().click();
+    await sleep(80);
+    const docItem2 = await elOrNull(() => Array.from(document.querySelectorAll('#menubar .mb-dd:not(.hidden) .mb-item'))
+      .find((i) => /doctor/i.test(i.textContent)) || null);
+    if (docItem2) {
+      await docItem2.asElement().click();
+      await waitFor(modalVisible, 4000, 'doctor picker again');
+      const row2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .picker-row'))
+        .find((r) => r.textContent.includes('team-files')) || null);
+      if (row2) await row2.asElement().click();
+      await ok('second ask re-seats the one Doctor window', waitFor(async () => await evalPage(() => {
+        const wins = document.querySelectorAll('#popout-root .popout[data-pop="doctor"]');
+        return wins.length === 1 && (wins[0].getAttribute('aria-label') || '').includes('team-files');
+      }), 4000, 'doctor singleton'));
+      const run2 = await elOrNull(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop="doctor"] button'))
+        .find((b) => /run all/i.test(b.textContent)) || null);
+      if (run2) {
+        await run2.asElement().click();
+        await ok('re-seated Run all addresses the new bucket', waitFor(async () => {
+          const c = await findCall('RunDoctor');
+          return !!c && c.args[0] === 'team-files';
+        }, 4000, 'RunDoctor team-files'));
+      } else {
+        await ok('re-seated Run all addresses the new bucket', false);
+      }
+    }
   }
   await shotOf('doctor', '#popout-root .popout[data-pop^="doctor"]');
   await closePopout('doctor');

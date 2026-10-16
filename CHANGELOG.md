@@ -9,6 +9,44 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 
+- **One Doctor window, pickers that never get lost, and logs two windows
+can share** — three hardening laws land on the multi-window app. The
+Doctor was the last view that could stack: its window id was scoped by
+bucket, so asking about a second bucket opened a second window beside
+the first. It now seats one window whatever bucket it serves — the
+same law File transfers and Running tasks already ride: asking again
+focuses the one window, and when the ask is about a different bucket
+the window re-seats onto it (on the native face the window reloads
+onto the new query; on the DOM face the title, body and footer swap
+in place), with the check list booting afresh because a re-seated
+window is a new scope. The reopen path itself moved: the frontend used
+to ask the backend whether the window was alive and fall back to a DOM
+box on a stale flag — now one OpenPopout call serves both roads, the
+backend being the singleton authority (a live window focuses and
+keeps its title honest, a dead id is re-created natively, so a window
+that died without its close event heals into a real window instead of
+an in-page box beside nothing), and the first-open verification polls a
+few times before ever downgrading the session — a cold first window on
+a fresh per-instance browser profile no longer costs the app its
+native popouts. The OS pickers learned where they belong: every native
+file/folder dialog (upload files, upload folder, choose download
+folder, profile open and save-as, credential import, the source
+editor's folder browse) is now owned by the app's main window — an
+owned dialog opens centered on its owner and stays above it, never
+lost on some other monitor's corner or buried under the app — and
+while a picker is up a modality ring disables every sibling window so
+a click meant for the dialog can never land in a popout behind it,
+with the window-group raise standing down the whole time a picker is
+up. And the shared log sinks learned about each other: events.jsonl
+and transfers.log are written by every window of the app, and Go's
+O_APPEND is seek-then-write on Windows, not atomic — two windows could
+interleave half-lines into a tail no reader parses. Both sinks now
+serialize rotation and append through a zero-byte cross-process lock
+beside the file (the same kernel-released lockfile the profile
+containers ride), and the law is best effort: a sibling window holding
+the lock past a 150 ms budget costs that one line, never a blocked
+app — the professional answer to overlapping artifacts is structural
+serialization, not a popup asking what to do about a log line.
 - **The app learns to run beside itself: full multi-instance support,
 and one OS file dialog per window** — a second window of the app is
 now a first-class thing: File → New window (Ctrl+N),

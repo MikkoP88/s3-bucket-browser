@@ -14,6 +14,7 @@ import (
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/appsettings"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/lockfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
@@ -999,8 +1000,17 @@ func (a *App) logTransfer(entry any) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "transfers.log"),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	p := filepath.Join(dir, "transfers.log")
+	// Every app window shares this sink, and Go's O_APPEND is
+	// seek-then-write on Windows, not atomic — the cross-process lock
+	// serializes appends (best effort: a contended budget drops the line,
+	// never blocks the transfer).
+	release, lerr := lockfile.TryLockBounded(p+".lock", 150*time.Millisecond)
+	if lerr != nil {
+		return
+	}
+	defer release()
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return
 	}
