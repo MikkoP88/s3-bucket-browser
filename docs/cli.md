@@ -63,7 +63,7 @@ described here. The same engine backs both.
   - [s3b completion powershell](#s3b-completion-powershell) — Generate the autocompletion script for powershell
   - [s3b completion zsh](#s3b-completion-zsh) — Generate the autocompletion script for zsh
 - [s3b cp](#s3b-cp) — Copy files (local↔S3, S3→S3 server-side)
-- [s3b doctor](#s3b-doctor) — Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, bucket policy, ACL
+- [s3b doctor](#s3b-doctor) — Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, policy, ACL, credential identity; --write adds the write round-trip
 - [s3b du](#s3b-du) — Count objects and total size under a prefix or source folder
 - [s3b edit](#s3b-edit) — Edit a file with $VISUAL/$EDITOR and push it back guarded
 - [s3b find](#s3b-find) — Search objects by name, size, age, kind or storage class
@@ -88,6 +88,10 @@ described here. The same engine backs both.
 - [s3b rb](#s3b-rb) — Remove a bucket (must be empty, or pass --force)
 - [s3b rm](#s3b-rm) — Delete objects or source files (folders need --recursive; large batches --force)
 - [s3b sc](#s3b-sc) — Convert objects to another storage class (server-side copy)
+- [s3b setup](#s3b-setup) — Install or remove s3b by scope: current user or all users
+  - [s3b setup install](#s3b-setup-install) — Install the running s3b binary (default: current user)
+  - [s3b setup status](#s3b-setup-status) — Report where s3b is installed and which seat PATH resolves to
+  - [s3b setup uninstall](#s3b-setup-uninstall) — Remove the installed s3b (the scope it was installed with)
 - [s3b source](#s3b-source) — Manage data sources (any connection type)
   - [s3b source add](#s3b-source-add) — Add or update a data source
   - [s3b source export](#s3b-source-export) — Export all sources into an encrypted profile file (*.s3bprofile)
@@ -161,6 +165,7 @@ Documentation: https://github.com/MikkoP88/s3-bucket-browser
 * [s3b rb](#s3b-rb)
 * [s3b rm](#s3b-rm)
 * [s3b sc](#s3b-sc)
+* [s3b setup](#s3b-setup)
 * [s3b source](#s3b-source)
 * [s3b stat](#s3b-stat)
 * [s3b sync](#s3b-sync)
@@ -1545,10 +1550,23 @@ s3b cp SRC DST [flags]
 
 ## s3b doctor
 
-Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, bucket policy, ACL
+Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, policy, ACL, credential identity; --write adds the write round-trip
+
+### Synopsis
+
+Diagnose connectivity: DNS resolution, TCP, TLS, clock skew, bucket auth, policy, ACL and
+credential identity — all read-only. The write round-trip (it writes and deletes a tiny
+probe object) is opt-in: pass --write to include it.
 
 ```
-s3b doctor [s3://bucket]
+s3b doctor [s3://bucket] [flags]
+```
+
+### Options
+
+```
+      --write   include the write round-trip check (writes and deletes a tiny probe object)
+
 ```
 
 ### Options inherited from parent commands
@@ -2490,6 +2508,152 @@ s3b sc s3://bucket[/key] CLASS [flags]
 ### SEE ALSO
 
 * [s3b](#s3b)
+
+## s3b setup
+
+Install or remove s3b by scope: current user or all users
+
+### Synopsis
+
+setup installs the running binary into a stable seat and removes it the same way.
+  s3b setup install --user     current user only — no administrator needed (default)
+  s3b setup install --system   all users — needs an elevated terminal (sudo on unix)
+  s3b setup uninstall          removes the install (the same selection it was made with)
+  s3b setup status             where s3b lives now, and which seat PATH resolves to
+
+On Windows the seat registers with App Paths, so Win+R and ShellExecute find s3b
+without touching PATH. S3B_SETUP_USER_DIR relocates user installs (portable use, CI).
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b](#s3b)
+* [s3b setup install](#s3b-setup-install)
+* [s3b setup status](#s3b-setup-status)
+* [s3b setup uninstall](#s3b-setup-uninstall)
+
+## s3b setup install
+
+Install the running s3b binary (default: current user)
+
+```
+s3b setup install [flags]
+```
+
+### Options
+
+```
+      --system   all users (needs elevation)
+      --user     the current user's seat
+
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b setup](#s3b-setup)
+
+## s3b setup status
+
+Report where s3b is installed and which seat PATH resolves to
+
+```
+s3b setup status
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b setup](#s3b-setup)
+
+## s3b setup uninstall
+
+Remove the installed s3b (the scope it was installed with)
+
+```
+s3b setup uninstall [flags]
+```
+
+### Options
+
+```
+      --system   all users (needs elevation)
+      --user     the current user's seat
+
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b setup](#s3b-setup)
 
 ## s3b source
 

@@ -961,7 +961,12 @@ the job's own source.
   it is the one check that writes: unticked by default, consented by
   its own checkbox or by `s3b doctor --write` on the terminal, and a
   run without consent reports the check as SKIP with its reason
-  instead of touching the bucket. The checks sit grouped by category under
+  instead of touching the bucket. The round-trip's cleanup is verified,
+  not assumed: after the delete the doctor lists the bucket for the probe
+  across a settling window — a slow store can land a write after its
+  delete — re-issuing the delete while the key still lists, and when a
+  leftover cannot be ruled out it warns naming the key instead of
+  passing. The checks sit grouped by category under
   a verdict banner (failing count, warning count, all-clear), the
   report header carries the region, the masked access key and the total
   run time, and a Copy report button puts the full JSON on the

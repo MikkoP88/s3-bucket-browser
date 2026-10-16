@@ -34,7 +34,7 @@ carries the same styling for the five best-known tools.
 
 | Tool | Platforms | License | S3 admin depth | Versioning UX | CLI | Main weakness |
 |---|---|---|---|---|---|---|
-| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock); SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs and local sources ride the same UI and CLI | First-class (timeline, restore, undo delete, three-way marker / keep-current / permanent Delete Window, version- and marker-count badges, purge, force-empty versioned buckets) | Yes — same binary, same engine | Beta: Windows artifacts are Authenticode-signed with a self-signed "s3b Project" certificate (public key at scripts/certs/s3b-signing.cer; a CA cert drops in via repo secrets); SBOM + SHA256SUMS ship per release; no CloudFront/KMS consoles; single maintainer |
+| **S3 Bucket Browser (`s3b`)** | Win, macOS, Linux | PolyForm Internal Use (source-available) | Deep (policy, CORS, lifecycle, encryption, PAB, website, tags, object lock); SFTP/SCP, FTP/FTPS, WebDAV/WebDAVs and local sources ride the same UI and CLI | First-class (timeline, restore, undo delete, three-way marker / keep-current / permanent Delete Window, version- and marker-count badges, purge, force-empty versioned buckets) | Yes — same binary, same engine (incl. guarded `edit`, `sync`, `setup` self-install) | Beta: Windows artifacts are Authenticode-signed with a self-signed "s3b Project" certificate (public key at scripts/certs/s3b-signing.cer; a CA cert drops in via repo secrets); SBOM + SHA256SUMS ship per release; no CloudFront/KMS consoles; single maintainer |
 | **S3 Browser** 13.x — 13.5.7 current (s3browser.com) | Windows only | Freeware (personal accounts) + Pro paid | Deep (policy, ACL, CORS, lifecycle, CloudFront) | Yes, incl. delete versions | No | Windows-only, closed-source, dated UI |
 | **Cyberduck** | Win, macOS | GPL-3.0 (copyleft) | Medium (versioning, lifecycle, logging, storage class, SSE) | Partial | `duck` (separate) | GPL, Java footprint, no Linux desktop, generic multi-protocol (S3 not first-class) |
 | **MSP360 (CloudBerry) Explorer** — freeware + PRO tiers, PRO $59.99 (verified 2026-09-16) | Win, macOS | Freeware + PRO (paid) | Medium-deep | Yes | No | Paywalls for sync/encryption/multi-account; backup-vendor side project |
@@ -66,8 +66,11 @@ gap this project fills.
    keyboard-first operation, details view with sortable and
    user-pickable columns, breadcrumbs, folder tree, context menus
    (copy-as name/path/URI included) — plus a WinSCP-style dual-pane
-   local browser with directory compare, and a guarded exit that
-   never silently drops running transfers or unsaved profile work.
+   local browser with directory compare, a guarded exit that
+   never silently drops running transfers or unsaved profile work,
+   in-place file editing behind a lost-update guard (F4 / `s3b edit`),
+   transfers that pause and resume mid-flight with a speed limiter,
+   and a Synchronize face that keeps any two sides a standing mirror.
 2. **Versioning done right.** Per-object version timeline one click
    away (the row's version-count badge), folder-level Directory
    Versions overviews, restore-as-latest, one-click undo delete for
@@ -85,9 +88,10 @@ gap this project fills.
    that Cloudflare R2 rejects path-style, MinIO ACLs are synthetic, B2 has
    no policy/ACL APIs — before the request fails.
 5. **Connection doctor.** DNS → TCP → TLS → clock skew → auth → policy/ACL
-   checks with plain-language remediation (`s3b doctor`) — the clock check
-   compares your system time against the server's before SigV4 rejects it.
-   No competitor diagnoses anything.
+   plus bucket-access, credential-identity and an opt-in write round-trip —
+   nine checks with plain-language remediation (`s3b doctor`) — the clock
+   check compares your system time against the server's before SigV4
+   rejects it. No competitor diagnoses anything.
 6. **Performance at scale.** Streaming ListObjectsV2 pagination (the Go
    side holds one page at a time), virtualized rendering, cancelable deep
    search — one floating Search window spans every configured source at
@@ -102,4 +106,4 @@ gap this project fills.
 Drive mounting (TntDrive/Mountain Duck/rclone mount territory) · SMB and
 other legacy network-filesystem sources · cloud KMS/IAM console features ·
 team/collaboration features · mobile · CloudFront management · notification
-configuration UI · embedded web server mode.
+configuration UI.

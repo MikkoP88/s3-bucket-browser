@@ -7159,7 +7159,7 @@ function sizeBarFallback(selRows) {
 // usageOf resolves an item list cache-first; every uncached key goes
 // through ONE backend call (fetchMissing receives the raw identifiers
 // and answers stats in that order).
-async function usageOf(loc, items, fetchMissing) {
+async function usageOf(items, fetchMissing) {
   const stats = [];
   const missing = [];
   for (const it of items) {
@@ -7219,7 +7219,7 @@ async function runSizeBar() {
       head = sel ? t('sizeBar.selected', { n: selRows.length }) : '';
       const items = selRows.map((r) => ({ key: r.key, ck: usageCacheKey(loc, r.key) }));
       const stats = sel
-        ? await usageOf(loc, items, (keys) => api.S3Usage(loc.bucket, loc.prefix || '', keys))
+        ? await usageOf(items, (keys) => api.S3Usage(loc.bucket, loc.prefix || '', keys))
         : await usageWhole(loc, () => api.S3Usage(loc.bucket, loc.prefix || '', []));
       if (seq !== sizeBarSeq) return; // the view moved on
       paintSizeBar(sumUsage(stats), { head });
@@ -7228,14 +7228,14 @@ async function runSizeBar() {
       const names = (sel ? selRows : grid.rows).map((r) => r.key);
       head = sel ? t('sizeBar.selected', { n: selRows.length }) : t('sizeBar.buckets', { n: names.length });
       const items = names.map((nm) => ({ key: nm, ck: usageCacheKey(loc, nm) }));
-      const stats = await usageOf(loc, items, (keys) => api.BucketUsage(keys));
+      const stats = await usageOf(items, (keys) => api.BucketUsage(keys));
       if (seq !== sizeBarSeq) return;
       paintSizeBar(sumUsage(stats), { head });
     } else if (loc.kind === 'remote') {
       head = sel ? t('sizeBar.selected', { n: selRows.length }) : '';
       const items = selRows.map((r) => ({ key: r.key, ck: usageCacheKey(loc, r.key) }));
       const stats = sel
-        ? await usageOf(loc, items, (keys) => api.RemoteUsage(loc.source, loc.path || '/', keys))
+        ? await usageOf(items, (keys) => api.RemoteUsage(loc.source, loc.path || '/', keys))
         : await usageWhole(loc, () => api.RemoteUsage(loc.source, loc.path || '/', []));
       if (seq !== sizeBarSeq) return;
       paintSizeBar(sumUsage(stats), { head });
@@ -7249,7 +7249,7 @@ async function runSizeBar() {
       }
       const items = selRows.map((r) => ({ key: r.key, ck: usageCacheKey(loc, r.key) }));
       const stats = sel
-        ? await usageOf(loc, items, (keys) => api.LocalUsage(keys))
+        ? await usageOf(items, (keys) => api.LocalUsage(keys))
         : await usageWhole(loc, () => api.LocalUsage([loc.dir]));
       if (seq !== sizeBarSeq) return;
       paintSizeBar(sumUsage(stats), { head });

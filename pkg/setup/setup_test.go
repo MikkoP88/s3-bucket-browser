@@ -76,18 +76,6 @@ func srcExe(t *testing.T) string {
 	return p
 }
 
-func TestParseScope(t *testing.T) {
-	for s, want := range map[string]Scope{"user": User, "system": System} {
-		got, err := ParseScope(s)
-		if err != nil || got != want {
-			t.Errorf("ParseScope(%q) = %v, %v; want %v", s, got, err, want)
-		}
-	}
-	if _, err := ParseScope("everyone"); err == nil {
-		t.Error("ParseScope accepted an unknown scope")
-	}
-}
-
 func TestInstall_CreatesSeatAndRegisters(t *testing.T) {
 	f := newFake(t)
 	src := srcExe(t)

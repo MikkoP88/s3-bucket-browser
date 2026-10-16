@@ -259,25 +259,71 @@ const listBucketsXML = `<?xml version="1.0" encoding="UTF-8"?>
   </Buckets>
 </ListAllMyBucketsResult>`
 
-// fakeS3Store records what the write probes actually landed.
-type fakeS3Store struct{ puts, dels []string }
+// fakeS3Store records what the write probes actually landed. live holds the
+// keys the store still lists (PUT adds, DELETE clears, stored path-prefixed
+// as the wire sees them), probeLists records the doctor's cleanup
+// verifications — each listing the settling ladder made — and
+// lieDelete/dropFirstDelete force the delete legs onto their dishonest
+// roads: a delete that acknowledges without effect — the field ghost the
+// verify ladder exists for.
+type fakeS3Store struct {
+	puts, dels, probeLists []string
+	live                   map[string]bool
+	lieDelete              bool
+	dropFirstDelete        bool
+}
 
 // fakeS3Server stages a minimal S3-compatible endpoint: ListBuckets answers
-// a fixed owner and two buckets, PUT/DELETE record the keys they see, and
-// the toggles force the write legs onto their failure roads.
+// a fixed owner and two buckets, PUT/DELETE record the keys they see,
+// ListObjectsV2 answers from the live set in bare keys (the ladder's
+// oracle — the reader's listing, not a HEAD the in-flight write can fool),
+// HEAD answers HeadBucket, and the toggles force the write legs onto their
+// failure roads.
 func fakeS3Server(t *testing.T, store *fakeS3Store, forbidPut, failDelete bool) *httptest.Server {
 	t.Helper()
+	if store.live == nil {
+		store.live = map[string]bool{}
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.URL.Path, "/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.Header().Set("Content-Type", "application/xml")
 			io.WriteString(w, listBucketsXML)
+		case r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2":
+			// ListObjectsV2: keys live path-prefixed; the listing speaks
+			// the bare keys the ladder asked about.
+			bucket := key
+			prefix := r.URL.Query().Get("prefix")
+			if strings.Contains(prefix, ".s3b-doctor-probe-") {
+				store.probeLists = append(store.probeLists, prefix)
+			}
+			w.Header().Set("Content-Type", "application/xml")
+			var b strings.Builder
+			b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>`)
+			b.WriteString(bucket)
+			b.WriteString(`</Name><Prefix>`)
+			b.WriteString(prefix)
+			b.WriteString(`</Prefix><IsTruncated>false</IsTruncated>`)
+			for k, l := range store.live {
+				if !l || !strings.HasPrefix(k, bucket+"/") {
+					continue
+				}
+				if bare := k[len(bucket)+1:]; strings.HasPrefix(bare, prefix) {
+					b.WriteString(`<Contents><Key>`)
+					b.WriteString(bare)
+					b.WriteString(`</Key></Contents>`)
+				}
+			}
+			b.WriteString(`</ListBucketResult>`)
+			io.WriteString(w, b.String())
 		case r.Method == http.MethodPut:
 			if forbidPut {
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
-			store.puts = append(store.puts, strings.TrimPrefix(r.URL.Path, "/"))
+			store.puts = append(store.puts, key)
+			store.live[key] = true
 			w.Header().Set("ETag", `"d41d8cd98f00b204e9800998ecf8427e"`)
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodDelete:
@@ -285,7 +331,16 @@ func fakeS3Server(t *testing.T, store *fakeS3Store, forbidPut, failDelete bool) 
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
-			store.dels = append(store.dels, strings.TrimPrefix(r.URL.Path, "/"))
+			store.dels = append(store.dels, key)
+			dels := 0
+			for _, k := range store.dels {
+				if k == key {
+					dels++
+				}
+			}
+			if !store.lieDelete && !(store.dropFirstDelete && dels == 1) {
+				store.live[key] = false
+			}
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodHead:
 			// HeadBucket: every bucket the fake names exists.
@@ -351,18 +406,22 @@ func TestCheckWriteRoundTrip_WritesAndDeletes(t *testing.T) {
 		t.Errorf("put key %q != deleted key %q — the probe was not cleaned up", store.puts[0], store.dels[0])
 	}
 	var info struct {
-		ProbeKey string `json:"probeKey"`
-		Wrote    bool   `json:"wrote"`
-		Deleted  bool   `json:"deleted"`
+		ProbeKey  string `json:"probeKey"`
+		Wrote     bool   `json:"wrote"`
+		Deleted   bool   `json:"deleted"`
+		Confirmed bool   `json:"confirmed"`
 	}
 	if err := json.Unmarshal(res.Info, &info); err != nil {
 		t.Fatalf("Info not valid JSON: %v", err)
 	}
-	if !info.Wrote || !info.Deleted || info.ProbeKey == "" {
-		t.Errorf("Info = %+v, want wrote+deleted with the probe key", info)
+	if !info.Wrote || !info.Deleted || !info.Confirmed || info.ProbeKey == "" {
+		t.Errorf("Info = %+v, want wrote+deleted+confirmed with the probe key", info)
 	}
 	if got := "probe-bucket/" + info.ProbeKey; got != store.puts[0] {
 		t.Errorf("Info probe key = %q, want the key the server saw (%q)", got, store.puts[0])
+	}
+	if len(store.probeLists) != 1 || !strings.HasSuffix(store.puts[0], store.probeLists[0]) {
+		t.Errorf("probe listings = %v, want exactly one verification listing of the probe key", store.probeLists)
 	}
 }
 
@@ -390,6 +449,60 @@ func TestCheckWriteRoundTrip_UndeletedProbeWarns(t *testing.T) {
 	}
 	if !strings.Contains(res.Detail, "remains") {
 		t.Errorf("detail = %q, want the leftover-key verdict", res.Detail)
+	}
+}
+
+func TestCheckWriteRoundTrip_LyingDeleteWarns(t *testing.T) {
+	// The field ghost: the store acknowledges the delete while the key
+	// keeps listing live. The round-trip must not claim PASS on an ack it
+	// could not confirm — the leftover key is named in the same run and
+	// the settling ladder stays bounded. The window walks fast here; the
+	// production settle lives in confirmSettle.
+	oldSettle := confirmSettle
+	confirmSettle = []time.Duration{0, time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}
+	t.Cleanup(func() { confirmSettle = oldSettle })
+	store := &fakeS3Store{lieDelete: true}
+	srv := fakeS3Server(t, store, false, false)
+	res := checkWriteRoundTrip(context.Background(), sdkClient(srv.URL), "probe-bucket")
+	if res.Status != StatusWarn {
+		t.Fatalf("status = %q, want warn (error %q)", res.Status, res.Error)
+	}
+	if !strings.Contains(res.Error, "unconfirmed") || !strings.Contains(res.Error, "still lists live") {
+		t.Errorf("error = %q, want the unconfirmed verdict naming the live key", res.Error)
+	}
+	if !strings.Contains(res.Detail, "may remain") {
+		t.Errorf("detail = %q, want the may-remain verdict", res.Detail)
+	}
+	if len(store.dels) != 4 || len(store.probeLists) != 4 {
+		t.Errorf("server saw dels=%v listings=%v, want the bounded ladder (ack + 3 retries across 4 listings)", store.dels, store.probeLists)
+	}
+	var info struct {
+		ProbeKey  string `json:"probeKey"`
+		Confirmed bool   `json:"confirmed"`
+	}
+	if err := json.Unmarshal(res.Info, &info); err != nil {
+		t.Fatalf("Info not valid JSON: %v", err)
+	}
+	if info.Confirmed || !strings.HasPrefix("probe-bucket/"+info.ProbeKey, "probe-bucket/.s3b-doctor-probe-") {
+		t.Errorf("Info = %+v, want the probe key with confirmed=false", info)
+	}
+}
+
+func TestCheckWriteRoundTrip_RetryLandsLostDelete(t *testing.T) {
+	// The cure road: the first delete is acknowledged and lost, the
+	// verification finds the key still live, and the retry lands it — the
+	// round-trip passes on its own second attempt.
+	oldSettle := confirmSettle
+	confirmSettle = []time.Duration{0, time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond}
+	t.Cleanup(func() { confirmSettle = oldSettle })
+	store := &fakeS3Store{dropFirstDelete: true}
+	srv := fakeS3Server(t, store, false, false)
+	res := checkWriteRoundTrip(context.Background(), sdkClient(srv.URL), "probe-bucket")
+	if res.Status != StatusPass {
+		t.Fatalf("status = %q, want pass (error %q)", res.Status, res.Error)
+	}
+	if len(store.dels) != 2 || len(store.probeLists) != 2 {
+		t.Errorf("server saw dels=%v listings=%v, want lost delete + retry with two listings", store.dels, store.probeLists)
 	}
 }
 

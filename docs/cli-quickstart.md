@@ -16,6 +16,8 @@ s3b source add lab s3://my-bucket --endpoint http://localhost:9000 \\
     --access-key minioadmin --secret-key minioadmin
 s3b source test lab          # lightweight connectivity check
 s3b doctor s3://my-bucket    # deep diagnosis: DNS → TCP → TLS → clock → auth → policy/ACL
+s3b doctor s3://my-bucket --write   # + the opt-in write round-trip (writes and
+                                    #   deletes one tiny probe object)
 
 # Non-S3 sources live in the same store and use NAME:// URIs everywhere;
 # shorthand sftp://user:pass@host:port/root — a password-less URL uses
@@ -59,6 +61,17 @@ s3b sync ./site s3://b/site/ --delete      # one-way sync (either direction);
                                            #   extras (>50 removals needs --force)
 s3b presign s3://b/docs/report.pdf --expires 1h
 ```
+
+## Edit in place
+
+```bash
+s3b edit s3://b/docs/notes.md           # $EDITOR, then a guarded push
+s3b edit s3://b/docs/notes.md --force   # overwrite a remote that moved
+```
+
+The edit rides a conditional push: when the object changed on the server
+since the pull, the CLI refuses, keeps the edited copy on disk and names
+`--force` as the way past. `--editor CMD` picks a specific editor.
 
 ## Delete — count first, act second
 
@@ -125,6 +138,19 @@ s3b lock legalhold s3://b/report.pdf --on
 
 Enabling object lock is permanent; COMPLIANCE retention cannot be
 shortened or removed by anyone.
+
+## The CLI installs itself
+
+```bash
+s3b setup install --user     # the user seat: LOCALAPPDATA on Windows,
+                              #   ~/.local/bin on unix — no admin rights
+s3b setup install --system   # machine-wide (Program Files, /usr/local/bin)
+s3b setup status             # both seats and which one PATH resolves
+s3b setup uninstall          # removes exactly the scope install made
+```
+
+All four take `--json`. The Windows setup wizard keeps its own seats;
+`setup status` names them without ever touching them.
 
 ## Every command
 

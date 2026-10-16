@@ -543,6 +543,34 @@ func checkIdentity(ctx context.Context, c *s3client.Client) CheckResult {
 	return res
 }
 
+// probeListed reports whether the store still lists the probe key as a
+// live object — the same read any later reader would use. A HEAD can be
+// fooled while a write is still in flight; the listing is the reader's
+// truth, and it is the oracle that catches a probe whose PUT flushed
+// after its DELETE.
+func probeListed(ctx context.Context, c *s3client.Client, bucket, key string) (bool, error) {
+	out, err := c.S3.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  aws.String(bucket),
+		Prefix:  aws.String(key),
+		MaxKeys: aws.Int32(2),
+	})
+	if err != nil {
+		return false, err
+	}
+	for _, o := range out.Contents {
+		if aws.ToString(o.Key) == key {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// confirmSettle is the settling window the write round-trip's
+// verification ladder walks — the first look is immediate, the later ones
+// give a slow write flush time to surface. A var so the rigs can walk it
+// fast.
+var confirmSettle = []time.Duration{0, time.Second, 3 * time.Second, 8 * time.Second}
+
 // checkWriteRoundTrip proves the credentials can actually land data: a
 // zero-byte probe object is written and deleted again. A read-only policy
 // warns (browsing still works); a probe that cannot be cleaned up warns
@@ -584,7 +612,53 @@ func checkWriteRoundTrip(ctx context.Context, c *s3client.Client, bucket string)
 		return res
 	}
 
-	info, _ := json.Marshal(map[string]any{"probeKey": probe, "wrote": true, "deleted": true})
+	// An acknowledged delete is not yet proof the key is gone: a real
+	// provider under load was seen acknowledging the probe's delete while
+	// the key kept listing live half an hour later — twice, in runs where
+	// a HEAD right after the delete honestly answered not-found. That is
+	// the shape of a probe whose PUT flushed after its DELETE: the delete
+	// and the verify both land while the object is still in flight, then
+	// the late flush materializes the key live with no marker over it.
+	// Verify with the reader's own oracle — the listing — across a
+	// settling window wide enough for a late flush to surface, and while
+	// the key still lists live, re-issue the delete; what cannot be ruled
+	// out is warned with the key named, never a silent PASS.
+	unconfirmed := ""
+	for i, wait := range confirmSettle {
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+		live, verr := probeListed(ctx, c, bucket, probe)
+		if verr != nil {
+			unconfirmed = "delete acknowledged but its effect could not be confirmed: " + verr.Error()
+			res.Advice = errhelp.ForError(verr)
+			continue
+		}
+		if !live {
+			unconfirmed = ""
+			break
+		}
+		unconfirmed = "delete acknowledged but " + probe + " still lists live"
+		if i == len(confirmSettle)-1 {
+			break
+		}
+		if _, rerr := c.S3.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(probe)}); rerr != nil {
+			unconfirmed = "retry delete failed: " + rerr.Error()
+			res.Advice = errhelp.ForError(rerr)
+			break
+		}
+	}
+	if unconfirmed != "" {
+		res.Status = StatusWarn
+		res.Error = "probe delete unconfirmed: " + unconfirmed
+		res.Detail = "the probe key may remain in the bucket"
+		info, _ := json.Marshal(map[string]any{"probeKey": probe, "wrote": true, "deleted": true, "confirmed": false})
+		res.Info = info
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+
+	info, _ := json.Marshal(map[string]any{"probeKey": probe, "wrote": true, "deleted": true, "confirmed": true})
 	res.Info = info
 	res.Detail = "wrote and deleted " + probe
 	res.Duration = ms(time.Since(start))

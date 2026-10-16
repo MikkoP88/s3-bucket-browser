@@ -4,7 +4,7 @@
 
 **A unified desktop browser and CLI with Windows File Explorer and a WinSCP inspired interface for managing S3‑compatible cloud storages and remote file servers, offering comprehensive supporting S3 buckets/objects, SFTP/SCP, FTP/FTPS, WebDAV, and local folders, with robust versioning, bucket administration, and security, and cross‑storage migration capabilities.**
 
-> **Status: v1.0 released; 1.2.0 in beta (current pre-release: 1.2.0-beta.3).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 added a unified data-source hierarchy, OS clipboard/drag interop, credential import and a unified versioned-delete flow; 1.2 makes every data source exactly one root (an S3 source is one bucket — legacy accounts split automatically), adds a floating Search window across every source, engine-level transfer cycle guards, folder sizes in every view, and GUI-matched CLI formats — see the [CHANGELOG](CHANGELOG.md).
+> **Status: v1.0 released; 1.2.0 in beta (current pre-release: 1.2.0-beta.3).** The project is in its Beta phase: core functionality is operational, but some features may exhibit partial functionality. 1.1 added a unified data-source hierarchy, OS clipboard/drag interop, credential import and a unified versioned-delete flow; 1.2 makes every data source exactly one root (an S3 source is one bucket — legacy accounts split automatically), adds a floating Search window across every source, engine-level transfer cycle guards, folder sizes in every view, guarded in-place editing (F4 / `s3b edit`), transfers that pause and resume mid-flight under a speed limiter, a Synchronize face that keeps any two sides a standing mirror, a dashboard-style admin panel, a nine-check connection doctor, an in-app viewer with gallery, an installer that asks all-users or per-user (plus `s3b setup` self-install on every OS), and fifteen languages — see the [CHANGELOG](CHANGELOG.md).
 
 ## Key Features of S3 Bucket Browser(s3b)
 
@@ -23,7 +23,13 @@
 - Sortable details grid with pickable, resizable, reorderable columns  
 - Dual‑pane with any source on either side — S3, remote or local — and directory compare  
 - Keyboard‑first operation (**F1** shows the full map)  
-- Guarded exit: never drops running transfers or unsaved profile work
+- Guarded exit: never drops running transfers or unsaved profile work  
+
+### ✔ Edit in place, guarded
+- **F4** opens any file the panes seat — S3, remote or local — in your editor  
+- Every save uploads automatically, pushed under a lost-update guard  
+- A remote that moved underneath you refuses honestly (Push anyway / Reload decide it)  
+- CLI twin: `s3b edit s3://bucket/key` (with `--force` and `--editor CMD`)
 
 ### ✔ Every source in one app
 - **S3‑compatible:** AWS, MinIO, Wasabi, Cloudflare R2, Backblaze B2, DigitalOcean Spaces, IBM COS, Hetzner, Ceph, Dell ECS, StorageGRID  
@@ -46,7 +52,18 @@
 - Same‑source S3 copies run **server‑side**  
 - Cross‑source copies stream through one transfer manager  
 - Conflict pre‑checks, throttling, resumable operations
-- **Engine-level cycle guard** — a destination inside the source's own subtree is refused before a byte moves
+- **Engine-level cycle guard** — a destination inside the source's own subtree is refused before a byte moves  
+
+### ✔ Transfers you can hold and point
+- Pause and resume any job mid-flight — a pause may cost time, never bytes  
+- Per-transfer speed limiter, set while the job runs  
+- The manager shows every job's phase, progress and verdict; landed bytes verify  
+- OS drag-out of rows to anywhere, and OS clipboard interop in both directions
+
+### ✔ Synchronize any two sides
+- One dialog keeps any two sides a standing mirror — local↔S3, S3↔S3, a remote server anywhere in the pair  
+- The same predicate the CLI's `s3b sync` rides: missing or size-differing files copied, deletes an explicit opt-in  
+- Preview first; the runs ride the existing gated transfers
 
 ### ✔ S3 versioning done right
 - Per‑object timelines with restore‑as‑latest  
@@ -56,7 +73,17 @@
 - Version‑ and marker‑count badges  
 - Folder‑level version overviews  
 - Bulk purge of noncurrent versions  
-- Force‑empty versioned buckets
+- Force‑empty versioned buckets  
+
+### ✔ Full bucket administration
+- The admin panel seats every knob: policy (with JSON validation), CORS, lifecycle, encryption, public-access block, object lock, website, tags  
+- A dashboard Overview with door-cards for the state of each — click through to the page that changes it  
+- The versioning switch lives on Versions, beside its cleanup tools (purge, force-empty)
+
+### ✔ Connection doctor
+- Nine checks: DNS → TCP → TLS → clock skew → auth → policy/ACL → bucket access → credential identity → opt-in write round-trip  
+- Plain-language remediation for every failure (`s3b doctor`, or Doctor… on the tree row)  
+- Reports copy to the clipboard as JSON; masked keys never leak the credential
 
 ### ✔ Import your credentials
 - AWS shared files (`~/.aws/credentials`, `~/.aws/config`)  
@@ -89,7 +116,13 @@
 - Virtualized rendering  
 - Cancelable deep search  
 - Responsive even on **million‑object buckets**
-- Folder sizes fill in lazily in every view (cached usage walks)
+- Folder sizes fill in lazily in every view (cached usage walks)  
+- The sidebar tree windows itself over ten-thousand-row sources — the keyboard never names a row no reader could see
+
+### ✔ Yours to tune
+- Fifteen languages, switchable in-app  
+- Dark and light themes, high-contrast and forced-colors support  
+- First-run onboarding and a first-launch license gate
 
 *One binary, two faces: run `s3b` with no arguments for the GUI, with arguments for the CLI — same engine, full parity.*
 
@@ -139,8 +172,11 @@ produce macOS artifacts. See the tested local build recipe in
 and the [local verification notes](docs/macos-build.md).
 
 - **To run**: the portable editions need no install and no admin rights —
-  releases ship an NSIS installer (machine-wide, elevated) and portable
-  zip (Windows), and tarballs plus portable tarballs (Linux). Secrets use the OS keychain (Windows
+  releases ship a Windows NSIS installer that asks who it is for — all
+  users of the computer (elevated, Program Files) or the current user only
+  (no admin, per-user directories; silent deploys keep the pre-choice
+  behavior with `/S /ALLUSERS` or pick explicitly with `/S /CURRENTUSER`) —
+  plus a portable zip (Windows), and tarballs plus portable tarballs (Linux). Secrets use the OS keychain (Windows
   Credential Manager, macOS Keychain, Linux SecretService); keyring-less
   hosts fall back to a `0600` file.
 - **To build from source**: Go **1.26+**, git and the platform compiler/libraries — the frontend is
@@ -153,7 +189,7 @@ and the [local verification notes](docs/macos-build.md).
 
 ## Install
 
-Prebuilt artifacts are attached to every [`v*` release](https://github.com/MikkoP88/s3-bucket-browser/releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows and Linux (amd64 and arm64) — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or [build from source](docs/build.md); releases stamp the version into `s3b version`.
+Prebuilt artifacts are attached to every [`v*` release](https://github.com/MikkoP88/s3-bucket-browser/releases): a Windows NSIS installer (`s3b-setup-x.y.z.exe`, asks all-users or per-user on its first page, registers an App Paths entry so Win+R `s3b` works without touching PATH), and standalone zips/tarballs for Windows and Linux (amd64 and arm64) — all checksummed in `SHA256SUMS`, with a dependency report and SBOM (SPDX-JSON) per release (see [docs/security.md](docs/security.md)). Or [build from source](docs/build.md). The CLI also installs and uninstalls itself on every OS — `s3b setup install --user` (or `--system`), `s3b setup status`, `s3b setup uninstall`, all with `--json`; releases stamp the version into `s3b version`.
 
 ## Documentation
 
@@ -179,8 +215,10 @@ More screenshots:
 | ![Data sources](docs/screenshots/sources-tree.png) | ![Dual pane compare](docs/screenshots/dual-pane-compare.png) |
 | ![Search window](docs/screenshots/search.png) | ![Transfer manager](docs/screenshots/transfers.png) |
 | ![Versions](docs/screenshots/versions.png) | ![Delete window](docs/screenshots/delete-window.png) |
-| ![Admin panel](docs/screenshots/admin-panel.png) | ![Dark theme](docs/screenshots/dark-theme.png) |
+| ![Admin panel](docs/screenshots/admin-panel.png) | ![Connection doctor](docs/screenshots/doctor.png) |
 | ![New bucket — bucket and data source in one step](docs/screenshots/new-bucket.png) | ![Credential import](docs/screenshots/import-credentials.png) |
+| ![Edit in place](docs/screenshots/editor.png) | ![Synchronize](docs/screenshots/sync.png) |
+| ![Viewer](docs/screenshots/viewer.png) | ![Dark theme](docs/screenshots/dark-theme.png) |
 
 The full tour with screenshots lives in the **[GUI usage guide](docs/usage.md)**; the app carries the same guide (Help → User guide, F1).
 

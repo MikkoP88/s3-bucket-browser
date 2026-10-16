@@ -29,18 +29,6 @@ const (
 	System Scope = "system"
 )
 
-// ParseScope maps a flag word to a Scope.
-func ParseScope(s string) (Scope, error) {
-	switch s {
-	case "user":
-		return User, nil
-	case "system":
-		return System, nil
-	default:
-		return "", fmt.Errorf("unknown scope %q (use user or system)", s)
-	}
-}
-
 // ErrSameBinary is returned when the destination IS the running binary:
 // nothing to install, and the caller reports the seat as already current.
 var ErrSameBinary = errors.New("destination is already the running binary")

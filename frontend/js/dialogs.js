@@ -3582,7 +3582,7 @@ export async function resolveTransferOpts(kind, target, check) {
     try { conflicts = await check(); } catch { conflicts = null; }
   }
   if (conflicts && conflicts.length) {
-    return conflictChoices(kind, target, conflicts);
+    return conflictChoices(conflicts);
   }
   // Clean destination (or pre-check unavailable): no dialog. The classic
   // whole-transfer policy dialog only appears when the pre-check itself
@@ -3659,7 +3659,7 @@ function throttleSelect() {
 // actions for the selection. Each row carries its own action (default
 // overwrite); Start resolves { policy, maxBps, decisions } where decisions
 // maps the engine's decision key to the per-file action.
-function conflictChoices(kind, target, conflicts) {
+function conflictChoices(conflicts) {
   let settled = false;
   return new Promise((resolve) => {
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };

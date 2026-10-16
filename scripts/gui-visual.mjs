@@ -2049,6 +2049,16 @@ await step('split-offline-fallback', async () => {
     && document.getElementById('empty-state').textContent.includes('no route to host')), 8000, 'buckets error'));
   await ok('no bucket rows render', evalPage(() =>
     Array.from(document.querySelectorAll('#grid-body .grid-row')).length === 0));
+  // the Test connection verb on the account row: the account-wide branch
+  // rides the TestProfile probe (a scoped source rides TestSource)
+  await resetCalls();
+  await rightClick(await treeRow('hetzner'));
+  await sleep(60);
+  await ctxItem(/^test connection/i);
+  await ok('the account row tests through TestProfile', waitFor(async () => {
+    const tp = await findCall('TestProfile');
+    return !!tp && tp.args[0] === 'hetzner';
+  }, 4000, 'the TestProfile dial'));
   // the network returns: Reconnect re-proves the account and the split
   // lands through the retry loop
   await evalPage(() => { window.__shim.world.fault = null; });
@@ -3261,6 +3271,23 @@ await step('tree-source-ctxmenu', async () => {
   await sleep(80);
   await ok('source node menu opens', evalPage(() => !document.getElementById('ctxmenu').classList.contains('hidden')));
   await shot('ctx-tree-source');
+  // the Test connection verb: an sftp source dials its root through the
+  // live engine, an s3 source rides the TestProfile probe
+  await ctxItem(/^test connection/i);
+  await waitFor(async () => (await findCall('RemoteList')) !== null, 4000, 'the sftp test dial');
+  const rl = await findCall('RemoteList');
+  await ok('a remote source tests by listing its root over the bridge',
+    !!rl && rl.args[0] === 'backup-box' && rl.args[1] === '/');
+  await waitFor(async () => (await txt('#toasts')).includes('backup-box reachable'), 4000, 'the test verdict toast');
+  const h2 = await treeRow('team-files');
+  await rightClick(h2);
+  await sleep(80);
+  await ctxItem(/^test connection/i);
+  await waitFor(async () => (await findCall('TestSource')) !== null, 4000, 'the scoped-s3 test dial');
+  const ts = await findCall('TestSource');
+  await ok('a scoped s3 source tests through the stored-source probe',
+    !!ts && typeof ts.args[0] === 'string' && ts.args[0].length > 0
+      && (await txt('#toasts')).includes('connected — bucket accessible'));
   await closeCtx();
 });
 
@@ -9974,6 +10001,12 @@ await step('main-local', async () => {
       && m.textContent.includes('Open terminal here')
       && m.textContent.includes('Select all');
   }));
+  // the terminal verb rides the same menu: clicking it carries the open
+  // folder over the bridge (OpenTerminal with the view dir)
+  await ctxItem(/^open terminal here/i);
+  await waitFor(async () => (await findCall('OpenTerminal')) !== null, 4000, 'the terminal verb over the bridge');
+  const ot = await findCall('OpenTerminal');
+  await ok('the terminal verb opens the folder shown', !!ot && ot.args[0] === 'C:\\Users\\demo\\Documents');
   await closeCtx();
   // refresh re-lists the open folder
   await resetCalls();
