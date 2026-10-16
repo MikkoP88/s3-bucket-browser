@@ -34,9 +34,13 @@ func (a *App) PickUploadFiles() ([]string, error) {
 	if shell == nil {
 		return nil, errNoShell
 	}
-	return shell.OpenFiles(ShellDialog{
-		Title:      "Choose files to upload",
-		ShowHidden: true,
+	// One native dialog per window (dialoggate.go): a second picker stacked
+	// over a first is how a user picks the wrong files into the wrong verb.
+	return withDialogGate(func() ([]string, error) {
+		return shell.OpenFiles(ShellDialog{
+			Title:      "Choose files to upload",
+			ShowHidden: true,
+		})
 	})
 }
 
@@ -45,7 +49,9 @@ func (a *App) PickUploadFiles() ([]string, error) {
 // are not files until downloaded). Under secure storage the staging area
 // lives inside the config dir (0700) instead of the shared system temp.
 func (a *App) StageClipboardDir() (string, error) {
-	base := workspaceBase("clip")
+	// Per-instance (secure.go): another app window's Startup sweep must
+	// never take this instance's in-flight clipboard staging.
+	base := instanceWorkspace("clip")
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", err
 	}

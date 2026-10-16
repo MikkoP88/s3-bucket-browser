@@ -133,13 +133,22 @@ func (l *lifecycle) ServiceStartup(ctx context.Context, options application.Serv
 
 // Run starts the desktop GUI and blocks until the app quits.
 func Run(version string) error {
-	// One GUI at a time (desktop Windows): a second launch hands its focus
-	// to the instance already running and exits — two GUIs would contend
-	// the same WebView2 user-data folder and the loser would hang into the
-	// startup watchdog. S3B_MULTI_INSTANCE=1 opts out (side-by-side rigs).
+	// One GUI at a time by default (desktop Windows): a second launch hands
+	// its focus to the instance already running and exits — two GUIs would
+	// contend the same WebView2 user-data folder and the loser would hang
+	// into the startup watchdog. S3B_MULTI_INSTANCE=1 opts out (File → New
+	// window, `s3b --new-instance`, side-by-side rigs): opted-out launches
+	// seat their webview on a per-instance profile (webviewProfilePlan) so
+	// the contention the guard exists for cannot happen.
 	focus, alreadyRunning := guardSingleInstance()
 	if alreadyRunning {
 		return nil
+	}
+	userDataPath, multiWindow := webviewProfilePlan()
+	if multiWindow {
+		// A booting instance never races its own profile: the sweep only
+		// removes seats whose PID no longer runs.
+		go sweepStaleWebviewProfiles()
 	}
 	detachConsole()
 	// The embedded WebView2 bindings log one unconditional line at startup
@@ -190,7 +199,10 @@ func Run(version string) error {
 		// exports these vars, never in normal use.
 		Windows: application.WindowsOptions{
 			AdditionalBrowserArgs: rigBrowserArgs(),
-			WebviewUserDataPath:   os.Getenv("S3B_RIG_WEBVIEW_PROFILE"),
+			// The rig profile when the rig exports it, a per-instance folder
+			// for multi-instance launches, else WebView2's default shared one
+			// (webviewProfilePlan).
+			WebviewUserDataPath: userDataPath,
 		},
 		// The webview shell discards the default logger (one unconditional
 		// WebView2 startup line), so without this a panic recovered by the
@@ -237,8 +249,12 @@ func Run(version string) error {
 	normalRect := appsettings.WindowRect{W: mainOpts.Width, H: mainOpts.Height}
 	if r, ok := wsMem.Main.Sane(mainOpts.MinWidth, mainOpts.MinHeight, screenRects(app3)); ok {
 		mainOpts.Width, mainOpts.Height = r.W, r.H
-		mainOpts.X, mainOpts.Y = r.X, r.Y
-		mainOpts.InitialPosition = application.WindowXY
+		if !multiWindow {
+			// Side-by-side copies would stack invisibly on the first's exact
+			// rect; let the OS cascade them instead.
+			mainOpts.X, mainOpts.Y = r.X, r.Y
+			mainOpts.InitialPosition = application.WindowXY
+		}
 		if r.Max {
 			mainOpts.StartState = application.WindowStateMaximised
 		}

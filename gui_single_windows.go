@@ -8,6 +8,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/api"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/eventlog"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/guihealth"
 )
@@ -26,8 +27,10 @@ const (
 	instanceMutexName = `Local\s3b.bucket.browser.instance`
 	focusEventName    = `Local\s3b.bucket.browser.focus`
 	// multiInstanceEnv opts out of the guard entirely (side-by-side rigs,
-	// running two profiles at once). Any non-empty value opts out.
-	multiInstanceEnv = "S3B_MULTI_INSTANCE"
+	// a second window via File → New window or `s3b --new-instance`). Any
+	// non-empty value opts out; pkg/api owns the spelling so every door —
+	// the guard, the New window verb, the flag — says the same name.
+	multiInstanceEnv = api.EnvMultiInstance
 )
 
 var (

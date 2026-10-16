@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/atomicfile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/lockfile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
@@ -48,12 +49,15 @@ func (a *App) PickOpenProfileFile() (string, error) {
 	if shell == nil {
 		return "", errNoShell
 	}
-	return shell.OpenFile(ShellDialog{
-		Title: "Open profile file",
-		Filters: []ShellFilter{{
-			DisplayName: "s3b profile files (*.s3bprofile)",
-			Pattern:     "*.s3bprofile",
-		}},
+	// One native dialog per window (dialoggate.go).
+	return withDialogGate(func() (string, error) {
+		return shell.OpenFile(ShellDialog{
+			Title: "Open profile file",
+			Filters: []ShellFilter{{
+				DisplayName: "s3b profile files (*.s3bprofile)",
+				Pattern:     "*.s3bprofile",
+			}},
+		})
 	})
 }
 
@@ -71,13 +75,16 @@ func (a *App) PickSaveProfileFile(defaultName string) (string, error) {
 	if shell == nil {
 		return "", errNoShell
 	}
-	return shell.SaveFile(ShellDialog{
-		Title:       "Save profile file",
-		DefaultName: defaultName,
-		Filters: []ShellFilter{{
-			DisplayName: "s3b profile files (*.s3bprofile)",
-			Pattern:     "*.s3bprofile",
-		}},
+	// One native dialog per window (dialoggate.go).
+	return withDialogGate(func() (string, error) {
+		return shell.SaveFile(ShellDialog{
+			Title:       "Save profile file",
+			DefaultName: defaultName,
+			Filters: []ShellFilter{{
+				DisplayName: "s3b profile files (*.s3bprofile)",
+				Pattern:     "*.s3bprofile",
+			}},
+		})
 	})
 }
 
@@ -102,6 +109,7 @@ type openProfileFile struct {
 	password string
 	sources  []profile.Source
 	dirty    bool
+	unlock   func() // drops the cross-process container lock (lockfile); nil for never-locked sessions
 }
 
 // ListSources returns the workspace's data sources, secrets masked: the
@@ -461,8 +469,28 @@ func (a *App) OpenProfileFile(path, password string) error {
 	if _, err := profile.NormalizeSources(srcs); err != nil {
 		return fmt.Errorf("profile file %s: %w", filepath.Base(path), err)
 	}
+	// One container open in one window at a time (lockfile): the whole file
+	// is rewritten on every save, so a second window's writer would clobber
+	// this one's secrets. A same-path reopen releases our own lock first so
+	// TryLock below sees a free name; the lockfile always precedes pfMu.
 	a.pfMu.Lock()
-	a.pf = &openProfileFile{name: name, path: path, password: password, sources: srcs}
+	if a.pf != nil && a.pf.path == path && a.pf.unlock != nil {
+		a.pf.unlock()
+		a.pf.unlock = nil
+	}
+	a.pfMu.Unlock()
+	release, lerr := lockfile.TryLock(path + ".lock")
+	if errors.Is(lerr, lockfile.ErrLocked) {
+		return fmt.Errorf("profile file %s is already open in another s3b window — close it there first", filepath.Base(path))
+	}
+	if lerr != nil {
+		return fmt.Errorf("locking profile file %s: %w", filepath.Base(path), lerr)
+	}
+	a.pfMu.Lock()
+	if old := a.pf; old != nil && old.unlock != nil {
+		old.unlock() // replacing a clean open of another file: its lock goes with it
+	}
+	a.pf = &openProfileFile{name: name, path: path, password: password, sources: srcs, unlock: release}
 	a.pfMu.Unlock()
 	a.invalidateClients()
 	a.emitLog(LogInfo, "profile", fmt.Sprintf("opened profile file %s (%d source(s))", filepath.Base(path), len(srcs)))
@@ -497,11 +525,36 @@ func (a *App) SaveProfileFile() error {
 // it adopts the session-only sources — this is how unsaved session sources
 // become a Profile file (no "New Profile file" prerequisite).
 func (a *App) SaveProfileFileAs(path, password string) error {
+	// One container open in one window at a time (lockfile): the file is
+	// rewritten whole on every save, so two windows' writers would clobber
+	// each other's secrets. The destination locks before any session state
+	// moves, Save As onto the open file's own path keeps the lock already
+	// held for it, and the lockfile always precedes pfMu (same order as
+	// OpenProfileFile) so container verbs can never deadlock in-process.
+	a.pfMu.Lock()
+	samePath := a.pf != nil && a.pf.path == path && a.pf.unlock != nil
+	a.pfMu.Unlock()
+
+	var release func()
+	if !samePath {
+		r, lerr := lockfile.TryLock(path + ".lock")
+		if errors.Is(lerr, lockfile.ErrLocked) {
+			return fmt.Errorf("profile file %s is already open in another s3b window — close it there first", filepath.Base(path))
+		}
+		if lerr != nil {
+			return fmt.Errorf("locking profile file %s: %w", filepath.Base(path), lerr)
+		}
+		release = r
+	}
+
 	a.pfMu.Lock()
 	defer a.pfMu.Unlock()
 	pf := a.pf
 	if pf == nil {
 		if len(a.session) == 0 {
+			if release != nil {
+				release()
+			}
 			return errNoProfileFile
 		}
 		name := strings.TrimSuffix(filepath.Base(path), ".s3bprofile")
@@ -516,14 +569,30 @@ func (a *App) SaveProfileFileAs(path, password string) error {
 		password = pf.password
 	}
 	if password == "" {
+		if release != nil {
+			release() // nothing is written under it; an adopted session carries no lock
+			pf.unlock = nil
+		}
 		return fmt.Errorf("a password is required to encrypt the profile file")
 	}
 	data, err := profile.EncryptContainer(pf.name, pf.sources, password)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		return err
 	}
 	if err := atomicfile.Write(path, data, 0o600); err != nil {
+		if release != nil {
+			release()
+		}
 		return err
+	}
+	if release != nil {
+		if prev := pf.unlock; prev != nil {
+			prev() // re-path: the previous file's lock goes with its path
+		}
+		pf.unlock = release
 	}
 	pf.path, pf.password, pf.dirty = path, password, false
 	a.emitLog(LogInfo, "profile", fmt.Sprintf("profile file saved as %s (%d source(s))", filepath.Base(path), len(pf.sources)))
@@ -560,9 +629,14 @@ func (a *App) CloseProfileFile(force bool) error {
 	name := pf.name
 	n := len(pf.sources)
 	pf.password = "" // best-effort wipe
+	unlock := pf.unlock
+	pf.unlock = nil
 	a.pf = nil
 	a.session = nil
 	a.pfMu.Unlock()
+	if unlock != nil {
+		unlock() // closed here — other windows may open the file now
+	}
 	a.invalidateClients()
 	if force {
 		a.emitLog(LogWarn, "profile", fmt.Sprintf("profile file %q closed WITHOUT saving (%d source(s) discarded)", name, n))

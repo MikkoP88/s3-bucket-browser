@@ -43,6 +43,12 @@
 - All color‑coded in one sidebar  
 - Same UI and same CLI (`NAME://` URIs)
 
+### ✔ A second window when you want one
+- **File → New window** (Ctrl+N) or `s3b --new-instance` opens another full window beside the first, each on its own browser profile  
+- A profile file open in one window is refused in another — two windows never edit the same container  
+- One OS file/folder dialog per window: a second picker waits until the first closes  
+- Without the verb, a second launch still just raises the running app
+
 ### ✔ Deep search, one window
 - **Ctrl+Shift+F** — floating Search window (or tear it out as a native OS window)  
 - Filters: name/glob, kind, size, age, extension, path  

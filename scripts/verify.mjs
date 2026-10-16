@@ -2442,9 +2442,9 @@ async function tuiBattery() {
   // earlier state), and waitForExit. Closing stdin quits (EOF), so a
   // row may end by :q or by draining the pipe — both contracts get
   // pinned. The frame file is APPEND-mode JSONL, one record per flush.
-  const tuiDrive = (drive) => new Promise((resolve, reject) => {
+  const tuiDrive = (drive, args = ['tui']) => new Promise((resolve, reject) => {
     const framesPath = path.join(ART, 'tui-frames-' + RUNID + '-' + (++tuiSeq) + '.jsonl');
-    const child = spawn(CLI_EXE, ['tui'], {
+    const child = spawn(CLI_EXE, args, {
       cwd: ROOT, windowsHide: true,
       env: { ...process.env, S3B_CONFIG: cfg, S3B_NO_KEYRING: '1', S3B_TUI_SIZE: '100x24', S3B_TUI_FRAMES: framesPath },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -2744,6 +2744,18 @@ async function tuiBattery() {
       need(code === 0, ':q must exit 0, got ' + code);
       return 'buckets-as-folders dial, bucket seating, ETag properties, byte-exact download';
     });
+  });
+
+  await verify({ id: 'TUI-09', area: 'tui', action: '--new-instance: the GUI launch flag routes the headless build into the terminal face', ds: 'local FS', scenario: 'the recognized GUI flag is a GUI launch (main.go hands it to the GUI face with the multi-instance opt-out in the environment) — in the headless build that face is the terminal browser, so s3b --new-instance over pipes boots the same face TUI-01 pins: the header carries the source crumb and the build version, and :q exits 0', face: 'TUI' }, async () => {
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      const f = await waitNext((fr) => tuiHas(fr, 'beta.bin') && tuiHas(fr, 'docs'), 'the boot listing');
+      need((f.lines[0] || '').includes('lab'), 'header must carry the source crumb: ' + f.lines[0]);
+      need((f.lines[0] || '').includes(VERSION), 'header must carry the build version: ' + f.lines[0]);
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'the flag boots the same terminal face (crumb + version header), :q exits 0';
+    }, ['--new-instance']);
   });
 }
 
@@ -3981,15 +3993,26 @@ async function guiBattery() {
     await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.includes('readme.md')); }, 15000, 'readme row');
     const cnt = async () => countLines((await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--recursive', '--json'])).out, '"key"');
     const c0 = await cnt();
-    // the clip workspace is minted FRESH per copy (os.MkdirTemp under the
-    // secure-storage clip root, else %TEMP%\s3b-clip) — snapshot the dirs,
-    // then discover the new one after the staging download finishes
+    // the clip workspace is minted FRESH per copy (os.MkdirTemp under this
+    // instance's per-PID seat in the secure-storage clip root, else
+    // %TEMP%\s3b-clip — one dir deeper, the multi-instance layout) —
+    // snapshot the dirs, then discover the new one after the staging
+    // download finishes
     const clipRoots = [path.join(GUICFG, 'clip'), path.join(os.tmpdir(), 's3b-clip')];
     const clipDirs = async () => {
       const out = [];
       for (const root of clipRoots) {
         try {
-          for (const e of await readdir(root, { withFileTypes: true })) if (e.isDirectory()) out.push(path.join(root, e.name));
+          for (const e of await readdir(root, { withFileTypes: true })) {
+            if (!e.isDirectory()) continue;
+            const seat = path.join(root, e.name); // legacy flat layout
+            out.push(seat);
+            // per-instance seats: <root>/<pid>/<minted dir> (alive sweep
+            // can race the walk — a vanished seat reads as empty)
+            for (const c of await readdir(seat, { withFileTypes: true }).catch(() => [])) {
+              if (c.isDirectory()) out.push(path.join(seat, c.name));
+            }
+          }
         } catch { /* root not present */ }
       }
       return out;
@@ -8173,6 +8196,72 @@ async function guiBattery() {
     need(srcs.some((x) => x.name === SRCNAME), 'the sources survived the clear');
     await shot('98-clear-all');
     return `cancel honest, clear dropped ${keysBefore.length - keysAfter.length} session key(s), sources kept`;
+  });
+
+  await verify({ id: 'GUI-99', area: 'gui', action: 'Multiple windows: side-by-side desktop instances, the default guard intact', ds: 'Wails v3 desktop (Windows)', scenario: 'two desktop instances launched with the multi-instance opt-out (S3B_MULTI_INSTANCE=1) stay alive side by side, each seated on its own per-PID webview profile under the config dir — the contention the single-instance guard exists for cannot happen; a launch without the opt-out still boots while only opt-out instances run (they never held the slot), and a second default launch while that one lives hands it focus and exits 0 — the guard still guards', face: 'GUI' }, async () => {
+    if (process.platform !== 'win32') return skip('the desktop multi-instance face is Windows-only');
+    // This row drives the real desktop exe (a plain build — not the
+    // headless or server stacks the battery otherwise rides).
+    const DESK = path.join(ROOT, 'testartifacts', 's3b-verify-desk.exe');
+    if (!NO_BUILD || !fs.existsSync(DESK)) {
+      await new Promise((res, rej) => {
+        const p = spawn('go', ['build', '-o', DESK, '-ldflags', `-X main.version=${VERSION}`, './cmd/s3b'], { cwd: ROOT, windowsHide: true });
+        p.on('exit', (c) => (c === 0 ? res() : rej(new Error('go build (desktop) exited ' + c))));
+        p.stderr.on('data', (d) => process.stderr.write(d));
+      });
+    }
+    // The single-instance mutex is scoped to the login session: a real
+    // desktop app running beside this battery holds it and would poison
+    // the guard legs below. A probe launch (no opt-out) that exits at
+    // once names a foreign holder — the row skips honestly instead.
+    const deskCfg = path.join(ART, 'desk-config');
+    await mkdir(deskCfg, { recursive: true });
+    const kids = [];
+    const launch = (multi) => {
+      const ch = spawn(DESK, [], {
+        cwd: ROOT, windowsHide: true, stdio: 'ignore',
+        env: { ...process.env, S3B_CONFIG: deskCfg, S3B_NO_KEYRING: '1', ...(multi ? { S3B_MULTI_INSTANCE: '1' } : {}) },
+      });
+      const st = { ch, code: null };
+      ch.on('exit', (c) => { st.code = c ?? -1; });
+      kids.push(st);
+      return st;
+    };
+    const probe = launch(false);
+    const probeCode = await new Promise((res) => {
+      const t = setTimeout(() => res(null), 8000);
+      probe.ch.on('exit', (c) => { clearTimeout(t); res(c ?? -1); });
+    });
+    if (probeCode !== null) {
+      return skip('a desktop s3b already holds the single-instance slot in this login session');
+    }
+    probe.ch.kill();
+    await sleep(800); // the kernel reclaims the mutex at process death
+    const a = launch(true), b = launch(true), c = launch(false);
+    try {
+      // legs 1+2: two opted-out instances side by side, each webview on
+      // its own per-PID profile (the folder appears when WebView2 seats
+      // the window, so existence is the window-up oracle; the settle
+      // window then proves both kept living past the boot burst)
+      const prof = (st) => path.join(deskCfg, 'webview', String(st.ch.pid));
+      await waitFor(() => a.code === null && b.code === null && fs.existsSync(prof(a)) && fs.existsSync(prof(b)), 30000, `the per-PID webview profiles (a.code=${a.code} b.code=${b.code})`);
+      await sleep(4000);
+      need(a.code === null && b.code === null, 'an opted-out instance died — side-by-side boot failed');
+      // leg 3: a default launch while only opt-out instances run takes
+      // the free slot and boots (they never held it)
+      need(c.code === null, 'a default launch beside opted-out instances must boot, exited ' + c.code);
+      // leg 4: a second default launch while that one lives focuses the
+      // running instance and exits 0 — the guard still guards
+      const d = launch(false);
+      const dCode = await new Promise((res) => {
+        const t = setTimeout(() => res(null), 15000);
+        d.ch.on('exit', (c2) => { clearTimeout(t); res(c2 ?? -1); });
+      });
+      need(dCode === 0, `a second default launch must focus the running instance and exit 0, got ${dCode}`);
+      return 'two opted-out windows side by side on their own per-PID webview profiles; a default launch boots beside them; a second default launch focuses and exits 0';
+    } finally {
+      for (const st of kids) { try { st.ch.kill(); } catch { /* already gone */ } }
+    }
   });
 
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {

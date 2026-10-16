@@ -154,9 +154,10 @@ func (t EditTarget) id() string {
 // "remote/<source name>" — a slash cannot occur in a bucket name, so
 // the two trees can never collide — and every segment is server-
 // supplied, riding the containment join like every other listing-
-// derived path segment.
+// derived path segment. The base is per-instance (secure.go): a second
+// app window's startup sweep never touches this window's staged edits.
 func editDir(parts ...string) string {
-	return transfer.SafeLocalJoin(workspaceBase("edit"), parts...)
+	return transfer.SafeLocalJoin(instanceWorkspace("edit"), parts...)
 }
 
 // watcherPoll is the file-watch interval; a change is uploaded after it

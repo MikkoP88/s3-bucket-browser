@@ -161,15 +161,25 @@ box (Windows) or terminal line (Linux/macOS) instead of an invisible
 hang, with the details in the event log (**Ctrl+L**). Starting it
 again after that message normally just works.
 
-A second launch is also not a broken start — the app keeps one window
-at a time on Windows: launching it again (double-click, taskbar, a
-second shortcut) brings the instance that is already running to the
-front, restoring it if it was minimised with its popout windows
-lifted behind it, and the new process quietly exits. Two GUIs would
-fight over the same browser profile, which is exactly the
-invisible-hang shape above. Set S3B_MULTI_INSTANCE=1 before launching
-to opt out and run two copies side by side (separate profiles, test
-rigs).
+A second launch is also not a broken start — by default the app keeps
+one window at a time on Windows: launching it again (double-click,
+taskbar, a second shortcut) brings the instance that is already
+running to the front, restoring it if it was minimised with its popout
+windows lifted behind it, and the new process quietly exits. But a
+second window is now a first-class thing, not a fight: **File → New
+window** (**Ctrl+N**), `s3b --new-instance`, or S3B_MULTI_INSTANCE=1
+before launching opens another full window beside the first. Every
+opted-out window seats its browser state on its own per-instance
+profile (the seats of windows that no longer run are swept at the next
+boot), the windows share nothing that could hang, and they no longer
+stack invisibly on the first window’s exact remembered position —
+the OS cascades them. Two windows can still meet at the data, so two
+seams are guarded: a profile file open in one window is refused in
+another (its path stays locked while open — two windows can never edit
+the same container), and each window opens one OS file/folder dialog
+at a time — a second picker in the same window is refused until the
+first closes, so two explorers can never overlap and trick a pick
+into the wrong one.
 
 Windows Server needs one thing client Windows has by default: the app’s
 window is an Edge WebView2 view, and Server SKUs (and stripped-down
@@ -1035,6 +1045,7 @@ you'll use daily:
 | F9 | dual pane |
 | Ctrl+L | event log |
 | Ctrl+S | save workspace profile |
+| Ctrl+N | open a new window of the app (File → New window; the desktop app) |
 | Ctrl+= / Ctrl+- / Ctrl+0 | text size: zoom in / out / reset (Ctrl+wheel steps the same ladder) |
 | ← / → in a header | walk the column sort seats (Enter sorts the seated column) |
 | F1 | help (in-app guide + key map) |

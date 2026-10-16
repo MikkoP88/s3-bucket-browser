@@ -1342,5 +1342,8 @@ func (a *App) PickFolder(title string) (string, error) {
 	if shell == nil {
 		return "", errNoShell
 	}
-	return shell.OpenDir(title)
+	// One native dialog per window (dialoggate.go).
+	return withDialogGate(func() (string, error) {
+		return shell.OpenDir(title)
+	})
 }

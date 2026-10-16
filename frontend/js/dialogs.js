@@ -3063,8 +3063,13 @@ export function sourceEditor(existing, onSaved) {
       f.localRoot,
       el('button', {
         class: 'btn', text: 'Browse\u2026', onclick: async () => {
-          const dir = await api.PickFolder('Choose the source folder');
-          if (dir) { f.localRoot.value = dir; applySuggest(); }
+          // one dialog per window: a refusal (another picker already
+          // up) or a dead dialog surfaces as a toast, never a silent
+          // rejection
+          try {
+            const dir = await api.PickFolder('Choose the source folder');
+            if (dir) { f.localRoot.value = dir; applySuggest(); }
+          } catch (err) { toast(`${err}`, 'error'); }
         },
       }),
     ),

@@ -9,6 +9,56 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 
+- **The app learns to run beside itself: full multi-instance support,
+and one OS file dialog per window** — a second window of the app is
+now a first-class thing: File → New window (Ctrl+N),
+`s3b --new-instance`, or S3B_MULTI_INSTANCE=1 opens another full
+window beside the first, and every opted-out window seats its
+WebView2 browser state on its own per-instance profile under the
+config dir (a %TEMP% fallback when the config dir is not writable),
+with the seats of dead windows swept at boot by a PID-liveness probe
+that fails safe — an unprobeable process counts as alive, because a
+wrongly swept profile costs a window its state while a wrongly kept
+one costs nothing. The default stays the honest default: launching
+s3b again without the verb still just raises the running app (the
+single-instance guard and its focus relay untouched), and side-by-side
+windows no longer stack invisibly on the first window’s exact
+remembered rect — the OS cascades them. The store is shared, so the
+round hardens the seams two windows actually meet at: every
+per-instance scratch seat (clipboard staging, editor staging,
+transfer spool) moves from one shared folder into <base>/<pid>
+subfolders the boot sweep keeps clean the same PID-honest way, and a
+profile file open in one window is refused in another — its path
+carries a container lock (a Windows byte-range lock, a unix flock,
+taken before the in-process mutex in every verb so the open and
+save-as doors can never deadlock each other), released on close,
+re-pointed on save-as, reclaimed by the kernel if a holder dies, and
+honest about the same window reopening its own file. The second half
+of the round is the picker law: one native OS file/folder dialog per
+window, always — every picker verb (upload files, upload folder,
+choose download folder, open and save profile file, import credential
+files, the source editor’s folder browse) rides one gate (a
+CAS’d busy flag in pkg/api), so a second picker in the same
+window is refused until the first closes and no two OS explorers can
+ever overlap into a pick from the wrong one; the frontend wraps every
+bare picker call in one helper that toasts the refusal instead of
+dying silently, and test seams sit before the gate so rigs never
+queue behind it. The battery walks it live: GUI-99 spawns real
+desktop instances side by side (two opted-out windows alive on their
+own per-PID webview profiles, a default launch booting beside them
+because opted-out windows never held the single-instance slot, and a
+second default launch focusing the running instance and exiting 0 —
+the guard still guards), and TUI-09 pins the --new-instance flag
+routing the headless build into the terminal face. The Go suite
+grows the rigs with it: the lockfile’s exclude, release and
+leftover-file laws; the dialog gate’s refuse-second, reopen,
+error-passthrough and seam-bypass laws; the instance-spawn contract;
+the profile-file container-lock family across windows (held while
+open, same-window reopen, re-path, wrong-password clean, save-as
+destination lock, external holders refused); the per-instance
+workspace sweep with live siblings preserved; and the webview
+profile plan’s precedence and sweep. No CLI command surface
+moved.
 - **The terminal grows its own face: `s3b tui` — the whole
 browser in any modern terminal, no WebView, no new
 dependencies** — the CLI binary now carries an interactive
@@ -1382,7 +1432,7 @@ README names the face beside the GUI.
   byte-for-byte intact instead of trading it for a truncated copy,
   and the log’s rotation rewrites atomically instead of cutting the
   file down the middle on a crash.
-
+
 
 - **FTP: a silently dead control channel can no longer hang the engine
   forever** — jlaffaye/ftp's commands take no context, so a peer that

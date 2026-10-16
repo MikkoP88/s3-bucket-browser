@@ -101,8 +101,11 @@ let osDragNative = false;
 // true while a native drag initiated here is (or just was) floating: the
 // drag:self-drop event must only ever route one of OUR gestures.
 let nativeDragOut = false;
+// desktopShell: real OS windows — gates the File → New window verb
+// (a second window can only exist where the desktop shell exists).
+let desktopShell = false;
 if (window.wails?.Call?.ByName) {
-  api.IsDesktopShell().then((v) => { osDragNative = !!v; }).catch(() => {});
+  api.IsDesktopShell().then((v) => { osDragNative = !!v; desktopShell = !!v; }).catch(() => {});
 }
 
 // Streaming listing state (M5): generation counter + active stream token.
@@ -2870,11 +2873,11 @@ function showTreeMenu(e, node) {
       favItem({ kind: 'remote', source: node.source, path: node.path }),
       null,
       ...uploadMenu(
-        async () => { const paths = await api.PickUploadFiles(); if (paths?.length) uploadToRemote(paths, node.source, node.path); },
-        async () => { const dir = await api.PickFolder('Choose a folder to upload'); if (dir) uploadToRemote([dir], node.source, node.path); },
+        async () => { const paths = await pickRun(() => api.PickUploadFiles()); if (paths?.length) uploadToRemote(paths, node.source, node.path); },
+        async () => { const dir = await pickRun(() => api.PickFolder('Choose a folder to upload')); if (dir) uploadToRemote([dir], node.source, node.path); },
       ),
       ['Download\u2026', '', async () => {
-        const dest = await api.PickFolder('Choose download folder');
+        const dest = await pickRun(() => api.PickFolder('Choose download folder'));
         if (dest) startTransfer({
           items: [{ source: node.source, key: node.path, isDir: true }],
           dest: { kind: 'local', dir: dest }, label: dest,
@@ -2952,19 +2955,26 @@ function showTreeMenu(e, node) {
   ]);
 }
 
+// pickRun runs one native picker call so the one-dialog-per-window law
+// (the backend refuses a second OS file dialog while one is already
+// up) and a dead dialog surface as a toast — never a silent rejection.
+async function pickRun(fn) {
+  try { return await fn(); } catch (err) { toast(`${err}`, 'error'); }
+}
+
 // uploadTo/uploadFolderTo push picked files or one directory into a
 // bucket/prefix of any S3 source (tree context menus' Upload menu).
 async function uploadTo(prefix, bucket, source) {
-  const paths = await api.PickUploadFiles();
+  const paths = await pickRun(() => api.PickUploadFiles());
   if (paths?.length) uploadPaths(paths, prefix, bucket, source);
 }
 async function uploadFolderTo(prefix, bucket, source) {
-  const dir = await api.PickFolder('Choose a folder to upload');
+  const dir = await pickRun(() => api.PickFolder('Choose a folder to upload'));
   if (dir) uploadPaths([dir], prefix, bucket, source);
 }
 
 async function downloadTreeEntry(node) {
-  const dest = await api.PickFolder('Choose download folder');
+  const dest = await pickRun(() => api.PickFolder('Choose download folder'));
   if (!dest) return;
   // DownloadRefs addresses the view source — open the bucket first when
   // it belongs to another source.
@@ -3133,7 +3143,7 @@ async function uploadPaths(paths, prefixOverride, bucketOverride, sourceOverride
 // bucket prefix; the backend walks directories either way.
 async function uploadFiles() {
   const loc = nav.current;
-  const paths = await api.PickUploadFiles();
+  const paths = await pickRun(() => api.PickUploadFiles());
   if (!paths?.length) return;
   if (loc?.kind === 'remote') return uploadToRemote(paths, loc.source, loc.path || '/');
   if (loc?.kind === 'objects') return uploadPaths(paths, loc.prefix || '', loc.bucket, loc.source);
@@ -3145,7 +3155,7 @@ async function uploadFiles() {
 
 async function uploadFolder() {
   const loc = nav.current;
-  const dir = await api.PickFolder('Choose a folder to upload');
+  const dir = await pickRun(() => api.PickFolder('Choose a folder to upload'));
   if (!dir) return;
   if (loc?.kind === 'remote') return uploadToRemote([dir], loc.source, loc.path || '/');
   if (loc?.kind === 'objects') return uploadPaths([dir], loc.prefix || '', loc.bucket, loc.source);
@@ -3193,11 +3203,11 @@ function sidePaneOpenFor(node) {
 // paneUploadFiles/paneUploadFolder pick local paths and push them into the
 // pane's current location, whatever it is bound to.
 async function paneUploadFiles() {
-  const paths = await api.PickUploadFiles();
+  const paths = await pickRun(() => api.PickUploadFiles());
   if (paths?.length) paneUploadPaths(paths);
 }
 async function paneUploadFolder() {
-  const dir = await api.PickFolder('Choose a folder to upload');
+  const dir = await pickRun(() => api.PickFolder('Choose a folder to upload'));
   if (dir) paneUploadPaths([dir]);
 }
 async function paneUploadPaths(paths) {
@@ -3262,7 +3272,7 @@ async function downloadSelection(overrideRows) {
   if (loc.kind !== 'objects' && loc.kind !== 'remote') return;
   const rows = overrideRows || grid.selectedRows();
   if (!rows.length) { toast('Select items to download'); return; }
-  const dest = await api.PickFolder('Choose download folder');
+  const dest = await pickRun(() => api.PickFolder('Choose download folder'));
   if (!dest) return;
   if (loc.kind === 'remote') {
     await startTransfer({
@@ -5684,8 +5694,8 @@ function sideRemoteEmptyMenu(e) {
     ['Paste', 'Ctrl+V', () => paste(null, null, { kind: 'remote', source: b.source, dir }), !pasteReady()],
     null,
     ...uploadMenu(
-      async () => { const paths = await api.PickUploadFiles(); if (paths?.length) uploadToRemote(paths, b.source, dir); },
-      async () => { const d = await api.PickFolder('Choose a folder to upload'); if (d) uploadToRemote([d], b.source, dir); },
+      async () => { const paths = await pickRun(() => api.PickUploadFiles()); if (paths?.length) uploadToRemote(paths, b.source, dir); },
+      async () => { const d = await pickRun(() => api.PickFolder('Choose a folder to upload')); if (d) uploadToRemote([d], b.source, dir); },
     ),
     ['New folder', 'Ctrl+Shift+N', async () => {
       const name = await prompt({ title: 'New folder', label: 'Folder name', value: 'new-folder' });
@@ -5710,7 +5720,7 @@ function sideRemoteEmptyMenu(e) {
 async function downloadSideRows(rows) {
   const b = localPane.binding;
   if (!rows?.length) return;
-  const dest = await api.PickFolder('Choose download folder');
+  const dest = await pickRun(() => api.PickFolder('Choose download folder'));
   if (!dest) return;
   const items = b.kind === 's3'
     ? rows.map((r) => ({ source: b.source, bucket: localPane.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir }))
@@ -5814,8 +5824,8 @@ function sideS3EmptyMenu(e) {
     ['Paste', 'Ctrl+V', () => panePasteScoped(), !pasteReady()],
     null,
     ...uploadMenu(
-      async () => { const paths = await api.PickUploadFiles(); if (paths?.length) startTransfer({ localPaths: paths, dest }); },
-      async () => { const d = await api.PickFolder('Choose a folder to upload'); if (d) startTransfer({ localPaths: [d], dest }); },
+      async () => { const paths = await pickRun(() => api.PickUploadFiles()); if (paths?.length) startTransfer({ localPaths: paths, dest }); },
+      async () => { const d = await pickRun(() => api.PickFolder('Choose a folder to upload')); if (d) startTransfer({ localPaths: [d], dest }); },
       !inBucket,
     ),
     ['New folder', 'Ctrl+Shift+N', async () => {
@@ -6070,6 +6080,17 @@ async function openProfileFileUi() {
   }
 }
 
+// newInstanceUi opens another window of the app beside this one
+// (multi-instance: every window keeps its own view state in its own
+// webview profile, and a profile file open in one window is refused
+// in another).
+async function newInstanceUi() {
+  try {
+    await api.NewInstance();
+    toast('Opening a new window\u2026', 'ok');
+  } catch (err) { toast(`${err}`, 'error'); }
+}
+
 async function saveProfileFileUi() {
   await refreshPfState();
   if (!pfState.open) {
@@ -6308,6 +6329,10 @@ function mountMenubar() {
     {
       label: t('menu.file'),
       items: [
+        // A second full window of the app (multi-instance) — desktop
+        // only: server embeds have no OS window to twin.
+        { label: t('menu.newWindow'), kbd: 'Ctrl+N', action: newInstanceUi, enabled: () => desktopShell },
+        null,
         // The workspace's front doors: the source manager and the
         // credential import. Upload stays on the toolbar, the context
         // menus and the empty states — it is a view verb, not a file
@@ -6750,6 +6775,7 @@ function wireKeys() {
     if (ctrl && e.key.toLowerCase() === 'u') { e.preventDefault(); uploadFiles(); return; }
     if (ctrl && e.key.toLowerCase() === 's') { e.preventDefault(); saveProfileFileUi(); return; }
     if (ctrl && e.key.toLowerCase() === 'd') { e.preventDefault(); downloadSelection(); return; }
+    if (ctrl && !e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newInstanceUi(); return; }
     if (ctrl && e.shiftKey && e.key.toLowerCase() === 'n') { e.preventDefault(); newFolder(); return; }
     if (e.shiftKey && e.key === 'F4') { e.preventDefault(); newFile(); return; }
     if (e.key === 'Escape') {

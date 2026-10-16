@@ -14,9 +14,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/eventlog"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/procprobe"
 )
 
 // SecureStatus is what the Settings → Security panel shows.
@@ -53,6 +55,40 @@ func workspaceBase(name string) string {
 		}
 	}
 	return filepath.Join(os.TempDir(), "s3b-"+name)
+}
+
+// instanceWorkspace is this app instance's private seat inside a named
+// workspace: workspaceBase(name)/<pid>. The live workspaces are
+// per-instance, because more than one app window can run at once
+// (multi-instance, gui) and each window's editor sessions, transfer
+// spool and clipboard staging must be invisible to the others — above all
+// to the others' startup sweeps. wipeWorkspaces removes only dead
+// instances' seats (see sweepInstanceEntries).
+func instanceWorkspace(name string) string {
+	return filepath.Join(workspaceBase(name), strconv.Itoa(os.Getpid()))
+}
+
+// pidAlive is procprobe.Alive, injectable for rigs.
+var pidAlive = procprobe.Alive
+
+// sweepInstanceEntries empties a workspace base for this boot: everything
+// goes except sibling seats whose PID still runs — another live window's
+// in-flight staging, never ours to touch. Legacy entries (files and dirs
+// from the pre-instance era, when staging lived flat in the base) carry
+// non-numeric names and are swept like any other leftover.
+func sweepInstanceEntries(base string) {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return // nothing to sweep (never created, or already gone)
+	}
+	for _, e := range entries {
+		if pid, err := strconv.Atoi(e.Name()); err == nil {
+			if pid > 0 && pid != os.Getpid() && pidAlive(pid) {
+				continue // a live sibling window's seat — hands off
+			}
+		}
+		_ = os.RemoveAll(filepath.Join(base, e.Name()))
+	}
 }
 
 // workspaceTempFile pattern for the transfer spool.
@@ -106,11 +142,14 @@ func (a *App) SetSecureStorage(on bool) (SecureStatus, error) {
 	return a.GetSecureStorage(), nil
 }
 
-// wipeWorkspaces removes every temp workspace location (both the
+// wipeWorkspaces empties every temp workspace location (both the
 // secure-mode config-dir areas and the default system-temp ones), so
 // leftovers from a crash never survive the next launch. Called from
 // Startup — before any editor session or transfer can exist — and right
-// after a mode switch.
+// after a mode switch. Since the workspaces went per-instance, the wipe
+// is a sweep: this instance's own seat and every dead instance's seat
+// goes, while a sibling window that is still running keeps its staging
+// (its PID is live — sweepInstanceEntries).
 func (a *App) wipeWorkspaces() {
 	dirs := []string{workspaceBase("edit"), workspaceBase("tmp"), workspaceBase("clip")}
 	// always sweep the other mode's locations too (mode may have changed)
@@ -119,9 +158,10 @@ func (a *App) wipeWorkspaces() {
 	}
 	dirs = append(dirs, filepath.Join(os.TempDir(), "s3b-edit"), filepath.Join(os.TempDir(), "s3b-tmp"))
 	for _, d := range dirs {
-		_ = os.RemoveAll(d)
+		sweepInstanceEntries(d)
 	}
-	// clipboard staging dirs are per-copy; sweep any left behind
+	// legacy clipboard staging dirs (pre-instance era, flat in the system
+	// temp) are per-copy; sweep any left behind
 	if clips, err := filepath.Glob(filepath.Join(os.TempDir(), "s3b-clip-*")); err == nil {
 		for _, c := range clips {
 			_ = os.RemoveAll(c)

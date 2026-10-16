@@ -65,13 +65,16 @@ func (a *App) PickCredentialFiles() ([]string, error) {
 	if shell == nil {
 		return nil, errNoShell
 	}
-	return shell.OpenFiles(ShellDialog{
-		Title: "Select credential files",
-		Filters: []ShellFilter{
-			{DisplayName: "Credential files (*.ini;*.cfg;*.conf;*.env;*.json;*.s3bprofile)",
-				Pattern: "*.ini;*.cfg;*.conf;*.env;*.json;*.s3bprofile"},
-			{DisplayName: "All files (*.*)", Pattern: "*.*"},
-		},
+	// One native dialog per window (dialoggate.go).
+	return withDialogGate(func() ([]string, error) {
+		return shell.OpenFiles(ShellDialog{
+			Title: "Select credential files",
+			Filters: []ShellFilter{
+				{DisplayName: "Credential files (*.ini;*.cfg;*.conf;*.env;*.json;*.s3bprofile)",
+					Pattern: "*.ini;*.cfg;*.conf;*.env;*.json;*.s3bprofile"},
+				{DisplayName: "All files (*.*)", Pattern: "*.*"},
+			},
+		})
 	})
 }
 
