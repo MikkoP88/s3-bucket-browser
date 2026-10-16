@@ -36,7 +36,7 @@ func TestUploadJobCarriesDest(t *testing.T) {
 	}
 
 	// The bucket root uploads to the empty prefix, not "/".
-	id, ji = mustUpload(t, a, paths, "up", PolicyOverwrite)
+	_, ji = mustUpload(t, a, paths, "up", PolicyOverwrite)
 	if want := (XferDest{Kind: "s3", Source: "upsrc", Bucket: "up", Dir: ""}); ji.Dest != want {
 		t.Fatalf("root dest = %+v, want %+v", ji.Dest, want)
 	}

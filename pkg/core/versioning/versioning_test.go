@@ -19,12 +19,11 @@ import (
 // ver is one timeline entry the mock serves: a real version or a delete
 // marker.
 type ver struct {
-	key     string
-	id      string
-	latest  bool
-	marker  bool
-	size    int64
-	storage string
+	key    string
+	id     string
+	latest bool
+	marker bool
+	size   int64
 }
 
 // newVersionsS3 serves one ListObjectVersions page of the given entries.

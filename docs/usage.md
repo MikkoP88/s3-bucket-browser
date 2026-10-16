@@ -982,7 +982,7 @@ the job's own source.
   storage classes via server-side self-copy.
 - **Properties** — full metadata for buckets, folders, objects and
   sources: provider, region, versioning, lock, encryption, policy
-  state.
+  state — from the context menu or **Alt+Enter** on the selection.
 
 ![Connection doctor](screenshots/doctor.png)
 
@@ -1029,6 +1029,7 @@ you'll use daily:
 | type letters | jump to the first name that starts with them (rows or tiles) |
 | Del / Shift+Del | delete window / permanent path |
 | F4 / Shift+F4 | edit the selected file / new file |
+| Alt+Enter | properties of the selection (object, bucket or multi-selection aggregate) |
 | ← / → (viewer) | walk the folder’s previewable files while the preview is open |
 | F8 | inspector panel |
 | F9 | dual pane |

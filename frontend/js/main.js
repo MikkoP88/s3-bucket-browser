@@ -6729,6 +6729,7 @@ function wireKeys() {
     if (e.key === 'Backspace') { e.preventDefault(); const p = parentRowOn() ? parentUp(nav.current) : null; if (p) nav.to(p); return; }
     if (e.key === 'F5') { e.preventDefault(); refreshCurrent(); return; }
     if (e.key === 'F2') { e.preventDefault(); renameSelection(); return; }
+    if (e.altKey && e.key === 'Enter') { e.preventDefault(); selectionProperties(); return; }
     if (e.key === 'F4' && !e.shiftKey) {
       e.preventDefault();
       const rows = grid.selectedRows().filter((r) => !r.isDir);

@@ -1223,8 +1223,8 @@ function shim() {
     RemoteRemove: (_src, keys) => ({ deleted: keys.length, errors: [] }),
     PresignObject: (bucket, key) => `https://${bucket}.s3.visual.shim/${key}?X-Amz-Signature=visual`,
     StatObject: (bucket, key) => (key.endsWith('/')
-      ? { key, isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
-      : { key, size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD' }),
+      ? { key, name: String(key).replace(/\/+$/, '').split('/').pop(), isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
+      : { key, name: String(key).split('/').pop(), size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD', contentType: 'text/plain', sse: '' }),
     StatBucket: (bucket) => ({ name: bucket, region: 'eu-central', objects: 7, bytes: 224975891, createdAt: daysAgo(220) }),
     RemoteStat: (source, key) => ({ key, isDir: false, size: 4096, lastModified: daysAgo(3) }),
     CopySelection: (src, keys, dst, prefix, move) => ({ copied: keys.length, errors: [] }),
@@ -1408,8 +1408,8 @@ function shim() {
     SourceGetBucketGuard: (_src, bucket) => JSON.parse(JSON.stringify(world.guards[bucket]
       || { versioning: 'Off', lockEnabled: false, lockMode: '', lockDays: 0 })),
     SourceStatObject: (_src, _bucket, key) => (key.endsWith('/')
-      ? { key, isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
-      : { key, size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD' }),
+      ? { key, name: String(key).replace(/\/+$/, '').split('/').pop(), isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
+      : { key, name: String(key).split('/').pop(), size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD', contentType: 'text/plain', sse: '' }),
     SourcePreviewDelete: (_src, _bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
     SourceDeleteSelection: (_src, _bucket, keys) => ({ deleted: keys.length, errors: [] }),
     SourceDeleteSelectionPermanent: (_src, _bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
@@ -10657,6 +10657,16 @@ await step('toolbar-nav', async () => {
     const k = await rowKeys();
     return k.includes('readme.md') && !k.includes('docs/notes.md');
   }, 6000, 'root rows settled after F5');
+  // Alt+Enter is the Properties accelerator every grid menu advertises:
+  // with a row selected the keyboard opens the same metadata modal the
+  // menu door does
+  await clickRow('readme.md');
+  await page.keyboard.press('Alt+Enter');
+  await ok('Alt+Enter opens the properties modal', waitFor(() => evalPage(() =>
+    !document.getElementById('modal-root').classList.contains('hidden')
+    && /properties — readme\.md/i.test(document.getElementById('modal-root').textContent || '')), 4000, 'alt-enter modal'));
+  await closeModal();
+
   // the data-source tree is a road uphill too: climbing it while deeper
   // in a bucket leaves Forward armed exactly like the Back button does —
   // the report was that only the Back button armed it. The account

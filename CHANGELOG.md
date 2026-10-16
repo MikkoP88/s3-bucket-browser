@@ -8,6 +8,35 @@ follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+
+- **The audit's last two unwitnessed actions earn their rows, the
+  advertised accelerator that never answered is wired, the dead wood
+  goes** — every verb, button and accelerator on the app's surface
+  was walked against the battery's coverage once more, and exactly
+  two critical actions had no witness: the Properties family and
+  Clear All…. GUI-97 seats the Properties verbs live: Alt+Enter on a
+  selected object — the accelerator every grid menu labels and no
+  keydown ladder answered until this round wired it beside F2 —
+  opens the metadata modal whose ETag and SSE row answer the
+  stat --json oracle, the tree source's Properties… opens the
+  bucket-grade modal whose region and versioning pill answer the
+  bucket info --json oracle beside its admin summary rows, and a
+  multi-selection aggregates items, total size and common prefix
+  without per-item round trips. GUI-98 seats Clear All… — the
+  workspace reset behind its danger confirm: Cancel is honest (the
+  view, the open pane and the session seats all stand), Clear
+  closes the windows, hides the pane, empties the filter, drops the
+  session keys (the pane seats, the popout geometries and the
+  remembered view — s3b-popout-center survives by design), leaves
+  the deep view for the source home and keeps every source and
+  setting. The gui-visual battery grows the wiring pin (the
+  keyboard opens the properties modal on the selected row). The
+  dead-wood half of the audit: an unused mock field and a dead
+  assignment retired from the test rigs, and every probe — go vet,
+  staticcheck run native (the linux docker run is blind to
+  windows-gated files and cries false positives on cross-file
+  windows-only symbols), the JS dead-symbol probe, the i18n
+  catalog's dead-key rule and go mod tidy — reads clean.
 - **Destructive decisions stop reading silence as permission** —
   every existence probe that gates an overwrite now answers honestly
   and fails closed: `transfer.ObjectExists` returns (found, error)

@@ -7687,6 +7687,149 @@ async function guiBattery() {
     return 'editor Test ✅ without a save, wrong secret ❌, stored source ✅';
   });
 
+
+  await verify({ id: 'GUI-97', area: 'objects', action: 'Properties family live: object, bucket, multi aggregate', ds: 'S3 (MinIO)', scenario: 'the Properties verb — advertised as Alt+Enter on every grid menu — answers the keyboard and the menu door with real metadata: the object modal carries the ETag, size and SSE the CLI stat --json oracle reports, the bucket modal carries the region and versioning state bucket info --json reports beside its admin summary rows, and a multi-selection aggregates items, total size and common prefix without per-item round trips', face: 'GUI' }, async () => {
+    // seed two objects whose facts the CLI oracle will report
+    await s3(['cp', path.join(FIX, 'data', 'root-2.txt'), `s3://${BUCKET}/props/props-pin.txt`]);
+    await s3(['cp', path.join(FIX, 'data', 'root-1.txt'), `s3://${BUCKET}/props/props-second.txt`]);
+    const st = JSON.parse((await s3(['stat', `s3://${BUCKET}/props/props-pin.txt`, '--json'])).out);
+    need(!!st.etag, 'the stat oracle carried an ETag');
+
+    // a real-handle row click starves its actionability budget when a
+    // floating popout stands over the grid (earlier rows leave them open —
+    // a window over the listing honestly owns the pointer): select through
+    // the grid's own mousedown grammar, dispatched atomically in one page
+    // turn the way rightClickRow/ctxItem already gesture
+    const selRow = (label, add) => waitFor(() => evalPage((src) => {
+      const [l, ctrl] = src;
+      const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+        .filter((r) => r.style.display !== 'none')
+        .find((r) => ((r.querySelector('.tname')?.textContent || '').trim() === l || (r.dataset.key || '') === l));
+      if (!row) {
+        const g = window.__s3bGrid;
+        if (g && Array.isArray(g.rows)) {
+          const idx = g.rows.findIndex((r) => String(r.name ?? '') === l || String(r.key ?? '') === l);
+          if (idx >= 0) g.scrollTo(idx);
+        }
+        return false;
+      }
+      const rc = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, ctrlKey: ctrl, clientX: Math.round(rc.left + 20), clientY: Math.round(rc.top + rc.height / 2) }));
+      return true;
+    }, [label, !!add]).catch(() => false), 10000, `row "${label}" to select`).then(() => sleep(60));
+    // leg 1: the keyboard door — Alt+Enter on the selected row
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('props')), 10000, 's3 root with props');
+    await enterFolder('props');
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('props-pin.txt')), 15000, 'props rows');
+    await selRow('props-pin.txt');
+    await page.keyboard.press('Alt+Enter');
+    await waitFor(modalVisible, 6000, 'the object properties modal');
+    let mt = await modalText();
+    need(/properties — props-pin\.txt/i.test(mt), `the object modal title: "${mt.slice(0, 80)}"`);
+    need(mt.includes(st.etag), `the modal carries the stat oracle ETag ${st.etag}`);
+    need(st.sse ? mt.includes(String(st.sse)) : mt.includes('SSEnone'), 'the SSE row answers the oracle');
+    await closeModal();
+    // leg 2: the menu door on the tree source — the bucket-grade modal
+    const bi = JSON.parse((await s3(['bucket', 'info', `s3://${BUCKET}`, '--json'])).out);
+    await treeMenu(SRCNAME);
+    await ctxItem(/^properties/i);
+    await waitFor(async () => /properties — /i.test(await modalText()), 10000, 'the bucket properties modal');
+    mt = await modalText();
+    need(mt.includes(BUCKET), 'the bucket modal names the bucket');
+    if (bi.region) need(mt.includes(bi.region), `the modal region matches the oracle (${bi.region})`);
+    need(mt.includes(`Versioning${bi.versioning === 'Enabled' ? 'Enabled' : 'Disabled'}`), `the versioning pill answers the oracle (${bi.versioning})`);
+    need(/none set/i.test(mt), 'the default-encryption row reads none set');
+    need(/bucket policy/i.test(mt) && /cors rules/i.test(mt), 'the admin summary rows are present');
+    await closeModal();
+    // goThen navigated to the bucket root — re-seat the props view for leg 3
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('props')), 10000, 'root rows after the bucket leg');
+    await enterFolder('props');
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('props-pin.txt')), 15000, 'props rows again');
+    // leg 3: a multi-selection aggregates client-side
+    await selRow('props-pin.txt');
+    await selRow('props-second.txt', true);
+    await page.keyboard.press('Alt+Enter');
+    await waitFor(async () => /2 item\(s\)/i.test(await modalText()), 6000, 'the multi aggregate modal');
+    mt = await modalText();
+    need(/total size/i.test(mt) && /common prefix/i.test(mt), 'the aggregate carries size and common prefix');
+    await closeModal();
+    await shot('97-properties');
+    return `ETag matched the stat oracle, bucket ${bi.versioning}, multi aggregated`;
+  });
+
+  await verify({ id: 'GUI-98', area: 'gui', action: 'Clear All…: the workspace reset behind its danger confirm', ds: 'S3 (MinIO) + local pane', scenario: 'File → Clear All… resets the workspace to a freshly opened state behind a danger confirm: Cancel keeps everything — the view, the open pane, the session seats — while Clear closes the windows, hides the pane, empties the filter, drops the session keys (the pane seats, the popout geometries, the remembered view — s3b-popout-center survives by design), leaves the deep view for the source home, and keeps every source and setting', face: 'GUI' }, async () => {
+
+    // the seat owns its seeds: in a full run earlier rows populate
+    // verify-gui (GUI-09's readme among them) — a slice owns none of
+    // that history, so seed the one row the filter leg narrows to
+    await s3(['cp', path.join(FIX, 'data', 'readme.md'), `s3://${BUCKET}/verify-gui/readme.md`]);
+    // seat a worked-in workspace: a deep view, an open pane, a live
+    // filter and staged session keys
+    await treeOpen(SRCNAME);
+    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+    await enterFolder('verify-gui');
+
+    await filterTo('readme');
+    try {
+      await waitFor(async () => (await rowKeys()).length > 0, 8000, 'the narrowed view');
+    } catch (e) {
+      // evidence at the miss: the seat, the filter, the grid's own logical
+      // list — an empty filtered list names a filter/view mismatch, an
+      // empty unfiltered one names a listing that never landed
+      const st = await evalPage(() => JSON.stringify({
+        crumb: document.querySelector('#breadcrumb')?.textContent || '',
+        filter: document.getElementById('filter')?.value ?? '?',
+        g: window.__s3bGrid ? (Array.isArray(window.__s3bGrid.rows) ? window.__s3bGrid.rows.length : 'rows-not-array') : 'no-grid',
+        names: (window.__s3bGrid && Array.isArray(window.__s3bGrid.rows)) ? window.__s3bGrid.rows.slice(0, 12).map((r) => r.name ?? r.key ?? '?') : [],
+        dom: Array.from(document.querySelectorAll('#grid-body .grid-row')).filter((r) => r.style.display !== 'none').length,
+      })).catch((err) => `evidence failed: ${err.message}`);
+      throw new Error(`${e.message} [the narrowed view: grid state ${st}]`);
+    }
+    const paneHidden = () => evalPage(() => document.getElementById('local-pane').classList.contains('hidden'));
+    if (await paneHidden()) await page.keyboard.press('F9');
+    await waitFor(async () => !(await paneHidden()), 6000, 'the pane open');
+    await evalPage(() => {
+      localStorage.setItem('s3b-side-src', 'verify-minio');
+      localStorage.setItem('s3b-side-loc', JSON.stringify({ kind: 'objects' }));
+      localStorage.setItem('s3b-popout-license', '{"x":8,"y":8,"w":400,"h":300}');
+    });
+    const keysBefore = await evalPage(() => Object.keys(localStorage).filter((k) => k.startsWith('s3b-')).sort());
+    const centerBefore = await evalPage(() => localStorage.getItem('s3b-popout-center'));
+    need((await evalPage(() => localStorage.getItem('s3b-lastview'))) !== null, 'the deep view recorded its seat');
+    // leg 1: Cancel is honest — nothing moves
+    await menuClick(/file/i, /clear all/i);
+    await waitFor(async () => /freshly opened state/i.test(await modalText()), 6000, 'the clear confirm');
+    await clickFooter(/^cancel$/i);
+    await sleep(150);
+    need(!(await modalVisible()), 'the confirm closed');
+    need(/verify-gui/.test(await txt('#breadcrumb')), 'the view survived the cancel');
+    need(!(await paneHidden()), 'the pane survived the cancel');
+    need((await evalPage(() => localStorage.getItem('s3b-side-src'))) === 'verify-minio', 'the session seats survived the cancel');
+    // leg 2: Clear resets — windows, pane, filter, keys, home
+    await evalPage(() => document.getElementById('toasts').replaceChildren());
+    await menuClick(/file/i, /clear all/i);
+    await waitFor(async () => /freshly opened state/i.test(await modalText()), 6000, 'the confirm again');
+    await clickFooter(/^clear$/i);
+    await waitFor(async () => /workspace cleared/i.test(await page.locator('#toasts').innerText()), 8000, 'the cleared toast');
+    need(await paneHidden(), 'the pane is hidden after the clear');
+    need(await evalPage(() => document.getElementById('filter').value === ''), 'the filter is emptied');
+    need(!/verify-gui/.test(await txt('#breadcrumb')), 'the workspace left the deep view');
+    const gone = await evalPage((keys) => keys.filter((k) => localStorage.getItem(k) === null), ['s3b-side-src', 's3b-side-loc', 's3b-popout-license']);
+    need(gone.length === 3, `session keys survived: ${JSON.stringify(await evalPage(() => Object.keys(localStorage).filter((k) => k.startsWith('s3b-'))))}`);
+    need((await evalPage(() => localStorage.getItem('s3b-popout-center'))) === centerBefore, 's3b-popout-center survives by design');
+    // s3b-lastview is rewritten by the reset's own re-home navigation — every
+    // nav records its seat — so the honest pin is the deep view gone from it
+    need(!String(await evalPage(() => localStorage.getItem('s3b-lastview'))).includes('verify-gui'), 's3b-lastview left the deep view behind');
+    // leg 3: the kept promises — sources ride unchanged, keys narrowed
+    const keysAfter = await evalPage(() => Object.keys(localStorage).filter((k) => k.startsWith('s3b-')).sort());
+    need(keysAfter.length < keysBefore.length, `the sweep dropped keys (${keysAfter.length} of ${keysBefore.length} left)`);
+    const srcs = (await call('ListSources')) || [];
+    need(srcs.some((x) => x.name === SRCNAME), 'the sources survived the clear');
+    await shot('98-clear-all');
+    return `cancel honest, clear dropped ${keysBefore.length - keysAfter.length} session key(s), sources kept`;
+  });
+
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
     need(pageErrors.length === 0, `${pageErrors.length} page error(s): ${pageErrors[0]}`);
     return 'clean console';
