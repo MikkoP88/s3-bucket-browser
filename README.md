@@ -12,6 +12,10 @@
 - **Windows, Linux, macOS** — native desktop app  
 - **Browser‑driven mode** — optional windowless UI accessible from any OS
 
+### ✔ A full terminal UI — `s3b tui`
+- **The whole browser in any modern terminal** — same sources, same engine; over SSH too, mouse included
+- **No WebView, no extra dependencies** — pure-ANSI rendering shipped in every CLI build; the CLI-only build opens it on bare `s3b`
+
 ### ✔ Source‑available
 - **PolyForm Internal Use** license  
 - Transparent codebase, no proprietary lock‑in

@@ -1130,3 +1130,52 @@ completions: `s3b completion bash|zsh|fish|powershell` — and they are
 typed: source and profile names, the s3:// and NAME:// operand grammars
 (the shell’s own file completion stays alive beside them on the transfer
 verbs), storage classes, retention modes and the source-type list.
+
+And the binary carries a third face: the interactive terminal —
+see [section 10](#10-the-interactive-terminal-s3b-tui).
+
+## 10. The interactive terminal (`s3b tui`)
+
+The CLI binary carries a full-screen interactive browser that runs
+in the terminal itself — the same source store and the same
+engine as the GUI, with no WebView2 or any other desktop
+dependency, and nothing added to the CLI's dependency list. It
+works over SSH, in every modern terminal, on every OS the CLI
+builds for; mouse and keyboard both drive it.
+
+```bash
+s3b tui        # start it from any build
+```
+
+The CLI-only (headless) build starts the same face on bare launch:
+`s3b` with no arguments opens the browser, not a usage screen.
+
+A source rail sits beside the listing — double-click (or Enter on
+the rail) dials a source; Tab walks between rail and listing; the
+crumb line names the seat. The listing is folders-first with
+humanized sizes; `/` starts a live filter; `:` opens the command
+bar (`cd s3://bucket/prefix`, `cd NAME://dir`, relative paths,
+`mkdir NAME`, `rm`, `sources`, `xfers`, `help`, `q`).
+
+| Key | Does |
+| --- | --- |
+| Enter | open folder · file properties |
+| Backspace | parent folder |
+| `/` · `:` | live filter · command bar |
+| F2 · F7 · Del | rename · new folder · delete (confirmed) |
+| `u` · `d` | upload · download (F8 shows the live transfers panel) |
+| `c` · `v` | copy · paste (S3) |
+| Space · Ctrl+Click | mark items |
+| Alt+Enter · F1 | properties · key map |
+| F5 · `r` · Tab | refresh · refresh · rail ↔ listing |
+| Ctrl+C ×2 · Ctrl+Q · `:q` | quit |
+
+The mouse drives everything the keyboard does: click to select,
+double-click to open, Ctrl+Click to mark, wheel to scroll, and a
+column-header click sorts — click again to reverse. Press F1
+inside for the full map.
+
+Automation and pipes: `S3B_TUI_SIZE=WxH` fixes the geometry and
+`S3B_TUI_FRAMES=<path>` writes every rendered frame as JSON lines,
+so scripts can drive the face without a terminal — the same hooks
+the verification battery walks it black-box with.

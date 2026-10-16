@@ -103,6 +103,7 @@ described here. The same engine backs both.
 - [s3b stat](#s3b-stat) — Show bucket, object or source-path metadata
 - [s3b sync](#s3b-sync) — Sync any two locations (local, S3, or a NAME:// source path)
 - [s3b tree](#s3b-tree) — Show a bucket or source subtree as an ASCII tree
+- [s3b tui](#s3b-tui) — Interactive terminal UI (keyboard + mouse browser)
 - [s3b version](#s3b-version) — Print the s3b version
 - [s3b versions](#s3b-versions) — Object version management (versioned buckets)
   - [s3b versions ls](#s3b-versions-ls) — List the version timeline of an object, newest first
@@ -170,6 +171,7 @@ Documentation: https://github.com/MikkoP88/s3-bucket-browser
 * [s3b stat](#s3b-stat)
 * [s3b sync](#s3b-sync)
 * [s3b tree](#s3b-tree)
+* [s3b tui](#s3b-tui)
 * [s3b version](#s3b-version)
 * [s3b versions](#s3b-versions)
 
@@ -3054,6 +3056,44 @@ Show a bucket or source subtree as an ASCII tree
 
 ```
 s3b tree s3://bucket[/prefix] | NAME://dir
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b](#s3b)
+
+## s3b tui
+
+Interactive terminal UI (keyboard + mouse browser)
+
+### Synopsis
+
+Launch the interactive terminal face: a source rail beside the current listing,
+rename, delete, new folder, upload and download with live progress, properties,
+a '/' filter and a ':' command bar — the GUI's grammar in the terminal.
+Mouse and keyboard both drive it; works over SSH and in any modern terminal.
+Press F1 inside for the key map.
+
+```
+s3b tui
 ```
 
 ### Options inherited from parent commands

@@ -9,6 +9,72 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 
+- **The terminal grows its own face: `s3b tui` — the whole
+browser in any modern terminal, no WebView, no new
+dependencies** — the CLI binary now carries an interactive
+terminal UI beside its verbs: a hand-rolled toolkit under
+internal/tui (a pure-ANSI cell grid with diff flushing, the
+alternate screen, SGR-1006 mouse, bracketed paste and the
+kitty key protocol — zero added dependencies, only the
+x/term, x/sys and color packages the CLI already rides) draws
+the GUI's grammar in text: a source rail with type badges
+beside the listing (double-click dials a source, Tab walks
+between rail and grid), a crumb speaking the seat, a
+folders-first humanized listing, `/` live filter, `:` command
+bar (cd s3://bucket/prefix, NAME://dir or relative paths,
+mkdir, rm, sources, xfers, help, q), F2 rename, F7 new folder,
+Del delete behind a confirm whose Cancel is honest, u and d
+upload and download with the F8 live transfers panel, c and v
+copy and paste, Space and Ctrl+Click marks with their count
+dialog, Alt+Enter properties (size, modified, storage class,
+ETag, mode, where), F1 the key map, and Ctrl+C twice, Ctrl+Q
+or :q to quit. It runs anywhere the CLI runs — the same
+source store and pkg/core engine, over SSH, in every modern
+terminal, no WebView2 — and the headless CLI build runs it on
+bare launch (s3b with no arguments gets the browser, not a
+usage screen); the face also stays drivable over pipes
+(S3B_TUI_SIZE fixes the geometry, S3B_TUI_FRAMES dumps every
+rendered frame), which is how the battery walks it black-box.
+The verification the face was built under: a Go rig suite in
+internal/tui (the parser's escape grammar, the width laws,
+every widget's key and mouse semantics, and live-browser
+walks over seeded local sources — navigation, filter, sort,
+rename, delete, transfers, marks, modals, the rail switch and
+the S3 prefix arithmetic), and eight new battery rows
+TUI-01…TUI-08 driving the real binary over pipes: boot
+geometry and the version-bearing header, Enter/Backspace
+navigation with the honest root refusal, the live filter and
+mouse header sorting both directions, :mkdir and F2 rename
+round-trips with Del's honest Cancel, upload and download
+byte-exact round-trips under the F8 panel, Ctrl+Click SGR
+marks with the count dialog, Alt+Enter properties and the F1
+map closing on Esc, and the S3 face end-to-end over MinIO —
+the rail double-click dialing the account-wide source into its
+bucket list, the bucket seat, the prefix descent, the
+ETag-bearing properties and a download verified byte for
+byte. The command census grows to 25 with tui. The round's
+verification paid two more product finds, both in the S3
+face: the rail dial never seated its source (crumb reads
+b.sel, dial set only the rail's own selection, so the dialed
+source's buckets listed under the booted source's name —
+navigate even carried a manual seat patch at its own call
+site, honest at one door and wrong at every other) — the seat
+now follows the dial; and every S3 descent doubled the prefix
+slash (transfer.JoinKey already answers prefix form, and the
+browser's own slash on top sent prefix// to MinIO, which
+answers XMinioInvalidObjectName — the descent, the :cd
+s3:// URI leg and the relative leg all ride JoinKey now, and
+a bare s3://bucket lists its root). The full run then paid one harness find the solo slice could not see: the S3 descent pressed Enter on row 0, which is the seed's seat only in a lonely bucket — the full battery's earlier rows leave their own folders in the same bucket, hostile-names sorting first — so the row now selects the prefix by its own coordinates before Enter. Gates: js-check OK, the
+i18n catalog untouched at 537 keys across fifteen locales,
+provenance 9/9 (no watermark disturbed), node --check on every
+patched file, the Go suite green under -race in docker
+(internal/tui joins the suite — the two wails binaries stay
+CI-only), the full battery green at 184 PASS · 8 SKIP · 0
+FAIL (the recorded MinIO provider gaps), and the gui-visual
+battery green at 1497/1497 (no frontend surface moved). Docs:
+usage.md grows the terminal section with its key map, cli.md
+regenerates through the twenty-five-command census, and the
+README names the face beside the GUI.
 - **The audit's last two unwitnessed actions earn their rows, the
   advertised accelerator that never answered is wired, the dead wood
   goes** — every verb, button and accelerator on the app's surface

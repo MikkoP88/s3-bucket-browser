@@ -12,6 +12,10 @@
 // Three faces are verified:
 //   CLI   — s3b-verify-cli.exe (s3b_headless build) driven as a process; exit
 //           codes and output are asserted, never eyeballed.
+//   TUI   — the same binary launched as `s3b tui` over pipes: S3B_TUI_SIZE
+//           fixes the geometry, S3B_TUI_FRAMES answers every flushed frame
+//           as JSONL, and stdin carries the same bytes a terminal would
+//           (runes, CSI keys, SGR-1006 mouse) — asserted frame by frame.
 //   GUI   — s3b-server.exe (the Wails `server` stack: real bindings, real
 //           backend, real browser) driven by Playwright; results verified
 //           BACK through the CLI so a GUI green means bytes on disk.
@@ -30,6 +34,7 @@
 //                            cross        cross-engine CLI battery (FTP/SFTP/WebDAV)
 //                            resilience   fault-injection battery
 //                            meta         binary/invocation contract battery
+//                            tui          the interactive terminal battery
 //                            gui          the whole GUI battery (both parts)
 //                            sweeps       the two full harnesses
 //           --no-build     reuse existing testartifacts exes
@@ -72,7 +77,7 @@ const HEADED = arg('headed');
 // Category runs (--only): each maps to whole batteries, which are internally
 // ordered so every row has the state it needs (a mid-battery slice could
 // depend on rows that did not run — batteries are the safe unit).
-const CATEGORIES = ['all', 'cli', 's3', 'cross', 'resilience', 'meta', 'gui', 'sweeps'];
+const CATEGORIES = ['all', 'cli', 's3', 'cross', 'resilience', 'meta', 'tui', 'gui', 'sweeps'];
 const ONLY = (() => {
   const i = process.argv.indexOf('--only');
   const v = i >= 0 ? process.argv[i + 1] : 'all';
@@ -82,7 +87,7 @@ const ONLY = (() => {
   }
   return v;
 })();
-const want = (c) => ONLY === 'all' || ONLY === c || (ONLY === 'cli' && ['s3', 'cross', 'resilience', 'meta'].includes(c));
+const want = (c) => ONLY === 'all' || ONLY === c || (ONLY === 'cli' && ['s3', 'cross', 'resilience', 'meta', 'tui'].includes(c));
 // Row filter (--row id1,id2): triage tool — run only the named rows
 // inside the selected categories (pair with --only gui for a solo GUI
 // row). The prologue still seeds everything, so a solo row sees the
@@ -2341,8 +2346,8 @@ async function cliMeta() {
     return `${N1} dials through the keyring-held secret; ${N2}'s token reached the signature (refused as synthetic); no keyring residue`;
   });
 
-  await verify({ id: 'CLI-M-07', area: 'meta', action: '--help contract: every command self-documents', ds: '—', scenario: 'every top-level command (24) plus the root: --help exits 0, prints a Usage: block and lists its subcommands where it has any — a missing or crashing help page is a broken contract for scripting humans', face: 'CLI' }, async () => {
-    const CMDS = ['source', 'profile', 'ls', 'tree', 'du', 'stat', 'mb', 'rb', 'mkdir', 'cp', 'mv', 'rm', 'sync', 'presign', 'doctor', 'versions', 'bucket', 'find', 'sc', 'lock', 'log', 'version', 'license', 'setup'];
+  await verify({ id: 'CLI-M-07', area: 'meta', action: '--help contract: every command self-documents', ds: '—', scenario: 'every top-level command (25) plus the root: --help exits 0, prints a Usage: block and lists its subcommands where it has any — a missing or crashing help page is a broken contract for scripting humans', face: 'CLI' }, async () => {
+    const CMDS = ['source', 'profile', 'ls', 'tree', 'du', 'stat', 'mb', 'rb', 'mkdir', 'cp', 'mv', 'rm', 'sync', 'presign', 'doctor', 'versions', 'bucket', 'find', 'sc', 'lock', 'log', 'version', 'license', 'setup', 'tui'];
     for (const c of CMDS) {
       const r = await cli([c, '--help']);
       need(r.code === 0, `${c} --help exited ${r.code}: ${(r.out + r.err).slice(0, 120)}`);
@@ -2399,6 +2404,346 @@ async function cliMeta() {
     need(r.code === 0 && r.out.includes('system:'), `un-redirected status: ${r.out}`);
     need(fs.existsSync(realSeat) === before, 'a status look created the real seat dir');
     return 'redirected install→status→uninstall round-trip clean; the usage refusal and the empty-uninstall verdict are honest; the un-redirected look touches nothing';
+  });
+}
+
+// ============================================================
+// TUI battery — the interactive terminal face, driven black-box
+// over pipes: stdin carries the same bytes a terminal would, the
+// frame oracle answers every flush
+// ============================================================
+let tuiSeq = 0;
+const tuiHas = (f, sub) => (f.lines || []).some((l) => l.includes(sub));
+// tuiAt answers cell coordinates for a mouse report: the line index is
+// the row, the character index the column (the frame's borders and
+// glyphs are all narrow single-unit runes).
+function tuiAt(f, sub) {
+  const y = (f.lines || []).findIndex((l) => l.includes(sub));
+  if (y < 0) return null;
+  return { x: (f.lines[y]).indexOf(sub), y };
+}
+
+async function tuiBattery() {
+  const cfg = path.join(ART, 'tui-config');
+  const world = path.join(ART, 'tui-world');
+  await mkdir(cfg, { recursive: true });
+  await mkdir(path.join(world, 'docs'), { recursive: true });
+  await writeFile(path.join(world, 'alpha.txt'), 'x'.repeat(12));          // 12 B
+  await writeFile(path.join(world, 'beta.bin'), Buffer.alloc(4096, 7));   // 4.0 KiB
+  await writeFile(path.join(world, 'gamma.md'), 'y'.repeat(100));
+  await writeFile(path.join(world, 'docs', 'notes.txt'), 'z'.repeat(30));
+  let r = await cli(['source', 'add', 'lab', '--type', 'local', '--root', world], { cfg, nokeyring: true });
+  need(r.code === 0, 'tui lab source add: ' + r.out + r.err);
+
+  // tuiDrive spawns "s3b tui" over pipes and hands the row three
+  // primitives: send (raw bytes to stdin — one write per chunk, the
+  // parser reads chunks), waitNext (a frame the cursor has not yet
+  // examined satisfying pred — asserts can never be satisfied by an
+  // earlier state), and waitForExit. Closing stdin quits (EOF), so a
+  // row may end by :q or by draining the pipe — both contracts get
+  // pinned. The frame file is APPEND-mode JSONL, one record per flush.
+  const tuiDrive = (drive) => new Promise((resolve, reject) => {
+    const framesPath = path.join(ART, 'tui-frames-' + RUNID + '-' + (++tuiSeq) + '.jsonl');
+    const child = spawn(CLI_EXE, ['tui'], {
+      cwd: ROOT, windowsHide: true,
+      env: { ...process.env, S3B_CONFIG: cfg, S3B_NO_KEYRING: '1', S3B_TUI_SIZE: '100x24', S3B_TUI_FRAMES: framesPath },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = ''; child.stdout.on('data', (d) => { out += d; });
+    let errOut = ''; child.stderr.on('data', (d) => { errOut += d; });
+    let exitCode = null; child.on('exit', (c) => { exitCode = c ?? -1; });
+    const kill = () => { try { child.kill(); } catch { /* already gone */ } };
+    const timer = setTimeout(() => { kill(); reject(new Error('TUI session exceeded its budget')); }, 120000);
+    let cursor = 0;
+    const readFrames = async () => {
+      let raw = '';
+      try { raw = await readFile(framesPath, 'utf8'); } catch { return []; }
+      const frames = [];
+      for (const line of raw.split('\n')) {
+        if (!line) continue;
+        try { frames.push(JSON.parse(line)); } catch { /* torn tail mid-write */ }
+      }
+      return frames;
+    };
+    const waitNext = async (pred, what, ms = 8000) => {
+      const t0 = Date.now();
+      for (;;) {
+        const frames = await readFrames();
+        for (let i = cursor; i < frames.length; i++) {
+          if (pred(frames[i])) { cursor = i + 1; return frames[i]; }
+        }
+        cursor = frames.length;
+        if (Date.now() - t0 > ms) {
+          const last = frames.length ? (frames[frames.length - 1].lines || []).join(' / ') : '(no frames)';
+          throw new Error('TUI never showed ' + what + ' — last frame: ' + last.slice(0, 300));
+        }
+        await sleep(40);
+      }
+    };
+    const send = (bytes) => { child.stdin.write(bytes); };
+    const end = () => { child.stdin.end(); };
+    const waitForExit = async (ms = 8000) => {
+      const t0 = Date.now();
+      while (exitCode === null) {
+        if (Date.now() - t0 > ms) throw new Error('TUI never exited (out: ' + out.slice(0, 120) + ' err: ' + errOut.slice(0, 120) + ')');
+        await sleep(40);
+      }
+      return exitCode;
+    };
+    Promise.resolve(drive({ send, end, waitNext, waitForExit }))
+      .then((detail) => { clearTimeout(timer); kill(); resolve(detail); },
+            (err) => { clearTimeout(timer); kill(); reject(err); });
+  });
+
+  await verify({ id: 'TUI-01', area: 'tui', action: 'Boot face: source dial, listing law, frame geometry, the :q exit contract', ds: 'local FS', scenario: 'the terminal face boots over pipes at a fixed geometry: the header carries the source crumb and the build version, the Sources rail seats the lab source, the Objects grid lists the seeded world with folders first and humanized sizes (4.0 KiB), the frame oracle reports exactly 100x24, and :q through the command bar exits 0', face: 'TUI' }, async () => {
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      const f = await waitNext((fr) => tuiHas(fr, 'beta.bin') && tuiHas(fr, 'docs'), 'the boot listing');
+      need(f.w === 100 && f.h === 24, 'frame geometry ' + f.w + 'x' + f.h + ' != 100x24');
+      need((f.lines[0] || '').includes('lab'), 'header must carry the source crumb: ' + f.lines[0]);
+      need((f.lines[0] || '').includes(VERSION), 'header must carry the build version: ' + f.lines[0]);
+      need(tuiHas(f, 'Sources') && tuiHas(f, 'Objects'), 'both panels must reach the frame');
+      const rows = f.lines.map((l) => l.trim()).filter((l) => /alpha\.txt|beta\.bin|gamma\.md|docs/.test(l));
+      need(rows.length >= 4, 'listing rows missing from the frame');
+      need(rows[0].includes('docs'), 'folders must sort first: ' + rows[0]);
+      const beta = rows.find((x) => x.includes('beta.bin'));
+      need(/4\.0 KiB/.test(beta), 'sizes must be humanized: ' + beta);
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'frame 100x24, crumb+version header, folders-first listing, humanized sizes, :q exits 0';
+    });
+  });
+
+  await verify({ id: 'TUI-02', area: 'tui', action: 'Navigation: Enter descends, Backspace climbs, the source root refuses honestly', ds: 'local FS', scenario: 'Enter on the selected folder swaps the listing to its contents with the crumb following the descent, Backspace returns to the root listing, and a second Backspace toasts "at the source root" instead of leaving the source — the GUI\'s honest refusal, in the terminal', face: 'TUI' }, async () => {
+    return tuiDrive(async ({ send, end, waitNext, waitForExit }) => {
+      await waitNext((fr) => tuiHas(fr, 'docs'), 'the boot listing');
+      send('\r'); // Enter on docs (row 0 is seated at boot)
+      await waitNext((fr) => tuiHas(fr, 'notes.txt') && !tuiHas(fr, 'beta.bin'), 'the docs listing');
+      send('\x7f'); // Backspace climbs
+      await waitNext((fr) => tuiHas(fr, 'beta.bin'), 'the root listing back');
+      send('\x7f'); // at the root: the honest refusal
+      await waitNext((fr) => tuiHas(fr, 'at the source root'), 'the root refusal toast');
+      end(); // the drained pipe is the other exit contract
+      const code = await waitForExit();
+      need(code === 0, 'stdin EOF must exit 0, got ' + code);
+      return 'descend, climb, root refusal, EOF exit 0';
+    });
+  });
+
+  await verify({ id: 'TUI-03', area: 'tui', action: 'Live filter and mouse sort: / narrows, Esc restores, the Size header click sorts', ds: 'local FS', scenario: 'the / filter narrows the listing live as it is typed (one row for "alp"), Enter commits with the panel title echoing the filter, Esc clears and restores the full listing; a synthesized SGR-1006 click on the Size header sorts big-first and the second click flips ascending — the header is a real mouse surface over pipes', face: 'TUI' }, async () => {
+    const orderOk = (fr, names) => {
+      const idx = names.map((n) => (fr.lines || []).findIndex((l) => l.includes(n)));
+      return idx.every((v) => v >= 0) && idx.every((v, i) => i === 0 || v > idx[i - 1]);
+    };
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      await waitNext((fr) => tuiHas(fr, 'alpha.txt'), 'the boot listing');
+      send('/alp');
+      await waitNext((fr) => tuiHas(fr, 'alpha.txt') && !tuiHas(fr, 'beta.bin'), 'the narrowed listing');
+      send('\r'); // commit: the bar closes, the title echoes the filter
+      const committed = await waitNext((fr) => (fr.lines[1] || '').includes('alp'), 'the title echo');
+      need(!tuiHas(committed, 'beta.bin'), 'the committed filter must keep the listing narrowed');
+      send('\x1b'); // lone Esc chunk — the per-chunk parser law
+      await sleep(60);
+      // a settled listing redraws nothing (the tick only draws when
+      // dirty), so coordinates come off the restore frame itself — the
+      // click that follows is what produces the next frame.
+      const restored = await waitNext((fr) => tuiHas(fr, 'beta.bin'), 'the restored listing');
+      const at = tuiAt(restored, 'Size');
+      need(at, 'Size header not on the frame');
+      send('\x1b[<0;' + (at.x + 1) + ';' + (at.y + 1) + 'M'); // click inside the title
+      await waitNext((fr) => orderOk(fr, ['beta.bin', 'gamma.md', 'alpha.txt']), 'the big-first sort');
+      send('\x1b[<0;' + (at.x + 1) + ';' + (at.y + 1) + 'M');
+      await waitNext((fr) => orderOk(fr, ['alpha.txt', 'gamma.md', 'beta.bin']), 'the ascending flip');
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'live filter, committed title echo, Esc restore, both sort directions by mouse';
+    });
+  });
+
+  await verify({ id: 'TUI-04', area: 'tui', action: 'Destructive verbs: :mkdir, F2 rename, Del confirm with an honest Cancel', ds: 'local FS', scenario: ':mkdir creates a real folder on disk and seats it in the listing with a success toast; F2 renames the selected file through the prompt dialog (old name gone, new name seated, bytes preserved on disk); Del opens a confirm naming its victim where Enter rides the focused Cancel honestly (the file survives) and Tab+Enter rides Delete (the file leaves disk and listing, success toast)', face: 'TUI' }, async () => {
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      await waitNext((fr) => tuiHas(fr, 'alpha.txt'), 'the boot listing');
+      send(':mkdir zed\r');
+      const mk = await waitNext((fr) => tuiHas(fr, 'zed'), 'the new folder seated');
+      need(tuiHas(mk, 'folder zed created'), 'mkdir must toast success');
+      send('\x1b[B\x1b[B'); // rows: docs, zed, alpha.txt — two downs reach it
+      send('\x1bOQ'); // F2
+      const dlg = await waitNext((fr) => tuiHas(fr, 'Rename'), 'the rename dialog');
+      need(tuiHas(dlg, 'alpha.txt'), 'the rename dialog must carry the prefilled name');
+      send('\x15'); // Ctrl+U kills the prefill
+      send('renamed.txt\r');
+      await waitNext((fr) => tuiHas(fr, 'renamed.txt') && !tuiHas(fr, 'alpha.txt'), 'the renamed row');
+      need(!fs.existsSync(path.join(world, 'alpha.txt')), 'rename must move the file off disk');
+      const kept = await readFile(path.join(world, 'renamed.txt'), 'utf8');
+      need(kept === 'x'.repeat(12), 'the renamed file must keep its bytes');
+      send('\x1b[B\x1b[B\x1b[B\x1b[B'); // walk to renamed.txt (last row)
+      send('\x1b[3~'); // Del
+      const confirm = await waitNext((fr) => tuiHas(fr, 'Delete 1 item(s)?'), 'the delete confirm');
+      need(tuiHas(confirm, 'renamed.txt'), 'the confirm must name its victim');
+      send('\r'); // Enter rides the focused Cancel — honest leg
+      await waitNext((fr) => !tuiHas(fr, 'Delete 1 item(s)?'), 'the dialog closed');
+      need(fs.existsSync(path.join(world, 'renamed.txt')), 'Cancel must leave the file on disk');
+      send('\x1b[3~');
+      send('\t'); // focus -> Delete
+      send('\r');
+      const gone = await waitNext((fr) => !tuiHas(fr, 'renamed.txt'), 'the listing without the victim');
+      need(tuiHas(gone, 'deleted'), 'delete must toast success');
+      need(!fs.existsSync(path.join(world, 'renamed.txt')), 'Delete must remove the file from disk');
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'mkdir on disk, rename round-trip with bytes, honest Cancel, real Delete';
+    });
+  });
+
+  await verify({ id: 'TUI-05', area: 'tui', action: 'Transfers: upload and download round-trip with the live transfers panel', ds: 'local FS', scenario: 'u opens the upload prompt (prefilled with the cwd, Ctrl+U clears it), the typed local path uploads with the transfers panel showing the row, the file lands in the source with its exact bytes, F8 hides the panel; d on the uploaded row downloads to a typed directory and the bytes round-trip exactly', face: 'TUI' }, async () => {
+    const payload = 'tui-upload-payload-42';
+    const up = path.join(ART, 'tui-up-source.txt');
+    await writeFile(up, payload);
+    const dl = path.join(ART, 'tui-dl');
+    await mkdir(dl, { recursive: true });
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      await waitNext((fr) => tuiHas(fr, 'beta.bin'), 'the boot listing');
+      send('u');
+      await waitNext((fr) => tuiHas(fr, 'Upload'), 'the upload prompt');
+      send('\x15');
+      send(up + '\r');
+      const upFrame = await waitNext((fr) => tuiHas(fr, 'up-source.txt'), 'the uploaded row or panel');
+      need(tuiHas(upFrame, 'Transfers'), 'the transfers panel must reach the frame');
+      const landed = await waitFor(() => fs.existsSync(path.join(world, 'tui-up-source.txt')), 8000, 'the uploaded file on disk');
+      const got = await readFile(path.join(world, 'tui-up-source.txt'), 'utf8');
+      need(landed && got === payload, 'the uploaded bytes must match');
+      send('\x1b[19~'); // F8 hides the panel
+      await waitNext((fr) => !tuiHas(fr, 'Transfers'), 'the panel hidden');
+      send('\x1b[B\x1b[B\x1b[B\x1b[B'); // walk to up-source.txt (last row)
+      send('d');
+      await waitNext((fr) => tuiHas(fr, 'Download'), 'the download prompt');
+      send('\x15');
+      send(dl + '\r');
+      await waitFor(() => fs.existsSync(path.join(dl, 'tui-up-source.txt')), 8000, 'the downloaded file on disk');
+      const rt = await readFile(path.join(dl, 'tui-up-source.txt'), 'utf8');
+      need(rt === payload, 'the download round trip must preserve bytes');
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'upload lands with exact bytes, panel shows then hides, download round-trips';
+    });
+  });
+
+  await verify({ id: 'TUI-06', area: 'tui', action: 'Marks: Ctrl+click seats multi-selection, Del speaks the count', ds: 'local FS', scenario: 'two synthesized Ctrl+clicks (the SGR modifier bit over pipes) mark two rows, and Del answers "Delete 2 item(s)?" naming both victims — Cancel keeps both files on disk', face: 'TUI' }, async () => {
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      const boot = await waitNext((fr) => tuiHas(fr, 'beta.bin') && tuiHas(fr, 'gamma.md'), 'the boot listing');
+      const b = tuiAt(boot, 'beta.bin');
+      const g = tuiAt(boot, 'gamma.md');
+      need(b && g, 'both rows must be on the frame');
+      send('\x1b[<16;' + (b.x + 1) + ';' + (b.y + 1) + 'M'); // Ctrl+click marks
+      send('\x1b[<16;' + (g.x + 1) + ';' + (g.y + 1) + 'M');
+      send('\x1b[3~');
+      const confirm = await waitNext((fr) => tuiHas(fr, 'Delete 2 item(s)?'), 'the two-victim confirm');
+      need(tuiHas(confirm, 'beta.bin') && tuiHas(confirm, 'gamma.md'), 'the confirm must name both victims');
+      send('\r'); // Cancel
+      await waitNext((fr) => !tuiHas(fr, 'Delete 2 item(s)?'), 'the dialog closed');
+      need(fs.existsSync(path.join(world, 'beta.bin')) && fs.existsSync(path.join(world, 'gamma.md')), 'Cancel must keep both files on disk');
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'Ctrl+click marks over pipes, the count dialog speaks two, Cancel is honest';
+    });
+  });
+
+  await verify({ id: 'TUI-07', area: 'tui', action: 'Alt+Enter properties and F1 help: the modal family', ds: 'local FS', scenario: 'Alt+Enter opens the Properties modal for the selected file (name, size and modified rows) and Esc closes it; F1 opens the Keys modal carrying the key map, and a lone Esc chunk — the per-chunk parser law — closes both', face: 'TUI' }, async () => {
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      await waitNext((fr) => tuiHas(fr, 'beta.bin'), 'the boot listing');
+      send('\x1b[B\x1b[B'); // walk to beta.bin (docs, zed above it)
+      send('\x1b\r'); // Alt+Enter
+      const props = await waitNext((fr) => tuiHas(fr, 'Properties'), 'the properties modal');
+      need(tuiHas(props, 'beta.bin') && tuiHas(props, 'Modified'), 'properties must carry the file rows');
+      send('\x1b');
+      await sleep(60);
+      await waitNext((fr) => !tuiHas(fr, 'Properties'), 'the modal closed');
+      send('\x1bOP'); // F1
+      const help = await waitNext((fr) => tuiHas(fr, 'Keys'), 'the keys modal');
+      need(tuiHas(help, 'rename'), 'the help modal must carry the key map');
+      send('\x1b');
+      await sleep(60);
+      await waitNext((fr) => !tuiHas(fr, 'Keys'), 'the help modal closed');
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'Alt+Enter properties, F1 help map, lone-Esc closes both';
+    });
+  });
+
+  await verify({ id: 'TUI-08', area: 'tui', action: 'S3 face over MinIO: the account-wide dial lists buckets, verbs live behind it', ds: 'S3 (MinIO)', scenario: 'an account-wide legacy S3 source (raw store load — the TUI never splits) boots into the bucket list as folder rows; a rail double-click seats the S3 source (the rail dials on activation — the 450ms law), a mouse click plus Enter seats the seeded bucket and lists its objects; Alt+Enter shows Properties with an ETag row, and d downloads the object with its bytes round-tripping exactly — the same engine the GUI drives', face: 'TUI' }, async () => {
+    // Seed: scoped source for the CLI verbs, then the scope stripped so
+    // the TUI dials account-wide (the legacy shape raw Load hands over).
+    r = await cli(['source', 'add', 'tuis3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET], { cfg, nokeyring: true });
+    need(r.code === 0, 'tuis3 add: ' + r.out + r.err);
+    r = await cli(['mb', 's3://' + BUCKET, '--profile', 'tuis3'], { cfg, nokeyring: true });
+    if (r.code !== 0 && !/exist/i.test(r.out + r.err)) need(false, 'mb ' + BUCKET + ': ' + r.out + r.err);
+    const payload = 'tui-s3-seed-payload-42';
+    const seed = path.join(ART, 'tui-s3-seed.txt');
+    await writeFile(seed, payload);
+    r = await cli(['cp', seed, 's3://' + BUCKET + '/tui/seed.txt', '--profile', 'tuis3'], { cfg, nokeyring: true, timeout: 60000 });
+    need(r.code === 0, 'seed cp: ' + r.out + r.err);
+    const storePath = path.join(cfg, 'profiles.json');
+    const store = JSON.parse(await readFile(storePath, 'utf8'));
+    delete store.sources.find((x) => x.name === 'tuis3').bucket; // ids are generated — key on the name
+    await writeFile(storePath, JSON.stringify(store, null, 2));
+    const dl = path.join(ART, 'tui-s3-dl');
+    await mkdir(dl, { recursive: true });
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      // the face boots into the FIRST source (lab) — the rail dials on
+      // ACTIVATION (OnActivate fires on the second press within 450ms,
+      // the widget's own law), so the switch gesture is a double-click:
+      // both presses in one chunk, decoded back to back
+      const boot = await waitNext((fr) => tuiHas(fr, 'beta.bin'), 'the boot listing');
+      const rail = tuiAt(boot, 'tuis3');
+      need(rail, 'the tuis3 rail row must be on the boot frame');
+      const click = '\x1b[<0;' + (rail.x + 1) + ';' + (rail.y + 1) + 'M';
+      send(click + click);
+      // the settled face redraws nothing — one predicate takes the
+      // coordinates off the frame IT matched (a second waitNext would
+      // scan for a newer frame that never comes)
+      const bk = await waitNext((fr) => !!tuiAt(fr, BUCKET), 'the bucket list');
+      need(tuiHas(bk, 'tuis3'), 'the crumb must name the seated source — dial seats b.sel');
+      const at = tuiAt(bk, BUCKET);
+      send('\x1b[<0;' + (at.x + 1) + ';' + (at.y + 1) + 'M'); // select the bucket row
+      send('\r'); // Enter seats the bucket
+      await waitNext((fr) => tuiHas(fr, 's3://' + BUCKET), 'the seated bucket crumb');
+      const tf = await waitNext((fr) => (fr.lines || []).some((l) => /▸ tui( |$)/.test(l)), 'the tui/ folder row');
+      // the full battery's earlier rows seed their own folders into this
+      // shared bucket (hostile-names sorts before tui/) — the seed is row 0
+      // only in the solo slice. Select the prefix by its own coordinates
+      // (a single SGR press selects; the 450ms law only gates activation),
+      // then Enter descends the selected row.
+      let trow = null;
+      for (let y = 0; y < (tf.lines || []).length; y++) {
+        const m = (tf.lines[y] || '').match(/▸ tui( |$)/);
+        if (m) { trow = { x: m.index, y }; break; }
+      }
+      need(trow, 'the tui/ folder row must carry coordinates');
+      send('\x1b[<0;' + (trow.x + 1) + ';' + (trow.y + 1) + 'M'); // select the tui row
+      send('\r'); // Enter descends the selected prefix
+      await waitNext((fr) => tuiHas(fr, 'seed.txt'), 'the object listing');
+      send('\x1b\r'); // Alt+Enter properties
+      const props = await waitNext((fr) => tuiHas(fr, 'Properties'), 'the properties modal');
+      need(tuiHas(props, 'seed.txt') && tuiHas(props, 'ETag'), 'S3 properties must carry the ETag row');
+      send('\x1b');
+      await sleep(60);
+      send('d');
+      await waitNext((fr) => tuiHas(fr, 'Download'), 'the download prompt');
+      send('\x15');
+      send(dl + '\r');
+      await waitFor(() => fs.existsSync(path.join(dl, 'seed.txt')), 8000, 'the downloaded object on disk');
+      const rt = await readFile(path.join(dl, 'seed.txt'), 'utf8');
+      need(rt === payload, 'the S3 download round trip must preserve bytes');
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'buckets-as-folders dial, bucket seating, ETag properties, byte-exact download';
+    });
   });
 }
 
@@ -8048,6 +8393,7 @@ async function main() {
   if (want('cross')) await cliCross();
   if (want('resilience')) await cliResilience();
   if (want('meta')) await cliMeta();
+  if (want('tui')) await tuiBattery();
 
   if (!SKIP_GUI && want('gui')) {
     try { await guiBattery(); } catch (err) {
