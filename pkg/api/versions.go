@@ -155,16 +155,6 @@ func (a *App) PrefixVersionSummary(bucket, prefix string) ([]versioning.ChildSum
 	return a.prefixVersionSummaryC(c, bucket, prefix)
 }
 
-// SourcePrefixVersionSummary is PrefixVersionSummary pinned to one named
-// S3 source.
-func (a *App) SourcePrefixVersionSummary(idOrName, bucket, prefix string) ([]versioning.ChildSummary, error) {
-	c, err := a.s3ClientFor(idOrName)
-	if err != nil {
-		return nil, err
-	}
-	return a.prefixVersionSummaryC(c, bucket, prefix)
-}
-
 func (a *App) prefixVersionSummaryC(c *s3client.Client, bucket, prefix string) ([]versioning.ChildSummary, error) {
 	ctx, cancel := a.quickCtx()
 	defer cancel()

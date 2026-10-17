@@ -1415,11 +1415,7 @@ function shim() {
     SourceDeleteSelection: (_src, _bucket, keys) => ({ deleted: keys.length, errors: [] }),
     SourceDeleteSelectionPermanent: (_src, _bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
     SourceDeleteSelectionKeepCurrent: (_src, _bucket, keys, _force) => ({ deleted: keys.length, errors: [] }),
-    SourcePrefixVersionSummary: async (_src, bucket, prefix) => {
-      const d = world.versionSummaryDelayMs || 0;
-      if (d) await new Promise((r) => setTimeout(r, d));
-      return JSON.parse(JSON.stringify(world.versionKids[`${bucket}/${prefix || ''}`] || []));
-    },
+
     SourceRenameObject: () => ({}),
     // ---- WinSCP-style real-address copy ("Copy URL") ----
     // S3 addresses resolve through the viewing source's endpoint (custom
@@ -9489,6 +9485,23 @@ await step('import-creds-file', async () => {
     const ff2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
       .find((b) => /^from file/i.test(b.textContent.trim())) || null);
     if (ff2) await ff2.asElement().click();
+    // the x on a staged candidate discards its stashed secret through the
+    // bridge — the row leaves without any import; restage it so the
+    // re-import below still has its row to land
+    await resetCalls();
+    const xBtn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row .cred-x')).at(-1) || null);
+    if (xBtn) await xBtn.asElement().click();
+    await ok('the x discards the staged candidate through the bridge', waitFor(async () => {
+      const c = await findCall('DiscardCredentialDrafts');
+      const gone = !(await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row'))
+        .find((r) => r.textContent.includes('from-file')) || null));
+      return !!c && JSON.stringify(c.args[0]).includes('cand-file') && gone;
+    }, 4000, 'discard'));
+    const ff2b = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+      .find((b) => /^from file/i.test(b.textContent.trim())) || null);
+    if (ff2b) await ff2b.asElement().click();
+    await waitFor(async () => !!(await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row'))
+      .find((r) => r.textContent.includes('from-file')) || null)), 4000, 'cred row restaged');
     await waitFor(async () => !!(await elOrNull(() => Array.from(document.querySelectorAll('#modal-root .cred-row'))
       .find((r) => r.textContent.includes('from-file')) || null)), 4000, 'cred row again');
     const imp2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
@@ -11493,6 +11506,16 @@ await step('edit-any', async () => {
     const c = await findCall('OpenLocalWith');
     return !!c && c.args[0] === 'C:\\Users\\demo\\notes.txt';
   }, 4000, 'OpenLocalWith'));
+
+  // the twin gesture — dblclick on a non-preview workstation file — rides
+  // the bare OpenLocal (OS default app), no chooser, no session
+  await resetCalls();
+  const docRow = await gridRow('report.docx');
+  if (docRow) await docRow.asElement().dblclick();
+  await ok('dblclick opens a workstation file through OpenLocal', waitFor(async () => {
+    const c = await findCall('OpenLocal');
+    return !!c && c.args[0] === 'C:\\Users\\demo\\report.docx';
+  }, 4000, 'OpenLocal'));
   // -- the manager's engine row: the crumb label and the typed ways out --
   await evalPage(() => {
     window.__shim.world.editing = [{ kind: 'remote', source: 'backup-box', key: '/backup.sh', dirty: true, stale: true }];

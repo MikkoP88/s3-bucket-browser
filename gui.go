@@ -598,11 +598,6 @@ func installShell(app3 *application.App, a *api.App) {
 				w.Close()
 			}
 		},
-		FocusPopout: func(id string) {
-			if w, ok := app3.Window.GetByName(popoutPrefix + id); ok {
-				w.Focus()
-			}
-		},
 		// The auto-height windows' content fit: the in-window controller
 		// measures its content and drives this as jobs come and go.
 		// w <= 0 means "keep the current width" — the auto-height windows

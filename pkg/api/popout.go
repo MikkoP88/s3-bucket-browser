@@ -72,13 +72,6 @@ func (a *App) ClosePopout(id string) {
 	}
 }
 
-// FocusPopout raises the popout window for id (no-op when none).
-func (a *App) FocusPopout(id string) {
-	if shell != nil {
-		shell.FocusPopout(id)
-	}
-}
-
 // ResizePopout resizes the popout window for id (no-op when none). The
 // auto-height windows (transfers, running tasks) drive it as their
 // content grows and shrinks: the window itself tracks the content between

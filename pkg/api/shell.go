@@ -84,7 +84,6 @@ type DesktopShell struct {
 	// is the URL query after the app root ("/?<query>") without the '?'.
 	OpenPopout  func(id, title, query string, geo ShellGeometry) bool
 	ClosePopout func(id string)
-	FocusPopout func(id string)
 	// ResizePopout resizes the popout window for id (no-op when none).
 	// The auto-height windows call it as their content grows and
 	// shrinks; w <= 0 means "keep the current width".

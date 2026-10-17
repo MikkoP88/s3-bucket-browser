@@ -3203,6 +3203,92 @@ async function tuiBattery() {
       return 'panel verbs toggle, the map answers, unknown verbs flash their cure, the listing re-lists the outside world';
     });
   });
+
+  await verify({ id: 'TUI-12', area: 'tui', action: 'FTP face end to end: rail dial, honest properties, byte-exact download', ds: 'FTP (live)', scenario: 'the terminal face seats a second real wire end to end: the rail double-click dials the live FTP source into its root listing with the crumb naming the seat, the descent into the row tree lists the seeded binary, Alt+Enter answers Properties with the FTP engine honest rows (name, modified, where — never a faked ETag), d downloads the file to the workstation byte-identical, and :q exits 0', face: 'TUI' }, async () => {
+    if (!(await portOpen(FTP_PORT))) return skip('FTP :2121 not reachable');
+    const U = `tui12-${RUNID}`;
+    await cli(['source', 'remove', 'ftp-tui'], { cfg, nokeyring: true }).catch(() => {}); // idempotent pre-clean
+    let r = await cli(['source', 'add', 'ftp-tui', '--type', 'ftp', '--host', '127.0.0.1', '--port', String(FTP_PORT), '--username', E2E_USER, '--password', E2E_PASS], { cfg, nokeyring: true });
+    need(r.code === 0, 'ftp-tui add: ' + r.out + r.err);
+    const seed = path.join(ART, 'tui12-seed.bin');
+    const payload = randomBytes(4096);
+    await writeFile(seed, payload);
+    r = await cli(['cp', seed, `ftp-tui://${U}/seed.bin`], { cfg, nokeyring: true, timeout: 60000 });
+    need(r.code === 0, 'ftp seed cp: ' + r.out + r.err);
+    const dl = path.join(ART, 'tui12-dl');
+    await rm(dl, { recursive: true, force: true });
+    await mkdir(dl, { recursive: true });
+    try {
+      const verdict = await tuiDrive(async ({ send, waitNext, waitForExit }) => {
+        // the store sorts sources by name and the boot dials the FIRST —
+        // ftp-tui sorts before the local lab, so the boot seat is already
+        // the FTP source. The rail dial walks a real round trip — away to
+        // the lab, then back — so both switches redraw and every wait has
+        // its frame (a re-dial of the seated row is a no-op that redraws
+        // nothing, the rig-pinned law)
+        const boot = await waitNext((fr) => (fr.lines || []).some((l) => l.includes(U)), 'the boot listing seated on the FTP root', 15000);
+        need((boot.lines[0] || '').includes('ftp-tui'), 'the boot crumb must name the sorted-first source: ' + (boot.lines[0] || ''));
+        const railRow = (frame, name) => {
+          const ls = frame.lines || [];
+          for (let y = 1; y < ls.length; y++) { // line 0 is the header crumb
+            const m = ls[y].match(new RegExp(' ' + name + '( |$)'));
+            if (m) return { x: m.index + 1, y };
+          }
+          return null;
+        };
+        const lab = railRow(boot, 'lab');
+        need(lab, 'the lab rail row must be on the boot frame');
+        send(':sources\r'); // the verb seats the rail pane
+        await sleep(150);
+        send('\t'); // Tab hands the pane back
+        await sleep(60);
+        // the 450ms activation law: both presses in one chunk
+        const clk = (r) => send('\x1b[<0;' + (r.x + 1) + ';' + (r.y + 1) + 'M\x1b[<0;' + (r.x + 1) + ';' + (r.y + 1) + 'M');
+        clk(lab); // dial away — the seat change guarantees fresh frames
+        const labf = await waitNext((fr) => tuiHas(fr, 'beta.bin'), 'the lab listing after the away dial');
+        const ftp = railRow(labf, 'ftp-tui');
+        need(ftp, 'the ftp-tui rail row must be on the rail after the away dial');
+        clk(ftp); // the dial under test — back onto the live FTP wire
+        // the settled face redraws nothing — take the coordinates off the
+        // frame the predicate matched (the shared FTP root carries other
+        // runs residue trees; this row descends into its own)
+        const root = await waitNext((fr) => (fr.lines || []).some((l) => l.includes(U)), 'the dialed FTP root', 15000);
+        need((root.lines[0] || '').includes('ftp-tui'), 'the crumb must name the seated source: ' + (root.lines[0] || ''));
+        let frow = null;
+        const want = new RegExp('▸ ' + U + '( |$)');
+        for (let y = 0; y < (root.lines || []).length; y++) {
+          const m = (root.lines[y] || '').match(want);
+          if (m) { frow = { x: m.index, y }; break; }
+        }
+        need(frow, 'the tui12 folder row must carry coordinates');
+        send('\x1b[<0;' + (frow.x + 1) + ';' + (frow.y + 1) + 'M'); // select it
+        send('\r'); // Enter descends the selected folder
+        await waitNext((fr) => tuiHas(fr, 'seed.bin'), 'the seeded file listing');
+        send('\x1b\r'); // Alt+Enter — properties of the seated row
+        const props = await waitNext((fr) => tuiHas(fr, 'Properties'), 'the properties modal');
+        need(tuiHas(props, 'seed.bin') && tuiHas(props, 'Modified') && tuiHas(props, 'Where'), 'properties must carry the FTP file rows');
+        need(!tuiHas(props, 'ETag'), 'the FTP engine must never fake an ETag row');
+        send('\x1b');
+        await sleep(60);
+        await waitNext((fr) => !tuiHas(fr, 'Properties'), 'the modal closed');
+        send('d');
+        await waitNext((fr) => tuiHas(fr, 'Download'), 'the download prompt');
+        send('\x15');
+        send(dl + '\r');
+        await waitFor(() => fs.existsSync(path.join(dl, 'seed.bin')), 15000, 'the downloaded file on disk');
+        const got = await readFile(path.join(dl, 'seed.bin'));
+        need(got.equals(payload), 'the FTP download round trip must preserve bytes');
+        send(':q\r');
+        const code = await waitForExit();
+        need(code === 0, ':q must exit 0, got ' + code);
+        return 'live FTP dial, properties without a faked ETag, byte-exact download';
+      });
+      return verdict;
+    } finally {
+      await cli(['rm', `ftp-tui://${U}`, '-r', '--force'], { cfg, nokeyring: true }).catch(() => {});
+      await cli(['source', 'remove', 'ftp-tui'], { cfg, nokeyring: true }).catch(() => {});
+    }
+  });
 }
 
 // ============================================================
@@ -8875,6 +8961,166 @@ async function guiBattery() {
       need(/settings/.test(f.text()), 'the followed line must carry its scope');
     } finally { f.kill(); }
     return 'the CLI face tailed the GUI app event stream live';
+  });
+
+  await verify({ id: 'GUI-103', area: 'objects', action: 'Pre-signed URLs: one object and many — signatures that really fetch', ds: 'S3 (MinIO)', scenario: 'the context menu Pre-sign verb answers shareable GETs over live data: a single selection opens the one-URL dialog whose readonly field carries a real signature — fetched over plain HTTP it answers the exact seeded bytes — and a two-row selection answers the list dialog with one row per object, every row URL fetching its own bytes; the share surface is live, not decorative', face: 'GUI' }, async () => {
+    const dir = `presign-${RUNID}`;
+    const f1 = `presign-a-${RUNID}.bin`, f2 = `presign-b-${RUNID}.bin`;
+    const p1 = path.join(ART, f1), p2 = path.join(ART, f2);
+    const body1 = randomBytes(4096), body2 = randomBytes(8192);
+    await writeFile(p1, body1);
+    await writeFile(p2, body2);
+    let r = await s3(['cp', p1, `s3://${BUCKET}/verify-gui/${dir}/${f1}`]);
+    need(r.code === 0, 'seed f1: ' + r.out + r.err);
+    r = await s3(['cp', p2, `s3://${BUCKET}/verify-gui/${dir}/${f2}`]);
+    need(r.code === 0, 'seed f2: ' + r.out + r.err);
+    try {
+      await navCertGui();
+      await enterFolder(dir);
+      await waitFor(async () => (await rowKeys()).some((k) => k.includes(f1)), 15000, 'the presign rows');
+      // single: one URL, readonly, live
+      await clickRow(f1);
+      await rightClickRow(f1);
+      await ctxItem(/pre-sign/i);
+      await waitFor(() => evalPage(() => !!document.querySelector('#modal-root input.input.mono')), 5000, 'the one-URL dialog');
+      const url1 = await evalPage(() => document.querySelector('#modal-root input.input.mono').value);
+      need(/^http:\/\//.test(url1) && /X-Amz-Signature=/.test(url1), 'the URL must carry a live signature: ' + url1.slice(0, 90));
+      const res1 = await fetch(url1);
+      need(res1.status === 200, 'the presigned GET answered ' + res1.status);
+      need(Buffer.from(await res1.arrayBuffer()).equals(body1), 'the presigned GET bytes differ from the seed');
+      const mt = await modalText();
+      need(/pre-signed url/i.test(mt) && !/object\(s\)/i.test(mt), 'the single dialog must be the one-URL face');
+      await clickFooter(/^close$/i);
+      // multi: one row per object, every URL its own bytes
+      await clickRow(f1);
+      await ctrlClickRow(f2);
+      await rightClickRow(f2);
+      await ctxItem(/pre-sign/i);
+      await waitFor(() => evalPage(() => document.querySelectorAll('#modal-root .psn-row').length >= 2), 5000, 'the URL list dialog');
+      need(/2 object\(s\)/.test(await modalText()), 'the list dialog must count two objects');
+      const psn = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .psn-row')).map((x) => ({ name: (x.querySelector('.psn-name')?.textContent || '').trim(), url: (x.querySelector('input')?.value || '') })));
+      need(psn.length === 2, 'the list must carry two rows');
+      for (const it of psn) {
+        need(it.name === f1 || it.name === f2, 'unexpected list row: ' + it.name);
+        const res = await fetch(it.url);
+        need(res.status === 200, 'the list GET for ' + it.name + ' answered ' + res.status);
+        const buf = Buffer.from(await res.arrayBuffer());
+        need(buf.equals(it.name === f1 ? body1 : body2), 'the list GET bytes differ for ' + it.name);
+      }
+      await clickFooter(/^close$/i);
+      return 'one-URL and two-URL presign dialogs, every signature fetched with its exact bytes';
+    } finally {
+      await s3(['rm', '-r', `s3://${BUCKET}/verify-gui/${dir}`, '--force']).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'GUI-104', area: 'search', action: 'Find window over live data: a real run and a hit that seats its row', ds: 'S3 (MinIO)', scenario: 'the toolbar Find opens the Search window over live data: a bare unique filename (the substring grammar — no wildcard needed) scoped to the S3 source streams its hit into the results grid, and activating the hit navigates the main view to the object parent folder with the row landing selected — the whole find-to-seat loop on real objects, closed clean behind itself', face: 'GUI' }, async () => {
+    const fname = `needle-${RUNID}.bin`;
+    const p = path.join(ART, fname);
+    await writeFile(p, randomBytes(2048));
+    let r = await s3(['cp', p, `s3://${BUCKET}/verify-gui/search-deep-${RUNID}/nested/${fname}`]);
+    need(r.code === 0, 'seed needle: ' + r.out + r.err);
+    try {
+      await navCertGui();
+      await page.locator('#btn-find').click();
+      await waitFor(() => evalPage(() => !!document.querySelector('#popout-root .popout[data-pop=search]')), 5000, 'the Search window');
+      // scope the run to the S3 source — the default All walk crosses every origin
+      const scoped = await evalPage(() => {
+        const sel = document.querySelector('#popout-root .sr-scope');
+        if (!sel) return false;
+        const opt = Array.from(sel.options).find((o) => o.textContent.includes('verify-minio'));
+        if (!opt) return false;
+        sel.value = opt.value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      });
+      need(scoped, 'the S3 scope never showed in the Sources picker');
+      await page.locator('#popout-root .sr-name input.input').fill(fname);
+      await page.keyboard.press('Enter');
+      await waitFor(() => evalPage((n) => Array.from(document.querySelectorAll('#popout-root .sr-results .sr-list .grid-row'))
+        .some((x) => (x.textContent || '').includes(n)), fname), 30000, 'the needle in the results grid');
+      // activate: the main view lands at the parent folder with the row selected
+      await evalPage((n) => {
+        const hit = Array.from(document.querySelectorAll('#popout-root .sr-results .sr-list .grid-row'))
+          .find((x) => (x.textContent || '').includes(n));
+        if (!hit) return false;
+        hit.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        return true;
+      }, fname);
+      await waitFor(async () => (await rowKeys()).some((k) => k.includes(fname)), 15000, 'the hit row seated in the main view');
+      const selKey = await evalPage(() => {
+        const row = document.querySelector('#grid-body .grid-row.sel');
+        return row ? String(row.dataset.key || row.querySelector('.tname')?.textContent || '').trim() : null;
+      });
+      need(selKey === fname, 'the seated row must land selected: ' + selKey);
+      need(await evalPage(() => Array.from(document.querySelectorAll('.crumb')).some((c) => (c.textContent || '').includes('nested'))), 'the crumb must name the hit parent folder');
+      // closed clean behind itself
+      await page.keyboard.press('Escape').catch(() => {});
+      await sleep(200);
+      await evalPage(() => { document.querySelector('#popout-root .popout .modal-head .x')?.click(); return true; });
+      await waitFor(() => evalPage(() => !document.querySelector('#popout-root .popout')), 5000, 'the Search window closed');
+      return 'find run, hit activation, seated row selected at its parent';
+    } finally {
+      await s3(['rm', '-r', `s3://${BUCKET}/verify-gui/search-deep-${RUNID}`, '--force']).catch(() => {});
+    }
+  });
+
+  await verify({ id: 'GUI-105', area: 'transfers', action: 'Retry failed: the one-click resubmit of a wire-dead upload, from the manager row', ds: 'S3 (MinIO) via faultproxy', scenario: 'a local-to-S3 upload dies mid-flight on a reset wire (error status, the reason recorded, nothing landed), the wire heals, and the transfer manager row offers Retry failed — one click resubmits exactly the failed item under skip semantics as a NEW job whose landing is byte-identical through the CLI face: the failure-to-retry loop the resilience rows always closed by re-arming the whole transfer, now closed through its own button', face: 'GUI' }, async () => {
+    const P = 'verify-slow105', u = `retry105-${RUNID}`;
+    const PPORT = 19340, PCTL = 19341;
+    await s3(['rm', '-r', `s3://${BUCKET}/verify-gui/${u}`, '--force']).catch(() => {}); // pre-clean
+    const src = path.join(ART, 'retry105.bin');
+    await rm(src, { force: true });
+    await writeFile(src, randomBytes(8 * 1024 * 1024));
+    const sha = await sha256file(src);
+    const proxy = spawn('node', [path.join(ROOT, 'scripts', 'faultproxy.mjs'), '--listen', String(PPORT), '--control', String(PCTL), '--target', '127.0.0.1:9000'], { stdio: 'ignore', windowsHide: true });
+    try {
+      let up = false;
+      for (let i = 0; i < 50 && !up; i++) { try { await fetch(`http://127.0.0.1:${PCTL}/state`, { signal: AbortSignal.timeout(500) }); up = true; } catch { await sleep(100); } }
+      need(up, 'the faultproxy control channel never came up');
+      await call('SaveSource', { name: P, type: 's3', s3: { name: P, endpoint: `http://127.0.0.1:${PPORT}`, region: 'us-east-1', accessKeyId: KEY, secretKey: SECRET, pathStyle: true } });
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'latency', delayMs: 150 }) });
+      const jid = await call('TransferCross', [], [src], { kind: 's3', source: P, bucket: BUCKET, dir: `verify-gui/${u}/` }, 'overwrite', 0, false, null, false);
+      await waitFor(async () => ((await call('ActiveTransfers')) || []).some((x) => x.id === jid && x.status === 'running' && x.sentBytes > 0 && x.sentBytes < x.totalBytes), 30000, 'the upload to reach mid-flight');
+      // the wire dies NOW
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'reset' }) });
+      const dead = await waitFor(async () => { const j = ((await call('ActiveTransfers')) || []).find((x) => x.id === jid); return j && j.status === 'error' && j; }, 60000, 'the wire-dead upload to fail out');
+      need(dead.error, 'the wire-dead upload recorded no error reason');
+      need((dead.failedFiles || 0) > 0, 'the job must name its failed file for the retry gate');
+      // nothing landed — the retry is the only writer from here
+      const l = await s3(['ls', `s3://${BUCKET}/verify-gui/${u}/`, '--recursive']);
+      need(!l.out.includes('retry105.bin'), 'the dead upload left the object anyway');
+      // the wire heals; the manager row offers the one-click resubmit
+      await fetch(`http://127.0.0.1:${PCTL}/mode`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'direct', delayMs: 0 }) });
+      const known = new Set(((await call('ActiveTransfers')) || []).map((x) => x.id));
+      await menuClick(/view/i, /transfers/i);
+      await waitFor(() => evalPage(() => !!document.querySelector('#popout-root .popout')), 5000, 'the transfer manager');
+      // the manager re-renders on every tick — find AND click in one turn
+      await waitFor(() => evalPage((id) => {
+        const b = Array.from(document.querySelectorAll('.tr-job'))
+          .filter((x) => x.dataset.id === id)
+          .flatMap((x) => Array.from(x.querySelectorAll('button')))
+          .find((btn) => /retry failed/i.test((btn.textContent || '').trim()));
+        if (!b) return false;
+        b.click();
+        return true;
+      }, jid), 10000, 'the Retry failed click');
+      // the retry lands as a NEW job (a new id) and carries the bytes home
+      const j2 = await waitFor(async () => ((await call('ActiveTransfers')) || []).find((x) => !known.has(x.id) && (x.status === 'done' || x.status === 'error') && (((x.dest || {}).source === P) || ((x.name || '').includes('retry105')))), 120000, 'the retried job to settle');
+      need(j2.status === 'done', 'the retried job did not complete: ' + JSON.stringify(j2).slice(0, 160));
+      await page.keyboard.press('Escape').catch(() => {});
+      const back = path.join(ART, 'retry105-back.bin');
+      await rm(back, { force: true });
+      const dl = await s3(['cp', `s3://${BUCKET}/verify-gui/${u}/retry105.bin`, back]);
+      need(dl.code === 0, 'download back: ' + dl.out + dl.err);
+      need(await sha256file(back) === sha, 'the retried upload bytes differ from the source');
+      return 'wire-dead upload, Retry failed from the manager row, healed resubmit sha-identical';
+    } finally {
+      if (proxy.exitCode === null) proxy.kill();
+      await page.keyboard.press('Escape').catch(() => {});
+      await call('RemoveSource', P).catch(() => {});
+      await s3(['rm', '-r', `s3://${BUCKET}/verify-gui/${u}`, '--force']).catch(() => {});
+    }
   });
 
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {
