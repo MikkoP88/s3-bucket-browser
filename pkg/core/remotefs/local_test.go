@@ -390,6 +390,8 @@ func TestLocalStepVerdicts(t *testing.T) {
 	}); !errors.Is(err, sentinel) {
 		t.Fatalf("fast step error = %v, want the step's own", err)
 	}
+	//lint:ignore SA1012 nil is the pin — the fast path must tolerate a
+	// caller with no context the same way the engine legs do
 	if v, err := LocalStep(nil, func() (int, error) { return 7, nil }); err != nil || v != 7 {
 		t.Fatalf("fast step = %d, %v; want 7, nil (nil context tolerated)", v, err)
 	}

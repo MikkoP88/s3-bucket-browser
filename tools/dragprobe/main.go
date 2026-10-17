@@ -114,7 +114,6 @@ var (
 	pGlobalAlloc    = kernel32.NewProc("GlobalAlloc")
 	pGlobalLock     = kernel32.NewProc("GlobalLock")
 	pGlobalUnlock   = kernel32.NewProc("GlobalUnlock")
-	pGetAsyncKey    = user32.NewProc("GetAsyncKeyState")
 	pGetCapture     = user32.NewProc("GetCapture")
 	pScreenToClient = user32.NewProc("ScreenToClient")
 

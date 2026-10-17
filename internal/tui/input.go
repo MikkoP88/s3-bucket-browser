@@ -40,9 +40,6 @@ func (p *InputParser) Feed(b []byte) []Event {
 	return evs
 }
 
-// Pending reports buffered bytes still awaiting completion.
-func (p *InputParser) Pending() int { return len(p.buf) }
-
 func (p *InputParser) decodeOne() (n int, ev Event, ok bool) {
 	if p.pasting {
 		return p.decodePaste()

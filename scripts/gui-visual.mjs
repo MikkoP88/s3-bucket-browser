@@ -10698,6 +10698,18 @@ await step('toolbar-nav', async () => {
     && /properties — readme\.md/i.test(document.getElementById('modal-root').textContent || '')), 4000, 'alt-enter modal'));
   await closeModal();
 
+
+  // Ctrl+L is the log drawer's accelerator — the View menu item and
+  // the status bar's log pill own the same door (toggleLogArea); the
+  // keyboard must toggle it both ways, synchronous class flips
+  await evalPage(() => document.getElementById('logarea').classList.add('hidden'));
+  await page.keyboard.press('Control+l');
+  await ok('Ctrl+L opens the log drawer', await evalPage(() =>
+    !document.getElementById('logarea').classList.contains('hidden')));
+  await page.keyboard.press('Control+l');
+  await ok('Ctrl+L closes the log drawer', await evalPage(() =>
+    document.getElementById('logarea').classList.contains('hidden')));
+
   // the data-source tree is a road uphill too: climbing it while deeper
   // in a bucket leaves Forward armed exactly like the Back button does —
   // the report was that only the Back button armed it. The account

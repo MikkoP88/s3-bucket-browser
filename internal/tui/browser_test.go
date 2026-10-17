@@ -634,6 +634,70 @@ func TestBrowserS3PrefixArithmetic(t *testing.T) {
 	}
 }
 
+// TestTuiObjectKeyLaw pins the object-key half of the JoinKey contract.
+// Prefixes ride prefix form (descent, :cd — pinned above), but KEYS must
+// not: an upload composed as "dir/name/" lands as a folder marker whose
+// bytes hide behind a synthetic directory, and mkdir's marker doubled
+// its slash outright. The battery's first S3 write walk (TUI-10) found
+// the whole verb family composing slash-tailed keys; this rig pins the
+// arithmetic and the one synchronous verb site, the live law rides
+// MinIO in verify.mjs.
+func TestTuiObjectKeyLaw(t *testing.T) {
+	if got := objKey("tui/", "name.txt"); got != "tui/name.txt" {
+		t.Fatalf("objKey must trim the prefix form, got %q", got)
+	}
+	if got := objKey("", "name.txt"); got != "name.txt" {
+		t.Fatalf("objKey at the bucket root must stay bare, got %q", got)
+	}
+	if got := objKey("a/b/", "sub", "f.txt"); got != "a/b/sub/f.txt" {
+		t.Fatalf("objKey must join clean, got %q", got)
+	}
+	if got := objKey("", ""); got != "" {
+		t.Fatalf("objKey of nothing must be empty, got %q", got)
+	}
+
+	// copyMarked composes clip keys through the real seat — the one
+	// synchronous verb site, observable without a store behind it.
+	cfg := t.TempDir()
+	blob, err := json.Marshal(map[string]any{
+		"sources": []profile.Source{{
+			ID: "s", Name: "s", Type: profile.TypeS3,
+			S3: &profile.Profile{Endpoint: "http://127.0.0.1:1", AccessKeyID: "k", SecretKey: "s", Region: "us-east-1", PathStyle: true},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "profiles.json"), blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("S3B_CONFIG", cfg)
+	t.Setenv("S3B_NO_KEYRING", "1")
+	t.Setenv("S3B_TUI_SIZE", "100x24")
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := profile.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBrowser(app, store, "1.2.0-test")
+	app.SetRoot(b)
+	app.resizeRoot()
+	t.Cleanup(b.Close)
+	t.Cleanup(app.term.Close)
+	b.bucket, b.prefix = "bkt", "tui/"
+	b.entries = []listing.Entry{{Key: "tui/f.txt", Name: "f.txt"}}
+	b.applyView()
+	b.grid.Marks[0] = true
+	pumpEvents(t, app)
+	b.copyMarked()
+	if len(b.clip) != 1 || b.clip[0].key != "tui/f.txt" {
+		t.Fatalf("copy must carry a slash-free object key, got %+v", b.clip)
+	}
+}
+
 func TestBrowserNoSources(t *testing.T) {
 	cfg := t.TempDir()
 	if err := os.WriteFile(filepath.Join(cfg, "profiles.json"), []byte(`{"sources":[]}`), 0o600); err != nil {

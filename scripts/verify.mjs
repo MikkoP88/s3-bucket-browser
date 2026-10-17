@@ -49,7 +49,9 @@
 //           gui shots, server log) — wiped fresh every run.
 //
 // Prerequisites: MinIO on :9000 (minioadmin/minioadmin). SFTP :2222,
-// FTP :2121, WebDAV :7070 (e2e/e2epass) join when their port answers.
+// FTP :2121, WebDAV :7070 (e2e/e2epass), FTPS :2122 (vsftpd explicit
+// TLS over the scripts/certs/e2e-tls identity) and WebDAVS :7443
+// (rclone serve webdav --cert/--key) join when their port answers.
 
 import { spawn, execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -148,6 +150,8 @@ const E2E_PASS = process.env.S3B_E2E_PASS || 'e2epass';
 const SFTP_PORT = +(process.env.S3B_SFTP_PORT || 2222);
 const FTP_PORT = +(process.env.S3B_FTP_PORT || 2121);
 const WEBDAV_PORT = +(process.env.S3B_WEBDAV_PORT || 7070);
+const FTPS_PORT = +(process.env.S3B_FTPS_PORT || 2122);      // vsftpd explicit TLS
+const WEBDAVS_PORT = +(process.env.S3B_WEBDAVS_PORT || 7443); // rclone webdav over TLS
 const VAULT_PORT = +(process.env.S3B_VAULT_PORT || 8200);        // Vault dev-mode container
 const VAULT_TOKEN = process.env.S3B_VAULT_TOKEN || 's3b-e2e-root-token';
 
@@ -205,6 +209,24 @@ function cli(args, { timeout = 120000, cfg = CFG, nokeyring = false, env = {} } 
     });
   });
 }
+// cliStream spawns the CLI with piped stdio for rows that need a LIVE
+// process (watch/follow tails): lines() merges stdout+stderr lines,
+// text()/errText() read the raw buffers, kill() ends it — rows must
+// kill in a finally, never leak a tailer past the row.
+const cliStream = (args, { cfg = CFG } = {}) => {
+  const p = spawn(CLI_EXE, args, {
+    cwd: ROOT, windowsHide: true,
+    env: { ...process.env, S3B_CONFIG: cfg, NO_COLOR: '1', TERM: 'dumb' },
+  });
+  let out = '', err = '';
+  p.stdout.on('data', (d) => { out += d; });
+  p.stderr.on('data', (d) => { err += d; });
+  return {
+    kill: () => { try { p.kill(); } catch { /* already gone */ } },
+    text: () => out, errText: () => err,
+    lines: () => (out + err).split(/\r?\n/),
+  };
+};
 const countLines = (out, needle) => out.split('\n').filter((l) => l.includes(needle)).length;
 
 // ---------- byte-level verification ----------
@@ -1514,6 +1536,61 @@ async function cliS3() {
     await rm(seedF, { force: true });
     return 'cat streamed exact bytes with both refusals; edit pushed guarded, refused the mid-edit overwrite keeping the staged copy, forced on consent, created the newborn';
   });
+
+  await verify({ id: 'CLI-S3-51', area: 'objects', action: 'Live tails: ls --watch over a bucket prefix', ds: 'S3 (MinIO)', scenario: 'ls --watch prints the full listing on its first pass then only the deltas — + name on an arrival, - name on a removal, the untouched file never reported; --watch with --json is refused (a live tail is interactive); log --follow --json refuses the same way and log with file logging off prints its honest hint — the follow tail itself lives in GUI-102, where the app that writes events can be driven', face: 'CLI' }, async () => {
+    const P = `${B}/watch51`;
+    await cli(['rm', '-r', `${P}/`, '--force']).catch(() => {});
+    const seedF = path.join(ART, 'watch51-seed.txt');
+    await writeFile(seedF, 'watch51 seed\n');
+    let r = await cli(['cp', seedF, `${P}/seed.txt`]);
+    need(r.code === 0, `seed: ${r.out}${r.err}`);
+    r = await cli(['ls', `${P}/`, '--watch', '--json']);
+    need(r.code !== 0 && /--watch is interactive/.test(r.out + r.err), `watch+json must refuse: ${r.out}${r.err}`);
+    r = await cli(['log', '--follow', '--json']);
+    need(r.code !== 0 && /--follow is interactive/.test(r.out + r.err), `follow+json must refuse: ${r.out}${r.err}`);
+    r = await cli(['log']);
+    need(r.code === 0 && /file logging is off/.test(r.out), `the off-state hint: ${r.out}${r.err}`);
+    const w = cliStream(['ls', `${P}/`, '--watch', '--interval', '300ms']);
+    try {
+      await waitFor(() => w.lines().some((l) => l.includes('seed.txt')), 8000, 'the watch first pass');
+      const addF = path.join(ART, 'watch51-add.txt');
+      await writeFile(addF, 'watch51 add\n');
+      r = await cli(['cp', addF, `${P}/new-obj.txt`]);
+      need(r.code === 0, `arrival cp: ${r.out}${r.err}`);
+      await waitFor(() => w.lines().some((l) => /^\+ new-obj\.txt/.test(l)), 8000, 'the + arrival line');
+      r = await cli(['rm', `${P}/new-obj.txt`, '--force']);
+      need(r.code === 0, `removal rm: ${r.out}${r.err}`);
+      await waitFor(() => w.lines().some((l) => /^- new-obj\.txt/.test(l)), 8000, 'the - removal line');
+      need(!w.lines().some((l) => /[~-] seed\.txt/.test(l)), 'the untouched seed was reported as a change');
+    } finally { w.kill(); }
+    await cli(['rm', '-r', `${P}/`, '--force']).catch(() => {});
+    return 'full first pass, + on arrival, - on removal, silence for the untouched file, both interactive refusals honest';
+  });
+
+  await verify({ id: 'CLI-S3-52', area: 'sync', action: 'Continuous synchronize: sync --watch', ds: 'S3 (MinIO)', scenario: 'sync --watch re-runs the plan on its interval: --dry-run is refused (a watcher does not plan once), the first pass lands the seeded tree, and a file dropped into the source directory AFTER the watch started is picked up by a later pass — the watch is live, not a one-shot; the download back proves the late arrival landed with its exact bytes', face: 'CLI' }, async () => {
+    const SRC = path.join(ART, 'watch52-src');
+    const T = `s3://${BUCKET}/watch52/`;
+    await rm(SRC, { recursive: true, force: true });
+    await mkdir(SRC, { recursive: true });
+    await writeFile(path.join(SRC, 'a.txt'), 'watch52 a\n');
+    await cli(['rm', '-r', T, '--force']).catch(() => {});
+    let r = await cli(['sync', SRC, T, '--watch', '--dry-run']);
+    need(r.code !== 0 && /dry-run/.test(r.out + r.err), `watch+dry-run must refuse: ${r.out}${r.err}`);
+    const landed = async (k) => (await cli(['stat', `s3://${BUCKET}/watch52/${k}`])).code === 0;
+    const w = cliStream(['sync', SRC, T, '--watch', '--interval', '400ms']);
+    try {
+      await waitFor(() => landed('a.txt'), 20000, 'the first pass to land a.txt');
+      await writeFile(path.join(SRC, 'late.txt'), 'watch52 late\n');
+      await waitFor(() => landed('late.txt'), 25000, 'the late arrival to land on a later pass');
+    } finally { w.kill(); }
+    const dl = path.join(ART, 'watch52-dl');
+    await rm(dl, { recursive: true, force: true });
+    r = await cli(['cp', '-r', T, dl]);
+    need(r.code === 0, `download back: ${r.out}${r.err}`);
+    need((await readFile(path.join(dl, 'late.txt'), 'utf8')) === 'watch52 late\n', 'the late file round-trips exactly');
+    await cli(['rm', '-r', T, '--force']).catch(() => {});
+    return 'the watcher re-planned live: the late arrival landed on its own pass and round-tripped exactly';
+  });
 }
 
 // ============================================================
@@ -1523,9 +1600,11 @@ async function cliCross() {
   const haveSftp = await portOpen(SFTP_PORT);
   const haveFtp = await portOpen(FTP_PORT);
   const haveDav = await portOpen(WEBDAV_PORT);
-  if (!haveSftp && !haveFtp && !haveDav) {
+  const haveFtps = await portOpen(FTPS_PORT);
+  const haveWs = await portOpen(WEBDAVS_PORT);
+  if (!haveSftp && !haveFtp && !haveDav && !haveFtps && !haveWs) {
     await verify({ id: 'CLI-X-00', area: 'sources', action: 'Remote engines', ds: 'SFTP/FTP/WebDAV', scenario: 'containers not running', face: 'CLI' },
-      () => skip('no engine containers reachable (2222/2121/7070)'));
+      () => skip('no engine containers reachable (2222/2121/7070/2122/7443)'));
     return;
   }
 
@@ -1893,6 +1972,171 @@ async function cliCross() {
     }
     return `parents + occupied-name honesty held on ${eng.map((e) => e[0]).join('/')}`;
   });
+
+  if (haveFtps) {
+    await verify({ id: 'CLI-X-16', area: 'transfers', action: 'FTPS round-trip over explicit TLS', ds: 'FTPS', scenario: 'the TLS twin of X-05: a vsftpd source added by flags (the engine dials AUTH TLS then PROT P — the jlaffaye client sends PBSZ 0/PROT P post-login, which the rclone goftp server 550s and vsftpd answers honestly), source test connects over TLS, a fixture tree uploads and downloads back byte-identical, and the source removes cleanly', face: 'CLI' }, async () => {
+      let r = await cli(['source', 'add', 'xx', '--type', 'ftps', '--host', '127.0.0.1', '--port', String(FTPS_PORT), '--username', E2E_USER, '--password', E2E_PASS]);
+      need(r.code === 0, `ftps add: ${r.out}${r.err}`);
+      r = await cli(['source', 'test', 'xx']);
+      need(r.code === 0, `ftps test: ${r.out}${r.err}`);
+      r = await cli(['cp', '-r', path.join(FIX, 'data'), `xx://${RUNID}/tree`]);
+      need(r.code === 0, `ftps up: ${r.out}${r.err}`);
+      const out = path.join(ART, 'from-ftps');
+      await rm(out, { recursive: true, force: true });
+      r = await cli(['cp', '-r', `xx://${RUNID}/tree`, out]);
+      need(r.code === 0, `ftps down: ${r.out}${r.err}`);
+      need(sameTree(await treeOf(path.join(FIX, 'data')), await treeOf(out)), 'ftps bytes differ');
+      await cli(['rm', '-r', `xx://${RUNID}/tree`, '--force']);
+      r = await cli(['source', 'remove', 'xx']);
+      need(r.code === 0 && /removed source/.test(r.out), `ftps remove: ${r.out}${r.err}`);
+      return 'explicit-TLS round-trip byte-identical, source removed cleanly';
+    });
+  }
+
+  if (haveWs) {
+    await verify({ id: 'CLI-X-17', area: 'transfers', action: 'WebDAVS round-trip over HTTPS', ds: 'WebDAVS', scenario: 'the webdavs:// URI shorthand dials the rclone webdav server over TLS (the e2e-tls identity; the fixture runs GODEBUG=http2server=0 — the stock http2 server speaks a dialect webdav clients choke on), source test connects, a payload carrying CRLF round-trips byte-exact (the line-ending law a WebDAV round-trip must prove), and the source removes cleanly', face: 'CLI' }, async () => {
+      let r = await cli(['source', 'add', 'xws', `webdavs://${E2E_USER}:${E2E_PASS}@127.0.0.1:${WEBDAVS_PORT}/`]);
+      need(r.code === 0, `webdavs add: ${r.err}`);
+      r = await cli(['source', 'test', 'xws']);
+      need(r.code === 0, `webdavs test: ${r.out}${r.err}`);
+      const PAY = 'webdavs line one\r\nwebdavs line two\n';
+      const seedF = path.join(ART, 'xws-seed.txt');
+      await writeFile(seedF, PAY);
+      r = await cli(['cp', seedF, `xws://${RUNID}/xws.txt`]);
+      need(r.code === 0, `webdavs up: ${r.out}${r.err}`);
+      const dl = path.join(ART, 'from-webdavs');
+      await rm(dl, { recursive: true, force: true });
+      await mkdir(dl, { recursive: true });
+      r = await cli(['cp', `xws://${RUNID}/xws.txt`, dl]);
+      need(r.code === 0, `webdavs down: ${r.out}${r.err}`);
+      const got = await readFile(path.join(dl, 'xws.txt'));
+      need(Buffer.compare(got, Buffer.from(PAY, 'utf8')) === 0, 'webdavs bytes differ (CRLF lost?)');
+      await cli(['rm', `xws://${RUNID}/xws.txt`]);
+      r = await cli(['source', 'remove', 'xws']);
+      need(r.code === 0 && /removed source/.test(r.out), `webdavs remove: ${r.out}${r.err}`);
+      return 'HTTPS round-trip byte-exact with CRLF intact, source removed cleanly';
+    });
+  }
+
+  if (haveSftp) {
+    await verify({ id: 'CLI-X-18', area: 'transfers', action: 'SCP round-trip', ds: 'SCP', scenario: 'the scp:// URI shorthand rides the same DialSFTP engine as sftp:// (SCP is the SFTP subsystem on every modern sshd — remotefs routes both types to one dialer, and the atmoz fixture chroots e2e into /upload): source test connects, a fixture tree round-trips byte-identical', face: 'CLI' }, async () => {
+      // X-01 owns xs in a full run; the defensive add covers the solo slice
+      await cli(['source', 'add', 'xs', `scp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+      let r = await cli(['source', 'test', 'xs']);
+      need(r.code === 0, `scp test: ${r.out}${r.err}`);
+      r = await cli(['cp', '-r', path.join(FIX, 'data'), `xs://${RUNID}/scptree`]);
+      need(r.code === 0, `scp up: ${r.out}${r.err}`);
+      const out = path.join(ART, 'from-scp');
+      await rm(out, { recursive: true, force: true });
+      r = await cli(['cp', '-r', `xs://${RUNID}/scptree`, out]);
+      need(r.code === 0, `scp down: ${r.out}${r.err}`);
+      need(sameTree(await treeOf(path.join(FIX, 'data')), await treeOf(out)), 'scp bytes differ');
+      await cli(['rm', '-r', `xs://${RUNID}/scptree`, '--force']);
+      return 'scp round-trip byte-identical over the shared dialer';
+    });
+  }
+
+  await verify({ id: 'CLI-X-19', area: 'sources', action: 'Local source: a typed NAME:// view over a workstation directory', ds: 'local FS', scenario: 'source add --type local --root binds a scratch tree as a first-class source: source test answers OK (the engine is the disk itself), ls --recursive --json walks it, cat streams exact bytes, cp reads FROM and writes TO the source with the disk file as the oracle, a missing --root is refused, and the source removes cleanly', face: 'CLI' }, async () => {
+    const root = path.join(ART, 'x19-root');
+    await rm(root, { recursive: true, force: true });
+    await mkdir(path.join(root, 'sub'), { recursive: true });
+    const PAY = `x19 local payload ${RUNID}\r\nsecond line\n`;
+    await writeFile(path.join(root, 'readme.md'), PAY);
+    await writeFile(path.join(root, 'sub', 'b.txt'), 'b\n');
+    let r = await cli(['source', 'add', 'xl', '--type', 'local', '--root', root]);
+    need(r.code === 0, `local add: ${r.out}${r.err}`);
+    r = await cli(['source', 'test', 'xl']);
+    need(r.code === 0 && /OK/.test(r.out), `local test: ${r.out}${r.err}`);
+    r = await cli(['ls', 'xl://', '--recursive', '--json']);
+    need(r.code === 0 && r.out.includes('readme.md') && r.out.includes('b.txt'), `local ls: ${r.out}${r.err}`);
+    r = await cli(['cat', 'xl://readme.md']);
+    need(r.code === 0 && r.out === PAY, `local cat exact bytes: ${JSON.stringify(r.out)}`);
+    const dl = path.join(ART, 'x19-dl');
+    await rm(dl, { recursive: true, force: true });
+    await mkdir(dl, { recursive: true });
+    r = await cli(['cp', 'xl://readme.md', dl]);
+    need(r.code === 0, `local cp out: ${r.out}${r.err}`);
+    need((await readFile(path.join(dl, 'readme.md'), 'utf8')) === PAY, 'local cp out bytes differ');
+    const UP = `x19 up payload ${RUNID}\n`;
+    const upF = path.join(ART, 'x19-up.txt');
+    await writeFile(upF, UP);
+    r = await cli(['cp', upF, 'xl://x19-up.txt']);
+    need(r.code === 0, `local cp in: ${r.out}${r.err}`);
+    need((await readFile(path.join(root, 'x19-up.txt'), 'utf8')) === UP, 'the written disk file must carry the exact bytes');
+    r = await cli(['rm', 'xl://x19-up.txt']);
+    need(r.code === 0, `local rm: ${r.out}${r.err}`);
+    need(!fs.existsSync(path.join(root, 'x19-up.txt')), 'the disk file must be gone');
+    r = await cli(['source', 'add', 'xlmiss', '--type', 'local', '--root', path.join(ART, 'x19-nope')]);
+    need(r.code !== 0 && /(local root|exist|not found|no such)/i.test(r.out + r.err), `a missing root must be refused: ${r.out}${r.err}`);
+    await cli(['source', 'remove', 'xlmiss']);
+    r = await cli(['source', 'remove', 'xl']);
+    need(r.code === 0 && /removed source/.test(r.out), `local remove: ${r.out}${r.err}`);
+    return 'a directory as a first-class source: listed, streamed, copied both ways with the disk as oracle, refused a missing root, removed cleanly';
+  });
+
+  if (haveSftp) {
+    await verify({ id: 'CLI-X-20', area: 'objects', action: 'Guarded edit round-trip on a remote engine', ds: 'SFTP', scenario: 'the same lost-update law CLI-S3-50 pins on objects, proven on a remote source: the edit verb pulls through SFTP and pushes under the size+mtime guard, a no-change run pushes nothing, a teammate cp landing mid-edit is refused with the staged copy kept and --force named as the cure, force lands, and a file that did not exist is created', face: 'CLI' }, async () => {
+      await cli(['source', 'add', 'xt', `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+      const NL = String.fromCharCode(10);
+      const P = `xt://${RUNID}/edit20`;
+      await cli(['rm', '-r', `${P}/`, '--force']).catch(() => {});
+      // the editor takes the staged path as its LAST argv (launchEditor
+      // appends it); the conflict verb overwrites the remote THROUGH the
+      // CLI before returning — a teammate's save landing mid-edit
+      const MOD = path.join(ART, 'editmod20.cjs');
+      await writeFile(MOD, [
+        'const fs = require("fs");',
+        'const cp = require("child_process");',
+        'const NL = String.fromCharCode(10);',
+        'const a = process.argv.slice(2);',
+        'const staged = a[a.length - 1];',
+        'if (a[0] === "conflict") {',
+        '  const mut = staged + ".teammate";',
+        '  fs.writeFileSync(mut, "teammate20-was-here" + NL);',
+        '  const r = cp.spawnSync(a[1], ["cp", mut, a[2], "--force"], { env: process.env });',
+        '  if (r.status !== 0) { process.stderr.write(String(r.stderr || r.error)); process.exit(1); }',
+        '} else if (a[0] === "noop") {',
+        '  process.exit(0);',
+        '}',
+        'fs.appendFileSync(staged, "verify-edit20 line" + NL);',
+      ].join(NL));
+      const SEED = 'edit20 seed line' + NL;
+      const seedF = path.join(ART, 'edit20-seed.txt');
+      await writeFile(seedF, SEED);
+      let r = await cli(['cp', seedF, `${P}/ed-1.txt`]);
+      need(r.code === 0, `seed copy failed: ${r.out}${r.err}`);
+      r = await cli(['cat', `${P}/ed-1.txt`]);
+      need(r.code === 0 && r.out === SEED, `cat did not stream the exact bytes: ${JSON.stringify(r.out)}`);
+      r = await cli(['cat', `${P}/`]);
+      need(r.code !== 0 && /is a (bucket or )?folder/.test(r.out + r.err), `cat on a folder must refuse: ${r.out}${r.err}`);
+      r = await cli(['cat', `${P}/ed-1.txt`, '--json']);
+      need(r.code !== 0 && /does not apply to cat/.test(r.out + r.err), `cat --json must refuse: ${r.out}${r.err}`);
+      r = await cli(['edit', `${P}/ed-1.txt`, '--editor', `node ${MOD} clean`]);
+      need(r.code === 0 && /pushed/.test(r.out), `the clean edit must push: ${r.out}${r.err}`);
+      r = await cli(['cat', `${P}/ed-1.txt`]);
+      need(r.out === SEED + 'verify-edit20 line' + NL, `the pushed bytes are wrong: ${JSON.stringify(r.out)}`);
+      r = await cli(['edit', `${P}/ed-1.txt`, '--editor', `node ${MOD} noop`]);
+      need(r.code === 0 && /no changes/.test(r.out) && /nothing pushed/.test(r.out), `the no-change edit must say nothing pushed: ${r.out}${r.err}`);
+      r = await cli(['edit', `${P}/ed-1.txt`, '--editor', `node ${MOD} conflict ${CLI_EXE} ${P}/ed-1.txt`]);
+      need(r.code !== 0 && /changed on the server/.test(r.out + r.err) && /--force/.test(r.out + r.err) && /kept at/.test(r.out + r.err), `the conflict must refuse with its cure: exit ${r.code} ${r.out}${r.err}`);
+      const kept = /kept at (\S+)/.exec(r.out + r.err);
+      if (kept) await rm(kept[1], { force: true }).catch(() => {});
+      r = await cli(['cat', `${P}/ed-1.txt`]);
+      need(r.out === 'teammate20-was-here' + NL, `the refused edit leaked onto the remote: ${JSON.stringify(r.out)}`);
+      r = await cli(['edit', `${P}/ed-1.txt`, '--editor', `node ${MOD} clean`, '--force']);
+      need(r.code === 0 && /pushed/.test(r.out), `the forced edit must push: ${r.out}${r.err}`);
+      r = await cli(['cat', `${P}/ed-1.txt`]);
+      need(r.out === 'teammate20-was-here' + NL + 'verify-edit20 line' + NL, `the forced bytes are wrong: ${JSON.stringify(r.out)}`);
+      r = await cli(['edit', `${P}/ed-new.txt`, '--editor', `node ${MOD} clean`]);
+      need(r.code === 0 && /created/.test(r.out), `edit on a missing file must create: ${r.out}${r.err}`);
+      r = await cli(['cat', `${P}/ed-new.txt`]);
+      need(r.out === 'verify-edit20 line' + NL, `the created bytes are wrong: ${JSON.stringify(r.out)}`);
+      await cli(['rm', '-r', `${P}/`, '--force']);
+      await rm(MOD, { force: true });
+      await rm(seedF, { force: true });
+      return 'the remote edit holds the same lost-update law: guarded push, honest noop, refused teammate with the staged copy kept, force as consent, newborn created';
+    });
+  }
 }
 
 // ============================================================
@@ -2405,6 +2649,20 @@ async function cliMeta() {
     need(fs.existsSync(realSeat) === before, 'a status look created the real seat dir');
     return 'redirected install→status→uninstall round-trip clean; the usage refusal and the empty-uninstall verdict are honest; the un-redirected look touches nothing';
   });
+
+  await verify({ id: 'CLI-M-10', area: 'meta', action: 'Provenance: the build identity answers on its own verb', ds: '—', scenario: 'the provenance verb is deliberately absent from --help (a verification verb, not a user verb); its human face carries the Build: and Marker: lines (the marker is the invisible-Unicode watermark — the LABEL is pinned, never its bytes); and --json answers the full identity: product, holder, year, license, licensever, repo, payload and version', face: 'CLI' }, async () => {
+    let r = await cli(['--help']);
+    need(r.code === 0 && !/\bprovenance\b/.test(r.out), 'provenance must stay off the help surface');
+    r = await cli(['provenance']);
+    need(r.code === 0 && /Build:/.test(r.out) && /Marker:/.test(r.out), `the human face must carry Build and Marker: ${r.out.slice(0, 160)}`);
+    r = await cli(['provenance', '--json']);
+    need(r.code === 0, `the json face: ${r.err}`);
+    const j = JSON.parse(r.out);
+    for (const k of ['product', 'holder', 'year', 'license', 'licensever', 'repo', 'payload', 'version']) need(k in j, `provenance json missing ${k}`);
+    need(/Mikko/.test(j.holder) && /PolyForm/.test(j.license), 'the identity rows must answer');
+    need(typeof j.version === 'string' && j.version.length > 0, 'the version row must be non-empty');
+    return 'hidden from help; human face carries Build/Marker; json answers all eight identity keys';
+  });
 }
 
 // ============================================================
@@ -2756,6 +3014,144 @@ async function tuiBattery() {
       need(code === 0, ':q must exit 0, got ' + code);
       return 'the flag boots the same terminal face (crumb + version header), :q exits 0';
     }, ['--new-instance']);
+  });
+
+  await verify({ id: 'TUI-10', area: 'tui', action: 'S3 mutations from the terminal: :sources dial, u upload, c/v copy-paste', ds: 'S3 (MinIO)', scenario: 'the seat TUI-08 only reads, now writing through it: :sources focuses the rail and the double-click dials the S3 source into its bucket list, the bucket and the tui/ prefix seat; u uploads a local file into the seated prefix with its exact bytes (the transfers panel shows the row, F8 hides it); c copies the uploaded row, Backspace climbs to the bucket root, v pastes the twin there — both keys verified through the CLI face on its own connection', face: 'TUI' }, async () => {
+    // seed: idempotent — TUI-08 usually owns tuis3, a solo run gets it here
+    let r = await cli(['source', 'list'], { cfg, nokeyring: true });
+    if (!r.out.includes('tuis3')) {
+      r = await cli(['source', 'add', 'tuis3', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET], { cfg, nokeyring: true });
+      need(r.code === 0, 'tuis3 add: ' + r.out + r.err);
+      r = await cli(['mb', 's3://' + BUCKET, '--profile', 'tuis3'], { cfg, nokeyring: true });
+      if (r.code !== 0 && !/exist/i.test(r.out + r.err)) need(false, 'mb ' + BUCKET + ': ' + r.out + r.err);
+      const seed = path.join(ART, 'tui-s3-seed.txt');
+      await writeFile(seed, 'tui-s3-seed-payload-42');
+      await cli(['cp', seed, 's3://' + BUCKET + '/tui/seed.txt', '--profile', 'tuis3'], { cfg, nokeyring: true, timeout: 60000 });
+      const storePath = path.join(cfg, 'profiles.json');
+      const store = JSON.parse(await readFile(storePath, 'utf8'));
+      delete store.sources.find((x) => x.name === 'tuis3').bucket; // ids are generated — key on the name
+      await writeFile(storePath, JSON.stringify(store, null, 2));
+    }
+    // a bucket-scoped twin for the row's own CLI oracles (the TUI rides the account-wide shape)
+    await cli(['source', 'add', 'tuis3v', '--type', 's3', '--endpoint', ENDPOINT, '--access-key', KEY, '--secret-key', SECRET, '--bucket', BUCKET], { cfg, nokeyring: true });
+    const payload = 'tui-s3-up-payload-43';
+    const up = path.join(ART, 'tui-s3-up.txt');
+    await writeFile(up, payload);
+    const verdict = await tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      const boot = await waitNext((fr) => tuiHas(fr, 'beta.bin'), 'the boot listing');
+      const rail = tuiAt(boot, 'tuis3');
+      need(rail, 'the tuis3 rail row must be on the boot frame');
+      send(':sources\r'); // the verb seats the rail pane
+      await sleep(150);
+      send('\t'); // Tab hands the pane back — the climb later is a grid-branch key
+      await sleep(60);
+      // the 450ms activation law: both presses in one chunk — the dial
+      // answering AFTER :sources is the verb's own pin
+      const click = '\x1b[<0;' + (rail.x + 1) + ';' + (rail.y + 1) + 'M';
+      send(click + click);
+      const bk = await waitNext((fr) => !!tuiAt(fr, BUCKET), 'the bucket list');
+      need(tuiHas(bk, 'tuis3'), 'the crumb must name the seated source');
+      const at = tuiAt(bk, BUCKET);
+      send('\x1b[<0;' + (at.x + 1) + ';' + (at.y + 1) + 'M');
+      send('\r'); // Enter seats the bucket
+      await waitNext((fr) => tuiHas(fr, 's3://' + BUCKET), 'the seated bucket crumb');
+      const tf = await waitNext((fr) => (fr.lines || []).some((l) => /▸ tui( |$)/.test(l)), 'the tui/ folder row');
+      let trow = null;
+      for (let y = 0; y < (tf.lines || []).length; y++) {
+        const m = (tf.lines[y] || '').match(/▸ tui( |$)/);
+        if (m) { trow = { x: m.index, y }; break; }
+      }
+      need(trow, 'the tui/ folder row must carry coordinates');
+      send('\x1b[<0;' + (trow.x + 1) + ';' + (trow.y + 1) + 'M'); // select the tui row
+      send('\r'); // Enter descends the selected prefix
+      await waitNext((fr) => tuiHas(fr, 'seed.txt'), 'the object listing');
+      // u — upload into the seated prefix
+      send('u');
+      await waitNext((fr) => tuiHas(fr, 'Upload'), 'the upload prompt');
+      send('\x15');
+      send(up + '\r');
+      await waitNext((fr) => tuiHas(fr, 'tui-s3-up.txt'), 'the uploaded row or panel');
+      send('\x1b[19~'); // F8 hides the transfers panel
+      const upf = await waitNext((fr) => tuiHas(fr, 'tui-s3-up.txt') && !tuiHas(fr, 'Transfers'), 'the row with the panel hidden');
+      let urow = null;
+      for (let y = 0; y < (upf.lines || []).length; y++) {
+        const idx = (upf.lines[y] || '').indexOf('tui-s3-up.txt');
+        if (idx >= 0) { urow = { x: idx, y }; break; }
+      }
+      need(urow, 'the uploaded row must carry coordinates');
+      // a lone press on a row whose INDEX an earlier click already pressed
+      // activates inside the 450ms window — out of it before selecting
+      await sleep(500);
+      send('\x1b[<0;' + (urow.x + 1) + ';' + (urow.y + 1) + 'M'); // select it — selection does not follow uploads
+      send('c');
+      await sleep(200);
+      send('\x7f'); // Backspace climbs to the bucket root (grid branch)
+      await waitNext((fr) => (fr.lines || []).some((l) => /▸ tui( |$)/.test(l)), 'the bucket root');
+      send('v');
+      // the paste answers with its own flash and reload; in a full battery
+      // the bucket root carries 30-odd rows and the twin sorts below
+      // the fold — the live filter narrows the listing until it renders
+      await waitNext((fr) => tuiHas(fr, 'pasted 1 item(s)'), 'the paste flash');
+      send('/tui-s3-up');
+      await waitNext((fr) => tuiHas(fr, 'tui-s3-up.txt'), 'the pasted twin filtered into view');
+      send('\r'); // Enter commits the filter closed
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'upload lands into the seated prefix, copy-paste lands the twin at the bucket root';
+    });
+    // the CLI face on its own connection is the oracle for both writes
+    const s3v = (args) => cli(args, { cfg, nokeyring: true, timeout: 90000 });
+    await waitFor(async () => (await s3v(['stat', 's3://' + BUCKET + '/tui-s3-up.txt', '--profile', 'tuis3v'])).code === 0, 10000, 'the pasted twin through the CLI face');
+    let cr = await s3v(['cat', 's3://' + BUCKET + '/tui/tui-s3-up.txt', '--profile', 'tuis3v']);
+    need(cr.code === 0 && cr.out === payload, 'the uploaded bytes through the CLI face: ' + JSON.stringify(cr.out));
+    cr = await s3v(['cat', 's3://' + BUCKET + '/tui-s3-up.txt', '--profile', 'tuis3v']);
+    need(cr.code === 0 && cr.out === payload, 'the pasted twin bytes through the CLI face: ' + JSON.stringify(cr.out));
+    await s3v(['rm', 's3://' + BUCKET + '/tui-s3-up.txt', '--force']);
+    await s3v(['rm', 's3://' + BUCKET + '/tui/tui-s3-up.txt', '--force']);
+    await s3v(['source', 'remove', 'tuis3v']);
+    return verdict + ' — both objects byte-pinned through the CLI face';
+  });
+
+  await verify({ id: 'TUI-11', area: 'tui', action: 'Command bar verbs and the live re-list', ds: 'local FS', scenario: ':xfers toggles the transfers panel on and off (seeded by a real upload — the panel only draws over transfer rows, so the verb rides real state both directions), :help opens the keys modal carrying the map, an unknown verb answers its flash naming :help, and a file written on disk OUTSIDE the app appears in the listing after r — the listing is a live re-list, not a cached one', face: 'TUI' }, async () => {
+    return tuiDrive(async ({ send, waitNext, waitForExit }) => {
+      await waitNext((fr) => tuiHas(fr, 'beta.bin'), 'the boot listing');
+      // the panel law: it only draws over real transfer rows (xferOn AND
+      // rows present) — seed one upload first, F8 hides it, then :xfers
+      // must bring it back and put it away again: the verb rides the
+      // same state the key does
+      const up = path.join(ART, 'tui-xfers-seed.txt');
+      await writeFile(up, 'tui-xfers-seed\n');
+      send('u');
+      await waitNext((fr) => tuiHas(fr, 'Upload'), 'the upload prompt');
+      send('\x15');
+      send(up + '\r');
+      await waitNext((fr) => tuiHas(fr, 'Transfers'), 'the panel carrying the seeded row');
+      send('\x1b[19~'); // F8 hides it
+      await waitNext((fr) => !tuiHas(fr, 'Transfers'), 'F8 hides the panel');
+      send(':xfers\r');
+      await waitNext((fr) => tuiHas(fr, 'Transfers'), ':xfers brings the panel back');
+      send(':xfers\r');
+      await waitNext((fr) => !tuiHas(fr, 'Transfers'), ':xfers hides it again');
+      send(':help\r');
+      const help = await waitNext((fr) => tuiHas(fr, 'Keys'), 'the help modal');
+      need(tuiHas(help, 'rename'), 'the help modal must carry the key map');
+      send('\x1b');
+      await sleep(60);
+      await waitNext((fr) => !tuiHas(fr, 'Keys'), 'the help modal closed');
+      send(':zzz\r');
+      // both substrings live on the flash's own frame — the clear redraw
+      // would starve a second waitNext
+      const fl = await waitNext((fr) => tuiHas(fr, 'unknown command: zzz'), 'the unknown-verb flash');
+      need(tuiHas(fl, 'try :help'), 'the flash must name its cure');
+      await writeFile(path.join(world, 'outside.txt'), 'written outside the app\n');
+      send('r');
+      await waitNext((fr) => tuiHas(fr, 'outside.txt'), 'the externally written file re-listed');
+      send(':q\r');
+      const code = await waitForExit();
+      need(code === 0, ':q must exit 0, got ' + code);
+      return 'panel verbs toggle, the map answers, unknown verbs flash their cure, the listing re-lists the outside world';
+    });
   });
 }
 
@@ -8313,6 +8709,122 @@ async function guiBattery() {
     } finally {
       for (const st of kids) { try { st.ch.kill(); } catch { /* already gone */ } }
     }
+  });
+
+  await verify({ id: 'GUI-100', area: 'gui', action: 'Viewer: PreviewData over s3, remote and local seats', ds: 'S3 (MinIO) + SFTP + local FS', scenario: 'the preview verb behind every viewer: an s3 object previews its exact bytes with its sniffed content type and whole-file size, a maxBytes cap truncates honestly (the sliver decodes to the cap, size still names the whole, truncated reads true), folders are refused on the s3 and local seats, an unknown kind is refused naming its grammar, a remote source file previews over SFTP and a local file over the disk — the payload crosses the bridge base64-encoded and decodes byte-exact', face: 'GUI' }, async () => {
+    const K = `${RUNID}/preview/verify-preview.txt`;
+    const PAY = `preview payload ${RUNID} — line two\r\n`;
+    const seedF = path.join(ART, 'gui100-seed.txt');
+    await writeFile(seedF, PAY);
+    let r = await s3(['cp', seedF, `s3://${BUCKET}/${K}`]);
+    need(r.code === 0, `seed cp: ${r.out}${r.err}`);
+    let p = await call('PreviewData', { kind: 's3', source: '', bucket: BUCKET, key: K });
+    need(p && typeof p.data === 'string' && p.data.length > 0, 'the s3 preview must carry data');
+    need(Buffer.from(p.data, 'base64').toString('utf8') === PAY, 'the s3 preview bytes must decode exact');
+    need(/text\/plain/.test(p.contentType || ''), `content type must sniff text/plain: ${p.contentType}`);
+    need(p.size === Buffer.byteLength(PAY), `size must name the whole: ${p.size}`);
+    need(p.truncated === false, 'an uncapped preview must not be truncated');
+    p = await call('PreviewData', { kind: 's3', source: '', bucket: BUCKET, key: K, maxBytes: 7 });
+    need(Buffer.from(p.data, 'base64').length === 7, 'the capped preview must decode to the cap');
+    need(p.size === Buffer.byteLength(PAY) && p.truncated === true, 'the capped preview must name the whole and flag truncation');
+    let refused = false;
+    try { await call('PreviewData', { kind: 's3', source: '', bucket: BUCKET, key: `${RUNID}/preview/` }); } catch (e) { refused = String(e); }
+    need(refused !== false && /folder/i.test(refused), `an s3 folder must refuse: ${refused}`);
+    refused = false;
+    try { await call('PreviewData', { kind: 'banana', bucket: BUCKET, key: K }); } catch (e) { refused = String(e); }
+    need(refused !== false && /cannot preview kind/.test(refused), `an unknown kind must refuse with its grammar: ${refused}`);
+    if (await portOpen(SFTP_PORT)) {
+      const S = 'verify-s100';
+      await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+      await call('SaveSource', { name: S, type: 'sftp', host: '127.0.0.1', port: SFTP_PORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
+      // the bridge save lives in the store the page has not read — reload
+      // so the tree learns the source before the cleanup walk
+      await page.reload();
+      await waitFor(() => evalPage(() => !!window.go && !!window.runtime), 15000, 'bridge after reload');
+      await waitFor(() => evalPage((l) => Array.from(document.querySelectorAll('#tree .tnode'))
+        .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), S), 10000, `tree row "${S}"`);
+      const RK = `${RUNID}/preview/verify-preview-remote.txt`;
+      r = await cli(['cp', seedF, `${S}://${RK}`]);
+      need(r.code === 0, `remote seed cp: ${r.out}${r.err}`);
+      p = await call('PreviewData', { kind: 'remote', source: S, key: RK });
+      need(Buffer.from(p.data, 'base64').toString('utf8') === PAY, 'the remote preview bytes must decode exact');
+      refused = false;
+      try { await call('PreviewData', { kind: 'remote', source: S, key: `${RUNID}/preview/` }); } catch (e) { refused = String(e); }
+      need(refused !== false && /folder/i.test(refused), `a remote folder must refuse: ${refused}`);
+      await cli(['rm', '-r', `${S}://${RUNID}/preview`, '--force']).catch(() => {});
+      await removeGuiSource(S);
+      await cli(['source', 'remove', S]).catch(() => {});
+    }
+    p = await call('PreviewData', { kind: 'local', path: seedF });
+    need(Buffer.from(p.data, 'base64').toString('utf8') === PAY, 'the local preview bytes must decode exact');
+    refused = false;
+    try { await call('PreviewData', { kind: 'local', path: ART }); } catch (e) { refused = String(e); }
+    need(refused !== false && /folder/i.test(refused), `a local folder must refuse: ${refused}`);
+    await s3(['rm', '-r', `s3://${BUCKET}/${RUNID}/preview/`, '--force']).catch(() => {});
+    return 's3, remote and local seats previewed byte-exact; the cap truncates honestly; folders and unknown kinds refused';
+  });
+
+  await verify({ id: 'GUI-101', area: 'gui', action: 'Typed editor: EditFile/PushEditFile/StopEditFile over a remote source', ds: 'SFTP', scenario: 'the editor family grown beyond objects, walked live on a remote seat: EditFile kind remote pulls the SFTP file to a staged local copy (EditInfo names kind, source, key and the staged path, and the session lists in EditingFiles), a save to the staged file auto-uploads through the watcher (the CLI face on its own connection is the oracle), a teammate overwrite landing mid-edit turns the session stale, PushEditFile with force is the consent that lands the local bytes, and StopEditFile closes the session — the staged file is an inert .cmd so the OS editor handoff is real but quiet', face: 'GUI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const S = 'verify-s101';
+    await cli(['source', 'add', S, `sftp://${E2E_USER}:${E2E_PASS}@127.0.0.1:${SFTP_PORT}/upload`]).catch(() => {});
+    await call('SaveSource', { name: S, type: 'sftp', host: '127.0.0.1', port: SFTP_PORT, username: E2E_USER, password: E2E_PASS, root: '/upload' });
+    // the bridge save lives in the store the page has not read — reload
+    // so the tree learns the source before the cleanup walk
+    await page.reload();
+    await waitFor(() => evalPage(() => !!window.go && !!window.runtime), 15000, 'bridge after reload');
+    await waitFor(() => evalPage((l) => Array.from(document.querySelectorAll('#tree .tnode'))
+      .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), S), 10000, `tree row "${S}"`);
+    const K = `${RUNID}/edit/verify-edit.cmd`;
+    const V1 = `rem gui101 v1 ${RUNID}\r\n`, V2 = `rem gui101 v2 ${RUNID}\r\n`, V3 = `rem gui101 teammate ${RUNID}\r\n`, V4 = `rem gui101 v4 ${RUNID}\r\n`;
+    const seedF = path.join(ART, 'gui101-seed.cmd');
+    await writeFile(seedF, V1);
+    let r = await cli(['cp', seedF, `${S}://${K}`]);
+    need(r.code === 0, `seed cp: ${r.out}${r.err}`);
+    const T = { kind: 'remote', source: S, bucket: '', key: K };
+    const info = await call('EditFile', T, false);
+    need(info && info.kind === 'remote' && info.source === S && info.key === K, `EditInfo must name the seat: ${JSON.stringify(info)}`);
+    need(typeof info.local === 'string' && info.local.length > 0, `EditInfo must name the staged path: ${JSON.stringify(info)}`);
+    need(info.dirty === false, 'a fresh session is not dirty');
+    const listed = await call('EditingFiles');
+    need(Array.isArray(listed) && listed.some((e) => e.source === S && e.key === K && e.kind === 'remote'), `EditingFiles must list the session: ${JSON.stringify(listed)}`);
+    // a save to the staged copy auto-uploads through the watcher
+    await writeFile(info.local, V2);
+    await waitFor(async () => (await cli(['cat', `${S}://${K}`])).out === V2, 15000, 'the watched save to reach the server');
+    // the teammate overwrite: the session goes stale on its next save
+    const mateF = path.join(ART, 'gui101-mate.cmd');
+    await writeFile(mateF, V3);
+    r = await cli(['cp', mateF, `${S}://${K}`, '--force']);
+    need(r.code === 0, `teammate cp: ${r.out}${r.err}`);
+    await writeFile(info.local, V4);
+    await waitFor(async () => {
+      const l = await call('EditingFiles');
+      const e = (l || []).find((x) => x.source === S && x.key === K);
+      return !!e && (e.stale === true || e.pushFailed === true);
+    }, 15000, 'the session to go stale after the teammate overwrite');
+    // force is the informed consent
+    await call('PushEditFile', T, true);
+    await waitFor(async () => (await cli(['cat', `${S}://${K}`])).out === V4, 15000, 'the forced push to land');
+    await call('StopEditFile', T, false);
+    const after = await call('EditingFiles');
+    need(!(after || []).some((e) => e.source === S && e.key === K), 'StopEditFile must close the session');
+    await cli(['rm', '-r', `${S}://${RUNID}/edit`, '--force']).catch(() => {});
+    await removeGuiSource(S);
+    await cli(['source', 'remove', S]).catch(() => {});
+    return 'pulled, auto-uploaded on save, staled by the teammate, force-landed, closed';
+  });
+
+  await verify({ id: 'GUI-102', area: 'gui', action: 'log --follow: the CLI face tails the app event stream live', ds: 'GUI app + CLI', scenario: 'file logging is opt-in: SetLogSettings default turns the events.jsonl sink on beside profiles.json in the GUI config; the CLI log --follow prints its banner then streams lines the APP appends afterwards — a tuning save through the bridge lands its engine-tuning line on the follow stdout within the interval, carrying its scope — the two faces share one event stream, and the row kills the tailer', face: 'GUI' }, async () => {
+    await call('SetLogSettings', 'default', '', [], [], []);
+    const f = cliStream(['log', '--follow', '--interval', '300ms'], { cfg: GUICFG });
+    try {
+      await waitFor(() => f.errText().includes('Ctrl+C to stop'), 8000, 'the follow banner');
+      const t0 = await call('GetTuning');
+      await call('SetTuning', t0.listingTimeoutMs, t0.compareTimeoutMs, t0.retryAttempts, t0.partSizeMiB, t0.partConcurrency, t0.stallAfterMs);
+      await waitFor(() => /engine tuning/.test(f.text()), 10000, 'the followed settings line');
+      need(/settings/.test(f.text()), 'the followed line must carry its scope');
+    } finally { f.kill(); }
+    return 'the CLI face tailed the GUI app event stream live';
   });
 
   await verify({ id: 'GUI-09', area: 'gui', action: 'Page-error gate', ds: 'Wails v3 server', scenario: 'zero uncaught page errors across the whole GUI battery', face: 'GUI' }, async () => {

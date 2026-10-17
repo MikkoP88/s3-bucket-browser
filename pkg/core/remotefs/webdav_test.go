@@ -226,7 +226,7 @@ func TestWebDAVParsesCreationDate(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/xml")
-		fmt.Fprintf(w, multistatus)
+		fmt.Fprint(w, multistatus)
 	}))
 	t.Cleanup(srv.Close)
 	host, port, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")

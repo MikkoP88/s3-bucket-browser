@@ -792,13 +792,22 @@ func (b *Browser) promptMkdir() {
 	b.promptInput("New folder", "folder name", "", func(name string) { b.mkdirAt(name) })
 }
 
+// objKey joins a seat prefix and one name into an object key — NO
+// trailing slash. JoinKey answers prefix form (trailing slash included),
+// which is right for prefixes (descent, up, :cd) and wrong for keys: an
+// upload at "dir/name/" lands as a folder marker and the file's bytes
+// hide behind a synthetic directory.
+func objKey(parts ...string) string {
+	return strings.TrimSuffix(transfer.JoinKey(parts...), "/")
+}
+
 func (b *Browser) mkdirAt(name string) {
 	b.runVerb("folder "+name+" created", true, func() error {
 		if b.s3c != nil {
 			if b.bucket == "" {
 				return fmt.Errorf("pick a bucket first")
 			}
-			key := transfer.JoinKey(b.prefix, name) + "/"
+			key := objKey(b.prefix, name) + "/"
 			return transfer.UploadReader(b.ctx, b.s3c.S3, strings.NewReader(""), 0, b.bucket, key, transfer.UploadOptions{})
 		}
 		if b.fs == nil {
@@ -825,8 +834,8 @@ func (b *Browser) promptRename() {
 			if b.s3c == nil || b.bucket == "" {
 				return fmt.Errorf("no source selected")
 			}
-			oldKey := transfer.JoinKey(b.prefix, e.Name)
-			newKey := transfer.JoinKey(b.prefix, name)
+			oldKey := objKey(b.prefix, e.Name)
+			newKey := objKey(b.prefix, name)
 			if e.IsDir {
 				oldKey, newKey = oldKey+"/", newKey+"/"
 			}
@@ -901,7 +910,7 @@ func (b *Browser) deleteEntries(ents []listing.Entry) error {
 	}
 	var keys []string
 	for _, e := range ents {
-		k := transfer.JoinKey(b.prefix, e.Name)
+		k := objKey(b.prefix, e.Name)
 		if e.IsDir {
 			sub, err := transfer.CollectPrefixKeys(b.ctx, b.s3c.S3, b.bucket, k+"/")
 			if err != nil {
@@ -946,7 +955,7 @@ func (b *Browser) upload(localPath string) {
 		var err error
 		switch {
 		case b.s3c != nil:
-			key := transfer.JoinKey(b.prefix, name)
+			key := objKey(b.prefix, name)
 			err = transfer.UploadFile(b.ctx, b.s3c.S3, localPath, b.bucket, key, transfer.UploadOptions{Progress: pr})
 		case b.fs != nil:
 			var f io.Reader
@@ -1056,7 +1065,7 @@ func (b *Browser) copyMarked() {
 	}
 	b.clip = b.clip[:0]
 	for _, e := range ents {
-		b.clip = append(b.clip, clipEntry{bucket: b.bucket, key: transfer.JoinKey(b.prefix, e.Name), name: e.Name})
+		b.clip = append(b.clip, clipEntry{bucket: b.bucket, key: objKey(b.prefix, e.Name), name: e.Name})
 	}
 	b.flash(fmt.Sprintf("copied %d — v pastes into this folder", len(b.clip)), true)
 }
@@ -1073,7 +1082,7 @@ func (b *Browser) pasteInto() {
 	clip, dst, prefix := b.clip, b.bucket, b.prefix
 	b.runVerb(fmt.Sprintf("pasted %d item(s)", len(clip)), true, func() error {
 		for _, c := range clip {
-			if err := transfer.Copy(b.ctx, b.s3c.S3, c.bucket, c.key, dst, transfer.JoinKey(prefix, c.name)); err != nil {
+			if err := transfer.Copy(b.ctx, b.s3c.S3, c.bucket, c.key, dst, objKey(prefix, c.name)); err != nil {
 				return err
 			}
 		}

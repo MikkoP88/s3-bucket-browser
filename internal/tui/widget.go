@@ -1,7 +1,5 @@
 package tui
 
-import "strings"
-
 // Widget is anything that can paint into the screen and consume input.
 // Containers manage their children's geometry and focus themselves —
 // the App only routes top-level events to the root (or the top modal)
@@ -97,16 +95,6 @@ func truncateFits(s string, max int) string {
 		w += rw
 	}
 	return string(sb) + string(glyphEllipsis)
-}
-
-// padRight pads s with spaces to exactly display width n (clipping if
-// longer) — for grid columns whose contents must be comparable.
-func padRight(s string, n int) string {
-	d := n - StringWidth(s)
-	if d < 0 {
-		return truncateFits(s, n)
-	}
-	return s + strings.Repeat(" ", d)
 }
 
 // drawProgress paints a fraction as an eighth-block ramp.

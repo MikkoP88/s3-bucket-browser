@@ -9,6 +9,44 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 
+- **Every live data source earns its row, and the terminal's S3 write law
+is found and fixed** — the third coverage audit walked every verb,
+source kind and data scenario on the app's surface against the battery
+and closed all thirteen honest gaps with real-data rows: FTPS over
+explicit TLS (a committed self-signed identity under scripts/certs/
+e2e-tls, CN=localhost, valid to 2036 — a vsftpd fixture rather than
+rclone, because the jlaffaye FTP client sends PBSZ 0 + PROT P whenever
+TLS is on and rclone's goftp server 550s it), WebDAVS over HTTPS (the
+rclone server pinned to GODEBUG=http2server=0 — the stock http2 server
+speaks a dialect webdav clients choke on — with a CRLF-bearing payload
+proving the line-ending law a WebDAV round-trip must hold), an SCP
+round-trip, a local source as a typed NAME:// view over a workstation
+directory, the guarded edit round-trip on a remote engine, ls --watch
+and sync --watch live tails, the provenance verb, the GUI rows seating
+PreviewData over s3, remote and local files, the typed editor family
+(EditFile/PushEditFile/StopEditFile) live over SFTP, and log --follow
+tailing the GUI app's own event stream from the CLI face — plus the
+TUI's first write rows, and Ctrl+L seating the log drawer in the visual
+battery. The TUI row paid the round's one product find, a whole family
+of it: transfer.JoinKey answers PREFIX form (trailing slash included),
+which is right for descent and :cd and wrong for object keys — every
+S3 write site in the terminal face rode it, so an upload at dir/name
+landed as dir/name/, a folder marker with the file's bytes hidden
+behind a synthetic directory, and mkdir, rename, delete, copy and paste
+all carried the same tail. A local objKey helper trims the slash at all
+six sites now, pinned by TestTuiObjectKeyLaw. The verdict runs also
+paid three harness finds worth their laws: a single mouse press on a
+row whose INDEX an earlier click pressed activates inside the 450ms
+double-click window (lastClk survives reloads), the transfers panel
+only draws over real transfer rows so its toggle verb must be seeded,
+and the virtualized grid renders only the visible fold — an assert for
+a row below it narrows the listing with the live filter instead. The
+dead-wood sweep that closed the round retired six unused TUI symbols
+(the stBright style, the padRight column helper, five dead glyph
+constants, the parser's Pending probe), the dragprobe's unused
+GetAsyncKeyState binding, and renamed the CLI edit sentinel to the
+errFoo convention — staticcheck on the Windows face reads clean.
+
 - **One Doctor window, pickers that never get lost, and logs two windows
 can share** — three hardening laws land on the multi-window app. The
 Doctor was the last view that could stack: its window id was scoped by

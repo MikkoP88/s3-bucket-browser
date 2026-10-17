@@ -38,8 +38,8 @@ import (
 // resolved at edit time, after the pull, in the command's own order).
 var editEditorFlag string
 
-// editConflict names the refusal: the remote moved under the edit.
-var editConflict = errors.New("the file changed on the server since the download")
+// errEditConflict names the refusal: the remote moved under the edit.
+var errEditConflict = errors.New("the file changed on the server since the download")
 
 // launchEditor runs the editor on the staged copy, attached to this
 // terminal so interactive editors behave. A var so the rigs can pin the
@@ -401,7 +401,7 @@ func runEditorAndWait(staged string, size, mod int64) (changed bool, err error) 
 // lives, and the two honest ways out.
 func editConflictErr(operand, detail, staged string) error {
 	return opErr(fmt.Errorf("%w: %s %s — your edit is kept at %s (re-run with --force to overwrite it)",
-		editConflict, operand, detail, staged))
+		errEditConflict, operand, detail, staged))
 }
 
 // httpStatusIs reports whether err carries the HTTP status code — the

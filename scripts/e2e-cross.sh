@@ -16,6 +16,24 @@
 #   docker run -d -p 7070:80 rclone/rclone:latest \
 #     serve webdav --addr :80 --user e2e --pass e2epass /srv)
 #
+# The TLS twins (verify.mjs CLI-X-16/CLI-X-17 ride them; the identity is
+# the committed self-signed scripts/certs/e2e-tls pair, CN=localhost,
+# valid to 2036 — on Git Bash prefix MSYS_NO_PATHCONV=1 for the -v):
+#   FTPS, explicit AUTH TLS — vsftpd, NOT rclone: the jlaffaye client
+#   sends PBSZ 0 + PROT P whenever TLS is on and rclone's goftp answers
+#   550 to PBSZ; vsftpd also needs require_ssl_reuse=NO for it:
+#   docker run -d --name s3b-e2e-ftps -p 2122:21 -p 21010-21012:21010-21012 \
+#     -e FTP_USER=e2e -e FTP_PASS=e2epass -e PASV_ADDRESS=127.0.0.1 \
+#     -e PASV_MIN_PORT=21010 -e PASV_MAX_PORT=21012 -e REVERSE_LOOKUP_ENABLE=NO \
+#     -v "$(pwd)/scripts/certs/e2e-tls:/certs:ro" fauria/vsftpd:latest \
+#     bash -c 'cp /certs/vsftpd-ftps.conf /etc/vsftpd/vsftpd.conf && /usr/sbin/run-vsftpd.sh'
+#   WebDAVS — rclone serve webdav over TLS, GODEBUG=http2server=0 (the
+#   stock http2 server speaks a dialect webdav clients choke on):
+#   docker run -d --name s3b-e2e-webdavs -p 7443:443 -e GODEBUG=http2server=0 \
+#     -v "$(pwd)/scripts/certs/e2e-tls:/certs:ro" rclone/rclone:latest \
+#     serve webdav --addr :443 --cert /certs/cert.pem --key /certs/key.pem \
+#     --user e2e --pass e2epass /srv
+#
 # Vault, the REAL KMS service for the import-credentials e2e
 # (pkg/api/importcreds_e2e_test.go Flows C/D and the verify.mjs GUI-87/88/89
 # rows — all env-gated, skip cleanly without it):

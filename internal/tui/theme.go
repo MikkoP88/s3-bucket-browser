@@ -46,7 +46,6 @@ var theme = struct {
 // Style shorthands the widgets share (kept as functions so callers can
 // chain further attributes without mutating shared state).
 func stDim() Style    { return Style{Fg: theme.Dim} }
-func stBright() Style { return Style{Fg: theme.Bright}.Bold() }
 func stAccent() Style { return Style{Fg: theme.Accent} }
 func stOk() Style     { return Style{Fg: theme.Ok} }
 func stWarn() Style   { return Style{Fg: theme.Warn} }
@@ -78,12 +77,7 @@ const (
 	glBotRight    = '╯'
 	glHoriz       = '─'
 	glVert        = '│'
-	glChevron     = '›'
-	glBranch      = '├'
-	glLast        = '└'
-	glSelected    = '▸'
 	glyphEllipsis = '…'
-	glArrowRight  = '→'
 	glCheck       = '✓'
 	glCross       = '✗'
 	glDot         = '•'

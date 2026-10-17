@@ -109,7 +109,7 @@ func TestEditRemoteConflictAndForce(t *testing.T) {
 		return os.WriteFile(filepath.Join(root, "a.txt"), []byte("team A grew it"), 0o600)
 	})
 	err := runEdit(context.Background(), "lab://a.txt", false)
-	if !errors.Is(err, editConflict) {
+	if !errors.Is(err, errEditConflict) {
 		t.Fatalf("guarded edit over a size move = %v, want the conflict", err)
 	}
 	if !strings.Contains(err.Error(), "--force") || !strings.Contains(err.Error(), "s3b-edit-") {
@@ -179,7 +179,7 @@ func TestEditRemoteConflictAndForce(t *testing.T) {
 		past := time.Now().Add(-time.Hour) // the pull happened moments ago
 		return os.Chtimes(filepath.Join(root, "a.txt"), past, past)
 	})
-	if err := runEdit(context.Background(), "lab://a.txt", false); !errors.Is(err, editConflict) {
+	if err := runEdit(context.Background(), "lab://a.txt", false); !errors.Is(err, errEditConflict) {
 		t.Fatalf("guarded edit over an mtime move = %v, want the conflict", err)
 	}
 	if got := readEngine(t, filepath.Join(root, "a.txt")); got != "beta2" {
@@ -423,7 +423,7 @@ func TestEditS3GuardRoundTrip(t *testing.T) {
 		return nil
 	})
 	err := runEdit(context.Background(), "store://a.txt", false)
-	if !errors.Is(err, editConflict) {
+	if !errors.Is(err, errEditConflict) {
 		t.Fatalf("guarded S3 edit over a teammate = %v, want the conflict", err)
 	}
 	fake.mu.Lock()

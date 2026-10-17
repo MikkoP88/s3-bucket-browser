@@ -41,7 +41,7 @@ func TestRuneWidthTable(t *testing.T) {
 
 func TestStringWidthMixed(t *testing.T) {
 	// a + 中 + ZWSP + 📁 + combining mark = 1+2+0+2+0
-	if got := StringWidth("a中​📁́"); got != 5 {
+	if got := StringWidth("a中\u200b📁́"); got != 5 {
 		t.Fatalf("StringWidth mixed: want 5, got %d", got)
 	}
 	if StringWidth("") != 0 {
