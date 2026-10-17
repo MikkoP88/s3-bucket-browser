@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/adminops"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/errhelp"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/policy"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
@@ -168,6 +169,21 @@ func Run(ctx context.Context, c *s3client.Client, bucket string, insecureTLS, al
 		}))
 	default:
 		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkWriteRoundTrip(ctx, c, bucket) }))
+	}
+
+	// Storage hygiene rides the same ladder the write round-trip does:
+	// it needs a bucket and a working connection, but never writes.
+	switch {
+	case bucket == "":
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult {
+			return skip("Incomplete Uploads Check", "no bucket selected")
+		}))
+	case authFailed:
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult {
+			return skip("Incomplete Uploads Check", "authentication failed")
+		}))
+	default:
+		r.Checks = append(r.Checks, timedCheck(func() CheckResult { return checkUploads(ctx, c, bucket) }))
 	}
 
 	for _, chk := range r.Checks {
@@ -667,6 +683,68 @@ func checkWriteRoundTrip(ctx context.Context, c *s3client.Client, bucket string)
 
 // maskKey renders an access key ID with only its first and last four
 // characters visible — enough to recognize, never enough to reuse.
+// checkUploads reads the bucket's incomplete multipart uploads — the
+// orphaned-parts lifecycle. A large transfer killed or canceled mid-flight
+// leaves an in-progress upload on the provider holding every part it
+// already streamed: invisible to object listings, billed until aborted or
+// expired by a lifecycle rule. Zero is a pass; any count is a warn with
+// the cure in hand, never a fail — the bucket serves traffic perfectly
+// while the parts sit.
+func checkUploads(ctx context.Context, c *s3client.Client, bucket string) CheckResult {
+	start := time.Now()
+	res := CheckResult{Check: "Incomplete Uploads Check", Status: StatusPass}
+	ups, err := adminops.ListUploads(ctx, c.S3, bucket)
+	if err != nil {
+		res.Duration = ms(time.Since(start))
+		if strings.Contains(err.Error(), "is not supported by this provider/endpoint") {
+			res.Status = StatusSkip
+			res.Detail = err.Error()
+			return res
+		}
+		res.Status = StatusWarn
+		res.Error = "could not list incomplete uploads: " + err.Error()
+		res.Advice = errhelp.ForError(err)
+		return res
+	}
+	if len(ups) == 0 {
+		res.Detail = "no incomplete multipart uploads"
+		res.Duration = ms(time.Since(start))
+		return res
+	}
+	oldest := HumanAge(time.Since(ups[0].Initiated)) // ListUploads answers oldest-first
+	res.Status = StatusWarn
+	res.Detail = fmt.Sprintf("%d incomplete multipart upload(s), oldest %s ago", len(ups), oldest)
+	info, _ := json.Marshal(map[string]any{"count": len(ups), "oldestInitiated": ups[0].Initiated})
+	res.Info = info
+	res.Advice = &errhelp.Advice{
+		Code:       "IncompleteUploads",
+		Cause:      "a killed or canceled large transfer leaves its multipart upload behind — the parts it already streamed stay on the provider until aborted",
+		Suggestion: "abort them to reclaim the storage, and consider a lifecycle rule that expires incomplete uploads automatically",
+		Commands:   []string{fmt.Sprintf("s3b bucket uploads s3://%s --abort --force", bucket)},
+	}
+	res.Duration = ms(time.Since(start))
+	return res
+}
+
+// HumanAge renders a duration the way a person reads storage ages: whole
+// units at or above — the GUI's size law, applied to time ("26h", "3d 4h",
+// "45m", "30s"). The doctor's verdicts and the CLI's listings share it so
+// both faces speak the same age for the same upload.
+func HumanAge(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		days := d / (24 * time.Hour)
+		hours := (d % (24 * time.Hour)) / time.Hour
+		return fmt.Sprintf("%dd %dh", days, hours)
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+}
+
 func maskKey(k string) string {
 	if len(k) <= 8 {
 		return strings.Repeat("*", len(k))
@@ -687,6 +765,7 @@ func CheckNames() []string {
 		"Bucket ACL Check",
 		"Credential Identity Check",
 		"Write Round-trip Check",
+		"Incomplete Uploads Check",
 	}
 }
 
@@ -742,6 +821,11 @@ func RunCheck(ctx context.Context, c *s3client.Client, bucket, name string, inse
 			}), nil
 		}
 		return timedCheck(func() CheckResult { return checkWriteRoundTrip(ctx, c, bucket) }), nil
+	case "Incomplete Uploads Check":
+		if bucket == "" {
+			return timedCheck(func() CheckResult { return skip("Incomplete Uploads Check", "no bucket selected") }), nil
+		}
+		return timedCheck(func() CheckResult { return checkUploads(ctx, c, bucket) }), nil
 	default:
 		// Unreachable (name was validated above), but satisfy the compiler.
 		return CheckResult{}, fmt.Errorf("unknown check: %s", name)

@@ -1061,13 +1061,13 @@ function shim() {
     PickSaveProfileFile: () => 'C:\\Users\\demo\\Documents\\saved.s3bprofile',
     PickFolder: () => 'C:\\Users\\demo\\Downloads',
     TestProfile: () => ({ ok: true, message: 'OK — visual shim' }),
-    DoctorChecks: () => ['DNS Resolution Check', 'TCP Connectivity Check', 'TLS Certificate Check', 'Clock Skew Check', 'Bucket Authentication Check', 'Bucket Policy Check', 'Bucket ACL Check', 'Credential Identity Check', 'Write Round-trip Check'],
+    DoctorChecks: () => ['DNS Resolution Check', 'TCP Connectivity Check', 'TLS Certificate Check', 'Clock Skew Check', 'Bucket Authentication Check', 'Bucket Policy Check', 'Bucket ACL Check', 'Credential Identity Check', 'Write Round-trip Check', 'Incomplete Uploads Check'],
     RunDoctor: (bucket, allowWrite) => ({
       endpoint: 's3.visual.shim', provider: 'aws', bucket: bucket || '',
       region: 'eu-central-1', accessKey: 'AKIA…DEMO', pathStyle: false,
       totalMs: 312, ranAt: daysAgo(0),
       warnings: [],
-      summary: allowWrite ? { pass: 8, warn: 1, fail: 0, skip: 0 } : { pass: 7, warn: 1, fail: 0, skip: 1 },
+      summary: allowWrite ? { pass: 9, warn: 1, fail: 0, skip: 0 } : { pass: 8, warn: 1, fail: 0, skip: 1 },
       checks: [
         { check: 'DNS Resolution Check', status: 'pass', durationMs: 12, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 's3.visual.shim resolved' },
         { check: 'TCP Connectivity Check', status: 'pass', durationMs: 21, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'TCP to s3.visual.shim:443' },
@@ -1080,6 +1080,7 @@ function shim() {
         { check: 'Write Round-trip Check', status: allowWrite ? 'pass' : 'skip', durationMs: 33, started_at: daysAgo(0), finished_at: daysAgo(0),
           detail: allowWrite ? 'probe written and deleted' : 'write test disabled — enable Allow write test to run it',
           info: allowWrite ? { probeKey: '.s3b-doctor-probe-1234', wrote: true, deleted: true } : undefined },
+        { check: 'Incomplete Uploads Check', status: 'pass', durationMs: 18, started_at: daysAgo(0), finished_at: daysAgo(0), detail: 'no incomplete multipart uploads' },
       ],
     }),
     RunDoctorCheck: (bucket, name, allowWrite) => ({ check: name,
@@ -4642,7 +4643,7 @@ await step('doctor', async () => {
     }, 4000, 'doctor meta'));
     await ok('checks grouped by category', waitFor(async () => {
       const gs = await evalPage(() => Array.from(document.querySelectorAll('#popout-root .popout[data-pop^="doctor"] .doc-group')).map((g) => g.textContent.trim()));
-      return gs.join('|') === 'Connectivity|Bucket access|Identity & writes';
+      return gs.join('|') === 'Connectivity|Bucket access|Identity & writes|Storage hygiene';
     }, 4000, 'doctor groups'));
     await ok('verdict banner warns', waitFor(async () => await evalPage(() => {
       const v = document.querySelector('#popout-root .doc-verdict');

@@ -63,10 +63,12 @@ func doctorCmd() *cobra.Command {
 	var allowWrite bool
 	cmd := &cobra.Command{
 		Use:   "doctor [s3://bucket]",
-		Short: "Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, policy, ACL, credential identity; --write adds the write round-trip",
+		Short: "Diagnose connectivity and storage hygiene: DNS, TCP, TLS, clock skew, auth, policy, ACL, identity, incomplete uploads; --write adds the write round-trip",
 		Long: "Diagnose connectivity: DNS resolution, TCP, TLS, clock skew, bucket auth, policy, ACL and\n" +
-			"credential identity — all read-only. The write round-trip (it writes and deletes a tiny\n" +
-			"probe object) is opt-in: pass --write to include it.",
+			"credential identity — all read-only — plus storage hygiene: incomplete multipart\n" +
+			"uploads (parts of dead transfers the provider keeps until aborted or expired).\n" +
+			"The write round-trip (it writes and deletes a tiny probe object) is opt-in: pass\n" +
+			"--write to include it.",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeS3URIs,
 		RunE: func(cmd *cobra.Command, args []string) error {

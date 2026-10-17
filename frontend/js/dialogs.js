@@ -1776,12 +1776,13 @@ export function doctorDialog(bucket) {
   const warnBox = el('div', {});
   const meta = el('div', { class: 'kv' });
 
-  // Check groups: the registry's names arranged in three categories; names a
+  // Check groups: the registry's names arranged in categories; names a
   // newer backend adds land in a trailing catch-all instead of disappearing.
   const DOC_GROUPS = [
     ['Connectivity', ['DNS Resolution Check', 'TCP Connectivity Check', 'TLS Certificate Check', 'Clock Skew Check']],
     ['Bucket access', ['Bucket Authentication Check', 'Bucket Policy Check', 'Bucket ACL Check']],
     ['Identity & writes', ['Credential Identity Check', 'Write Round-trip Check']],
+    ['Storage hygiene', ['Incomplete Uploads Check']],
   ];
   const groupOf = (name) => {
     for (const [g, names] of DOC_GROUPS) if (names.includes(name)) return g;

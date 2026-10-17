@@ -29,8 +29,8 @@ func hermeticClient() *s3client.Client {
 
 func TestCheckNames_RegistryCompleteness(t *testing.T) {
 	names := CheckNames()
-	if len(names) != 9 {
-		t.Fatalf("CheckNames returned %d names, want 9: %v", len(names), names)
+	if len(names) != 10 {
+		t.Fatalf("CheckNames returned %d names, want 10: %v", len(names), names)
 	}
 	seen := map[string]bool{}
 	for _, n := range names {
@@ -271,6 +271,15 @@ type fakeS3Store struct {
 	live                   map[string]bool
 	lieDelete              bool
 	dropFirstDelete        bool
+	// mpus is the incomplete-upload set ListMultipartUploads answers
+	// (bucket-scoped check reads it; nil = none, a clean pass).
+	mpus []fakeMPU
+}
+
+// fakeMPU is one in-progress upload the fake provider holds.
+type fakeMPU struct {
+	Key, ID   string
+	Initiated time.Time
 }
 
 // fakeS3Server stages a minimal S3-compatible endpoint: ListBuckets answers
@@ -316,6 +325,22 @@ func fakeS3Server(t *testing.T, store *fakeS3Store, forbidPut, failDelete bool) 
 				}
 			}
 			b.WriteString(`</ListBucketResult>`)
+			io.WriteString(w, b.String())
+		case r.Method == http.MethodGet && r.URL.Query().Has("uploads"):
+			// ListMultipartUploads: the incomplete-upload set, oldest first.
+			w.Header().Set("Content-Type", "application/xml")
+			var b strings.Builder
+			b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult>`)
+			for _, u := range store.mpus {
+				b.WriteString(`<Upload><Key>`)
+				b.WriteString(u.Key)
+				b.WriteString(`</Key><UploadId>`)
+				b.WriteString(u.ID)
+				b.WriteString(`</UploadId><Initiated>`)
+				b.WriteString(u.Initiated.UTC().Format(time.RFC3339Nano))
+				b.WriteString(`</Initiated></Upload>`)
+			}
+			b.WriteString(`<IsTruncated>false</IsTruncated></ListMultipartUploadsResult>`)
 			io.WriteString(w, b.String())
 		case r.Method == http.MethodPut:
 			if forbidPut {
@@ -642,5 +667,65 @@ func TestRun_WriteProbeAgainstLiveFake(t *testing.T) {
 	}
 	if len(store.dels) != 1 || store.dels[0] != store.puts[0] {
 		t.Errorf("probe cleanup: puts=%v dels=%v, want the probe key deleted", store.puts, store.dels)
+	}
+}
+
+func TestCheckUploads_CleanBucketPasses(t *testing.T) {
+	srv := fakeS3Server(t, &fakeS3Store{}, false, false)
+	res := checkUploads(context.Background(), sdkClient(srv.URL), "probe-bucket")
+	if res.Status != StatusPass {
+		t.Fatalf("status = %q, want pass (error %q)", res.Status, res.Error)
+	}
+	if !strings.Contains(res.Detail, "no incomplete multipart uploads") {
+		t.Errorf("detail = %q", res.Detail)
+	}
+}
+
+func TestCheckUploads_CountsAndPrescribesTheCure(t *testing.T) {
+	store := &fakeS3Store{mpus: []fakeMPU{
+		{Key: "big/late.bin", ID: "id-late", Initiated: time.Now().UTC().Add(-2 * time.Hour)},
+		{Key: "big/early.bin", ID: "id-early", Initiated: time.Now().UTC().Add(-26 * time.Hour)},
+	}}
+	srv := fakeS3Server(t, store, false, false)
+	res := checkUploads(context.Background(), sdkClient(srv.URL), "probe-bucket")
+	if res.Status != StatusWarn {
+		t.Fatalf("status = %q, want warn", res.Status)
+	}
+	if !strings.Contains(res.Detail, "2 incomplete multipart upload(s)") || !strings.Contains(res.Detail, "h ago") {
+		t.Errorf("detail = %q, want the count and oldest age", res.Detail)
+	}
+	if !strings.Contains(res.Detail, "1d 2h") { // 26h humanized — the OLDEST, not the newest
+		t.Errorf("detail = %q, want the oldest upload's age (1d 2h)", res.Detail)
+	}
+	if res.Advice == nil || len(res.Advice.Commands) != 1 ||
+		!strings.Contains(res.Advice.Commands[0], "s3b bucket uploads s3://probe-bucket --abort --force") {
+		t.Errorf("advice = %+v, want the cleanup command", res.Advice)
+	}
+	var info struct {
+		Count  int       `json:"count"`
+		Oldest time.Time `json:"oldestInitiated"`
+	}
+	if err := json.Unmarshal(res.Info, &info); err != nil {
+		t.Fatalf("Info not valid JSON: %v", err)
+	}
+	if info.Count != 2 {
+		t.Errorf("Info = %+v, want count 2", info)
+	}
+}
+
+func TestCheckUploads_UnsupportedProviderSkips(t *testing.T) {
+	// A provider without the listing wire skips with its reason — the
+	// doctor never fails a bucket for a capability its provider lacks.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotImplemented)
+		io.WriteString(w, `<Error><Code>NotImplemented</Code><Message>no MPU listing</Message></Error>`)
+	}))
+	t.Cleanup(srv.Close)
+	res := checkUploads(context.Background(), sdkClient(srv.URL), "probe-bucket")
+	if res.Status != StatusSkip {
+		t.Fatalf("status = %q, want skip", res.Status)
+	}
+	if !strings.Contains(res.Detail, "not supported by this provider/endpoint") {
+		t.Errorf("detail = %q, want the unsupported sentence", res.Detail)
 	}
 }

@@ -24,7 +24,7 @@ described here. The same engine backs both.
 
 ## Index
 
-- [s3b bucket](#s3b-bucket) — Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags, lock)
+- [s3b bucket](#s3b-bucket) — Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags, lock, incomplete uploads)
   - [s3b bucket cors](#s3b-bucket-cors) — CORS rules
     - [s3b bucket cors delete](#s3b-bucket-cors-delete) — Remove all CORS rules
     - [s3b bucket cors get](#s3b-bucket-cors-get) — Print CORS rules
@@ -51,6 +51,7 @@ described here. The same engine backs both.
     - [s3b bucket tags delete](#s3b-bucket-tags-delete) — Remove all bucket tags
     - [s3b bucket tags get](#s3b-bucket-tags-get) — Print bucket tags
     - [s3b bucket tags put](#s3b-bucket-tags-put) — Replace the tag set
+  - [s3b bucket uploads](#s3b-bucket-uploads) — List (or abort) incomplete multipart uploads
   - [s3b bucket versioning](#s3b-bucket-versioning) — Enable (on) or suspend (off) bucket versioning
   - [s3b bucket website](#s3b-bucket-website) — Static website hosting
     - [s3b bucket website delete](#s3b-bucket-website-delete) — Disable website hosting
@@ -63,7 +64,7 @@ described here. The same engine backs both.
   - [s3b completion powershell](#s3b-completion-powershell) — Generate the autocompletion script for powershell
   - [s3b completion zsh](#s3b-completion-zsh) — Generate the autocompletion script for zsh
 - [s3b cp](#s3b-cp) — Copy files (local↔S3, S3→S3 server-side)
-- [s3b doctor](#s3b-doctor) — Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, policy, ACL, credential identity; --write adds the write round-trip
+- [s3b doctor](#s3b-doctor) — Diagnose connectivity and storage hygiene: DNS, TCP, TLS, clock skew, auth, policy, ACL, identity, incomplete uploads; --write adds the write round-trip
 - [s3b du](#s3b-du) — Count objects and total size under a prefix or source folder
 - [s3b edit](#s3b-edit) — Edit a file with $VISUAL/$EDITOR and push it back guarded
 - [s3b find](#s3b-find) — Search objects by name, size, age, kind or storage class
@@ -177,7 +178,7 @@ Documentation: https://github.com/MikkoP88/s3-bucket-browser
 
 ## s3b bucket
 
-Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags, lock)
+Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags, lock, incomplete uploads)
 
 ### Options inherited from parent commands
 
@@ -208,6 +209,7 @@ Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags, 
 * [s3b bucket pab](#s3b-bucket-pab)
 * [s3b bucket policy](#s3b-bucket-policy)
 * [s3b bucket tags](#s3b-bucket-tags)
+* [s3b bucket uploads](#s3b-bucket-uploads)
 * [s3b bucket versioning](#s3b-bucket-versioning)
 * [s3b bucket website](#s3b-bucket-website)
 
@@ -1030,6 +1032,54 @@ s3b bucket tags put s3://bucket k=v [k=v ...]
 
 * [s3b bucket tags](#s3b-bucket-tags)
 
+## s3b bucket uploads
+
+List (or abort) incomplete multipart uploads
+
+### Synopsis
+
+Lists the bucket's incomplete multipart uploads — in-progress uploads whose transfer
+died mid-flight (process kill, cancel, link failure). The parts already streamed
+stay on the provider, invisible to object listings, until aborted or expired by a
+lifecycle rule. With --abort the matched uploads are aborted (releasing their parts);
+aborting never touches completed objects. --older-than accepts e.g. 90m, 12h, 7d.
+
+```
+s3b bucket uploads s3://bucket [--abort] [--id ID | --older-than DUR] [--force] [flags]
+```
+
+### Options
+
+```
+      --abort               abort the matched uploads (releases their parts)
+      --force               required with --abort
+      --id string           select one upload by its upload id
+      --older-than string   select uploads initiated at least this long ago (90m, 12h, 7d)
+
+```
+
+### Options inherited from parent commands
+
+```
+      --access-key string      access key override ($S3B_ACCESS_KEY)
+      --endpoint-url string    override the profile endpoint URL
+      --json                   machine-readable JSON output
+      --no-color               disable colors (also honors $NO_COLOR)
+      --path-style             force path-style addressing
+      --profile string         profile name (default: $S3B_PROFILE, then the default profile)
+      --region string          override the region
+      --secret-key string      secret key override ($S3B_SECRET_KEY)
+      --session-token string   session token override
+      --timeout duration       per-request timeout (default 5m0s)
+      --verbose                verbose output
+      --virtual-hosted         force virtual-hosted addressing
+
+```
+
+### SEE ALSO
+
+* [s3b bucket](#s3b-bucket)
+
 ## s3b bucket versioning
 
 Enable (on) or suspend (off) bucket versioning
@@ -1552,13 +1602,15 @@ s3b cp SRC DST [flags]
 
 ## s3b doctor
 
-Diagnose connectivity: DNS, TCP, TLS, clock skew, auth, policy, ACL, credential identity; --write adds the write round-trip
+Diagnose connectivity and storage hygiene: DNS, TCP, TLS, clock skew, auth, policy, ACL, identity, incomplete uploads; --write adds the write round-trip
 
 ### Synopsis
 
 Diagnose connectivity: DNS resolution, TCP, TLS, clock skew, bucket auth, policy, ACL and
-credential identity — all read-only. The write round-trip (it writes and deletes a tiny
-probe object) is opt-in: pass --write to include it.
+credential identity — all read-only — plus storage hygiene: incomplete multipart
+uploads (parts of dead transfers the provider keeps until aborted or expired).
+The write round-trip (it writes and deletes a tiny probe object) is opt-in: pass
+--write to include it.
 
 ```
 s3b doctor [s3://bucket] [flags]

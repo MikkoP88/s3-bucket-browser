@@ -9,6 +9,37 @@ follow [Semantic Versioning](https://semver.org/).
 ### Added
 
 
+- **The orphaned parts of dead transfers become a first-class lifecycle —
+seen, diagnosed, and released** — incomplete multipart uploads were the
+one storage-hygiene surface the app had no leg for: a large transfer
+that dies mid-flight (a killed process, a canceled job, a dropped link)
+leaves its in-progress multipart upload on the provider holding every
+part already streamed — invisible to every object listing, billed and
+kept until aborted or expired — and s3b could neither see nor cure
+them (the prevention face, the lifecycle rule’s abortMpuDays, existed
+alone). The operational face lands as `s3b bucket uploads s3://bucket`:
+a listing (oldest first) with each upload’s key, short id, age and
+initiated timestamp, `--older-than 90m` / `--id ID` filters, `--json`
+for the machines (an array, never null), and `--abort --force`
+releasing the parts — a bare `--abort` refuses as a usage error the
+same way `rb --force` gates, and aborting never touches completed
+objects. The Doctor grows its Storage hygiene group: a tenth check
+counts the bucket’s incomplete uploads, warns with the oldest’s age
+in whole human units (a shared HumanAge helper — “3d 4h”, never
+“26h0m0s”) and prescribes the cure command, as a warn rather than a
+fail so the run stays exit 0; unsupported providers map to the honest
+skip sentence. The engine underneath speaks the raw wire
+(ListMultipartUploads walked through its paginator, AbortMultipartUpload
+by bucket+key+uploadId). The battery walks the whole story live as
+CLI-S3-53, riding the hard kill of CLI-RES-04: a 24 MiB cp slain
+mid-flight through the faultproxy, then stat proving no object ever
+became visible, the listing naming the orphan, --older-than 7d refusing
+to match a seconds-old upload, the bare --abort refused with nothing
+touched, an unknown --id failing honestly, the doctor warning by name
+at exit 0, the abort by id releasing exactly the seeded orphan, and the
+final sweep leaving the bucket’s upload list empty — the residue of
+earlier kills swept with it.
+
 - **Every live data source earns its row, and the terminal's S3 write law
 is found and fixed** — the third coverage audit walked every verb,
 source kind and data scenario on the app's surface against the battery

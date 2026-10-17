@@ -22,7 +22,7 @@ import (
 func bucketCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bucket",
-		Short: "Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags, lock)",
+		Short: "Bucket administration (policy, CORS, lifecycle, encryption, PAB, website, tags, lock, incomplete uploads)",
 	}
 	cmd.AddCommand(
 		bucketInfoCmd(),
@@ -35,6 +35,7 @@ func bucketCmd() *cobra.Command {
 		bucketWebsiteCmd(),
 		bucketTagsCmd(),
 		bucketLockCmd(),
+		bucketUploadsCmd(),
 	)
 	// Every admin verb speaks s3://bucket first (the put verbs take FILE
 	// after) — one walk wires the shared URI completion on every leaf.

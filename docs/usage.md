@@ -971,7 +971,7 @@ the job's own source.
 
 - **Doctor** — Help → Doctor opens a picker of your S3 sources — pick one
   and the guided diagnosis runs: DNS → TCP → TLS → clock → auth →
-  permissions → credential identity → a write round-trip (the clock check
+  permissions → credential identity → storage hygiene → a write round-trip (the clock check
   compares your system time against the
   server's Date header and names the RequestTimeTooSkewed rejection
   before it ever fires), with plain-language remediation and one-click
@@ -980,7 +980,19 @@ the job's own source.
   it is the one check that writes: unticked by default, consented by
   its own checkbox or by `s3b doctor --write` on the terminal, and a
   run without consent reports the check as SKIP with its reason
-  instead of touching the bucket. The round-trip's cleanup is verified,
+  instead of touching the bucket. The storage-hygiene check is the
+  incomplete-upload leg: a large transfer that dies mid-flight (a killed
+  process, a canceled job, a dropped link) leaves its in-progress
+  multipart upload on the provider — parts already streamed, invisible
+  to any object listing, held until aborted or expired — so the check
+  counts them, warns with the oldest's age and prescribes the cure,
+  and the cure is one command: `s3b bucket uploads s3://bucket` lists
+  them oldest-first (`--older-than 90m` narrows, `--id` picks one,
+  `--json` for the machines) and `--abort --force` releases the parts —
+  a bare `--abort` refuses to act, and aborting never touches
+  completed objects. The prevention face is the lifecycle rule's
+  `abortMpuDays`, which expires them automatically. The round-trip’s
+  cleanup is verified,
   not assumed: after the delete the doctor lists the bucket for the probe
   across a settling window — a slow store can land a write after its
   delete — re-issuing the delete while the key still lists, and when a
@@ -1140,6 +1152,9 @@ s3b find s3://b --ext pdf,csv --path docs --larger 1MB
 s3b find vault://media --name '*.md'        # any saved source, same filters
 s3b doctor s3://my-bucket
 s3b doctor s3://my-bucket --write       # include the opt-in write round-trip
+
+s3b bucket uploads s3://b                 # orphaned parts of dead transfers
+s3b bucket uploads s3://b --abort --force # release them (gated behind --force)
 
 s3b versions ls s3://b/docs/report.pdf      # timeline, newest first
 s3b versions undo s3://b/docs/report.pdf --version-id MARKER

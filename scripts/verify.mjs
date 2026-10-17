@@ -2229,6 +2229,56 @@ async function cliResilience() {
     return 'kill left no visible object; retry sha-identical';
   });
 
+  await verify({ id: 'CLI-S3-53', area: 'resilience', action: 'Incomplete multipart uploads: see, gate, abort — the orphaned parts of a dead transfer', ds: 'S3 via faultproxy + MinIO', scenario: 'the hard kill of CLI-RES-04 leaves an incomplete multipart upload holding streamed parts the provider keeps until aborted: the listing names it, --older-than narrows honestly, a bare --abort refuses to act, the forced abort releases the parts, no object ever became visible, and the doctor names the storage-hygiene check', face: 'CLI' }, async () => {
+    if (!proxy) return skip('proxy not running');
+    await fmode({ mode: 'latency', delayMs: 600 });
+    const seedKey = `verify-orphans/${RUNID}-seed.bin`;
+    const src = path.join(ART, 'orphan-24m.bin');
+    await writeFile(src, randomBytes(24 * 1024 * 1024));
+    const child = spawn(CLI_EXE, ['cp', src, `s3://${BUCKET}/${seedKey}`, '--profile', 'verifyfault'], {
+      cwd: ROOT, windowsHide: true, stdio: 'ignore',
+      env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' },
+    });
+    await sleep(2500); // 24 MiB through a 600ms/chunk link is nowhere near done
+    need(child.exitCode === null, 'cp finished before the kill — not a mid-flight probe');
+    child.kill();
+    await new Promise((res) => { child.once('exit', res); if (child.exitCode !== null) res(); });
+    // the orphan is invisible to object listings by definition — stat must miss
+    const st = await cli(['stat', `s3://${BUCKET}/${seedKey}`, '--profile', 'verifys3'], { timeout: 30000 });
+    need(st.code !== 0, 'an incomplete upload became a visible object');
+    // the listing names it (and whatever earlier kills left behind)
+    let r = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--profile', 'verifys3', '--json'], { timeout: 60000 });
+    need(r.code === 0, `uploads listing: ${r.out}${r.err}`);
+    let ups = JSON.parse(r.out);
+    const mine = ups.find((u) => u.key === seedKey);
+    need(mine && mine.uploadId, `listing misses the seeded orphan: ${r.out}`);
+    // the age filter is honest: a seconds-old orphan never matches 7d
+    r = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--older-than', '7d', '--profile', 'verifys3', '--json'], { timeout: 60000 });
+    need(r.code === 0 && JSON.parse(r.out).length === 0, `--older-than 7d matched fresh uploads: ${r.out}`);
+    // the gate: a bare --abort refuses and touches nothing
+    r = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--abort', '--profile', 'verifys3'], { timeout: 60000 });
+    need(r.code === 2, `bare --abort must be a usage refusal, exit ${r.code}: ${r.out}${r.err}`);
+    r = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--profile', 'verifys3', '--json'], { timeout: 60000 });
+    need(JSON.parse(r.out).some((u) => u.key === seedKey), 'the refused --abort still removed something');
+    // an unknown --id is an honest operation failure
+    r = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--id', `no-such-${RUNID}`, '--profile', 'verifys3'], { timeout: 60000 });
+    need(r.code === 1, `unknown --id must exit 1, got ${r.code}: ${r.out}${r.err}`);
+    // the doctor names the storage-hygiene check and keeps exit 0 (warn, not fail)
+    r = await cli(['doctor', `s3://${BUCKET}`, '--profile', 'verifys3'], { timeout: 120000 });
+    need(r.code === 0, `doctor with orphans present: exit ${r.code}: ${r.out}${r.err}`);
+    need(/WARN\s+Incomplete Uploads Check/.test(r.out), `doctor must WARN on incomplete uploads: ${r.out}`);
+    need(/\d+ incomplete multipart upload\(s\)/.test(r.out), `doctor detail must count the uploads: ${r.out}`);
+    // abort by id: exactly the seeded orphan
+    r = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--abort', '--id', mine.uploadId, '--force', '--profile', 'verifys3', '--json'], { timeout: 60000 });
+    need(r.code === 0 && JSON.parse(r.out).aborted === 1, `abort by id: ${r.out}${r.err}`);
+    // the sweep: abort the rest (earlier kills left orphans too), then the bucket is clean
+    r = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--abort', '--force', '--profile', 'verifys3', '--json'], { timeout: 120000 });
+    need(r.code === 0, `sweep abort: ${r.out}${r.err}`);
+    r = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--profile', 'verifys3', '--json'], { timeout: 60000 });
+    need(r.code === 0 && JSON.parse(r.out).length === 0, `orphan residue after the sweep: ${r.out}`);
+    return 'orphan seen, gated, aborted by id and swept; doctor warns by name';
+  });
+
   await verify({ id: 'CLI-RES-05', area: 'resilience', action: 'Transient 5xx storm: absorbed by retries / exhausted honestly', ds: 'S3 via faultproxy', scenario: 'a canned-503 flap: a 2-failure storm must be retried away INSIDE the SDK budget (the put lands byte-identical); a 50-failure storm must exhaust it — non-zero exit, a surfaced error, and NO object half-landed', face: 'CLI' }, async () => {
     if (!proxy) return skip('proxy not running');
     const src = path.join(ART, 'flap.txt');
