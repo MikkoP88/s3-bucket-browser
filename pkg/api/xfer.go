@@ -465,9 +465,39 @@ func sameS3Store(a, b profile.Source) bool {
 // planXfer expands every item into file copies (plus empty dirs and move
 // bookkeeping). Listing walks use the quick context — the same budget
 // DownloadRefs planning uses.
+//
+// The whole plan runs under the per-source operation locks of every
+// remote engine it touches (read sides and a remote destination):
+// engines are not safe for concurrent use — the FTP control channel
+// answers one command at a time — and the planner stats and walks them
+// like any other caller (clipboard items carry keys only, so even a
+// single file is statted). A plan that raced the tree's own listing on
+// one ServerConn once tore the shared textproto reader until the
+// command panicked and the whole app died with it (the GUI's FTPS
+// paste crash, 18 Oct 2026); the locks are the law that keeps every
+// engine command serialized, one sorted lockSrcs call so the hold can
+// never deadlock against the transfer runner's src+dst acquisitions.
 func (a *App) planXfer(ctx context.Context, items []XferItem, localPaths []string, dst xferDestSide) (*xferPlan, error) {
 	p := &xferPlan{}
 	srcCache := map[string]*xferSrcSide{}
+	// Resolve every read side before the first engine call — resolution
+	// may dial a missing engine (no commands on it), never run one — so
+	// the lock set below is complete before anything touches a wire.
+	lockIDs := []string{}
+	if dst.kind == "remote" && dst.lockID != "" {
+		lockIDs = append(lockIDs, dst.lockID)
+	}
+	for _, it := range items {
+		side, err := a.xferSrcSideFor(srcCache, it.Source)
+		if err != nil {
+			return nil, err
+		}
+		if side.kind == "remote" && side.lockID != "" {
+			lockIDs = append(lockIDs, side.lockID)
+		}
+	}
+	unlock := a.lockSrcs(lockIDs...)
+	defer unlock()
 	// nonEmpty is keyed "item|rel": rel's parent chain has content. A
 	// directory graduates to emptyDirs only if nothing ever marks it.
 	nonEmpty := map[string]bool{}

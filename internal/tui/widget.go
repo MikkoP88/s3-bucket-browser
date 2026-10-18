@@ -69,9 +69,6 @@ func (b *Box) Inner() (int, int, int, int) {
 	return b.x + 1, b.y + 1, b.w - 2, b.h - 2
 }
 
-func (b *Box) HandleKey(KeyEvent) bool     { return false }
-func (b *Box) HandleMouse(MouseEvent) bool { return false }
-
 // truncateFits clips s to display width max and appends an ellipsis
 // when clipping happened.
 func truncateFits(s string, max int) string {

@@ -68,6 +68,13 @@ func (a *App) CheckConflicts(items []XferItem, localPaths []string, dest XferDes
 	sctx, scancel := a.quickCtx()
 	defer scancel()
 
+	// The destination probes ride the same per-source law the planner
+	// holds: a remote destination's Stat is an engine command like any
+	// other, serialized on the source's lock (S3 and local probes carry
+	// no lock id and lock nothing).
+	probeUnlock := a.lockSrcs(dst.lockID)
+	defer probeUnlock()
+
 	var out = []ConflictInfo{}
 	var truncated bool
 	for i := range plan.files {

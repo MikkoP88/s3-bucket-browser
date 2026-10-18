@@ -3289,6 +3289,89 @@ async function tuiBattery() {
       await cli(['source', 'remove', 'ftp-tui'], { cfg, nokeyring: true }).catch(() => {});
     }
   });
+
+  await verify({ id: 'TUI-13', area: 'tui', action: 'F7 new-folder key and Space marks: the keyboard grammar of the grid', ds: 'local FS', scenario: 'the two grid verbs no row ever pressed: F7 opens the New folder prompt and the typed name lands as a real directory on disk, Space marks two rows \u2014 the keyboard mark path, the \u2713 gutter TUI-06 only ever walked by mouse \u2014 d answers the MARKED SET with the download prompt (copy and paste are the S3-in-account family TUI-10 already walks), both files land byte-exact in the typed directory, and the descent into the new folder proves the new directory navigable \u2014 :q exits 0', face: 'TUI' }, async () => {
+    const D = 'tui13dir';
+    await rm(path.join(world, D), { recursive: true, force: true }); // idempotent pre-clean
+    await rm(path.join(ART, 'tui13-dl'), { recursive: true, force: true });
+    // own seeds: earlier TUI rows consume the shared lab files (a full
+    // battery ran this row with alpha.txt already gone), so the marks
+    // never lean on residue names
+    const FA = 'tui13-a.txt', FB = 'tui13-b.bin';
+    const PAYA = 'tui13 alpha payload - seeded by TUI-13\r\n';
+    const PAYB = 'tui13 beta payload 0123456789ABCDEF';
+    fs.writeFileSync(path.join(world, FA), PAYA);
+    fs.writeFileSync(path.join(world, FB), PAYB);
+    try {
+      const verdict = await tuiDrive(async ({ send, waitNext, waitForExit }) => {
+        const boot = await waitNext((fr) => tuiHas(fr, 'tui13-a.txt'), 'the boot listing carrying the seed');
+        need((boot.lines[0] || '').includes('lab'), 'the boot crumb must name the lab: ' + (boot.lines[0] || ''));
+        // F7 - the new-folder key (TUI-04 walks the :mkdir verb; the KEY
+        // path opens the prompt modal and the typed name commits on Enter)
+        send('\x1b[18~');
+        await waitNext((fr) => tuiHas(fr, 'New folder'), 'the F7 prompt');
+        send(D + '\r');
+        const mkf = await waitNext((fr) => (fr.lines || []).some((l) => new RegExp('\u25b8 ' + D + '( |$)').test(l)), 'the created folder row');
+        need(fs.existsSync(path.join(world, D)), 'F7 must create the directory on disk');
+        // Space - the keyboard mark path. A lone press selects without
+        // activating (fresh row indexes cannot re-fire lastClk), Space
+        // marks the selected row and advances; the settled-face law:
+        // coordinates come off the frame the predicate itself matched
+        const fileRow = (fr, name) => {
+          const ls = fr.lines || [];
+          for (let y = 1; y < ls.length; y++) {
+            const m = (ls[y] || '').match(new RegExp(' ' + name + '( |$)'));
+            if (m) return { x: m.index, y };
+          }
+          return null;
+        };
+        const PA = fileRow(mkf, FA), PB = fileRow(mkf, FB);
+        need(PA && PB, 'the mark targets must carry coordinates');
+        send('\x1b[<0;' + (PA.x + 1) + ';' + (PA.y + 1) + 'M'); // select the first seed
+        send(' ');
+        send('\x1b[<0;' + (PB.x + 1) + ';' + (PB.y + 1) + 'M'); // select the second seed - a different index, so the 450ms window cannot activate
+        send(' ');
+        await waitNext((fr) => (fr.lines || []).filter((l) => l.includes('\u2713')).length >= 2, 'two marked rows in the gutter');
+        // d - the marked-set download: the marks drive the verb over any
+        // engine (c/v are the S3-in-account family TUI-10 walks), so the
+        // local lab answers honestly and both files must land byte-exact
+        const dl = path.join(ART, 'tui13-dl');
+        send('d');
+        await waitNext((fr) => tuiHas(fr, 'Download'), 'the marked-set download prompt');
+        send('\x15');
+        send(dl + '\r');
+        // the modal-close redraw is our own action - it carries the
+        // folder row before the settle reload can flush past a later wait
+        const nav = await waitNext((fr) => (fr.lines || []).some((l) => new RegExp('\u25b8 ' + D + '( |$)').test(l)), 'the folder row for the descent');
+        await waitFor(() => fs.existsSync(path.join(dl, FA)) && fs.existsSync(path.join(dl, FB)), 15000, 'both marked files downloaded to disk');
+        let drow = null;
+        for (let y = 0; y < (nav.lines || []).length; y++) {
+          const m = (nav.lines[y] || '').match(new RegExp('\u25b8 ' + D + '( |$)'));
+          if (m) { drow = { x: m.index, y }; break; }
+        }
+        need(drow, 'the folder row must carry coordinates on the nav frame');
+        send('\x1b[<0;' + (drow.x + 1) + ';' + (drow.y + 1) + 'M'); // select the new folder
+        send('\r'); // Enter descends the selected folder
+        await waitNext((fr) => (fr.lines[0] || '').includes(D), 'the descent crumb');
+        send(':q\r');
+        const code = await waitForExit();
+        need(code === 0, ':q must exit 0, got ' + code);
+        return 'F7 lands the directory, Space marks the set, the marked-set download answers both files';
+      });
+      const fa = await readFile(path.join(world, FA));
+      const fb = await readFile(path.join(ART, 'tui13-dl', FA));
+      need(fa.equals(fb), FA + ' bytes differ after the marked-set download');
+      const ga = await readFile(path.join(world, FB));
+      const gb = await readFile(path.join(ART, 'tui13-dl', FB));
+      need(ga.equals(gb), FB + ' bytes differ after the marked-set download');
+      return verdict + ' \u2014 both files byte-exact in the typed directory';
+    } finally {
+      await rm(path.join(world, D), { recursive: true, force: true });
+      await rm(path.join(ART, 'tui13-dl'), { recursive: true, force: true });
+      await rm(path.join(world, FA), { force: true });
+      await rm(path.join(world, FB), { force: true });
+    }
+  });
 }
 
 // ============================================================
@@ -3860,6 +3943,159 @@ async function guiBattery() {
     });
   } else {
     await verify({ id: 'GUI-03', area: 'sources', action: 'Add FTP source (GUI)', ds: 'FTP', scenario: 'FTP container not running', face: 'GUI' }, () => skip('FTP :2121 not reachable'));
+  }
+  // The TLS twins of the FTP rows: no GUI row ever seated an FTPS or
+  // WebDAVS source live - the wire x face matrix gap this round closes.
+  const FTPS = 'verify-ftps';
+  if (await portOpen(FTPS_PORT)) {
+    await verify({ id: 'GUI-106', area: 'sources', action: 'FTPS source seated live: the editor Test over TLS and a GUI transfer off the TLS wire', ds: 'FTPS', scenario: 'the TLS twin of the FTP rows: a payload seeds through the CLI face onto the fixture, the source editor dials ftps \u2014 the Test verb proves the DRAFT connection over explicit TLS before anything is saved, Save seats the tree row and the saved source LISTS the seeded row \u2014 the GUI copies that row into S3 (select, Ctrl+C, paste into verify-gui/), the S3 face pulls the pasted object back and the bytes compare exact, and RemoveSource forgets exactly the GUI store entry while the engine data survives through a CLI twin dial', face: 'GUI' }, async () => {
+      await call('RemoveSource', FTPS).catch(() => {}); // idempotent pre-clean (GUI store)
+      await cli(['source', 'remove', 'ftps-seed106']).catch(() => {}); // CLI store
+      const F = 'gui106-' + RUNID + '.txt';
+      const PAY = 'ftps gui payload ' + RUNID + '\r\nsecond line\n';
+      const seedf = path.join(ART, 'gui106-seed.txt');
+      await writeFile(seedf, PAY);
+      // leg 1: seed through the CLI face - a TRANSIENT source; the data
+      // persists on the fixture after the store entry is removed
+      let r = await cli(['source', 'add', 'ftps-seed106', '--type', 'ftps', '--host', '127.0.0.1', '--port', String(FTPS_PORT), '--username', E2E_USER, '--password', E2E_PASS]);
+      need(r.code === 0, 'ftps seed add: ' + r.out + r.err);
+      r = await cli(['cp', seedf, 'ftps-seed106://' + F]);
+      need(r.code === 0, 'ftps seed cp: ' + r.out + r.err);
+      await cli(['source', 'remove', 'ftps-seed106']);
+      // leg 2: the editor walk - the Test verb dials the DRAFT over TLS
+      await page.locator('#sidebar-head .side-add').click();
+      await waitFor(() => page.locator('#modal-root .modal select').count().then((n) => n > 0), 5000, 'source editor');
+      await page.locator('#modal-root .modal select').selectOption('ftps');
+      const inputs = page.locator('#modal-root .modal input.input');
+      await waitFor(() => inputs.count().then((n) => n >= 6), 5000, 'ftps fields');
+      await inputs.nth(0).fill(FTPS);
+      await inputs.nth(1).fill('127.0.0.1');
+      await inputs.nth(2).fill(String(FTPS_PORT));
+      await inputs.nth(3).fill(E2E_USER);
+      await inputs.nth(4).fill(E2E_PASS);
+      await inputs.nth(5).fill('/');
+      await clickFooter(/^test$/i);
+      await waitFor(async () => /\u2705|\u274c/.test(await modalText()), 20000, 'ftps test');
+      need((await modalText()).includes('\u2705'), 'the ftps draft test must answer \u2705 over TLS');
+      await shot('106-ftps-test');
+      await clickFooter(/^save$/i);
+      await waitFor(async () => (await txt('#breadcrumb')).includes(FTPS), 15000, 'the ftps root');
+      // leg 3: the saved source lists the seeded row through this face
+      await treeOpen(FTPS);
+      await waitFor(async () => {
+        await refresh();
+        return (await rowKeys()).some((k) => k.includes(F));
+      }, 20000, 'the seeded ftps row');
+      await shot('106-ftps-listed');
+      // leg 4: the GUI transfer off the TLS wire - copy the row into S3
+      await clickRow(F);
+      await page.keyboard.press('Control+c');
+      await sleep(600); // the hidden Explorer staging job also starts
+      await treeOpen(SRCNAME);
+      await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+      await enterFolder('verify-gui');
+      await evalPage(() => { document.getElementById('filter')?.blur(); }); // Ctrl+V is swallowed while focus sits in the filter input
+      await page.keyboard.press('Control+v');
+      await waitFor(async () => {
+        await refresh();
+        return (await rowKeys()).some((k) => k.includes(F));
+      }, 30000, 'the pasted row');
+      await shot('106-ftps-pasted');
+      // leg 5: the byte oracle through the S3 face
+      const outf = path.join(ART, 'gui106-out.txt');
+      await rm(outf, { force: true });
+      r = await s3(['cp', 's3://' + BUCKET + '/verify-gui/' + F, outf]);
+      need(r.code === 0, 's3 pull: ' + r.out + r.err);
+      need((await readFile(outf)).equals(Buffer.from(PAY, 'utf8')), 'the FTPS bytes differ after the GUI copy');
+      // leg 6: the store forgets, the data survives - the CLI twin witnesses
+      const before = (await call('ListSources')) || [];
+      need(before.some((s) => s.name === FTPS), 'the source must be in the GUI store to remove');
+      await call('RemoveSource', FTPS);
+      const after = (await call('ListSources')) || [];
+      need(!after.some((s) => s.name === FTPS), 'RemoveSource left the entry in the store');
+      r = await cli(['source', 'add', 'ftps-w106', '--type', 'ftps', '--host', '127.0.0.1', '--port', String(FTPS_PORT), '--username', E2E_USER, '--password', E2E_PASS]);
+      need(r.code === 0, 'witness add: ' + r.out + r.err);
+      const wl = await cli(['ls', 'ftps-w106://', '--json']);
+      need(wl.code === 0 && wl.out.includes(F), 'engine data lost with the source: ' + (wl.out || '').slice(0, 120) + wl.err);
+      await cli(['rm', 'ftps-w106://' + F, '--force']).catch(() => {});
+      await cli(['source', 'remove', 'ftps-w106']).catch(() => {});
+      return 'editor Test \u2705 over TLS, the transfer byte-exact off the TLS wire, the store entry removed with the data surviving';
+    });
+  } else {
+    await verify({ id: 'GUI-106', area: 'sources', action: 'FTPS source seated live (GUI)', ds: 'FTPS', scenario: 'vsftpd TLS fixture not running', face: 'GUI' }, () => skip('FTPS :2122 not reachable'));
+  }
+
+  const WVS = 'verify-webdavs';
+  if (await portOpen(WEBDAVS_PORT)) {
+    await verify({ id: 'GUI-107', area: 'sources', action: 'WebDAVS source seated live: the CRLF law through the GUI face', ds: 'WebDAVS', scenario: 'the HTTPS twin: a payload carrying CRLF seeds through the CLI face onto the fixture, the source editor dials webdavs \u2014 the Test verb proves the TLS draft before anything is saved, Save seats the tree row and the saved source LISTS the seeded row \u2014 the GUI copies that row into S3, and the S3 pull-back compares byte-exact INCLUDING the line endings (the law a WebDAV round-trip must hold), and RemoveSource forgets the GUI store entry with the engine data surviving through a twin dial', face: 'GUI' }, async () => {
+      await call('RemoveSource', WVS).catch(() => {}); // idempotent pre-clean (GUI store)
+      await cli(['source', 'remove', 'wvs-seed107']).catch(() => {}); // CLI store
+      const F = 'gui107-' + RUNID + '.txt';
+      const PAY = 'webdavs gui line one\r\nwebdavs gui line two\n';
+      const seedf = path.join(ART, 'gui107-seed.txt');
+      await writeFile(seedf, PAY);
+      let r = await cli(['source', 'add', 'wvs-seed107', 'webdavs://' + E2E_USER + ':' + E2E_PASS + '@127.0.0.1:' + WEBDAVS_PORT + '/']);
+      need(r.code === 0, 'webdavs seed add: ' + r.out + r.err);
+      r = await cli(['cp', seedf, 'wvs-seed107://' + F]);
+      need(r.code === 0, 'webdavs seed cp: ' + r.out + r.err);
+      await cli(['source', 'remove', 'wvs-seed107']);
+      // the editor walk
+      await page.locator('#sidebar-head .side-add').click();
+      await waitFor(() => page.locator('#modal-root .modal select').count().then((n) => n > 0), 5000, 'source editor');
+      await page.locator('#modal-root .modal select').selectOption('webdavs');
+      const inputs = page.locator('#modal-root .modal input.input');
+      await waitFor(() => inputs.count().then((n) => n >= 6), 5000, 'webdavs fields');
+      await inputs.nth(0).fill(WVS);
+      await inputs.nth(1).fill('127.0.0.1');
+      await inputs.nth(2).fill(String(WEBDAVS_PORT));
+      await inputs.nth(3).fill(E2E_USER);
+      await inputs.nth(4).fill(E2E_PASS);
+      await inputs.nth(5).fill('/');
+      await clickFooter(/^test$/i);
+      await waitFor(async () => /\u2705|\u274c/.test(await modalText()), 20000, 'webdavs test');
+      need((await modalText()).includes('\u2705'), 'the webdavs draft test must answer \u2705 over TLS');
+      await shot('107-webdavs-test');
+      await clickFooter(/^save$/i);
+      await waitFor(async () => (await txt('#breadcrumb')).includes(WVS), 15000, 'the webdavs root');
+      await treeOpen(WVS);
+      await waitFor(async () => {
+        await refresh();
+        return (await rowKeys()).some((k) => k.includes(F));
+      }, 20000, 'the seeded webdavs row');
+      await shot('107-webdavs-listed');
+      await clickRow(F);
+      await page.keyboard.press('Control+c');
+      await sleep(600);
+      await treeOpen(SRCNAME);
+      await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+      await enterFolder('verify-gui');
+      await evalPage(() => { document.getElementById('filter')?.blur(); });
+      await page.keyboard.press('Control+v');
+      await waitFor(async () => {
+        await refresh();
+        return (await rowKeys()).some((k) => k.includes(F));
+      }, 30000, 'the pasted row');
+      await shot('107-webdavs-pasted');
+      const outf = path.join(ART, 'gui107-out.txt');
+      await rm(outf, { force: true });
+      r = await s3(['cp', 's3://' + BUCKET + '/verify-gui/' + F, outf]);
+      need(r.code === 0, 's3 pull: ' + r.out + r.err);
+      need((await readFile(outf)).equals(Buffer.from(PAY, 'utf8')), 'the WebDAVS bytes differ after the GUI copy (CRLF lost?)');
+      const before = (await call('ListSources')) || [];
+      need(before.some((s) => s.name === WVS), 'the source must be in the GUI store to remove');
+      await call('RemoveSource', WVS);
+      const after = (await call('ListSources')) || [];
+      need(!after.some((s) => s.name === WVS), 'RemoveSource left the entry in the store');
+      r = await cli(['source', 'add', 'wvs-w107', 'webdavs://' + E2E_USER + ':' + E2E_PASS + '@127.0.0.1:' + WEBDAVS_PORT + '/']);
+      need(r.code === 0, 'witness add: ' + r.out + r.err);
+      const wl = await cli(['ls', 'wvs-w107://', '--json']);
+      need(wl.code === 0 && wl.out.includes(F), 'engine data lost with the source: ' + (wl.out || '').slice(0, 120) + wl.err);
+      await cli(['rm', 'wvs-w107://' + F, '--force']).catch(() => {});
+      await cli(['source', 'remove', 'wvs-w107']).catch(() => {});
+      return 'editor Test \u2705 over TLS, the CRLF law held through the GUI copy, the store entry removed with the data surviving';
+    });
+  } else {
+    await verify({ id: 'GUI-107', area: 'sources', action: 'WebDAVS source seated live (GUI)', ds: 'WebDAVS', scenario: 'rclone webdav TLS fixture not running', face: 'GUI' }, () => skip('WebDAVS :7443 not reachable'));
   }
 
   await verify({ id: 'GUI-06', area: 'objects', action: 'Single object deletion (GUI)', ds: 'S3 (MinIO)', scenario: 'CLI-seeded object; row selected; Del → Delete Window (marker default) → confirm; row gone; CLI timeline shows the marker', face: 'GUI' }, async () => {

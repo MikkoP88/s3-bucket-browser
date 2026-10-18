@@ -56,6 +56,20 @@ type FS interface {
 // reset or an EOF and redial.
 var ErrCmdDeadline = errors.New("remotefs: command deadline exceeded")
 
+// ErrCmdPanic marks an engine command that panicked inside its bound
+// runner — a torn reader raced by an unsynchronized caller, a hostile
+// reply, any unknown unknown in the engine stack. Whatever broke, the
+// connection it broke on cannot be trusted afterwards, so every
+// connection-health classifier treats the verdict exactly like a reset
+// (redial, never reuse the channel) — and the recover in bound is what
+// turns it from a process-killing crash into that honest error: the
+// runner is a bare goroutine, and an unrecovered panic there takes the
+// whole app down (the GUI's FTPS paste crash of 18 Oct 2026 — two
+// command goroutines on one FTP control connection tearing the shared
+// textproto reader until ReadSlice panicked — is the shape this net
+// catches even if a caller ever slips past the api layer's locks).
+var ErrCmdPanic = errors.New("remotefs: command panicked")
+
 // forceBreaker is the surface the deadline machinery needs from an
 // engine's connection: something Quit can tear down hard. *ftp.ServerConn
 // carries Quit itself; the SSH engines adapt their transport.
@@ -80,6 +94,17 @@ func bound[T any](ctx context.Context, c forceBreaker, d time.Duration, fn func(
 	}
 	ch := make(chan res, 1)
 	go func() {
+		// The panic net: fn runs on this bare goroutine, where an
+		// unrecovered panic would kill the whole process. Converted to
+		// ErrCmdPanic it reaches the caller as an error the health
+		// classifiers answer with a redial — the honest downgrade for a
+		// channel whose reader state just tore.
+		defer func() {
+			if r := recover(); r != nil {
+				var zero T
+				ch <- res{v: zero, err: fmt.Errorf("%w: %v", ErrCmdPanic, r)}
+			}
+		}()
 		v, err := fn()
 		ch <- res{v: v, err: err}
 	}()

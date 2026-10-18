@@ -42,7 +42,7 @@ const (
 // Color is one palette entry. The zero value is the terminal default.
 type Color struct {
 	Kind ColorKind
-	V    uint8 // 256-index, or one channel of RGB (see RGB())
+	V    uint8 // palette index when Kind == Color256
 	R    uint8
 	G    uint8
 	B    uint8

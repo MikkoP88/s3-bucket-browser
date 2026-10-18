@@ -135,6 +135,12 @@ func isConnErr(err error) bool {
 	if errors.Is(err, errFTPDeadline) {
 		return true
 	}
+	// A command that panicked tore this connection's reader state —
+	// the channel is untrustworthy, so the verdict is the same as a
+	// reset: redial.
+	if errors.Is(err, ErrCmdPanic) {
+		return true
+	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}

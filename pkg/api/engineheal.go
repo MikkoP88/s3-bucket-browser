@@ -42,6 +42,11 @@ func connDead(err error) bool {
 	if errors.Is(err, remotefs.ErrCmdDeadline) {
 		return true
 	}
+	// A command that panicked inside its bound runner tore that
+	// connection's reader state — dead like a reset, never reused.
+	if errors.Is(err, remotefs.ErrCmdPanic) {
+		return true
+	}
 	// The ssh/sftp stack (and some ftp paths) raise plain sentinel strings
 	// that carry no type to errors.Is against.
 	s := strings.ToLower(err.Error())
