@@ -74,16 +74,6 @@ func (a *App) AcceptLicense(face string) (LicenseState, error) {
 	return licenseState(), nil
 }
 
-// DeclineLicense revokes any recorded acceptance — the next launch (or
-// reload) walks the gate again.
-func (a *App) DeclineLicense() (LicenseState, error) {
-	if err := appsettings.SaveLicense(appsettings.LicenseAcceptance{}); err != nil {
-		return licenseState(), err
-	}
-	a.emitLog(LogWarn, "license", "license acceptance revoked")
-	return licenseState(), nil
-}
-
 // whoami names the account that accepted — best effort, never a failure.
 func whoami() string {
 	if u, err := user.Current(); err == nil && u.Username != "" {

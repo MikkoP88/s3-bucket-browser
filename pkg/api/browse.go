@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"sort"
 	"strings"
@@ -195,27 +196,8 @@ func (a *App) statObjectC(c *s3client.Client, bucket, key string) (ObjectStat, e
 	if head.ServerSideEncryption != "" {
 		st.SSE = string(head.ServerSideEncryption)
 	}
-	for k, v := range head.Metadata {
-		st.Metadata[k] = v
-	}
+	maps.Copy(st.Metadata, head.Metadata)
 	return st, nil
-}
-
-// CreateBucket makes a new bucket (region defaults to the profile region).
-func (a *App) CreateBucket(name, region string) error {
-	c, err := a.client("")
-	if err != nil {
-		return err
-	}
-	ctx, cancel := a.quickCtx()
-	defer cancel()
-	if err := bucketops.Create(ctx, c.S3, name, firstNonEmpty(region, c.Region), false); err != nil {
-		a.emitLogSrc(LogError, "admin", name, fmt.Sprintf("creating bucket failed: %v", err))
-		return err
-	}
-	a.emitLogSrc(LogInfo, "admin", name, "bucket created")
-	a.emit(EventS3Changed, map[string]string{"bucket": name})
-	return nil
 }
 
 // CreateBucketInSource makes a new bucket through a NAMED s3 source's

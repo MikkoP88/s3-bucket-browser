@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -335,8 +336,17 @@ func parseS3URI(s string) (s3URI, error) {
 }
 
 // printJSON emits v as indented JSON (compact would also do; indented aids
-// humans using it in jq pipelines either way).
+// humans using it in jq pipelines either way). The --json law: an array or
+// object, never null — a nil slice or map (the engines' "nothing set"
+// answers) coerces to its empty shape so every list verb answers [] not null.
 func printJSON(v any) error {
+	if rv := reflect.ValueOf(v); (rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map) && rv.IsNil() {
+		if rv.Kind() == reflect.Slice {
+			v = []any{}
+		} else {
+			v = map[string]any{}
+		}
+	}
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)

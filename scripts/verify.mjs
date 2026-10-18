@@ -3372,6 +3372,136 @@ async function tuiBattery() {
       await rm(path.join(world, FB), { force: true });
     }
   });
+
+  await verify({ id: 'TUI-14', area: 'tui', action: 'SFTP face end to end: rail dial, honest properties, F2 rename write, byte-exact download', ds: 'SFTP (live)', scenario: 'the terminal face seats a third real wire: sftp-tui sorts AFTER the local lab so the boot stays lab-seated and the single rail dial onto the live SFTP fixture is a true seat change, the descent into the seeded tree lists the binary, Alt+Enter answers Properties with the SFTP engine honest rows (never a faked ETag), F2 renames through the prompt and the rename is a WRITE the CLI twin proves (new name byte-exact, old name gone), d downloads byte-identical, and :q exits 0', face: 'TUI' }, async () => {
+    if (!(await portOpen(SFTP_PORT))) return skip('SFTP :2222 not reachable');
+    const U = 'tui14-' + RUNID;
+    const RN = 'tui14-rn-' + RUNID + '.bin';
+    const BOOT = 'tui14-boot-' + RUNID + '.txt'; // own seed: shared lab files are consumed by earlier rows
+    await cli(['source', 'remove', 'sftp-tui'], { cfg, nokeyring: true }).catch(() => {}); // idempotent pre-clean
+    let r = await cli(['source', 'add', 'sftp-tui', 'sftp://' + E2E_USER + ':' + E2E_PASS + '@127.0.0.1:' + SFTP_PORT + '/upload'], { cfg, nokeyring: true });
+    need(r.code === 0, 'sftp-tui add: ' + r.out + r.err);
+    const seed = path.join(ART, 'tui14-seed.bin');
+    const payload = randomBytes(4096);
+    await writeFile(seed, payload);
+    r = await cli(['cp', seed, 'sftp-tui://' + U + '/seed.bin'], { cfg, nokeyring: true, timeout: 60000 });
+    need(r.code === 0, 'sftp seed cp: ' + r.out + r.err);
+    await rm(path.join(world, BOOT), { force: true });
+    fs.writeFileSync(path.join(world, BOOT), 'tui14 boot marker\r\n');
+    const dl = path.join(ART, 'tui14-dl');
+    await rm(dl, { recursive: true, force: true });
+    await mkdir(dl, { recursive: true });
+    try {
+      const verdict = await tuiDrive(async ({ send, waitNext, waitForExit }) => {
+        // the store sorts sources by name and sftp-tui sorts AFTER the
+        // local lab, so the boot seat stays the lab — the dial under test
+        // is one real seat change with fresh frames (TUI-12 needed its
+        // away-and-back round trip only because ftp-tui sorted FIRST)
+        const boot = await waitNext((fr) => tuiHas(fr, 'tui14-boot'), 'the boot listing carrying the own seed', 15000);
+        need((boot.lines[0] || '').includes('lab'), 'the boot crumb must name the sorted-first lab: ' + (boot.lines[0] || ''));
+        const railRow = (frame, name) => {
+          const ls = frame.lines || [];
+          for (let y = 1; y < ls.length; y++) { // line 0 is the header crumb
+            const m = ls[y].match(new RegExp(' ' + name + '( |$)'));
+            if (m) return { x: m.index + 1, y };
+          }
+          return null;
+        };
+        const sftp = railRow(boot, 'sftp-tui');
+        need(sftp, 'the sftp-tui rail row must be on the boot frame');
+        send(':sources\r'); // the verb seats the rail pane
+        await sleep(150);
+        send('\t'); // Tab hands the pane back
+        await sleep(60);
+        // the 450ms activation law: both presses in one chunk
+        const clk = (c) => send('\x1b[<0;' + (c.x + 1) + ';' + (c.y + 1) + 'M\x1b[<0;' + (c.x + 1) + ';' + (c.y + 1) + 'M');
+        clk(sftp); // the dial under test — onto the live SFTP wire
+        const root = await waitNext((fr) => (fr.lines || []).some((l) => l.includes(U)), 'the dialed SFTP root', 15000);
+        need((root.lines[0] || '').includes('sftp-tui'), 'the crumb must name the seated source: ' + (root.lines[0] || ''));
+        let frow = null;
+        const want = new RegExp('▸ ' + U + '( |$)');
+        for (let y = 0; y < (root.lines || []).length; y++) {
+          const m = (root.lines[y] || '').match(want);
+          if (m) { frow = { x: m.index, y }; break; }
+        }
+        need(frow, 'the tui14 folder row must carry coordinates');
+        send('\x1b[<0;' + (frow.x + 1) + ';' + (frow.y + 1) + 'M'); // select it
+        send('\r'); // Enter descends the selected folder
+        const dirf = await waitNext((fr) => tuiHas(fr, 'seed.bin'), 'the seeded file listing');
+        const fileRow = (fr, name) => {
+          const ls = fr.lines || [];
+          for (let y = 1; y < ls.length; y++) {
+            const m = (ls[y] || '').match(new RegExp(' ' + name + '( |$)'));
+            if (m) return { x: m.index, y };
+          }
+          return null;
+        };
+        const srow = fileRow(dirf, 'seed.bin');
+        need(srow, 'the seed row must carry coordinates');
+        // the 450ms law (TUI-12's find): the Table's lastClk survives the
+        // re-list keyed on ROW INDEX, and the descent press landed on this
+        // same index — a press inside the window double-activates the row.
+        // Sleep past the window so this press only selects.
+        await sleep(500);
+        send('\x1b[<0;' + (srow.x + 1) + ';' + (srow.y + 1) + 'M'); // select it
+        send('\x1b\r'); // Alt+Enter — properties of the seated row
+        const props = await waitNext((fr) => tuiHas(fr, 'Properties'), 'the properties modal');
+        need(tuiHas(props, 'seed.bin') && tuiHas(props, 'Modified') && tuiHas(props, 'Where'), 'properties must carry the SFTP file rows');
+        need(!tuiHas(props, 'ETag'), 'the SFTP engine must never fake an ETag row');
+        send('\x1b');
+        await sleep(60);
+        await waitNext((fr) => !tuiHas(fr, 'Properties'), 'the modal closed');
+        // F2 — the rename WRITE verb over the engine-agnostic fs face
+        send('\x1bOQ');
+        await waitNext((fr) => tuiHas(fr, 'Rename'), 'the F2 rename prompt');
+        send('\x15'); // kill the prefilled current name
+        send(RN + '\r');
+        // the runVerb flash "renamed to RN" draws BEFORE the re-list — a wait
+        // on RN alone would satisfy on the flash frame riding the OLD listing,
+        // so the predicate demands the re-listed frame itself: the new name
+        // seated AND the old name gone, same frame (a failed engine rename
+        // starves here honestly — the flash names only the success)
+        const rnf = await waitNext((fr) => (fr.lines[0] || '').includes(U) && tuiHas(fr, RN) && !tuiHas(fr, 'seed.bin'), 'the renamed listing — the new name seated, the old name gone');
+        const erow = fileRow(rnf, RN);
+        need(erow, 'the renamed row must carry coordinates');
+        // the same 450ms law, and this press paid it on 18 Oct 2026: the
+        // seed select and the renamed row share the listing's one row
+        // index, and the props/rename legs between them are fast enough on
+        // localhost SFTP to sit INSIDE the window — the press
+        // double-activated the renamed row into Properties and the d fell
+        // into the modal (the download wait starved on a full-screen
+        // Properties takeover). Sleep past the window so the press only
+        // selects.
+        await sleep(500);
+        send('\x1b[<0;' + (erow.x + 1) + ';' + (erow.y + 1) + 'M'); // select it
+        send('d');
+        await waitNext((fr) => tuiHas(fr, 'Download'), 'the download prompt');
+        send('\x15');
+        send(dl + '\r');
+        await waitFor(() => fs.existsSync(path.join(dl, RN)), 15000, 'the downloaded file on disk');
+        const got = await readFile(path.join(dl, RN));
+        need(got.equals(payload), 'the SFTP download round trip must preserve bytes');
+        send(':q\r');
+        const code = await waitForExit();
+        need(code === 0, ':q must exit 0, got ' + code);
+        return 'live SFTP dial, properties without a faked ETag, F2 rename write, byte-exact download';
+      });
+      // the CLI twin proves the rename landed on the wire: the new name
+      // reads back byte-exact and the old name is gone
+      const twin = path.join(ART, 'tui14-back.bin');
+      r = await cli(['cp', 'sftp-tui://' + U + '/' + RN, twin], { cfg, nokeyring: true, timeout: 60000 });
+      need(r.code === 0, 'renamed cp back: ' + r.out + r.err);
+      const back = await readFile(twin);
+      need(back.equals(payload), 'the renamed SFTP file must carry the seed bytes');
+      r = await cli(['cp', 'sftp-tui://' + U + '/seed.bin', twin + '.old'], { cfg, nokeyring: true, timeout: 60000 });
+      need(r.code !== 0, 'the old name must be gone after the rename');
+      return verdict + ' — rename CLI-proven (new name byte-exact, old name gone)';
+    } finally {
+      await cli(['rm', 'sftp-tui://' + U, '-r', '--force'], { cfg, nokeyring: true }).catch(() => {});
+      await cli(['source', 'remove', 'sftp-tui'], { cfg, nokeyring: true }).catch(() => {});
+      await rm(path.join(world, BOOT), { force: true });
+    }
+  });
 }
 
 // ============================================================
@@ -5438,6 +5568,185 @@ async function guiBattery() {
     await s3(['rb', `s3://${AB}`, '--force']);
     await removeGuiSource(AB);
     return 'website documents saved from the panel, CLI-verified, disabled';
+  });
+
+  await verify({ id: 'GUI-108', area: 'admin', action: 'Admin panel: Security tab (public access block) round-trip', ds: 'S3 (MinIO)', scenario: 'the four block-public-access switches ticked in the Security tab save through the panel and the CLI reads every flag back true; unticked and saved they read back false — the panel is the writer, the CLI the oracle, both directions', face: 'GUI' }, async () => {
+    const AB = BUCKET + '-gpab';
+    let r = await s3(['mb', 's3://' + AB]);
+    need(r.code === 0, 'mb: ' + r.out + r.err);
+    await addGuiBucketSource(AB);
+    await treeMenu(AB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    const clickBtn = (re) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root button'))
+        .find((x) => new RegExp(src, 'i').test((x.textContent || '').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    }, re);
+    await page.locator('#modal-root .tab[data-tab="Security"]').click();
+    // same settle + provider-gap read as GUI-35/36: a pane that drew as an
+    // error banner has no switches to drive
+    await waitFor(async () => {
+      const t = await evalPage(() => document.querySelector('#modal-root .tabbody')?.textContent || '');
+      return t && !/Loading/.test(t);
+    }, 15000, 'the Security pane to draw');
+    const paneErr = await evalPage(() => document.querySelector('#modal-root .tabbody .banner.warn')?.textContent || '');
+    if (/not supported/i.test(paneErr)) {
+      const put = await s3(['bucket', 'pab', 'put', 's3://' + AB, '--all']);
+      await closeModal();
+      await s3(['rb', 's3://' + AB, '--force']);
+      await removeGuiSource(AB);
+      need(put.code !== 0, 'pab put unexpectedly succeeded where the panel said unsupported: ' + put.out);
+      return skip('provider refused the public access block API (recorded gap): pane "' + paneErr.trim().slice(0, 80) + '"; CLI put: ' + (put.out + put.err).trim().slice(0, 80));
+    }
+    need(!paneErr, 'the Security pane opened with an error: ' + paneErr.trim().slice(0, 160));
+    // the tab binds at Save-click time — direct checked writes need no events
+    const tick = (on) => evalPage((v) => {
+      const boxes = Array.from(document.querySelectorAll('#modal-root .pab input[type=checkbox]'));
+      for (const b of boxes) b.checked = v;
+      return boxes.length;
+    }, on);
+    need((await tick(true)) === 4, 'the Security tab did not expose its four PAB switches');
+    await waitFor(() => clickBtn('^save$'), 5000, 'PAB Save (all on)');
+    const readPab = async (want) => {
+      const g = await s3(['bucket', 'pab', 'get', 's3://' + AB, '--json']);
+      try {
+        const j = JSON.parse(g.out);
+        if (j && ['blockPublicAcls', 'ignorePublicAcls', 'blockPublicPolicy', 'restrictPublicBuckets'].every((k) => j[k] === want)) return j;
+      } catch (e) { /* poll */ }
+      return null;
+    };
+    let p = null;
+    for (let i = 0; i < 40 && !p; i++) { p = await readPab(true); if (!p) await sleep(500); }
+    if (!p) {
+      // out-of-band CLI put decides provider gap vs GUI bug
+      const put = await s3(['bucket', 'pab', 'put', 's3://' + AB, '--all']);
+      await closeModal();
+      await s3(['rb', 's3://' + AB, '--force']);
+      await removeGuiSource(AB);
+      if (put.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(put.out + put.err)) {
+        return skip('provider refused public access block on this build (recorded gap): ' + (put.out + put.err).trim().slice(0, 120));
+      }
+      need(false, 'the panel PAB Save did not land (direct CLI put exited ' + put.code + ')');
+    }
+    // the false direction: untick all four, save, CLI reads them back false
+    await tick(false);
+    await waitFor(() => clickBtn('^save$'), 5000, 'PAB Save (all off)');
+    let q = null;
+    for (let i = 0; i < 40 && !q; i++) { q = await readPab(false); if (!q) await sleep(500); }
+    need(q, 'the unticked PAB Save never read back false: ' + (await s3(['bucket', 'pab', 'get', 's3://' + AB, '--json'])).out);
+    await closeModal();
+    await shot('108-admin-pab');
+    await s3(['rb', 's3://' + AB, '--force']);
+    await removeGuiSource(AB);
+    return 'all four block-public-access switches saved from the panel, CLI-verified both directions';
+  });
+
+  await verify({ id: 'GUI-109', area: 'admin', action: 'Admin panel: Lifecycle tab round-trip', ds: 'S3 (MinIO)', scenario: 'a rule authored in the Lifecycle tab (id, prefix filter, transition days + class, expiration, noncurrent + abort-MPU days, delete markers) saves through the panel and the CLI reads every field back; Delete all clears it and the CLI answers the honest empty array — the array-never-null law live — the panel is the writer, the CLI the oracle', face: 'GUI' }, async () => {
+    const AB = BUCKET + '-glife';
+    const RULE = [{ id: 'verify-life', enabled: true, prefix: 'logs/', transitionDays: 30, transitionClass: 'GLACIER', expirationDays: 365, noncurrentDays: 14, abortMpuDays: 7, deleteMarker: true }];
+    let r = await s3(['mb', 's3://' + AB]);
+    need(r.code === 0, 'mb: ' + r.out + r.err);
+    await addGuiBucketSource(AB);
+    await treeMenu(AB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    const clickBtn = (re) => evalPage((src) => {
+      const b = Array.from(document.querySelectorAll('#modal-root button'))
+        .find((x) => new RegExp(src, 'i').test((x.textContent || '').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    }, re);
+    await page.locator('#modal-root .tab[data-tab="Lifecycle"]').click();
+    // same settle + provider-gap read as GUI-35/36
+    await waitFor(async () => {
+      const t = await evalPage(() => document.querySelector('#modal-root .tabbody')?.textContent || '');
+      return t && !/Loading/.test(t);
+    }, 15000, 'the Lifecycle pane to draw');
+    const paneErr = await evalPage(() => document.querySelector('#modal-root .tabbody .banner.warn')?.textContent || '');
+    if (/not supported/i.test(paneErr)) {
+      const f = path.join(ART, 'gui-life.json');
+      await writeFile(f, JSON.stringify(RULE));
+      const put = await s3(['bucket', 'lifecycle', 'put', 's3://' + AB, f]);
+      await closeModal();
+      await s3(['rb', 's3://' + AB, '--force']);
+      await removeGuiSource(AB);
+      need(put.code !== 0, 'lifecycle put unexpectedly succeeded where the panel said unsupported: ' + put.out);
+      return skip('provider refused the lifecycle API (recorded gap): pane "' + paneErr.trim().slice(0, 80) + '"; CLI put: ' + (put.out + put.err).trim().slice(0, 80));
+    }
+    need(!paneErr, 'the Lifecycle pane opened with an error: ' + paneErr.trim().slice(0, 160));
+    await waitFor(() => clickBtn('\\+ add rule'), 5000, 'Add rule');
+    await sleep(200);
+    // the card binds through change events (the CORS grammar): inputs in
+    // DOM order [id, prefix, enabled, transitionDays, expirationDays,
+    // noncurrentDays, abortMpuDays, deleteMarker] + the class select
+    const filled = await evalPage(() => {
+      const card = document.querySelector('#modal-root .rule-card');
+      if (!card) return 'no card';
+      const inputs = Array.from(card.querySelectorAll('input'));
+      if (inputs.length !== 8) return inputs.length + ' inputs';
+      const set = (i, v) => { inputs[i].value = v; inputs[i].dispatchEvent(new Event('change', { bubbles: true })); };
+      set(0, 'verify-life');
+      set(1, 'logs/');
+      if (!inputs[2].checked) inputs[2].click(); // enabled ships checked
+      set(3, '30');
+      set(4, '365');
+      set(5, '14');
+      set(6, '7');
+      inputs[7].checked = true; // expire delete markers
+      inputs[7].dispatchEvent(new Event('change', { bubbles: true }));
+      const sel = card.querySelector('select');
+      if (!sel) return 'no select';
+      sel.value = 'GLACIER';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    });
+    need(filled === true, 'the lifecycle rule card did not expose its shape: ' + filled);
+    await waitFor(() => clickBtn('^save$'), 5000, 'Lifecycle Save');
+    let rule = null;
+    for (let i = 0; i < 40 && !rule; i++) {
+      const g = await s3(['bucket', 'lifecycle', 'get', 's3://' + AB, '--json']);
+      try {
+        const j = JSON.parse(g.out);
+        if (Array.isArray(j)) rule = j.find((x) => x && x.id === 'verify-life') || null;
+      } catch (e) { /* poll */ }
+      if (!rule) await sleep(500);
+    }
+    if (!rule) {
+      // out-of-band CLI put decides provider gap vs GUI bug
+      const f = path.join(ART, 'gui-life.json');
+      await writeFile(f, JSON.stringify(RULE));
+      const put = await s3(['bucket', 'lifecycle', 'put', 's3://' + AB, f]);
+      await closeModal();
+      await s3(['rb', 's3://' + AB, '--force']);
+      await removeGuiSource(AB);
+      if (put.code !== 0 && /not supported|not implemented|malformed|invalid/i.test(put.out + put.err)) {
+        return skip('provider refused lifecycle rules on this build (recorded gap): ' + (put.out + put.err).trim().slice(0, 120));
+      }
+      need(false, 'the panel Lifecycle Save did not land (direct CLI put exited ' + put.code + ')');
+    }
+    for (const kv of [['enabled', true], ['prefix', 'logs/'], ['transitionDays', 30], ['transitionClass', 'GLACIER'], ['expirationDays', 365], ['noncurrentDays', 14], ['abortMpuDays', 7], ['deleteMarker', true]]) {
+      need(rule[kv[0]] === kv[1], 'lifecycle field ' + kv[0] + ' read back ' + JSON.stringify(rule[kv[0]]) + ', want ' + JSON.stringify(kv[1]));
+    }
+    await waitFor(() => clickBtn('delete all'), 5000, 'Lifecycle Delete all');
+    let gone = null;
+    for (let i = 0; i < 40 && !gone; i++) {
+      const g = await s3(['bucket', 'lifecycle', 'get', 's3://' + AB, '--json']);
+      try {
+        const j = JSON.parse(g.out);
+        if (Array.isArray(j) && j.length === 0) gone = true; // the array-never-null law live: [] not null
+      } catch (e) { /* poll */ }
+      if (!gone) await sleep(500);
+    }
+    need(gone, 'Delete all must leave the CLI answering the honest empty array: ' + (await s3(['bucket', 'lifecycle', 'get', 's3://' + AB, '--json'])).out);
+    await closeModal();
+    await shot('109-admin-lifecycle');
+    await s3(['rb', 's3://' + AB, '--force']);
+    await removeGuiSource(AB);
+    return 'lifecycle rule authored in the panel, CLI-verified field by field, deleted to []';
   });
 
   await verify({ id: 'GUI-37', area: 'gates', action: 'Delete Window keepcurrent mode: history destroyed, current version survives', ds: 'S3 (MinIO)', scenario: 'an object with THREE versions through the keepcurrent mode: the older versions are destroyed while the CURRENT bytes stay live and identical — the window never auto-confirms (explicit mode + typed word), and CLI re-reads the collapsed timeline (exactly 1 version, zero markers) and the bytes', face: 'GUI' }, async () => {

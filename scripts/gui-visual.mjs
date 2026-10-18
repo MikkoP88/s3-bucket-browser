@@ -497,8 +497,13 @@ function shim() {
         summary: { hasPolicy: true, statementCount: 1, hasPublicAllow: false, hasPublicRead: false, hasPublicWrite: false },
       },
       acl: { owner: 'demo', summary: { grants: ['demo — FULL_CONTROL'], publicRead: false, authenticatedRead: false } },
-      cors: [{ allowedMethods: 'GET', allowedOrigins: 'https://demo.example', allowedHeaders: '*', maxAgeSeconds: 3000 }],
-      lifecycle: [{ id: 'archive-old', status: 'Enabled', days: 90, storageClass: 'GLACIER' }],
+      // the adminops CORSRule contract (origins/methods/headers/expose/
+      // maxAge) — the old mock spoke allowed*-prefixed keys the tab never
+      // reads, so its rule inputs rendered empty in every screenshot
+      cors: [{ origins: ['https://demo.example'], methods: ['GET'], headers: [], expose: [], maxAge: 3000 }],
+      // the adminops LifecycleRule contract — same drift family: the old
+      // status/days/storageClass keys left every card input empty
+      lifecycle: [{ id: 'archive-old', enabled: true, prefix: 'logs/', transitionDays: 90, transitionClass: 'GLACIER', expirationDays: 365, noncurrentDays: 0, abortMpuDays: 7, deleteMarker: false }],
       encryption: { algorithm: 'AES256', kmsKeyId: '' },
       website: { index: 'index.html', error: '', redirectHost: '', redirectProtocol: '' },
       tags: [{ key: 'env', value: 'demo' }, { key: 'team', value: 'qa' }],
@@ -4819,6 +4824,51 @@ await step('admin-panel', async () => {
     }
     await shot(shotName);
   }
+  // the Security tab's save verb — the offline twin of verify's GUI-108:
+  // tick all four (the fixture ships a MIXED state, so a stuck render can
+  // never pass), Save, and the recorded PutBucketPAB args prove the
+  // click-time bind onto the wire
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).find((t) => t.textContent.trim() === 'Security'); if (b) b.click(); });
+  await sleep(120);
+  await resetCalls();
+  await evalPage(() => { const bs = Array.from(document.querySelectorAll('#modal-root .pab input[type=checkbox]')); for (const b of bs) b.checked = true; return bs.length; });
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Save'); if (b) b.click(); });
+  let pabCall = null;
+  await waitFor(async () => { pabCall = ((await calls()).find((c) => c.m === 'PutBucketPAB')) || null; return !!pabCall; }, 4000, 'PutBucketPAB recorded');
+  await ok('PAB save writes all four switches', pabCall.args[0] === 'team-files'
+    && pabCall.args[1].blockPublicAcls === true && pabCall.args[1].ignorePublicAcls === true
+    && pabCall.args[1].blockPublicPolicy === true && pabCall.args[1].restrictPublicBuckets === true);
+  await sleep(150); // the save re-fetch re-renders the pane — let it settle
+  // the Lifecycle tab's save + delete-all verbs — GUI-109's offline twin
+  // (the Add path is the live row's walk; the seated rule card proves the
+  // same input bind onto the wire args)
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).find((t) => t.textContent.trim() === 'Lifecycle'); if (b) b.click(); });
+  await sleep(120);
+  await resetCalls();
+  const retitled = await evalPage(() => {
+    const card = document.querySelector('#modal-root .rule-card');
+    if (!card) return false;
+    const inputs = Array.from(card.querySelectorAll('input'));
+    if (inputs.length < 8) return false;
+    inputs[0].value = 'visual-life';
+    inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  });
+  await ok('lifecycle card exposes the rule shape', retitled);
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Save'); if (b) b.click(); });
+  let lcCall = null;
+  await waitFor(async () => { lcCall = ((await calls()).find((c) => c.m === 'PutBucketLifecycle')) || null; return !!lcCall; }, 4000, 'PutBucketLifecycle recorded');
+  await ok('lifecycle save writes the bound rule', lcCall.args[0] === 'team-files'
+    && Array.isArray(lcCall.args[1]) && lcCall.args[1].length === 1
+    && lcCall.args[1][0].id === 'visual-life' && lcCall.args[1][0].enabled === true
+    && lcCall.args[1][0].prefix === 'logs/' && lcCall.args[1][0].transitionDays === 90
+    && lcCall.args[1][0].transitionClass === 'GLACIER' && lcCall.args[1][0].abortMpuDays === 7);
+  await sleep(150); // settle the re-fetch before the delete verb
+  await resetCalls();
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Delete all'); if (b) b.click(); });
+  let delCall = null;
+  await waitFor(async () => { delCall = ((await calls()).find((c) => c.m === 'DeleteBucketLifecycle')) || null; return !!delCall; }, 4000, 'DeleteBucketLifecycle recorded');
+  await ok('lifecycle delete all speaks the delete verb for the bucket', delCall.args[0] === 'team-files');
   await closeModal();
 });
 
@@ -13854,10 +13904,14 @@ await step('forced-colors', async () => {
     return cs.backgroundColor === a.hl && cs.color === a.hlt;
   }, { hl, hlt }));
   await closePopout('guide');
-  // drop the mode: the theme paint returns to the exact pre-emulation value
+  // drop the mode: the theme paint returns to the exact pre-emulation
+  // value. The drop's style recalc is asynchronous — poll the settle,
+  // never a blind sleep (the entrance-settle law above; a fixed 120ms
+  // flipped the coin on 18 Oct 2026 and the sweep paid a first-attempt
+  // fail for it)
   await page.emulateMedia({ forcedColors: null });
-  await sleep(120);
   await clickRow('readme.md');
+  await waitFor(async () => (await selRowBg()) === baseBg, 4000, 'the theme paint to return after the mode drops');
   await ok('the mode drops and the theme paint returns', (await selRowBg()) === baseBg);
   await page.focus('#grid-body');
 });

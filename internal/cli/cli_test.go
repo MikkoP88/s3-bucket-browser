@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"strings"
@@ -185,5 +186,34 @@ func TestParseIntDuration(t *testing.T) {
 func TestFirst(t *testing.T) {
 	if first("", "x", "y") != "x" || first() != "" || first("a", "b") != "a" {
 		t.Error("first() fallback chain broken")
+	}
+}
+
+// The --json law: an array or object, never null. The engines answer nil
+// slices for their "nothing set" states (no lifecycle rules, no CORS, an
+// empty listing) and every list verb must print the empty shape, not null.
+func TestPrintJSONNeverNull(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"nil slice", []string(nil), "[]"},
+		{"nil typed slice", []profile.Source(nil), "[]"},
+		{"nil map", map[string]string(nil), "{}"},
+		{"live slice", []string{"x"}, "[\n  \"x\"\n]"},
+	}
+	for _, c := range cases {
+		var buf bytes.Buffer
+		old := out
+		out = &buf
+		err := printJSON(c.in)
+		out = old
+		if err != nil {
+			t.Fatalf("%s: printJSON: %v", c.name, err)
+		}
+		if strings.TrimSpace(buf.String()) != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, buf.String(), c.want)
+		}
 	}
 }
