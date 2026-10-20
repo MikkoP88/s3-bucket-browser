@@ -38,8 +38,9 @@ type Entry struct {
 
 // Options controls a List call.
 type Options struct {
-	Recursive bool // no delimiter: stream every object under prefix
-	MaxKeys   int32
+	Recursive  bool // no delimiter: stream every object under prefix
+	MaxKeys    int32
+	StartAfter string // begin strictly past this key (windowed fetch; first page only — the API's own law)
 }
 
 // ListBuckets returns all buckets visible to the client.
@@ -67,6 +68,9 @@ func WalkDir(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, pref
 	}
 	if opts.MaxKeys > 0 {
 		input.MaxKeys = aws.Int32(opts.MaxKeys)
+	}
+	if opts.StartAfter != "" {
+		input.StartAfter = aws.String(opts.StartAfter)
 	}
 	paginator := s3.NewListObjectsV2Paginator(client, input)
 	for paginator.HasMorePages() {
@@ -98,6 +102,49 @@ func WalkDir(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, pref
 				continue // the prefix marker itself
 			}
 			if err := fn(FromObject(obj, prefix)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// WalkDirs streams only the sub-folders of one prefix through fn:
+// common prefixes plus zero-byte folder markers, never the objects.
+// The sidebar's lazy tree lists through it, so a folder holding a
+// million files costs the wire its scan but the app zero object rows
+// (the object view's WalkDir ships every entry; a tree cares only
+// about the branching). A folder that appears both as a common prefix
+// and as its own marker is emitted once — the first sighting wins, and
+// within a page the common prefix leads (tree nodes carry no metadata,
+// so the plain prefix entry serves).
+func WalkDirs(ctx context.Context, client s3.ListObjectsV2APIClient, bucket, prefix string, fn func(Entry) error) error {
+	seen := map[string]bool{prefix: true}
+	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(bucket), Prefix: aws.String(prefix), Delimiter: aws.String("/"),
+	})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return err
+		}
+		for _, cp := range page.CommonPrefixes {
+			key := aws.ToString(cp.Prefix)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if err := fn(DirEntry(key, prefix)); err != nil {
+				return err
+			}
+		}
+		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+			if key == prefix || !strings.HasSuffix(key, "/") || seen[key] {
+				continue
+			}
+			seen[key] = true
+			if err := fn(DirEntryFromObject(obj, prefix)); err != nil {
 				return err
 			}
 		}

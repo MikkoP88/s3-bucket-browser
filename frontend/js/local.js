@@ -110,6 +110,7 @@ export class SidePane {
     this.bucket = '';     // s3 binding: the listed bucket ('' = buckets view)
     this.s3Seq = 0;       // s3 listing stream generation
     this.s3Off = null;    // s3 listing page-event unsubscribe
+    this.s3Token = null;  // live s3 listing token (cancel on supersede)
     this.navSeq = 0;      // local/remote listing generation (stale-response guard)
     this.roots = [];
     this.binding = { kind: 'local', source: '' }; // what the pane is bound to
@@ -765,6 +766,7 @@ export class SidePane {
     this.setLoading(true);
     try {
       const target = dir === '' || dir === '~' ? await app().LocalHome() : dir;
+      this.grid.on.more = null; // the footer is the S3 stream's door only
       const ents = await app().ListLocal(target);
       if (seq !== this.navSeq) return; // superseded — user navigated on
       this.dir = target;
@@ -792,6 +794,7 @@ export class SidePane {
     this.setLoading(true);
     try {
       const path = dir && dir !== '~' ? dir : '/';
+      this.grid.on.more = null; // the footer is the S3 stream's door only
       const ents = await app().RemoteList(this.binding.source, path);
       if (seq !== this.navSeq) return; // superseded — user navigated on
       this.dir = path;
@@ -814,13 +817,18 @@ export class SidePane {
   // cancelS3Stream invalidates the running S3 listing (navigation moved on).
   cancelS3Stream() {
     this.s3Seq++;
+    // the Go walk dies with the listener: a superseded listing must not
+    // keep paging the bucket for rows nobody will ever seat
+    if (this.s3Token) { app().CancelList(this.s3Token).catch(() => {}); this.s3Token = null; }
     this.s3Off?.();
     this.s3Off = null;
   }
 
   // navigateS3 lists the bound S3 source: the buckets view at the root,
-  // one streamed prefix inside a bucket. Same one-page memory contract as
-  // the main view.
+  // one streamed prefix inside a bucket. Same one-page memory contract
+  // as the main view, and the same big-folder law: the model caps at
+  // one deliberate step, the parked rows ride the continuation footer,
+  // and extendS3 fetches the next window past the last key held.
   async navigateS3({ bucket, prefix }) {
     this.cancelS3Stream();
     this.dropUsage(`${this.binding.source}|${bucket}|`); // mutation refreshes land here
@@ -832,6 +840,7 @@ export class SidePane {
         if (seq !== this.s3Seq) return;
         this.bucket = '';
         this.dir = '';
+        this.grid.on.more = null; // buckets never park rows
         this.grid.setRows(buckets.map((b) => ({
           name: b.name, key: b.name, bucket: b.name, isDir: true, isBucket: true,
           lastModified: b.createdAt,
@@ -843,6 +852,8 @@ export class SidePane {
       }
       return;
     }
+    this.grid.on.more = () => { this.extendS3(); };
+    let parked = 0; // rows the ceiling refused (this stream's own count)
     let token;
     const stream = subscribeStream(
       () => app().ListSourceObjectsStream(this.binding.source, bucket, prefix || ''),
@@ -852,12 +863,25 @@ export class SidePane {
         this.setLoading(false);
         this.hideOnboarding();
         this.hasListed = true;
-        this.grid.appendRows((p.entries || []).map((e) => ({ ...e, bucket })));
+        const entries = (p.entries || []).map((e) => ({ ...e, bucket }));
+        const acc = this.grid.appendStreamRows(entries);
+        parked += entries.length - acc.length;
         if (!this.painted) { this.painted = true; this.hideEmpty(); this.landUpbar(); this.updateNav(); }
         this.updateStatus();
         this.scheduleFill(); // every page re-arms the lazy folder sizes
+        if (parked > 0) {
+          // the materialization ceiling: cut the walk, settle capped —
+          // the footer offers the parked rows from here
+          this.cancelS3Stream();
+          this.grid.endStream(true);
+          this.updateCrumb();
+          this.consumePendingSelect();
+          this.updateStatus();
+          return;
+        }
         if (p.done) {
           this.cancelS3Stream();
+          this.grid.endStream(false);
           if (!this.grid.rows.length) this.showEmpty(t('emptyFolder'), t('emptyFolderSub'), []);
           this.updateCrumb();
           this.consumePendingSelect();
@@ -873,12 +897,67 @@ export class SidePane {
       return;
     }
     if (seq !== this.s3Seq) { app().CancelList(token).catch(() => {}); return; }
+    this.s3Token = token;
     this.bucket = bucket;
     this.dir = prefix || '';
     this.painted = false;
     this.grid.setRows([]);
+    this.grid.beginStream();
     this.updateCrumb();
     this.updateStatus();
+    stream.flush();
+  }
+
+  // extendS3 answers the pane grid's continuation footer: one more
+  // bounded window from the last key held, the ceiling grown one
+  // deliberate step — the pane twin of the main view's
+  // extendObjectStream, over the same windowed bridge.
+  async extendS3() {
+    if (this.binding.kind !== 's3' || !this.bucket) return;
+    const startAfter = this.grid.lastKey();
+    if (!startAfter) return;
+    this.grid.growRows();
+    this.cancelS3Stream();
+    const seq = this.s3Seq;
+    let parked = 0;
+    const stream = subscribeStream(
+      () => app().ListSourceObjectsWindow(this.binding.source, this.bucket, this.dir || '', startAfter),
+      (p) => {
+        if (seq !== this.s3Seq) return; // superseded while the window paged
+        if (p.error) { this.listFail(p.error); this.cancelS3Stream(); return; }
+        const entries = (p.entries || []).map((e) => ({ ...e, bucket: this.bucket }));
+        const acc = this.grid.appendStreamRows(entries);
+        parked += entries.length - acc.length;
+        this.updateStatus();
+        this.scheduleFill();
+        if (parked > 0) {
+          // the ceiling again: cut and settle capped — the footer
+          // re-offers with the new honest count
+          this.cancelS3Stream();
+          this.grid.endStream(true);
+          this.updateCrumb();
+          this.consumePendingSelect();
+          return;
+        }
+        if (p.done) {
+          this.cancelS3Stream();
+          this.grid.endStream(false);
+          this.updateCrumb();
+          this.consumePendingSelect();
+        }
+      },
+    );
+    this.s3Off = stream.off;
+    let token;
+    try {
+      token = await stream.begin;
+    } catch (e) {
+      if (this.s3Off === stream.off) this.s3Off = null;
+      if (seq === this.s3Seq) this.listFail(e);
+      return;
+    }
+    if (seq !== this.s3Seq) { app().CancelList(token).catch(() => {}); return; }
+    this.s3Token = token;
     stream.flush();
   }
 

@@ -104,7 +104,7 @@ func TestStreamWatchdogCutsDeadEndpoint(t *testing.T) {
 
 	mu, pages := captureListPages(t)
 
-	if _, err := a.streamObjects(blackholeClient(t, srv.URL), "b", ""); err != nil {
+	if _, err := a.streamObjects(blackholeClient(t, srv.URL), "b", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	last := waitForDone(t, mu, pages)
@@ -173,7 +173,7 @@ func TestStreamWatchdogResetsOnPages(t *testing.T) {
 
 	mu, pages := captureListPages(t)
 
-	if _, err := a.streamObjects(blackholeClient(t, srv.URL), "b", ""); err != nil {
+	if _, err := a.streamObjects(blackholeClient(t, srv.URL), "b", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	last := waitForDone(t, mu, pages)
@@ -189,5 +189,157 @@ func TestStreamWatchdogResetsOnPages(t *testing.T) {
 	mu.Unlock()
 	if total != 3 {
 		t.Fatalf("entries across pages = %d, want 3", total)
+	}
+}
+
+// startAfterXMLServer serves N sequential keys w-prefixed, one per page,
+// honoring start-after on page 0 — the window grammar ListObjectsWindow
+// rides. The window's own continuation pages carry no start-after (the
+// token does the walking), so the server only applies it when the request
+// carries no continuation-token, exactly like the real wire.
+func startAfterXMLServer(t *testing.T, n int) *httptest.Server {
+	t.Helper()
+	page := func(i int) string {
+		next := ""
+		if i < n-1 {
+			next = fmt.Sprintf("<NextContinuationToken>tok%d</NextContinuationToken>", i)
+		}
+		trunc := i < n-1
+		return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<Name>b</Name><Prefix></Prefix><KeyCount>1</KeyCount><MaxKeys>1</MaxKeys>
+<IsTruncated>%t</IsTruncated>%s
+<Contents><Key>w%03d.txt</Key><LastModified>2026-01-01T00:00:00.000Z</LastModified>
+<ETag>&quot;%03d&quot;</ETag><Size>3</Size><StorageClass>STANDARD</StorageClass></Contents>
+</ListBucketResult>`, trunc, next, i, i)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		i := 0
+		if tok := r.URL.Query().Get("continuation-token"); tok != "" {
+			fmt.Sscanf(tok, "tok%d", &i)
+			fmt.Fprint(w, page(i+1))
+			return
+		}
+		if sa := r.URL.Query().Get("start-after"); sa != "" {
+			fmt.Sscanf(sa, "w%d.txt", &i)
+			fmt.Fprint(w, page(i+1)) // strictly past the named key
+			return
+		}
+		fmt.Fprint(w, page(i))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// dirsXMLServer serves one page of the tree's listing shape — two common
+// prefixes, one marker-only folder, and a plain object WalkDirs must
+// never stream to the sidebar.
+func dirsXMLServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+<Name>b</Name><Prefix></Prefix><KeyCount>4</KeyCount><MaxKeys>1000</MaxKeys>
+<IsTruncated>false</IsTruncated>
+<CommonPrefixes><Prefix>a/</Prefix></CommonPrefixes>
+<CommonPrefixes><Prefix>c/</Prefix></CommonPrefixes>
+<Contents><Key>b/</Key><LastModified>2026-01-01T00:00:00.000Z</LastModified>
+<ETag>&quot;mb&quot;</ETag><Size>0</Size><StorageClass>STANDARD</StorageClass></Contents>
+<Contents><Key>plain.txt</Key><LastModified>2026-01-01T00:00:00.000Z</LastModified>
+<ETag>&quot;mp&quot;</ETag><Size>4</Size><StorageClass>STANDARD</StorageClass></Contents>
+</ListBucketResult>`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestListSourceDirsStream pins the tree's binding end to end: one named
+// S3 source's prefix streams its FOLDERS only — no object row ever
+// arrives — and the walk still lands the always-final done page with the
+// running total counting dirs alone.
+func TestListSourceDirsStream(t *testing.T) {
+	a := newTestApp(t)
+	a.ctx = context.Background()
+	srv := dirsXMLServer(t)
+	if err := a.SaveSource(fakeS3Source("tree", srv.URL)); err != nil {
+		t.Fatal(err)
+	}
+
+	mu, pages := captureListPages(t)
+	if _, err := a.ListSourceDirsStream("tree", "b", ""); err != nil {
+		t.Fatal(err)
+	}
+	last := waitForDone(t, mu, pages)
+	if last.Error != "" {
+		t.Fatalf("dirs stream errored: %q", last.Error)
+	}
+
+	mu.Lock()
+	names := []string{}
+	for _, p := range *pages {
+		for _, e := range p.Entries {
+			if !e.IsDir {
+				t.Fatalf("object row streamed to the tree: %+v", e)
+			}
+			names = append(names, e.Name)
+		}
+	}
+	mu.Unlock()
+	// emission order is the walk's law, not sorted: common prefixes lead
+	// within a page, marker-only folders follow (the tree sorts its nodes).
+	if strings.Join(names, ",") != "a,c,b" {
+		t.Fatalf("dirs = %v, want [a c b] (prefixes lead, markers follow)", names)
+	}
+	if last.Total != len(names) {
+		t.Fatalf("total = %d, want %d (dirs alone)", last.Total, len(names))
+	}
+}
+
+// TestStreamWindowStartsAfter pins the windowed-fetch binding: the stream
+// answers exactly the keys strictly past startAfter, in arrival order, and
+// the running Total counts only the window — the big-folder law's
+// random-access half. A bare stream over the same server still walks from
+// the first key (ListObjectsStream's own path).
+func TestStreamWindowStartsAfter(t *testing.T) {
+	a := newTestApp(t)
+	a.ctx = context.Background()
+	srv := startAfterXMLServer(t, 6)
+	c := blackholeClient(t, srv.URL)
+
+	mu, pages := captureListPages(t)
+	if _, err := a.streamObjects(c, "b", "", "w001.txt"); err != nil {
+		t.Fatal(err)
+	}
+	last := waitForDone(t, mu, pages)
+	mu.Lock()
+	got := []string{}
+	for _, p := range *pages {
+		for _, e := range p.Entries {
+			got = append(got, e.Name)
+		}
+	}
+	mu.Unlock()
+	want := []string{"w002.txt", "w003.txt", "w004.txt", "w005.txt"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("window keys = %v, want %v", got, want)
+	}
+	if last.Total != len(want) {
+		t.Fatalf("window total = %d, want %d", last.Total, len(want))
+	}
+
+	// the bare stream walks the whole set from the first key
+	mu2, pages2 := captureListPages(t)
+	if _, err := a.streamObjects(c, "b", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForDone(t, mu2, pages2)
+	mu2.Lock()
+	n := 0
+	for _, p := range *pages2 {
+		n += len(p.Entries)
+	}
+	mu2.Unlock()
+	if n != 6 {
+		t.Fatalf("bare stream entries = %d, want 6", n)
 	}
 }

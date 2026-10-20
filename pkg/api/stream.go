@@ -49,7 +49,29 @@ func (a *App) ListObjectsStream(bucket, prefix string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return a.streamObjects(c, bucket, prefix)
+	return a.streamObjects(c, bucket, prefix, "")
+}
+
+// ListObjectsWindow is ListObjectsStream starting strictly past startAfter
+// in key order — the windowed-fetch half of the big-folder law: a folder
+// with more objects than the frontend materializes stays reachable at any
+// depth, one bounded stream at a time.
+func (a *App) ListObjectsWindow(bucket, prefix, startAfter string) (string, error) {
+	c, err := a.client("")
+	if err != nil {
+		return "", err
+	}
+	return a.streamObjects(c, bucket, prefix, startAfter)
+}
+
+// ListSourceObjectsWindow is ListObjectsWindow for one named S3 source
+// (the dual pane's side view).
+func (a *App) ListSourceObjectsWindow(idOrName, bucket, prefix, startAfter string) (string, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return "", err
+	}
+	return a.streamObjects(c, bucket, prefix, startAfter)
 }
 
 // ListSourceObjectsStream is ListObjectsStream for one named S3 source
@@ -59,11 +81,47 @@ func (a *App) ListSourceObjectsStream(idOrName, bucket, prefix string) (string, 
 	if err != nil {
 		return "", err
 	}
-	return a.streamObjects(c, bucket, prefix)
+	return a.streamObjects(c, bucket, prefix, "")
 }
 
-// streamObjects runs the listing stream over one resolved client.
-func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, error) {
+// ListSourceDirsStream is the sidebar tree's listing: one source-pinned
+// prefix walked for its FOLDERS only — common prefixes and markers,
+// never the objects (listing.WalkDirs). A folder with a million files
+// costs the wire its scan but the event stream a handful of dir rows,
+// so the tree's lazy expansion stays cheap at any depth.
+func (a *App) ListSourceDirsStream(idOrName, bucket, prefix string) (string, error) {
+	c, err := a.s3ClientFor(idOrName)
+	if err != nil {
+		return "", err
+	}
+	return a.streamListing(bucket, prefix, fmt.Sprintf("s3://%s/%s (folders)", bucket, prefix),
+		func(ctx context.Context, entry func(listing.Entry)) error {
+			return listing.WalkDirs(ctx, c.S3, bucket, prefix, func(e listing.Entry) error {
+				entry(e)
+				return nil
+			})
+		})
+}
+
+// streamObjects runs the object view's listing stream over one resolved
+// client: the full directory walk (folders AND objects).
+func (a *App) streamObjects(c *s3client.Client, bucket, prefix, startAfter string) (string, error) {
+	return a.streamListing(bucket, prefix, fmt.Sprintf("s3://%s/%s", bucket, prefix),
+		func(ctx context.Context, entry func(listing.Entry)) error {
+			return listing.WalkDir(ctx, c.S3, bucket, prefix, listing.Options{StartAfter: startAfter}, func(e listing.Entry) error {
+				entry(e)
+				return nil
+			})
+		})
+}
+
+// streamListing is the one streaming-listing law: token, watchdog (reset
+// by every entry and every page — a slow-but-alive paginator is
+// legitimate, a silent endpoint is cut at the listing-timeout budget and
+// reported), transient task row, batched pages, and the always-final
+// Done page. The walk function chooses WHAT streams — the object view's
+// full directory walk or the tree's folders-only walk.
+func (a *App) streamListing(bucket, prefix, label string, walk func(context.Context, func(listing.Entry)) error) (string, error) {
 	if a.ctx == nil {
 		return "", errNoContext
 	}
@@ -82,8 +140,7 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 	// Transient task: visible while it runs (a stuck listing is killable
 	// from the Running tasks window), gone when it ends — navigation
 	// would otherwise pile done rows up forever.
-	task := a.tasks.addWithID(token, "list",
-		fmt.Sprintf("s3://%s/%s", bucket, prefix))
+	task := a.tasks.addWithID(token, "list", label)
 
 	go func() {
 		// The watchdog lives as long as the listing goroutine, not the
@@ -114,7 +171,7 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 			task.finish(err, true)
 			emit(true, "internal error: "+err.Error())
 		})
-		err := listing.WalkDir(ctx, c.S3, bucket, prefix, listing.Options{}, func(e listing.Entry) error {
+		err := walk(ctx, func(e listing.Entry) {
 			// Any progress resets the watchdog — a paginating walk whose
 			// pages trickle in slowly is alive; emit-level resets alone
 			// would starve small folders (a batch needs 1000 entries).
@@ -125,7 +182,6 @@ func (a *App) streamObjects(c *s3client.Client, bucket, prefix string) (string, 
 				emit(false, "")
 				task.progress(total) // live entry count on the transient row
 			}
-			return nil
 		})
 		msg := ""
 		var ferr error

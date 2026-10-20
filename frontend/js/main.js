@@ -1482,10 +1482,100 @@ async function loadView(loc, { silent = false } = {}) {
   updateStatus();
 }
 
+// finishObjectsStream is the shared settle for the objects view: the
+// canonical apply (folders-first, active sort, the deferred selection
+// prune), tree dir sync, version decoration, pending select and status —
+// whether the walk ended on its own done page or was cut at the
+// materialization ceiling (capped), the view settles the same honest way.
+function finishObjectsStream(loc, seq, { capped = false } = {}) {
+  grid.endStream(capped);
+  decorateVersionMarkers(loc, seq);
+  // Keep the sidebar tree in step with what the grid now shows —
+  // the S3 twin of the remote path's updateRemoteDir call: folders
+  // created, deleted or renamed anywhere appear in the tree without
+  // a manual re-expand. currentEntries holds exactly the rows the grid
+  // accepted (the cap law feeds both the same slice). loc.source is
+  // unset on the local-pane sync-up path; the listing went through the
+  // pinned viewSource there, which is also the tree node's source.
+  tree.updateObjectsDir(loc.source || viewSource, loc.bucket, loc.prefix || '',
+    currentEntries.filter((e) => e.isDir));
+  if (!capped && !currentEntries.length && !view.filter) {
+    showEmpty(t('emptyFolder'), t('dropToUpload'), [
+      el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: (ev) => openMenu(ev.currentTarget, uploadChoices(uploadFiles, uploadFolder)) }),
+    ]);
+  }
+  consumePendingSelect();
+  updateStatus();
+  viewLandedHealthy(loc.source || viewSource); // a settled listing = healthy
+}
+
+// extendObjectStream answers the grid's continuation footer: one more
+// bounded window from the last key the model holds, the ceiling grown
+// one deliberate step (the big-folder law). The window rides the same
+// stream machinery as the initial load — a navigation away supersedes
+// it exactly the same way.
+async function extendObjectStream() {
+  const loc = nav.current;
+  if (!loc || loc.kind !== 'objects') return;
+  const startAfter = grid.lastKey();
+  if (!startAfter) return;
+  grid.growRows();
+  const seq = ++listSeq;
+  cancelListStream();
+  let parked = 0;
+  const stream = subscribeStream(
+    () => api.ListObjectsWindow(loc.bucket, loc.prefix || '', startAfter),
+    (p) => {
+      if (seq !== listSeq) return; // superseded while the window paged
+      if (p.error) {
+        showListError(p.error);
+        viewFailed(loc.source || viewSource, p.error, { silent: false });
+        return;
+      }
+      const acc = grid.appendStreamRows(p.entries || []);
+      currentEntries.push(...acc);
+      parked += (p.entries || []).length - acc.length;
+      updateStatus();
+      if (parked > 0) {
+        // the ceiling again: cut the walk and settle capped — the footer
+        // re-offers with the new honest count
+        if (listStream.token) { api.CancelList(listStream.token).catch(() => {}); listStream.token = null; }
+        stream.off?.();
+        if (listStream.off === stream.off) listStream.off = null;
+        finishObjectsStream(loc, seq, { capped: true });
+        return;
+      }
+      if (p.done) {
+        listStream.token = null;
+        stream.off?.();
+        if (listStream.off === stream.off) listStream.off = null;
+        finishObjectsStream(loc, seq, {});
+      }
+    },
+  );
+  listStream.off = stream.off;
+  let token;
+  try {
+    token = await stream.begin;
+  } catch (err) {
+    if (listStream.off === stream.off) listStream.off = null;
+    if (seq !== listSeq) return;
+    showListError(err);
+    viewFailed(loc.source || viewSource, err, { silent: false });
+    return;
+  }
+  if (seq !== listSeq) { api.CancelList(token).catch(() => {}); return; }
+  listStream.token = token;
+  stream.flush();
+}
+
 // loadObjectsStream fills the grid incrementally from the streaming
 // listing API: the first page renders immediately, Go-side memory stays
 // at one page for million-object folders, and stale streams are
-// canceled on navigation (M5).
+// canceled on navigation (M5). The big-folder law rides the same wire:
+// the model materializes at most one deliberate step (grid.beginStream);
+// a folder larger than the ceiling is cut mid-walk, settled as capped,
+// and the continuation footer offers the parked rows (extendObjectStream).
 async function loadObjectsStream(loc, silent = false) {
   const seq = ++listSeq;
   cancelListStream();
@@ -1497,8 +1587,25 @@ async function loadObjectsStream(loc, silent = false) {
     grid.setRows([]);
   }
   grid.setFilter(view.filter);
-  // silent: pages buffer off-screen; the grid swaps once, when done.
+  grid.beginStream();
+  let parked = 0; // rows the ceiling refused (this stream's own count)
+  // silent: pages buffer off-screen under the same ceiling and the grid
+  // swaps once, when done. Both modes feed through acceptPage so the
+  // grid and currentEntries always hold exactly the same rows.
   const buffered = [];
+  const acceptPage = (entries) => {
+    if (silent) {
+      const room = grid.rowLimit - buffered.length;
+      const acc = room <= 0 ? [] : entries.slice(0, room);
+      parked += entries.length - acc.length;
+      buffered.push(...acc);
+      currentEntries = buffered;
+      return;
+    }
+    const acc = grid.appendStreamRows(entries);
+    currentEntries.push(...acc); // the mirror holds exactly what the grid holds
+    parked += entries.length - acc.length;
+  };
   const stream = subscribeStream(
     () => api.ListObjectsStream(loc.bucket, loc.prefix || ''),
     (p) => {
@@ -1508,10 +1615,7 @@ async function loadObjectsStream(loc, silent = false) {
         viewFailed(loc.source || viewSource, p.error, { silent });
         return;
       }
-      if (silent) {
-        buffered.push(...p.entries);
-        currentEntries = buffered;
-      } else {
+      if (!silent) {
         // First data landed: the skeleton/loading overlay has done its
         // job — rows now tell the story (idempotent, so every page can
         // call it without layout cost once hidden). The parent row
@@ -1519,10 +1623,25 @@ async function loadObjectsStream(loc, silent = false) {
         // nothing sits above (a bucket-scoped source's root).
         hideEmpty();
         setUpbar(parentUp(loc) ? 'on' : 'off');
-        currentEntries.push(...p.entries);
-        grid.appendRows(p.entries);
       }
+      acceptPage(p.entries);
       updateStatus();
+      if (parked > 0) {
+        // The materialization ceiling: cut the walk (it would page the
+        // whole universe for nothing), detach, and settle the view as
+        // capped — the footer offers the parked rows from here.
+        if (listStream.token) { api.CancelList(listStream.token).catch(() => {}); listStream.token = null; }
+        stream.off?.();
+        if (listStream.off === stream.off) listStream.off = null;
+        if (silent) {
+          // the off-screen buffer swaps now, carrying its ghosts — the
+          // parked count rides with it (setRows clears the footer state)
+          grid.setRows([...buffered, ...ghostCarryFor(loc, buffered)]);
+          grid.parkRows(parked);
+        }
+        finishObjectsStream(loc, seq, { capped: true });
+        return;
+      }
       if (p.done) {
         listStream.token = null;
         listStream.off?.();
@@ -1534,25 +1653,7 @@ async function loadObjectsStream(loc, silent = false) {
           // version-summary pass re-appends them (auto-refresh)
           grid.setRows([...buffered, ...ghostCarryFor(loc, buffered)]);
         }
-        grid.apply(); // canonical folders-first ordering + active sort/filter
-        decorateVersionMarkers(loc, seq);
-        // Keep the sidebar tree in step with what the grid now shows —
-        // the S3 twin of the remote path's updateRemoteDir call: folders
-        // created, deleted or renamed anywhere appear in the tree without
-        // a manual re-expand. currentEntries is complete only at done
-        // (pages before it are partial). loc.source is unset on the
-        // local-pane sync-up path; the listing went through the pinned
-        // viewSource there, which is also the tree node's source.
-        tree.updateObjectsDir(loc.source || viewSource, loc.bucket, loc.prefix || '',
-          currentEntries.filter((e) => e.isDir));
-        if (!currentEntries.length && !view.filter) {
-          showEmpty(t('emptyFolder'), t('dropToUpload'), [
-            el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: (ev) => openMenu(ev.currentTarget, uploadChoices(uploadFiles, uploadFolder)) }),
-          ]);
-        }
-        consumePendingSelect();
-        updateStatus();
-        viewLandedHealthy(loc.source || viewSource); // a completed listing = healthy
+        finishObjectsStream(loc, seq, {});
       }
     },
   );
@@ -2091,6 +2192,10 @@ function wireGrid() {
   // the tile face follows every selection change the rows own — the
   // grid verbs (Ctrl+A, Invert, the Escape clear) all re-emit here
   grid.on.select = () => { updateStatus(); refreshDragUrls(); gallery.syncSel(); inspSeat = 'main'; inspectorRender(); };
+  // the continuation footer's fetch — the big-folder law's door. Wired
+  // unconditionally: renderMore seats the footer only while rows are
+  // actually parked under a live stream session.
+  grid.on.more = () => { extendObjectStream(); };
   grid.on.dragOS = (e, rows) => {
     // OS drag-out. Desktop: a plain drag of a files-only selection floats
     // a native OLE drag — Go stages the selection and Explorer drops real
@@ -2462,8 +2567,8 @@ function showContextMenu(e, rows) {
     if (sel === 1 && rows[0].isDir) items.push(favItem({ kind: 'remote', source: loc.source, path: rows[0].key }));
     items.push([`Download${sel ? ` (${sel})` : ''}\u2026`, 'Ctrl+D', () => downloadSelection(), !sel]);
     items.push(null);
-    items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
-    items.push(['Cut', 'Ctrl+X', () => cutSelection(), !sel]);
+    items.push(['Copy', 'Ctrl+C', () => copySelection('main'), !sel]);
+    items.push(['Cut', 'Ctrl+X', () => cutSelection('main'), !sel]);
     if (sel === 1 && rows[0].isDir) {
       items.push(['Paste into folder', 'Ctrl+V', () => paste(rows[0].key), !pasteReady()]);
     }
@@ -2491,8 +2596,8 @@ function showContextMenu(e, rows) {
     else if (sel === 1 && isPreviewRow(rows[0])) items.push(['Preview', 'Enter', () => previewRow(rows[0])]);
     if (sel === 1 && rows[0].isDir) items.push(favItem({ kind: 'local', dir: rows[0].path }));
     items.push(null);
-    items.push(['Copy', 'Ctrl+C', () => copySelection(), !sel]);
-    items.push(['Cut', 'Ctrl+X', () => cutSelection(), !sel]);
+    items.push(['Copy', 'Ctrl+C', () => copySelection('main'), !sel]);
+    items.push(['Cut', 'Ctrl+X', () => cutSelection('main'), !sel]);
     if (sel === 1 && rows[0].isDir) {
       items.push(['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 'local', dir: rows[0].path }), !pasteReady()]);
     }
@@ -2513,8 +2618,8 @@ function showContextMenu(e, rows) {
     if (sel === 1 && rows[0].isDir) items.push(favItem({ kind: 'objects', source: loc.source || viewSource, bucket: loc.bucket, prefix: rows[0].key }));
     items.push([`Download${sel ? ` (${sel})` : ''}`, 'Ctrl+D', () => downloadSelection()]);
     items.push(null);
-    items.push(['Cut', 'Ctrl+X', () => cutSelection()]);
-    items.push(['Copy', 'Ctrl+C', () => copySelection()]);
+    items.push(['Cut', 'Ctrl+X', () => cutSelection('main')]);
+    items.push(['Copy', 'Ctrl+C', () => copySelection('main')]);
     items.push(['Paste', 'Ctrl+V', () => paste(), !pasteReady() || !inObjects]);
     items.push(['Copy name', '', () => copyAsText(rows, 'name'), !sel]);
     items.push(['Copy path', '', () => copyAsText(rows, 'path'), !sel]);
@@ -3691,6 +3796,9 @@ async function viewerShow() {
     if (one) hideViewer();
     return;
   }
+  const load = $('viewer-loading'); // liveness: the dial is visible until the answer lands
+  load.classList.remove('hidden');
+  $('viewer-loading-text').textContent = t('loading');
   try {
     const p = await api.PreviewData(viewerTarget(viewer.ref, row));
     // the sniff rules the desk: an image row needs the sniff’s
@@ -3732,6 +3840,8 @@ async function viewerShow() {
   } catch (err) {
     toast(`Preview failed: ${err}`, 'error');
     if (one) hideViewer();
+  } finally {
+    load.classList.add('hidden'); // the dial is over — seated, refused, or failed
   }
 }
 
@@ -3745,6 +3855,7 @@ function hideViewer() {
   t.textContent = '';
   t.classList.remove('wrap');
   viewer.text = '';
+  $('viewer-loading').classList.add('hidden');
 }
 
 // ============================ gallery =============================
@@ -5599,8 +5710,8 @@ function showLocalRowMenu(e, rows) {
   openMenu(e, [
     [rows.length === 1 && rows[0].isDir ? 'Open' : 'Open / Preview', 'Enter', () => localPane.grid.on.activate(rows[0])],
     null,
-    ['Copy', 'Ctrl+C', () => copySelection()],
-    ['Cut', 'Ctrl+X', () => cutSelection()],
+    ['Copy', 'Ctrl+C', () => copySelection('pane')],
+    ['Cut', 'Ctrl+X', () => cutSelection('pane')],
     ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'local' }), !sel],
     ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'local' }), !sel],
     ['Copy URL', '', () => copyAsText(rows, 'url', { kind: 'local' }), !sel],
@@ -5657,8 +5768,8 @@ function showSideRemoteRowMenu(e, rows) {
         ? [['Preview', 'Enter', () => previewRow(rows[0], { kind: 'remote', source: b.source }, localPane.grid)]]
         : [[`Download${sel ? ` (${sel})` : ''}\u2026`, 'Ctrl+D', () => downloadSideRows(rows)]]),
     null,
-    ['Copy', 'Ctrl+C', () => copySelection(), !sel],
-    ['Cut', 'Ctrl+X', () => cutSelection(), !sel],
+    ['Copy', 'Ctrl+C', () => copySelection('pane'), !sel],
+    ['Cut', 'Ctrl+X', () => cutSelection('pane'), !sel],
     ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'remote' }), !sel],
     ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'remote' }), !sel],
     ['Copy URL', '', () => copyAsText(rows, 'url', { kind: 'remote', source: b.source }), !sel],
@@ -5772,8 +5883,8 @@ function showSideS3RowMenu(e, rows) {
       ? [['Paste into folder', 'Ctrl+V', () => paste(null, null, { kind: 's3', source: b.source, bucket: localPane.bucket, dir: rows[0].key }), !pasteReady()]]
       : []),
     null,
-    ['Copy', 'Ctrl+C', () => copySelection(), hasBucketRow],
-    ['Cut', 'Ctrl+X', () => cutSelection(), hasBucketRow],
+    ['Copy', 'Ctrl+C', () => copySelection('pane'), hasBucketRow],
+    ['Cut', 'Ctrl+X', () => cutSelection('pane'), hasBucketRow],
     ['Copy name', '', () => copyAsText(rows, 'name', { kind: 'objects', bucket: localPane.bucket }), hasBucketRow],
     ['Copy path', '', () => copyAsText(rows, 'path', { kind: 'objects', bucket: localPane.bucket, source: b.source }), hasBucketRow],
     ['Copy URL', '', () => copyAsText(rows, 'url', { kind: 'objects', bucket: localPane.bucket, source: b.source }), hasBucketRow],
@@ -6469,9 +6580,28 @@ function aboutDialog() {
 }
 
 // ============================ keyboard ============================
-// setClip records the current selection (main grid by location kind, else the
-// local pane's selection) as the clipboard payload.
-function setClip(mode) {
+// clipFocusOnPane: focus is the shared verbs' surface oracle — a click or
+// an arrow walk inside the side pane leaves focus on the pane's own DOM,
+// so the keyboard and the menubar Edit verbs address the pane there and
+// the main view anywhere else.
+function clipFocusOnPane() {
+  const host = document.getElementById('local-pane');
+  const el = document.activeElement;
+  return !!(host && !host.classList.contains('hidden') && el && host.contains(el));
+}
+
+// setClip records the current selection (main grid by location kind, else
+// the local pane's selection) as the clipboard payload. The surface names
+// who asked: 'pane' (the side pane's own context menus) gathers the pane
+// first so a stale main-grid selection can never win the priority chain,
+// 'main' (the main view's context menus) gathers the main grid first, and
+// the shared verbs (Ctrl+C/X, the menubar Edit menu) pass nothing and let
+// focus speak. A main gather that finds nothing still falls through to
+// the pane — the pane fallback is the older law, kept.
+function setClip(mode, surface) {
+  const paneFirst = surface === 'pane'
+    || (surface !== 'main' && localPane.visible && clipFocusOnPane());
+  if (paneFirst) { setClipFromPane(mode); return; }
   const loc = nav.current;
   const rows = grid.selectedRows();
   if (rows.length && (loc?.kind === 'objects' || loc?.kind === 'remote')) {
@@ -6522,53 +6652,62 @@ function setClip(mode) {
     updateCommandState();
     return;
   }
-  if (localPane.visible) {
-    const lrows = localPane.grid.selectedRows();
-    if (!lrows.length) return;
-    // A remote-bound pane contributes a remote clipboard payload (keys +
-    // origin source/dir), the local binding the workstation paths.
-    if (localPane.binding.kind === 'remote') {
-      Object.assign(clipboard, {
-        mode,
-        kind: 'remote',
-        bucket: null,
-        source: localPane.binding.source,
-        dir: localPane.dir || '/',
-        keys: lrows.map((x) => x.key),
-        paths: [],
-      });
-      if (mode === 'copy') osCopyRemote(lrows.map((r) => ({ source: localPane.binding.source, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
-    } else if (localPane.binding.kind === 's3') {
-      if (!localPane.bucket) return; // bucket rows are navigation only
-      Object.assign(clipboard, {
-        mode,
-        kind: 's3',
-        bucket: localPane.bucket,
-        source: localPane.binding.source,
-        dir: localPane.dir || '',
-        keys: lrows.filter((x) => !x.isBucket).map((x) => x.key),
-        paths: [],
-      });
-      if (mode === 'copy') osCopyRemote(lrows.filter((x) => !x.isBucket).map((r) => ({ source: localPane.binding.source, bucket: localPane.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
-    } else {
-      Object.assign(clipboard, {
-        mode,
-        kind: 'local',
-        bucket: null,
-        source: null,
-        dir: localPane.dir,
-        keys: [],
-        paths: lrows.map((x) => x.path),
-      });
-      // Local files are real OS files — straight onto the OS clipboard.
-      if (mode === 'copy' && explorerClipOn()) {
-        api.OsClipboardSetFiles(clipboard.paths).then(() => osClipAdopt(), () => {});
-      }
+  // the pane gather is its own law (setClipFromPane below): pane-first
+  // when a pane verb or pane focus asked, the fallback when the main
+  // grid holds nothing
+  setClipFromPane(mode);
+}
+
+// setClipFromPane gathers the side pane's selection into the clipboard
+// payload — a remote-bound pane contributes keys + origin source/dir,
+// an S3-bound pane its keys, the local binding the workstation paths.
+// Both setClip paths meet here: the pane-first gather (a pane verb or
+// pane focus) and the legacy fallback when the main grid holds nothing.
+function setClipFromPane(mode) {
+  if (!localPane.visible) return;
+  const lrows = localPane.grid.selectedRows();
+  if (!lrows.length) return;
+  if (localPane.binding.kind === 'remote') {
+    Object.assign(clipboard, {
+      mode,
+      kind: 'remote',
+      bucket: null,
+      source: localPane.binding.source,
+      dir: localPane.dir || '/',
+      keys: lrows.map((x) => x.key),
+      paths: [],
+    });
+    if (mode === 'copy') osCopyRemote(lrows.map((r) => ({ source: localPane.binding.source, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
+  } else if (localPane.binding.kind === 's3') {
+    if (!localPane.bucket) return; // bucket rows are navigation only
+    Object.assign(clipboard, {
+      mode,
+      kind: 's3',
+      bucket: localPane.bucket,
+      source: localPane.binding.source,
+      dir: localPane.dir || '',
+      keys: lrows.filter((x) => !x.isBucket).map((x) => x.key),
+      paths: [],
+    });
+    if (mode === 'copy') osCopyRemote(lrows.filter((x) => !x.isBucket).map((r) => ({ source: localPane.binding.source, bucket: localPane.bucket, key: r.key, size: r.size || 0, isDir: !!r.isDir })));
+  } else {
+    Object.assign(clipboard, {
+      mode,
+      kind: 'local',
+      bucket: null,
+      source: null,
+      dir: localPane.dir,
+      keys: [],
+      paths: lrows.map((x) => x.path),
+    });
+    // Local files are real OS files — straight onto the OS clipboard.
+    if (mode === 'copy' && explorerClipOn()) {
+      api.OsClipboardSetFiles(clipboard.paths).then(() => osClipAdopt(), () => {});
     }
-    osClipAdopt(); // in-app copy is now the newest clipboard (last copy wins)
-    toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${lrows.length} item(s)`);
-    updateCommandState();
   }
+  osClipAdopt(); // in-app copy is now the newest clipboard (last copy wins)
+  toast(`${mode === 'cut' ? 'Cut' : 'Copied'} ${lrows.length} item(s)`);
+  updateCommandState();
 }
 
 // osCopyRemote mirrors a remote/S3 copy onto the OS clipboard so Ctrl+V in
@@ -6693,9 +6832,13 @@ async function copyAsText(rows, what, ctx = {}) {
 // main grid's selection, else the local pane's (mirrors setClip's
 // gathering) — with the ctx copyAsText needs.
 function copyAsFromMenu() {
-  const loc = nav.current;
-  const rows = grid.selectedRows();
-  if (rows.length) return { rows, ctx: { kind: loc?.kind, bucket: loc?.bucket, source: loc?.source } };
+  // the same surface law setClip speaks: pane focus addresses the pane,
+  // and a pane selection never loses to a stale main-grid one
+  if (!(localPane.visible && clipFocusOnPane())) {
+    const loc = nav.current;
+    const rows = grid.selectedRows();
+    if (rows.length) return { rows, ctx: { kind: loc?.kind, bucket: loc?.bucket, source: loc?.source } };
+  }
   if (localPane.visible) {
     const b = localPane.binding;
     const lrows = localPane.grid.selectedRows();
@@ -6711,7 +6854,7 @@ function copyAsFromMenu() {
 // canCopyUrlFromMenu: every pane kind has a real-address form (S3 object,
 // remote path, local file).
 function canCopyUrlFromMenu() {
-  if (grid.selectedRows().length) {
+  if (!(localPane.visible && clipFocusOnPane()) && grid.selectedRows().length) {
     const k = nav.current?.kind;
     return k === 'objects' || k === 'remote' || k === 'local';
   }
@@ -6722,10 +6865,13 @@ function canCopyUrlFromMenu() {
   return lrows.length > 0;
 }
 
-// copySelection/cutSelection: shared by Ctrl+C/X and the Edit menu.
-function copySelection() { setClip('copy'); }
+// copySelection/cutSelection: shared by Ctrl+C/X and the menubar Edit
+// menu (no surface — focus speaks) and by the context menus, which name
+// their surface: 'main' for the main view's menus, 'pane' for the side
+// pane's.
+function copySelection(surface) { setClip('copy', surface); }
 
-function cutSelection() { setClip('cut'); }
+function cutSelection(surface) { setClip('cut', surface); }
 
 function wireKeys() {
   document.addEventListener('keydown', (e) => {

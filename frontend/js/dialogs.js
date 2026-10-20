@@ -4135,8 +4135,33 @@ export function adminDialog(bucket, onChanged) {
   const navRegion = el('div', { class: 'admin-nav-region', text: 'region: …' });
   const tabBtns = {};
   strip.appendChild(el('div', { class: 'admin-nav-head' }, navBucket, navRegion));
+  // The Settings idiom carries its signature here too: the rail holds the
+  // search box, and a query flattens the rail to the pages whose name or
+  // description speaks it — emptied category heads hide with their tabs,
+  // the walk skips hidden tabs, and picking a page clears the query (the
+  // Settings law — the pick is the answer, the book returns whole).
+  const search = el('input', {
+    type: 'search', class: 'input admin-search',
+    placeholder: 'Filter pages\u2026', 'aria-label': 'Filter pages',
+  });
+  const filterRail = () => {
+    const q = (search.value || '').trim().toLowerCase();
+    for (const [t, b] of Object.entries(tabBtns)) {
+      b.hidden = !!q && !(t.toLowerCase().includes(q) || (TAB_DESC[t] || '').toLowerCase().includes(q));
+    }
+    for (const [gh, names] of groupEls) {
+      gh.hidden = !!q && !names.some((n) => !tabBtns[n].hidden);
+    }
+  };
+  // Escape stays the modal law (document-capture in openModal) — the
+  // Settings search owns no Escape case either, so parity keeps none here
+  search.addEventListener('input', filterRail);
+  strip.appendChild(search);
+  const groupEls = [];
   for (const [g, names] of GROUPS) {
-    strip.appendChild(el('div', { class: 'tabgroup', text: g }));
+    const gh = el('div', { class: 'tabgroup', text: g });
+    groupEls.push([gh, names]);
+    strip.appendChild(gh);
     for (const t of names) {
       const b = el('button', {
         class: 'tab', type: 'button', role: 'tab', 'data-tab': t,
@@ -4152,7 +4177,9 @@ export function adminDialog(bucket, onChanged) {
   // tabindex — one tab stop for the whole strip)
   strip.addEventListener('keydown', (e) => {
     if (e.altKey || e.ctrlKey || e.metaKey) return;
-    const order = GROUPS.flatMap(([, names]) => names);
+    // the walk answers the rail it can see — a query hides tabs, and the
+    // arrows must never seat a hidden page
+    const order = GROUPS.flatMap(([, names]) => names).filter((n) => !tabBtns[n].hidden);
     const i = order.indexOf(active);
     let j = null;
     if (e.key === 'ArrowDown') j = Math.min(order.length - 1, i + 1);
@@ -4205,6 +4232,7 @@ export function adminDialog(bucket, onChanged) {
     active = name;
     seatTab(name);
     drawTab(name);
+    if (search.value) { search.value = ''; filterRail(); }
   }
 
   function drawTab(name) {
@@ -4423,7 +4451,48 @@ export function adminDialog(bucket, onChanged) {
       }
       case 'Lifecycle': {
         if (panel.lifecycleErr) { content.replaceChildren(errBox(panel.lifecycleErr)); break; }
-        const rules = (panel.lifecycle || []).map((r) => ({ ...r }));
+        // normRule seats a rule in the v2 shape whatever it arrived as:
+        // the full wire contract (tag and size-range filter, stacked
+        // transitions with days OR date per entry, expiration by days XOR
+        // date, noncurrent retention plus its own transitions, abort-MPU)
+        // with the legacy transitionDays/Class pair folded into the list
+        // when it stands alone — the pair never survives as a duplicate.
+        const normRule = (r) => {
+          const n = {
+            id: r.id || '', enabled: !!r.enabled,
+            prefix: r.prefix || '', tagKey: r.tagKey || '', tagValue: r.tagValue || '',
+            minBytes: parseInt(r.minBytes, 10) || 0, maxBytes: parseInt(r.maxBytes, 10) || 0,
+            transitions: (r.transitions || []).map((t) => ({
+              days: parseInt(t.days, 10) || 0, date: t.date || '', storageClass: t.storageClass || '',
+            })),
+            expirationDays: parseInt(r.expirationDays, 10) || 0, expirationDate: r.expirationDate || '',
+            deleteMarker: !!r.deleteMarker,
+            noncurrentDays: parseInt(r.noncurrentDays, 10) || 0, newerNoncurrent: parseInt(r.newerNoncurrent, 10) || 0,
+            noncurrentTransitions: (r.noncurrentTransitions || []).map((t) => ({
+              noncurrentDays: parseInt(t.noncurrentDays, 10) || 0, storageClass: t.storageClass || '',
+            })),
+            abortMpuDays: parseInt(r.abortMpuDays, 10) || 0,
+          };
+          if (!n.transitions.length && (parseInt(r.transitionDays, 10) || 0) > 0) {
+            n.transitions = [{ days: parseInt(r.transitionDays, 10) || 0, date: '', storageClass: r.transitionClass || '' }];
+          }
+          return n;
+        };
+        // cleanRules is the wire shape: v2 fields only — the legacy pair
+        // is gone (the list carries it) and never-completed list rows
+        // drop off rather than fail validation as accidental no-ops
+        const cleanRules = () => rules.map((r) => ({
+          ...r,
+          transitions: r.transitions.filter((t) => t.days > 0 || t.date || t.storageClass),
+          noncurrentTransitions: r.noncurrentTransitions.filter((t) => t.noncurrentDays > 0 || t.storageClass),
+        }));
+        const rules = (panel.lifecycle || []).map(normRule);
+        const CLASSES = ['', 'STANDARD_IA', 'INTELLIGENT_TIERING', 'ONEZONE_IA', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE'];
+        const clsSelect = (val) => {
+          const sel = el('select', { class: 'input' }, CLASSES.map((cl) => el('option', { value: cl }, cl || '—')));
+          sel.value = val || '';
+          return sel;
+        };
         const rowsBox = el('div', {});
         function drawRules() {
           rowsBox.replaceChildren(...rules.map((r, i) => {
@@ -4432,34 +4501,88 @@ export function adminDialog(bucket, onChanged) {
               inp.addEventListener('change', () => { r[key] = parseInt(inp.value, 10) || 0; });
               return el('label', { class: 'lc-cell' }, label, inp);
             };
+            const mkTxt = (label, key, mono) => {
+              const inp = el('input', { class: 'input' + (mono ? ' mono' : ''), value: r[key] || '', spellcheck: 'false' });
+              inp.addEventListener('change', () => { r[key] = inp.value; });
+              return el('label', { class: 'lc-cell' }, label, inp);
+            };
             const id = el('input', { class: 'input', value: r.id || '' });
             id.addEventListener('change', () => { r.id = id.value; });
-            const prefix = el('input', { class: 'input mono', value: r.prefix || '', spellcheck: 'false' });
-            prefix.addEventListener('change', () => { r.prefix = prefix.value; });
-            const cls = el('select', { class: 'input' },
-              ['', 'STANDARD_IA', 'INTELLIGENT_TIERING', 'ONEZONE_IA', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE']
-                .map((c) => el('option', { value: c }, c || '—')));
-            cls.value = r.transitionClass || '';
-            cls.addEventListener('change', () => { r.transitionClass = cls.value; });
             const on = el('input', { type: 'checkbox' });
             on.checked = !!r.enabled;
             on.addEventListener('change', () => { r.enabled = on.checked; });
             const dm = el('input', { type: 'checkbox' });
             dm.checked = !!r.deleteMarker;
             dm.addEventListener('change', () => { r.deleteMarker = dm.checked; });
+            // expiration is days XOR date: filling one clears the other —
+            // the wire refuses both, so the card never drafts both
+            const expDays = el('input', { class: 'input', type: 'number', value: r.expirationDays ? String(r.expirationDays) : '' });
+            const expDate = el('input', { class: 'input', type: 'date', value: r.expirationDate || '' });
+            expDays.addEventListener('change', () => {
+              r.expirationDays = parseInt(expDays.value, 10) || 0;
+              if (r.expirationDays > 0) { r.expirationDate = ''; expDate.value = ''; }
+            });
+            expDate.addEventListener('change', () => {
+              r.expirationDate = expDate.value || '';
+              if (r.expirationDate) { r.expirationDays = 0; expDays.value = ''; }
+            });
+            // each transitions row is days OR date + a class; the pair
+            // clears each other exactly like expiration does
+            const trBox = el('div', {});
+            const drawTr = () => {
+              trBox.replaceChildren(...r.transitions.map((t, j) => {
+                const d = el('input', { class: 'input', type: 'number', placeholder: 'days', value: t.days ? String(t.days) : '' });
+                const dt = el('input', { class: 'input', type: 'date', title: 'or transition on a date', value: t.date || '' });
+                const cls = clsSelect(t.storageClass);
+                d.addEventListener('change', () => { t.days = parseInt(d.value, 10) || 0; if (t.days > 0) { t.date = ''; dt.value = ''; } });
+                dt.addEventListener('change', () => { t.date = dt.value || ''; if (t.date) { t.days = 0; d.value = ''; } });
+                cls.addEventListener('change', () => { t.storageClass = cls.value; });
+                return el('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:4px' },
+                  d, el('span', { style: 'color:var(--text-dim);font-size:11px', text: 'or' }), dt, cls,
+                  el('button', { class: 'btn', text: '×', title: 'Remove transition', onclick: () => { r.transitions.splice(j, 1); drawTr(); } }));
+              }));
+            };
+            drawTr();
+            const nctBox = el('div', {});
+            const drawNct = () => {
+              nctBox.replaceChildren(...r.noncurrentTransitions.map((t, j) => {
+                const d = el('input', { class: 'input', type: 'number', placeholder: 'days', value: t.noncurrentDays ? String(t.noncurrentDays) : '' });
+                const cls = clsSelect(t.storageClass);
+                d.addEventListener('change', () => { t.noncurrentDays = parseInt(d.value, 10) || 0; });
+                cls.addEventListener('change', () => { t.storageClass = cls.value; });
+                return el('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:4px' },
+                  d, cls,
+                  el('button', { class: 'btn', text: '×', title: 'Remove noncurrent transition', onclick: () => { r.noncurrentTransitions.splice(j, 1); drawNct(); } }));
+              }));
+            };
+            drawNct();
             return el('div', { class: `rule-card${r.enabled ? '' : ' off'}` },
               el('div', { class: 'lc-head' },
                 el('label', { class: 'lc-cell' }, 'Rule ID', id),
-                el('label', { class: 'lc-cell' }, 'Prefix filter', prefix),
+                mkTxt('Prefix filter', 'prefix', true),
                 el('label', { style: 'display:flex;align-items:center;gap:6px' }, on, 'Enabled'),
               ),
               el('div', { class: 'rule-grid' },
-                mkNum('Transition after (days)', 'transitionDays'),
-                el('label', { class: 'lc-cell' }, 'Transition class', cls),
-                mkNum('Expire after (days)', 'expirationDays'),
+                mkTxt('Tag key', 'tagKey'),
+                mkTxt('Tag value', 'tagValue'),
+                mkNum('Min size (bytes)', 'minBytes'),
+                mkNum('Max size (bytes)', 'maxBytes'),
+                el('label', { class: 'lc-cell' }, 'Expire after (days)', expDays),
+                el('label', { class: 'lc-cell' }, 'Expire on', expDate),
                 mkNum('Expire noncurrent after (days)', 'noncurrentDays'),
+                mkNum('Keep newer noncurrent (count)', 'newerNoncurrent'),
                 mkNum('Abort incomplete uploads after (days)', 'abortMpuDays'),
                 el('label', { style: 'display:flex;align-items:center;gap:6px' }, dm, 'Expire delete markers'),
+              ),
+              el('div', { style: 'margin-top:8px' },
+                el('div', { style: 'font-size:11px;color:var(--text-dim);margin-bottom:4px', text: 'Transitions (days or date, one per row)' }),
+                trBox,
+                el('button', { class: 'btn', text: '+ Add transition', onclick: () => { r.transitions.push({ days: 0, date: '', storageClass: '' }); drawTr(); } }),
+              ),
+              el('div', { style: 'margin-top:8px' },
+                el('div', { style: 'font-size:11px;color:var(--text-dim);margin-bottom:4px', text: 'Noncurrent transitions' }),
+                nctBox,
+                el('button', { class: 'btn', text: '+ Add noncurrent transition', onclick: () => { r.noncurrentTransitions.push({ noncurrentDays: 0, storageClass: '' }); drawNct(); } }),
               ),
               el('div', { style: 'margin-top:8px' },
                 el('button', { class: 'btn', text: 'Remove rule', onclick: () => { rules.splice(i, 1); drawRules(); } })),
@@ -4468,11 +4591,35 @@ export function adminDialog(bucket, onChanged) {
         }
         drawRules();
         content.replaceChildren(
-          el('div', { class: 'field', text: 'Transition moves objects to cheaper storage after N days; expiration deletes them. At least one action per rule.' }),
+          el('div', { class: 'field', text: 'Transitions move matching objects to cheaper storage after N days or on a date; expiration deletes them. A rule can stack several transitions, filter by prefix, tag and size range, and act on noncurrent versions. At least one action per rule.' }),
           rowsBox,
-          el('div', { style: 'display:flex;gap:8px;margin-top:10px' },
-            el('button', { class: 'btn', text: '+ Add rule', onclick: () => { rules.push({ id: `rule-${rules.length + 1}`, enabled: true }); drawRules(); } }),
-            el('button', { class: 'btn primary', text: 'Save', onclick: (e) => save(() => api.PutBucketLifecycle(bucket, rules), 'Lifecycle saved', e.currentTarget) }),
+          el('div', { style: 'display:flex;gap:8px;margin-top:10px;flex-wrap:wrap' },
+            el('button', { class: 'btn', text: '+ Add rule', onclick: () => { rules.push(normRule({ id: `rule-${rules.length + 1}`, enabled: true })); drawRules(); } }),
+            el('button', { class: 'btn', text: 'Copy JSON', onclick: () => {
+              const ta = el('textarea', { class: 'input mono', rows: '14', spellcheck: 'false', style: 'width:100%;box-sizing:border-box' });
+              ta.value = JSON.stringify(cleanRules(), null, 2);
+              openModal({ title: 'Lifecycle as JSON', wide: true,
+                body: el('div', {}, el('div', { class: 'field', text: 'Select all and copy (Ctrl+A, Ctrl+C) — the exact array Save writes. An edited array pastes back through Paste JSON.' }), ta),
+                buttons: [{ label: 'Close' }] });
+            } }),
+            el('button', { class: 'btn', text: 'Paste JSON', onclick: () => {
+              const ta = el('textarea', { class: 'input mono', rows: '14', spellcheck: 'false', style: 'width:100%;box-sizing:border-box', placeholder: '[{ "id": "archive", "enabled": true, "prefix": "logs/", "transitions": [{ "days": 30, "storageClass": "STANDARD_IA" }], "expirationDays": 365 }]' });
+              openModal({ title: 'Lifecycle from JSON', wide: true,
+                body: el('div', {}, el('div', { class: 'field', text: 'Paste a rule array in the same shape Copy JSON prints. Applying replaces the editor contents; Save still speaks the wire.' }), ta),
+                buttons: [
+                  { label: 'Apply', class: 'primary', onclick: (close) => {
+                    let parsed;
+                    try { parsed = JSON.parse(ta.value); } catch (e) { toast(`Invalid JSON — not applied: ${e.message}`, 'error'); return; }
+                    if (!Array.isArray(parsed) || parsed.some((x) => !x || typeof x !== 'object' || Array.isArray(x))) {
+                      toast('Lifecycle JSON must be an array of rule objects', 'error'); return;
+                    }
+                    rules.length = 0; rules.push(...parsed.map(normRule)); drawRules();
+                    close(null);
+                  } },
+                  { label: 'Cancel' },
+                ] });
+            } }),
+            el('button', { class: 'btn primary', text: 'Save', onclick: (e) => save(() => api.PutBucketLifecycle(bucket, cleanRules()), 'Lifecycle saved', e.currentTarget) }),
             el('button', { class: 'btn danger', text: 'Delete all', onclick: (e) => save(() => api.DeleteBucketLifecycle(bucket), 'Lifecycle removed', e.currentTarget) }),
           ),
         );

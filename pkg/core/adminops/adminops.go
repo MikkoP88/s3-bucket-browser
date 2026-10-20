@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/policy"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -153,19 +154,61 @@ func DeleteCORS(ctx context.Context, client *s3.Client, bucket string) error {
 
 // ---------------- lifecycle ----------------
 
-// LifecycleRule is the supported subset of S3 lifecycle rules: transition to
-// a cheaper class, expiration, noncurrent-version cleanup and aborted
-// multipart cleanup. One transition per rule.
+// LifecycleTransition is one transition action: matching objects move to
+// StorageClass after Days, or on the calendar Date (YYYY-MM-DD) — exactly
+// one of the two forms per S3's grammar.
+type LifecycleTransition struct {
+	Days         int32  `json:"days,omitempty"`
+	Date         string `json:"date,omitempty"` // YYYY-MM-DD
+	StorageClass string `json:"storageClass"`
+}
+
+// NoncurrentTransition moves NONCURRENT versions to StorageClass after
+// NoncurrentDays (the noncurrent twin of LifecycleTransition, minus dates —
+// S3 allows day offsets only on this side).
+type NoncurrentTransition struct {
+	NoncurrentDays int32  `json:"noncurrentDays"`
+	StorageClass   string `json:"storageClass"`
+}
+
+// LifecycleRule is the supported subset of S3 lifecycle rules: the filter
+// (prefix, one tag, an object-size range), any number of transitions, the
+// expiration (days or a calendar date, delete markers), noncurrent-version
+// expiration (with how many newer versions to keep) and noncurrent
+// transitions, and aborted-multipart cleanup.
+//
+// The legacy transitionDays/transitionClass pair is kept for older JSON
+// payloads (the CLI's documented example, saved files): on READ the first
+// days-form transition also mirrors into the pair; on WRITE the pair is
+// honored only when the Transitions list is empty — the list, when present,
+// is the truth.
 type LifecycleRule struct {
-	ID              string `json:"id,omitempty"`
-	Enabled         bool   `json:"enabled"`
-	Prefix          string `json:"prefix,omitempty"`
-	TransitionDays  int32  `json:"transitionDays,omitempty"`
-	TransitionClass string `json:"transitionClass,omitempty"` // GLACIER, DEEP_ARCHIVE, ...
-	ExpirationDays  int32  `json:"expirationDays,omitempty"`
-	DeleteMarker    bool   `json:"deleteMarker,omitempty"`   // expire delete markers
-	NoncurrentDays  int32  `json:"noncurrentDays,omitempty"` // expire noncurrent versions
-	AbortMPUDays    int32  `json:"abortMpuDays,omitempty"`   // abort incomplete uploads
+	ID      string `json:"id,omitempty"`
+	Enabled bool   `json:"enabled"`
+
+	Prefix   string `json:"prefix,omitempty"`
+	TagKey   string `json:"tagKey,omitempty"`
+	TagValue string `json:"tagValue,omitempty"`
+	MinBytes int64  `json:"minBytes,omitempty"` // filter: object size >=
+	MaxBytes int64  `json:"maxBytes,omitempty"` // filter: object size <
+
+	Transitions     []LifecycleTransition `json:"transitions,omitempty"`
+	TransitionDays  int32                 `json:"transitionDays,omitempty"`  // legacy: Transitions[0]
+	TransitionClass string                `json:"transitionClass,omitempty"` // legacy pair
+
+	ExpirationDays int32  `json:"expirationDays,omitempty"`
+	ExpirationDate string `json:"expirationDate,omitempty"` // YYYY-MM-DD
+	DeleteMarker   bool   `json:"deleteMarker,omitempty"`   // expire delete markers
+
+	NoncurrentDays        int32                  `json:"noncurrentDays,omitempty"`          // expire noncurrent versions
+	NewerNoncurrent       int32                  `json:"newerNoncurrentVersions,omitempty"` // keep N newer while expiring
+	NoncurrentTransitions []NoncurrentTransition `json:"noncurrentTransitions,omitempty"`
+	AbortMPUDays          int32                  `json:"abortMpuDays,omitempty"` // abort incomplete uploads
+}
+
+// parseLifecycleDate parses the YYYY-MM-DD form both wire dates speak.
+func parseLifecycleDate(s string) (time.Time, error) {
+	return time.Parse("2006-01-02", s)
 }
 
 // GetLifecycle fetches lifecycle rules; none configured is not an error.
@@ -186,18 +229,50 @@ func GetLifecycle(ctx context.Context, client *s3.Client, bucket string) ([]Life
 			Enabled: r.Status == s3types.ExpirationStatusEnabled,
 		}
 		if r.Filter != nil {
-			lr.Prefix = firstNonEmpty(aws.ToString(r.Filter.And.Prefix), aws.ToString(r.Filter.Prefix))
+			lr.Prefix = aws.ToString(r.Filter.Prefix)
+			if tag := r.Filter.Tag; tag != nil {
+				lr.TagKey, lr.TagValue = aws.ToString(tag.Key), aws.ToString(tag.Value)
+			}
+			if and := r.Filter.And; and != nil {
+				// And is a pointer on the wire — a plain prefix filter never
+				// carries one, and the unguarded deref was a latent crash on
+				// the most common rule shape (caught by the v2 rigs)
+				lr.Prefix = firstNonEmpty(aws.ToString(and.Prefix), lr.Prefix)
+				if len(and.Tags) > 0 {
+					lr.TagKey, lr.TagValue = aws.ToString(and.Tags[0].Key), aws.ToString(and.Tags[0].Value)
+				}
+				lr.MinBytes = aws.ToInt64(and.ObjectSizeGreaterThan)
+				lr.MaxBytes = aws.ToInt64(and.ObjectSizeLessThan)
+			}
 		}
-		if len(r.Transitions) > 0 {
-			lr.TransitionDays = aws.ToInt32(r.Transitions[0].Days)
-			lr.TransitionClass = string(r.Transitions[0].StorageClass)
+		for _, t := range r.Transitions {
+			tr := LifecycleTransition{StorageClass: string(t.StorageClass)}
+			if t.Days != nil {
+				tr.Days = aws.ToInt32(t.Days)
+			} else if t.Date != nil {
+				tr.Date = t.Date.Format("2006-01-02")
+			}
+			lr.Transitions = append(lr.Transitions, tr)
+		}
+		if len(lr.Transitions) > 0 && lr.Transitions[0].Days > 0 {
+			lr.TransitionDays, lr.TransitionClass = lr.Transitions[0].Days, lr.Transitions[0].StorageClass
 		}
 		if r.Expiration != nil {
 			lr.ExpirationDays = aws.ToInt32(r.Expiration.Days)
 			lr.DeleteMarker = aws.ToBool(r.Expiration.ExpiredObjectDeleteMarker)
+			if r.Expiration.Date != nil {
+				lr.ExpirationDate = r.Expiration.Date.Format("2006-01-02")
+			}
 		}
 		if r.NoncurrentVersionExpiration != nil {
 			lr.NoncurrentDays = aws.ToInt32(r.NoncurrentVersionExpiration.NoncurrentDays)
+			lr.NewerNoncurrent = aws.ToInt32(r.NoncurrentVersionExpiration.NewerNoncurrentVersions)
+		}
+		for _, t := range r.NoncurrentVersionTransitions {
+			lr.NoncurrentTransitions = append(lr.NoncurrentTransitions, NoncurrentTransition{
+				NoncurrentDays: aws.ToInt32(t.NoncurrentDays),
+				StorageClass:   string(t.StorageClass),
+			})
 		}
 		if r.AbortIncompleteMultipartUpload != nil {
 			lr.AbortMPUDays = aws.ToInt32(r.AbortIncompleteMultipartUpload.DaysAfterInitiation)
@@ -207,6 +282,16 @@ func GetLifecycle(ctx context.Context, client *s3.Client, bucket string) ([]Life
 	return rules, nil
 }
 
+// lifecycleRuleHasAction reports whether the rule carries at least one
+// action or a narrowing filter — S3 refuses rules that do nothing.
+func lifecycleRuleHasAction(r LifecycleRule) bool {
+	return r.Prefix != "" || r.TagKey != "" || r.MinBytes > 0 || r.MaxBytes > 0 ||
+		len(r.Transitions) > 0 || (r.TransitionDays > 0 && r.TransitionClass != "") ||
+		r.ExpirationDays > 0 || r.ExpirationDate != "" || r.DeleteMarker ||
+		r.NoncurrentDays > 0 || r.NewerNoncurrent > 0 || len(r.NoncurrentTransitions) > 0 ||
+		r.AbortMPUDays > 0
+}
+
 // PutLifecycle replaces the lifecycle configuration.
 func PutLifecycle(ctx context.Context, client *s3.Client, bucket string, rules []LifecycleRule) error {
 	if len(rules) == 0 {
@@ -214,34 +299,92 @@ func PutLifecycle(ctx context.Context, client *s3.Client, bucket string, rules [
 	}
 	var out []s3types.LifecycleRule
 	for _, r := range rules {
-		if r.Prefix == "" && r.ExpirationDays == 0 && r.TransitionDays == 0 &&
-			r.NoncurrentDays == 0 && r.AbortMPUDays == 0 {
-			return fmt.Errorf("lifecycle rule %q does nothing (no prefix filter or action)", r.ID)
+		if !lifecycleRuleHasAction(r) {
+			return fmt.Errorf("lifecycle rule %q does nothing (no filter or action)", r.ID)
+		}
+		if r.ExpirationDays > 0 && r.ExpirationDate != "" {
+			return fmt.Errorf("lifecycle rule %q: expiration days and date are mutually exclusive", r.ID)
+		}
+		if r.MinBytes > 0 && r.MaxBytes > 0 && r.MinBytes >= r.MaxBytes {
+			return fmt.Errorf("lifecycle rule %q: min size %d is not below max %d", r.ID, r.MinBytes, r.MaxBytes)
+		}
+		// the transitions list is the truth; the legacy pair stands in only
+		// when no list rode the payload
+		transitions := r.Transitions
+		if len(transitions) == 0 && r.TransitionDays > 0 && r.TransitionClass != "" {
+			transitions = []LifecycleTransition{{Days: r.TransitionDays, StorageClass: r.TransitionClass}}
+		}
+		var wireTransitions []s3types.Transition
+		for _, t := range transitions {
+			wt := s3types.Transition{StorageClass: s3types.TransitionStorageClass(t.StorageClass)}
+			switch {
+			case t.Date != "":
+				d, err := parseLifecycleDate(t.Date)
+				if err != nil {
+					return fmt.Errorf("lifecycle rule %q: transition date %q is not YYYY-MM-DD", r.ID, t.Date)
+				}
+				wt.Date = aws.Time(d)
+			default:
+				wt.Days = aws.Int32(t.Days)
+			}
+			wireTransitions = append(wireTransitions, wt)
 		}
 		tr := s3types.LifecycleRule{
-			ID:     aws.String(r.ID),
-			Status: s3types.ExpirationStatusDisabled,
-			Filter: &s3types.LifecycleRuleFilter{Prefix: aws.String(r.Prefix)},
+			ID:          aws.String(r.ID),
+			Status:      s3types.ExpirationStatusDisabled,
+			Filter:      &s3types.LifecycleRuleFilter{Prefix: aws.String(r.Prefix)},
+			Transitions: wireTransitions,
 		}
 		if r.Enabled {
 			tr.Status = s3types.ExpirationStatusEnabled
 		}
-		if r.TransitionDays > 0 && r.TransitionClass != "" {
-			tr.Transitions = []s3types.Transition{{
-				Days:         aws.Int32(r.TransitionDays),
-				StorageClass: s3types.TransitionStorageClass(r.TransitionClass),
-			}}
-		}
-		if r.ExpirationDays > 0 || r.DeleteMarker {
-			tr.Expiration = &s3types.LifecycleExpiration{
-				Days:                      aws.Int32(r.ExpirationDays),
-				ExpiredObjectDeleteMarker: aws.Bool(r.DeleteMarker && r.ExpirationDays == 0),
+		if r.TagKey != "" || r.MinBytes > 0 || r.MaxBytes > 0 {
+			and := s3types.LifecycleRuleAndOperator{}
+			if r.Prefix != "" {
+				and.Prefix = aws.String(r.Prefix)
 			}
-		}
-		if r.NoncurrentDays > 0 {
-			tr.NoncurrentVersionExpiration = &s3types.NoncurrentVersionExpiration{
-				NoncurrentDays: aws.Int32(r.NoncurrentDays),
+			if r.TagKey != "" {
+				and.Tags = []s3types.Tag{{Key: aws.String(r.TagKey), Value: aws.String(r.TagValue)}}
 			}
+			if r.MinBytes > 0 {
+				and.ObjectSizeGreaterThan = aws.Int64(r.MinBytes)
+			}
+			if r.MaxBytes > 0 {
+				and.ObjectSizeLessThan = aws.Int64(r.MaxBytes)
+			}
+			tr.Filter = &s3types.LifecycleRuleFilter{And: &and}
+		}
+		if r.ExpirationDays > 0 || r.ExpirationDate != "" || r.DeleteMarker {
+			ex := s3types.LifecycleExpiration{
+				ExpiredObjectDeleteMarker: aws.Bool(r.DeleteMarker && r.ExpirationDays == 0 && r.ExpirationDate == ""),
+			}
+			if r.ExpirationDays > 0 {
+				ex.Days = aws.Int32(r.ExpirationDays)
+			}
+			if r.ExpirationDate != "" {
+				d, err := parseLifecycleDate(r.ExpirationDate)
+				if err != nil {
+					return fmt.Errorf("lifecycle rule %q: expiration date %q is not YYYY-MM-DD", r.ID, r.ExpirationDate)
+				}
+				ex.Date = aws.Time(d)
+			}
+			tr.Expiration = &ex
+		}
+		if r.NoncurrentDays > 0 || r.NewerNoncurrent > 0 {
+			ne := s3types.NoncurrentVersionExpiration{}
+			if r.NoncurrentDays > 0 {
+				ne.NoncurrentDays = aws.Int32(r.NoncurrentDays)
+			}
+			if r.NewerNoncurrent > 0 {
+				ne.NewerNoncurrentVersions = aws.Int32(r.NewerNoncurrent)
+			}
+			tr.NoncurrentVersionExpiration = &ne
+		}
+		for _, t := range r.NoncurrentTransitions {
+			tr.NoncurrentVersionTransitions = append(tr.NoncurrentVersionTransitions, s3types.NoncurrentVersionTransition{
+				NoncurrentDays: aws.Int32(t.NoncurrentDays),
+				StorageClass:   s3types.TransitionStorageClass(t.StorageClass),
+			})
 		}
 		if r.AbortMPUDays > 0 {
 			tr.AbortIncompleteMultipartUpload = &s3types.AbortIncompleteMultipartUpload{

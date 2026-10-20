@@ -5644,9 +5644,9 @@ async function guiBattery() {
     return 'all four block-public-access switches saved from the panel, CLI-verified both directions';
   });
 
-  await verify({ id: 'GUI-109', area: 'admin', action: 'Admin panel: Lifecycle tab round-trip', ds: 'S3 (MinIO)', scenario: 'a rule authored in the Lifecycle tab (id, prefix filter, transition days + class, expiration, noncurrent + abort-MPU days, delete markers) saves through the panel and the CLI reads every field back; Delete all clears it and the CLI answers the honest empty array — the array-never-null law live — the panel is the writer, the CLI the oracle', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-109', area: 'admin', action: 'Admin panel: Lifecycle tab round-trip', ds: 'S3 (MinIO)', scenario: 'a rule authored in the Lifecycle tab (a pasted JSON array seats beside an authored rule — id, prefix/tag/size filter, transition days + class, expiration, noncurrent + abort-MPU days, delete markers — Save lands both through the panel and the CLI reads every field back; Delete all clears it and the CLI answers the honest empty array — the array-never-null law live — the panel is the writer, the CLI the oracle', face: 'GUI' }, async () => {
     const AB = BUCKET + '-glife';
-    const RULE = [{ id: 'verify-life', enabled: true, prefix: 'logs/', transitionDays: 30, transitionClass: 'GLACIER', expirationDays: 365, noncurrentDays: 14, abortMpuDays: 7, deleteMarker: true }];
+    const RULE = [{ id: 'verify-life', enabled: true, prefix: 'logs/', tagKey: 'team', tagValue: 'core', minBytes: 1024, maxBytes: 1048576, transitions: [{ days: 30, storageClass: 'GLACIER' }], expirationDays: 365, noncurrentDays: 14, newerNoncurrentVersions: 3, abortMpuDays: 7, deleteMarker: true }];
     let r = await s3(['mb', 's3://' + AB]);
     need(r.code === 0, 'mb: ' + r.out + r.err);
     await addGuiBucketSource(AB);
@@ -5680,26 +5680,66 @@ async function guiBattery() {
     need(!paneErr, 'the Lifecycle pane opened with an error: ' + paneErr.trim().slice(0, 160));
     await waitFor(() => clickBtn('\\+ add rule'), 5000, 'Add rule');
     await sleep(200);
-    // the card binds through change events (the CORS grammar): inputs in
-    // DOM order [id, prefix, enabled, transitionDays, expirationDays,
-    // noncurrentDays, abortMpuDays, deleteMarker] + the class select
+    // Paste JSON first — the round's new verb, live: the dialog takes an
+    // array, Apply seats it as the editor's contents (REPLACING the rule
+    // the Add above drafted — the replace law), and the card carries it
+    // until Save speaks the wire
+    await waitFor(() => clickBtn('paste json'), 5000, 'Paste JSON');
+    await sleep(200);
+    const seeded = await evalPage(() => {
+      const ta = document.querySelector('#modal-root .modal-body textarea');
+      if (!ta) return 'no textarea';
+      ta.value = JSON.stringify([{ id: 'verify-paste', enabled: true, prefix: 'paste/', transitions: [{ days: 5, storageClass: 'GLACIER' }], expirationDays: 10 }]);
+      const apply = Array.from(document.querySelectorAll('#modal-root button')).find((b) => (b.textContent || '').trim() === 'Apply');
+      if (!apply) return 'no Apply';
+      apply.click();
+      return true;
+    });
+    need(seeded === true, 'the Paste JSON dialog did not take the array: ' + seeded);
+    const seated = await evalPage(() => {
+      const cards = document.querySelectorAll('#modal-root .rule-card');
+      return cards.length === 1 && cards[0].querySelector('input').value === 'verify-paste';
+    });
+    need(seated, 'Paste JSON must REPLACE the editor contents: expected exactly one card named verify-paste');
+    await waitFor(() => clickBtn('\\+ add rule'), 5000, 'Add rule');
+    await sleep(200);
+    // the v2 card binds through change events (the CORS grammar): every
+    // field under its own label, the transition as its own row
     const filled = await evalPage(() => {
-      const card = document.querySelector('#modal-root .rule-card');
-      if (!card) return 'no card';
-      const inputs = Array.from(card.querySelectorAll('input'));
-      if (inputs.length !== 8) return inputs.length + ' inputs';
-      const set = (i, v) => { inputs[i].value = v; inputs[i].dispatchEvent(new Event('change', { bubbles: true })); };
-      set(0, 'verify-life');
-      set(1, 'logs/');
-      if (!inputs[2].checked) inputs[2].click(); // enabled ships checked
-      set(3, '30');
-      set(4, '365');
-      set(5, '14');
-      set(6, '7');
-      inputs[7].checked = true; // expire delete markers
-      inputs[7].dispatchEvent(new Event('change', { bubbles: true }));
+      const cards = document.querySelectorAll('#modal-root .rule-card');
+      if (!cards.length) return 'no card';
+      const card = cards[cards.length - 1]; // the freshly added rule
+      if (card.querySelectorAll('input').length < 13) return 'card too thin';
+      const labels = Array.from(card.querySelectorAll('label'));
+      const by = (t) => labels.find((l) => (l.textContent || '').trim().startsWith(t));
+      const set = (t, v) => { const inp = by(t) && by(t).querySelector('input'); if (!inp) return 'no input: ' + t; inp.value = v; inp.dispatchEvent(new Event('change', { bubbles: true })); return true; };
+      let r;
+      if ((r = set('Rule ID', 'verify-life')) !== true) return r;
+      if ((r = set('Prefix filter', 'logs/')) !== true) return r;
+      if ((r = set('Tag key', 'team')) !== true) return r;
+      if ((r = set('Tag value', 'core')) !== true) return r;
+      if ((r = set('Min size (bytes)', '1024')) !== true) return r;
+      if ((r = set('Max size (bytes)', '1048576')) !== true) return r;
+      if ((r = set('Expire after (days)', '365')) !== true) return r;
+      if ((r = set('Expire noncurrent after (days)', '14')) !== true) return r;
+      if ((r = set('Keep newer noncurrent (count)', '3')) !== true) return r;
+      if ((r = set('Abort incomplete uploads after (days)', '7')) !== true) return r;
+      const dm = by('Expire delete markers') && by('Expire delete markers').querySelector('input');
+      if (!dm) return 'no input: Expire delete markers';
+      dm.checked = true; // expire delete markers
+      dm.dispatchEvent(new Event('change', { bubbles: true }));
+      const en = by('Enabled') && by('Enabled').querySelector('input');
+      if (!en || !en.checked) return 'enabled not checked'; // enabled ships checked
+      const addTr = Array.from(card.querySelectorAll('button')).find((b) => (b.textContent || '').trim() === '+ Add transition');
+      if (!addTr) return 'no + Add transition';
+      addTr.click();
       const sel = card.querySelector('select');
       if (!sel) return 'no select';
+      const nums = Array.from(card.querySelectorAll('input[type="number"]'));
+      const trD = nums[nums.length - 1]; // the transition row's days input
+      if (!trD) return 'no transition days input';
+      trD.value = '30';
+      trD.dispatchEvent(new Event('change', { bubbles: true }));
       sel.value = 'GLACIER';
       sel.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
@@ -5728,9 +5768,16 @@ async function guiBattery() {
       }
       need(false, 'the panel Lifecycle Save did not land (direct CLI put exited ' + put.code + ')');
     }
-    for (const kv of [['enabled', true], ['prefix', 'logs/'], ['transitionDays', 30], ['transitionClass', 'GLACIER'], ['expirationDays', 365], ['noncurrentDays', 14], ['abortMpuDays', 7], ['deleteMarker', true]]) {
+    for (const kv of [['enabled', true], ['prefix', 'logs/'], ['tagKey', 'team'], ['tagValue', 'core'], ['minBytes', 1024], ['maxBytes', 1048576], ['expirationDays', 365], ['noncurrentDays', 14], ['newerNoncurrentVersions', 3], ['abortMpuDays', 7], ['deleteMarker', true]]) {
       need(rule[kv[0]] === kv[1], 'lifecycle field ' + kv[0] + ' read back ' + JSON.stringify(rule[kv[0]]) + ', want ' + JSON.stringify(kv[1]));
     }
+    need(Array.isArray(rule.transitions) && rule.transitions.length === 1 && rule.transitions[0].days === 30 && rule.transitions[0].storageClass === 'GLACIER', 'lifecycle transitions read back ' + JSON.stringify(rule.transitions) + ', want the days-form GLACIER row');
+    need(rule.transitionDays === 30 && rule.transitionClass === 'GLACIER', 'the legacy pair must mirror the first days-form transition on read: ' + JSON.stringify({ d: rule.transitionDays, c: rule.transitionClass }));
+    // the pasted rule rode the same Save — the paste verb's live wire pin
+    const allRaw = await s3(['bucket', 'lifecycle', 'get', 's3://' + AB, '--json']);
+    let pasted = null;
+    try { const j = JSON.parse(allRaw.out); pasted = Array.isArray(j) && j.find((x) => x && x.id === 'verify-paste'); } catch (e) { /* the poll already parsed this */ }
+    need(pasted && Array.isArray(pasted.transitions) && pasted.transitions.length === 1 && pasted.transitions[0].days === 5 && pasted.expirationDays === 10, 'the pasted rule did not land on the wire: ' + JSON.stringify(pasted));
     await waitFor(() => clickBtn('delete all'), 5000, 'Lifecycle Delete all');
     let gone = null;
     for (let i = 0; i < 40 && !gone; i++) {
@@ -5746,7 +5793,206 @@ async function guiBattery() {
     await shot('109-admin-lifecycle');
     await s3(['rb', 's3://' + AB, '--force']);
     await removeGuiSource(AB);
-    return 'lifecycle rule authored in the panel, CLI-verified field by field, deleted to []';
+    return 'two lifecycle rules seated (one pasted as JSON, one authored in the card), CLI-verified field by field, deleted to []';
+  });
+
+  await verify({ id: 'GUI-110', area: 'transfers', action: 'Dual-pane clipboard law: the pane selection wins its own verbs over a stale main selection', ds: 'FTP', scenario: 'a two-row main-grid selection stays armed while the side pane binds a remote source: the main keyboard copy answers with the main count (2), the pane context-menu Copy answers with the pane count (1 — never the stale two), the paste into S3 lands exactly the pane file byte-exact, and a pane-focused Ctrl+C gathers the pane too — focus is the shared verbs surface oracle', face: 'GUI' }, async () => {
+    // The seeds: two objects in the S3 folder the main view certifies on,
+    // one file on the FTP fixture the pane will bind. The FTP seed rides a
+    // transient CLI source — the CLI store never reaches the page tree, and
+    // both sources dial the same fixture root, so the file is there for the
+    // persistent verify-ftp binding to list.
+    const F = 'pane110-' + RUNID + '.txt';
+    const A1 = 'pane110-a-' + RUNID + '.txt';
+    const A2 = 'pane110-b-' + RUNID + '.txt';
+    const PAY = 'pane clipboard payload ' + RUNID + '\n';
+    const seedf = path.join(ART, 'pane110-seed.txt');
+    await writeFile(seedf, PAY);
+    let r = await s3(['cp', seedf, 's3://' + BUCKET + '/verify-gui/' + A1]);
+    need(r.code === 0, 's3 seed a: ' + r.out + r.err);
+    r = await s3(['cp', seedf, 's3://' + BUCKET + '/verify-gui/' + A2]);
+    need(r.code === 0, 's3 seed b: ' + r.out + r.err);
+    await cli(['source', 'remove', 'ftp-seed110']).catch(() => {});
+    r = await cli(['source', 'add', 'ftp-seed110', '--type', 'ftp', '--host', '127.0.0.1', '--port', String(FTP_PORT), '--username', E2E_USER, '--password', E2E_PASS]);
+    need(r.code === 0, 'ftp seed add: ' + r.out + r.err);
+    r = await cli(['cp', seedf, 'ftp-seed110://' + F]);
+    need(r.code === 0, 'ftp seed cp: ' + r.out + r.err);
+    const toastText = () => evalPage(() => document.getElementById('toasts')?.textContent || '');
+    const clearToasts = () => evalPage(() => { const t = document.getElementById('toasts'); if (t) t.textContent = ''; });
+    // leg 1 — the main law still holds: two main rows, keyboard copy, 2
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.endsWith(A1)); }, 15000, 'the seeded main rows');
+    await clearToasts();
+    await clickRow(A1);
+    await ctrlClickRow(A2);
+    await page.keyboard.press('Control+c');
+    await waitFor(async () => (await toastText()).includes('Copied 2 item'), 5000, 'the main keyboard copy counts the main selection');
+    // leg 2 — THE LAW: pane-bound remote, pane menu Copy, the stale two lose
+    await ensureDualPane();
+    await treeMenu(FTPNAME);
+    await ctxItem(/open on secondary pane/i);
+    await waitFor(async () => (await sideKeys()).includes(F), 15000, 'the pane lists the ftp root');
+    await clearToasts();
+    // synthetic contextmenu (the treeMenu law: a real right-click starves);
+    // the pane grid selects the row before its menu opens, so the copy has
+    // exactly one pane row armed against the stale main two
+    await evalPage((name) => {
+      const rows = Array.from(document.querySelectorAll('#local-grid-body .grid-row'));
+      const row = rows.find((x) => x._model && String(x._model.key).endsWith(name));
+      if (!row) return false;
+      const rc = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, button: 2,
+        clientX: Math.round(rc.left + rc.width / 2), clientY: Math.round(rc.top + rc.height / 2),
+      }));
+      return true;
+    }, F);
+    await ctxItem(/copy\s*ctrl\+c/i);
+    try {
+      await waitFor(async () => (await toastText()).includes('Copied 1 item'), 5000, 'the pane menu copy counts the pane selection, not the stale two');
+    } catch (e) {
+      const st = await evalPage(() => JSON.stringify({
+        toasts: (document.getElementById('toasts')?.textContent || '').slice(0, 60),
+        paneSel: Array.from(document.querySelectorAll('#local-grid-body .grid-row.sel')).map((r) => r.querySelector('.tname')?.textContent).join(','),
+        crumb: (document.querySelector('#local-crumb')?.textContent || '').slice(0, 40),
+        paneHidden: document.getElementById('local-pane')?.classList.contains('hidden'),
+      }));
+      throw new Error(`${e.message} — state: ${st}`);
+    }
+    await shot('110-pane-copy');
+    // leg 3 — the paste lands exactly the pane file, byte-exact, in S3
+    await evalPage(() => { document.getElementById('filter')?.blur(); });
+    await page.keyboard.press('Control+v');
+    const K = 's3://' + BUCKET + '/verify-gui/' + F;
+    await waitFor(async () => /size:/.test((await s3(['stat', K])).out), 30000, 'the pasted ftp file');
+    const outf = path.join(ART, 'pane110-out.txt');
+    await rm(outf, { force: true });
+    r = await s3(['cp', K, outf]);
+    need(r.code === 0, 's3 pull: ' + r.out + r.err);
+    need((await readFile(outf)).equals(Buffer.from(PAY, 'utf8')), 'the pane-copied bytes differ after the paste');
+    // leg 4 — focus is the oracle: a pane-focused Ctrl+C gathers the pane
+    await clearToasts();
+    const h = await sideRow(F);
+    need(!!h, 'the pane row handle for the focus leg');
+    await h.click();
+    await sleep(150);
+    // the click seats focus on the pane surface (the grid body is the
+    // focusable listbox); if the browser kept it elsewhere, seat it the
+    // way the tab walk does — the law under test is WHICH selection the
+    // copy gathers, and a pane-focused keyboard copy must never lose to
+    // the stale main two
+    await evalPage(() => {
+      const pane = document.getElementById('local-pane');
+      if (pane && !pane.contains(document.activeElement)) {
+        const g = document.getElementById('local-grid-body');
+        if (g) g.focus();
+      }
+      return true;
+    });
+    await page.keyboard.press('Control+c');
+    await waitFor(async () => (await toastText()).includes('Copied 1 item'), 5000, 'a pane-focused keyboard copy gathers the pane');
+    // cleanup — the pane rebinds local, every seed leaves
+    await paneGoto(ART).catch(() => {});
+    await cli(['rm', 'ftp-seed110://' + F, '--force']).catch(() => {});
+    await cli(['source', 'remove', 'ftp-seed110']).catch(() => {});
+    for (const k of [F, A1, A2]) await s3(['rm', 's3://' + BUCKET + '/verify-gui/' + k, '--force']);
+    return 'pane copy beats a stale two-row main selection, the paste lands byte-exact, and pane focus owns the keyboard copy';
+  });
+
+  await verify({ id: 'GUI-111', area: 'objects', action: 'Big-folder law: the materialization cap and the windowed continuation over live MinIO', ds: 'S3 (MinIO)', scenario: 'a folder seeded with 2,500 objects (tools/seedbig) seats exactly one deliberate step of the model through the streaming listing, the continuation footer names the bounded count and its verb fetches the next window strictly past the highest key held until the last window lands whole and the universe is known — the walk is asserted on row identities at the seams, never on wall-clock', face: 'GUI' }, async () => {
+    const AB = BUCKET + '-big';
+    // seedbig is the seeder this law owes: one process, 16-wide zero-byte
+    // puts, deterministic zero-padded keys, and -rm sweeps the exact key
+    // set — the walk leaves the world it found
+    const seed = (args) => new Promise((res) => {
+      const p = spawn('go', ['run', './tools/seedbig', ...args], { cwd: ROOT, windowsHide: true });
+      let out = '';
+      p.stdout.on('data', (d) => { out += d; });
+      p.stderr.on('data', (d) => { out += d; });
+      const kill = setTimeout(() => { try { p.kill(); } catch { /* hung seeder */ } }, 120000);
+      p.on('exit', (c) => { clearTimeout(kill); res({ code: c ?? 1, out }); });
+    });
+    let r = await seed(['-bucket', AB, '-prefix', 'seeded/', '-n', '2500', '-workers', '16']);
+    need(r.code === 0, 'seedbig exited ' + r.code + ': ' + r.out.trim().slice(0, 200));
+    // the first listing after a fresh seed pays the provider's cold
+    // directory scan (~8-10s per page on local MinIO over NTFS with
+    // Defender; a warm walk rides the FS cache at sub-second). Warm once
+    // through the CLI face so the descent asserts the cap law, not the
+    // cold-scan latency.
+    r = await s3(['ls', 's3://' + AB + '/seeded/']);
+    need(r.code === 0, 'warmup ls: ' + (r.out + r.err).trim().slice(0, 200));
+    await addGuiBucketSource(AB);
+    await treeOpen(AB);
+    await waitFor(async () => (await rowKeys()).includes('seeded'), 10000, 'the seeded folder at the root');
+    // the rigs seat: one deliberate step of 1,000 against a 5,000 ceiling
+    // (production rides the shipped constants — the walk is the same law).
+    // The folder is named seeded on purpose: the scratch bucket name ends
+    // in -big, and enterFolder proves the descent through the breadcrumb —
+    // a folder named big would satisfy that proof at the root itself.
+    await evalPage(() => { window.__s3bGrid.setStreamStep(1000, 5000); });
+    try {
+      await enterFolder('seeded');
+      // parked===1000 is the settle-stable pin, and the count is the
+      // cut law made visible: the walk is canceled the moment the
+      // ceiling refuses its first page (the parked>0 branch cancels the
+      // token — fetching on would page the universe for nothing), so
+      // parked names exactly the one refused page, never the folder's
+      // true remainder. 2,500 against a 1,000 ceiling settle shown 1000
+      // · parked 1000 · universe null, terminal until the footer's own
+      // window walk settles the same way.
+      await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 1000
+        && window.__s3bGrid.modelInfo().parked === 1000
+        && !!document.querySelector('#grid-body .grid-more')), 20000, 'the cap seated');
+      const cap = await evalPage(() => {
+        const g = window.__s3bGrid;
+        const info = g.modelInfo();
+        const foot = document.querySelector('#grid-body .grid-more');
+        return { shown: info.shown, universe: info.universe, parked: info.parked,
+          foot: !!foot, footText: foot ? foot.textContent : '', last: g.rows[999] ? String(g.rows[999].name) : '' };
+      });
+      need(cap.shown === 1000 && cap.parked === 1000 && cap.universe === null,
+        'the ceiling did not seat one deliberate step: ' + JSON.stringify(cap));
+      need(cap.last === 'big-000000999.txt', 'the highest held row is ' + cap.last + ', want big-000000999.txt');
+      need(cap.foot && /[0-9]/.test(cap.footText), 'the continuation footer did not name the bounded count');
+      await shot('111-big-cap');
+      await evalPage(() => document.querySelector('#grid-body .grid-more').click());
+      await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 2000
+        && !!document.querySelector('#grid-body .grid-more')), 20000, 'the first window');
+      const w1 = await evalPage(() => {
+        const g = window.__s3bGrid;
+        const info = g.modelInfo();
+        return { first: String(g.rows[0].name), seam: String(g.rows[1000].name),
+          parked: info.parked, universe: info.universe };
+      });
+      // the seam is the window law made visible: the fetch started strictly
+      // past the highest key held — no duplicate, no gap, nothing skipped
+      need(w1.seam === 'big-000001000.txt', 'the seam row after the first window is ' + w1.seam + ', want big-000001000.txt');
+      need(w1.first === 'big-000000000.txt', 'the first row moved: ' + w1.first);
+      need(w1.parked === 500 && w1.universe === null, 'the first window left the walk cut: ' + JSON.stringify(w1));
+      await evalPage(() => document.querySelector('#grid-body .grid-more').click());
+      await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 2500
+        && !document.querySelector('#grid-body .grid-more')), 20000, 'the universe known');
+      const w2 = await evalPage(() => {
+        const g = window.__s3bGrid;
+        const info = g.modelInfo();
+        return { shown: info.shown, universe: info.universe, parked: info.parked, last: String(g.rows[2499].name) };
+      });
+      need(w2.shown === 2500 && w2.universe === 2500 && w2.parked === 0,
+        'the last window did not settle the universe: ' + JSON.stringify(w2));
+      need(w2.last === 'big-000002499.txt', 'the final row is ' + w2.last + ', want big-000002499.txt');
+      await shot('111-big-full');
+    } finally {
+      // the rigs seat clears whatever the walk left — the shipped constants
+      // own every listing the rows ahead will drive
+      await evalPage(() => { window.__s3bGrid.setStreamStep(0, 0); }).catch(() => {});
+    }
+    await treeOpen(SRCNAME);
+    r = await seed(['-bucket', AB, '-prefix', 'seeded/', '-n', '2500', '-rm']);
+    need(r.code === 0, 'seedbig -rm exited ' + r.code + ': ' + r.out.trim().slice(0, 200));
+    r = await s3(['rb', 's3://' + AB, '--force']);
+    need(r.code === 0, 'rb: ' + r.out + r.err);
+    await removeGuiSource(AB);
+    return '2,500-object folder: one deliberate step of 1,000, both window seams exact, the universe 2,500 with the footer retired';
   });
 
   await verify({ id: 'GUI-37', area: 'gates', action: 'Delete Window keepcurrent mode: history destroyed, current version survives', ds: 'S3 (MinIO)', scenario: 'an object with THREE versions through the keepcurrent mode: the older versions are destroyed while the CURRENT bytes stay live and identical — the window never auto-confirms (explicit mode + typed word), and CLI re-reads the collapsed timeline (exactly 1 version, zero markers) and the bytes', face: 'GUI' }, async () => {
@@ -8908,13 +9154,23 @@ async function guiBattery() {
     return 'upload-only landed its copy and deleted nothing; the canceled window deleted nothing; the ticked leg removed exactly the remote extra';
   });
 
-  await verify({ id: 'GUI-93', area: 'transfers', action: 'Pause and resume a running job through the transfer manager', ds: 'S3 (MinIO)', scenario: 'a 3-file 9 MiB upload throttled to 256 kB/s: the manager row Pause parks the job between files (phase paused, progress frozen), Resume completes it, and every landed file is sha-identical — a pause may cost time, never bytes', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-93', area: 'transfers', action: 'Pause and resume a running job through the transfer manager', ds: 'S3 (MinIO)', scenario: 'a 3-file 9 MiB upload throttled to 256 kB/s: the manager row Pause parks the job mid-file (phase paused, the in-flight offset held, progress frozen), Resume completes it, and every landed file is sha-identical — a pause may cost time, never bytes', face: 'GUI' }, async () => {
     const P = `s3://${BUCKET}/verify-gui/pause93`;
     const LD = path.join(ART, 'pause93');
     await rm(LD, { recursive: true, force: true });
     await mkdir(LD, { recursive: true });
     await s3(['rm', '-r', `${P}/`, '--force']).catch(() => {});
-    await s3(['mkdir', `${P}/`]); // the folder marker: the row seeds nothing else before navigating
+    const mk93 = await s3(['mkdir', `${P}/`]); // the folder marker: the row seeds nothing else before navigating
+    need(mk93.code === 0, `pause93 seed mkdir failed: ${mk93.err}`);
+    // the local MinIO's FS backend can serve stale listings seconds after
+    // a write acked (GUI-68's documented flake — a seed cp exits 0 and the
+    // fresh key stays absent from dozens of refreshed listings) — settle
+    // the marker out-of-band first, so a provider lag can never masquerade
+    // as an app listing bug inside the row
+    await waitFor(async () => {
+      const r93 = await s3(['ls', `s3://${BUCKET}/verify-gui/`]);
+      return r93.code === 0 && /pause93/.test(r93.out);
+    }, 45000, 'the seeded pause93 marker to list (provider settle)');
     const shas = {};
     for (const n of ['f1', 'f2', 'f3']) {
       const f = path.join(LD, `${n}.bin`);
@@ -8936,8 +9192,9 @@ async function guiBattery() {
     let job = null;
     await waitFor(async () => {
       job = ((await call('ActiveTransfers')) || []).find((x) => x.status === 'running' && !x.hidden);
-      return job && job.sentBytes > 0 && job.sentBytes < job.totalBytes;
-    }, 20000, 'the throttled job running');
+      return job && job.sentBytes > 0 && job.sentBytes < job.totalBytes
+        && job.currentSent > 0 && job.currentSent < job.currentTotal; // demonstrably mid-file: the pause must land inside the in-flight file
+    }, 20000, 'the throttled job running mid-file');
     need(job.totalFiles === 3, `the drag did not carry the selection: ${JSON.stringify(job).slice(0, 200)}`);
     const jid = job.id;
     if (!(await evalPage(() => !!document.querySelector('#popout-root .popout')))) await menuClick(/view/i, /transfers/i);
@@ -8952,12 +9209,21 @@ async function guiBattery() {
     await waitFor(async () => {
       job = ((await call('ActiveTransfers')) || []).find((x) => x.id === jid);
       return job && job.phase === 'paused';
-    }, 30000, 'the job parked between files');
-    const s0 = job.sentBytes;
-    await sleep(1200);
-    job = ((await call('ActiveTransfers')) || []).find((x) => x.id === jid);
+    }, 30000, 'the job parked mid-file');
+    // the drain law: phase flips at once, sentBytes freezes only once the
+    // in-flight request lands — a 5s stillness window is the freeze oracle
+    let still = 0;
+    let prev = job ? job.sentBytes : -1;
+    for (let i = 0; i < 45 && still < 5; i++) {
+      await sleep(1000);
+      job = ((await call('ActiveTransfers')) || []).find((x) => x.id === jid);
+      const sent = job ? job.sentBytes : -1;
+      still = sent === prev ? still + 1 : 0;
+      prev = sent;
+    }
+    need(job && still >= 5, `progress never froze while paused: ${JSON.stringify(job).slice(0, 160)}`);
     need(job && job.status === 'running' && job.phase === 'paused', `the parked job moved: ${JSON.stringify(job).slice(0, 200)}`);
-    need(job.sentBytes === s0, `progress moved while paused: ${s0} -> ${job.sentBytes}`);
+    need(job.currentSent > 0 && job.currentSent < job.currentTotal, `the parked job lost the in-flight offset: ${JSON.stringify({ s: job.currentSent, t: job.currentTotal }).slice(0, 200)}`);
     await shot('93-paused');
     await waitFor(async () => evalPage(() => {
       const b = Array.from(document.querySelectorAll('.tr-job.running button'))
@@ -8981,7 +9247,7 @@ async function guiBattery() {
     await page.keyboard.press('Escape').catch(() => {});
     await s3(['rm', '-r', `${P}/`, '--force']);
     await rm(LD, { recursive: true, force: true });
-    return 'parked between files with progress frozen; resumed to done; all three files sha-identical';
+    return 'parked mid-file with the in-flight offset held and progress frozen; resumed to done; all three files sha-identical';
   });
 
   await verify({ id: 'GUI-94', area: 'sources', action: 'New bucket on this connection: bucket and its data source in one gesture', ds: 'S3 (MinIO)', scenario: 'the source row New bucket dialog creates the bucket through the picked connection AND seats its data source: the tree gains the newborn row, the view lands on its empty objects, the bucket is real on the CLI face and takes a write, and the row own Delete-bucket ladder removes bucket and source together', face: 'GUI' }, async () => {

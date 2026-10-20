@@ -428,8 +428,9 @@ export class Tree {
     this.render();
   }
 
-  // listDirs streams one source-pinned directory view and keeps only the
-  // folders.
+  // listDirs streams one source-pinned prefix's folders through the
+  // dirs-only walk (ListSourceDirsStream): the wire speaks folders alone,
+  // so a million-object folder ships the tree no object row.
   listDirs(source, bucket, prefix) {
     return new Promise((resolve, reject) => {
       const dirs = [];
@@ -441,10 +442,10 @@ export class Tree {
         fn(val);
       };
       const stream = subscribeStream(
-        () => api.ListSourceObjectsStream(source, bucket, prefix),
+        () => api.ListSourceDirsStream(source, bucket, prefix),
         (p) => {
           if (p.error) { finish(reject, new Error(p.error)); return; }
-          for (const e of p.entries || []) if (e.isDir) dirs.push(e);
+          for (const e of p.entries || []) dirs.push(e); // dirs-only wire: every entry is a folder
           if (p.done) finish(resolve, dirs);
         },
       );

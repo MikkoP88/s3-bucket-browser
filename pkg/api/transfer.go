@@ -148,8 +148,16 @@ type jobHandle struct {
 	itemNames  []string // item display names (TransferItems — the >itemRowCap fallback)
 	// hold is the pause gate: nil while the job flows, a channel that
 	// stays open for exactly as long as the job is paused (closed and
-	// cleared by resume). Guarded by mu; awaited only between files.
+	// cleared by resume). Guarded by mu; awaited between files by every
+	// walker and, for streamPark jobs, inside progress mid-file.
 	hold chan struct{}
+	// streamPark says this job's progress callback may park the in-flight
+	// stream itself (upload/download walkers — they hold no source locks).
+	// The xfer walker must NOT: it holds lockSrcs around each file's whole
+	// engine call, and a park inside the stream would hold both sources'
+	// locks for the pause's entire duration, freezing every other operation
+	// on them (the planner lock law) — xfer pauses at file boundaries.
+	streamPark bool
 	// retry resubmits only the kept rows of the original request under
 	// skip semantics; set once at entry before the worker spawns, read
 	// only by RetryTransfer after the job settles.
@@ -426,6 +434,18 @@ func (j *jobHandle) emit(force bool) {
 // options. THE live path: it emits (throttled) on every read, so a
 // 15-second single-file transfer paints its percentage as it climbs
 // instead of jumping 0% → 100% at the end.
+//
+// For streamPark jobs it is also the mid-file brake: when the job is
+// paused, the callback parks between reads — the stream itself stops
+// moving bytes (progress frozen, nothing written past the parked read)
+// instead of running the whole in-flight file to its settle before the
+// pause takes hold. Safe because the engine invokes it after the read
+// with no locks held (progressReader releases the rate limiter before
+// the callback), and because the walkers that set streamPark hold no
+// source locks across the engine call. Multipart parts each park at
+// their own next read boundary; cancellation still ends a park (the
+// context case returns and the walker's own checkpoint finishes the
+// job).
 func (j *jobHandle) progress(sent, total int64) {
 	j.mu.Lock()
 	j.fileSent = sent
@@ -435,8 +455,24 @@ func (j *jobHandle) progress(sent, total int64) {
 		j.info.CurrentTotal = total
 	}
 	j.lastByteAt = time.Now()
+	h := j.hold
+	park := j.streamPark
 	j.mu.Unlock()
 	j.emit(false)
+	if h == nil || !park {
+		return
+	}
+	j.emit(true) // the row says paused at the byte where the park began
+	select {
+	case <-h:
+	case <-j.ctx.Done():
+		return
+	}
+	j.mu.Lock()
+	j.info.Phase = PhaseTransfer
+	j.lastByteAt = time.Now() // the park was not a stall — never inherit its age
+	j.mu.Unlock()
+	j.emit(true)
 }
 
 // startFile announces the next in-flight file: its owning item (index
@@ -532,16 +568,23 @@ func (j *jobHandle) setPhase(p string) {
 	j.mu.Unlock()
 }
 
-// pause parks the job between files: the worker's next between-files
-// gate waits instead of starting the next file. An in-flight file (if
-// any) runs to its own settle first — a stream is never abandoned
-// mid-write. No-op on a settled or already-paused job.
+// pause parks the job. The phase flips to paused immediately (the row
+// answers the click — a job whose pause shows no effect reads as stuck),
+// and the parking itself happens at the next boundary the worker can
+// honor: for streamPark jobs that is the in-flight file's next read
+// (progress freezes mid-file); for every job it is the next between-
+// files gate. An in-flight file on a non-streamPark walker runs to its
+// own settle first. No-op on a settled or already-paused job.
 func (j *jobHandle) pause() {
 	j.mu.Lock()
-	defer j.mu.Unlock()
 	if j.info.Status == JobRunning && j.hold == nil {
 		j.hold = make(chan struct{})
+		j.info.Phase = PhasePaused
+		j.mu.Unlock()
+		j.emit(true)
+		return
 	}
+	j.mu.Unlock()
 }
 
 // resume releases the pause; the close is the one wake signal, so a job
@@ -639,9 +682,14 @@ func (a *App) ClearFinishedTransfers(ids []string) { a.jobs.clearFinished(ids) }
 // CancelTransfer cancels a running job by ID.
 func (a *App) CancelTransfer(id string) bool { return a.jobs.cancel(id) }
 
-// PauseTransfer parks a running job at its next between-files gate —
-// the in-flight file (if any) settles first, the row says "paused", and
-// nothing new starts until ResumeTransfer (or cancel) releases the gate.
+// PauseTransfer parks a running job — the row says "paused" immediately,
+// and the bytes stop at the boundary the job's walker can honor: uploads
+// and downloads freeze the in-flight file mid-stream (progress parked
+// between reads), cross-source transfers finish the in-flight file first
+// (their walker holds the involved sources' locks across each engine
+// call, and a mid-stream park would hold those locks for the whole
+// pause) and hold at the next file boundary. Nothing new starts until
+// ResumeTransfer (or cancel) releases the gate.
 func (a *App) PauseTransfer(id string) bool {
 	ok, src := a.jobs.pause(id)
 	if ok {
@@ -757,6 +805,7 @@ func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64
 	}
 	j := a.jobs.add("upload", len(pairs), total)
 	j.src = bucket
+	j.streamPark = true // this walker holds no source locks — progress may park mid-file
 	j.setMeta(uploadTitle(paths), filepath.Dir(paths[0]), s3Label(bucket, dirPrefix(prefix)), len(paths), false)
 	// The view source may be "" (single-source fallback) — the same value
 	// client("") resolved this job through, and the frontend resolves the
@@ -1156,6 +1205,7 @@ func (a *App) Download(bucket string, items []DownloadItem, destDir, policy stri
 	}
 	j := a.jobs.add("download", len(items), total)
 	j.src = bucket
+	j.streamPark = true // this walker holds no source locks — progress may park mid-file
 	j.setMeta(downloadTitle(items), s3Label(bucket, ""), destDir, len(items), false)
 	j.setDest(XferDest{Kind: "local", Dir: destDir})
 	its := make([]TransferItem, len(items))

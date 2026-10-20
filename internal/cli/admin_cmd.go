@@ -454,14 +454,44 @@ func bucketLifecycleCmd() *cobra.Command {
 						state = "enabled"
 					}
 					fmt.Printf("%s (%s, prefix %q):", r.ID, state, r.Prefix)
-					if r.TransitionDays > 0 {
+					if r.TagKey != "" {
+						fmt.Printf(" tag %s=%s", r.TagKey, r.TagValue)
+					}
+					if r.MinBytes > 0 || r.MaxBytes > 0 {
+						fmt.Print(" size")
+						if r.MinBytes > 0 {
+							fmt.Printf(" >= %d", r.MinBytes)
+						}
+						if r.MaxBytes > 0 {
+							fmt.Printf(" < %d", r.MaxBytes)
+						}
+					}
+					if len(r.Transitions) > 0 {
+						for _, t := range r.Transitions {
+							if t.Date != "" {
+								fmt.Printf(" transition on %s -> %s", t.Date, t.StorageClass)
+							} else {
+								fmt.Printf(" transition %dd -> %s", t.Days, t.StorageClass)
+							}
+						}
+					} else if r.TransitionDays > 0 {
 						fmt.Printf(" transition %dd -> %s", r.TransitionDays, r.TransitionClass)
 					}
 					if r.ExpirationDays > 0 {
 						fmt.Printf(" expire after %dd", r.ExpirationDays)
+					} else if r.ExpirationDate != "" {
+						fmt.Printf(" expire on %s", r.ExpirationDate)
 					}
-					if r.NoncurrentDays > 0 {
-						fmt.Printf(" noncurrent after %dd", r.NoncurrentDays)
+					if r.NoncurrentDays > 0 || r.NewerNoncurrent > 0 {
+						if r.NoncurrentDays > 0 {
+							fmt.Printf(" noncurrent after %dd", r.NoncurrentDays)
+						}
+						if r.NewerNoncurrent > 0 {
+							fmt.Printf(" keep %d newer", r.NewerNoncurrent)
+						}
+					}
+					for _, t := range r.NoncurrentTransitions {
+						fmt.Printf(" noncurrent %dd -> %s", t.NoncurrentDays, t.StorageClass)
 					}
 					if r.AbortMPUDays > 0 {
 						fmt.Printf(" abort MPU after %dd", r.AbortMPUDays)

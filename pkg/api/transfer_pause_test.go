@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"testing"
 	"time"
 )
@@ -105,6 +106,24 @@ func waitJobStatus(t *testing.T, a *App, id, status string, patience ...time.Dur
 	}
 }
 
+// waitRemoteKey polls the fake until the key holds exactly want (the held
+// PUT's settle is asynchronous with the phase flip since pause turned
+// instant — a rig that needs the wire settled waits for the wire, not the
+// row).
+func waitRemoteKey(t *testing.T, f *fakeS3, key, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := remoteContent(t, f, key); got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("key %s never settled its %d bytes", key, len(want))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // The between-files gate: pause while a file sits mid-wire, and that file
 // still settles (a stream is never abandoned), but nothing new starts —
 // the row says "paused", Stalled stays off it, the wire goes quiet, and
@@ -127,6 +146,9 @@ func TestTransferPauseResume(t *testing.T) {
 	}
 	close(h.release) // let b.txt finish; the next gate must hold c.txt
 
+	// the phase flip is instant now (the row answers the click), so the
+	// wire settle is its own wait — b.txt must land before the gate speaks
+	waitRemoteKey(t, f, "b.txt", "bravo")
 	paused := waitJobPhase(t, a, id, PhasePaused)
 	if paused.Stalled {
 		t.Fatal("paused row flagged Stalled — the park is a decision, not a stall")
@@ -204,6 +226,9 @@ func TestTransferPauseThenCancel(t *testing.T) {
 		t.Fatal("PauseTransfer(running, flowing) = false")
 	}
 	close(h.release)
+	// the phase flip is instant — the cancel must wait for the in-flight
+	// file to settle or the count loses it
+	waitRemoteKey(t, f, "b.txt", "bravo")
 	waitJobPhase(t, a, id, PhasePaused)
 	if !a.CancelTransfer(id) {
 		t.Fatal("CancelTransfer(paused) = false")
@@ -215,5 +240,148 @@ func TestTransferPauseThenCancel(t *testing.T) {
 	time.Sleep(200 * time.Millisecond) // nothing may move after the settle
 	if len(f.keys("docs")) != 2 {
 		t.Fatalf("wire grew past the two settled files after cancel")
+	}
+}
+
+// The mid-file brake: pause a single throttled upload while its only file
+// is on the wire and the stream itself parks — progress freezes between
+// reads (not at a file boundary), the phase answers the click instantly,
+// Stalled stays off the parked row, nothing lands while parked, and the
+// resumed file is byte-exact. This is the law the Pause button owes the
+// user: a pause that waits for a large in-flight file to finish reads as
+// "pause does nothing".
+func TestTransferPauseMidFile(t *testing.T) {
+	a, _, f := pauseRigApp(t, "") // no held key — the throttle is the brake
+	// The body must stay UNDER the uploader's PartSize floor (5 MiB even at
+	// SDK defaults) or the engine splits into multipart — a path the fake
+	// does not serve, and a variable the rig must not ride. Single PUT,
+	// deterministically: 2 MiB at 512 KiB/s streams ~4s with reads parked
+	// every copy-buffer fill.
+	body := make([]byte, 2<<20)
+	for i := range body {
+		body[i] = byte(i*31 + i>>16) // deterministic, not all-zero
+	}
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(big, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, err := a.Upload([]string{big}, "docs", "", PolicyOverwrite, 512<<10, nil) // 512 KiB/s
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// wait until the file is provably mid-wire, then click pause
+	snap := func() JobInfo {
+		for _, ji := range a.ActiveTransfers() {
+			if ji.ID == id {
+				return ji
+			}
+		}
+		return JobInfo{}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ji := snap()
+		if ji.Status == JobRunning && ji.CurrentSent > 128*1024 && ji.CurrentSent < ji.CurrentTotal {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job never showed mid-file progress: %+v", snap())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !a.PauseTransfer(id) {
+		t.Fatal("PauseTransfer(mid-file, running) = false")
+	}
+	// the phase answers the click at once — no boundary wait
+	if ji := snap(); ji.Phase != PhasePaused {
+		t.Fatalf("phase %q right after PauseTransfer, want the instant paused", ji.Phase)
+	}
+
+	// the stream parks between reads: progress freezes while the file is
+	// provably part-sent. The freeze oracle must out-live the rate limiter's
+	// own lulls: a read of n bytes sleeps up to n/maxBPS before its callback
+	// runs, so any one read can hold the counters still for at most
+	// fileSize/maxBPS — a value unchanged longer than that bound (plus slack)
+	// with the phase parked can only be the park itself.
+	settled := func() (JobInfo, bool) {
+		ji := snap()
+		return ji, ji.Status == JobRunning && ji.Phase == PhasePaused
+	}
+	quietBound := time.Duration(int64(time.Second) * int64(len(body)) / (512 << 10))
+	quietBound += 500 * time.Millisecond
+	var frozen int64
+	stableFor := time.Duration(0)
+	lastSaw := time.Now()
+	deadline = time.Now().Add(12 * time.Second)
+	for {
+		ji, ok := settled()
+		if ok && frozen > 0 {
+			if ji.CurrentSent == frozen {
+				stableFor = time.Since(lastSaw)
+				if stableFor >= quietBound {
+					break
+				}
+			} else {
+				frozen = ji.CurrentSent
+				lastSaw = time.Now()
+			}
+		} else if ok {
+			frozen = ji.CurrentSent
+			lastSaw = time.Now()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("stream never parked: %+v", snap())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(700 * time.Millisecond) // the quiet beat: parked means parked
+	ji, ok := settled()
+	if !ok {
+		t.Fatalf("parked row moved: %+v", snap())
+	}
+	if ji.SentBytes != frozen {
+		t.Fatalf("SentBytes moved while parked mid-file: %d -> %d", frozen, ji.SentBytes)
+	}
+	if ji.Stalled {
+		t.Fatal("parked mid-file row flagged Stalled — the park is a decision, not a stall")
+	}
+	if ji.CurrentSent <= 0 || ji.CurrentSent >= ji.CurrentTotal {
+		t.Fatalf("park boundary = %d/%d, want strictly mid-file", ji.CurrentSent, ji.CurrentTotal)
+	}
+	if len(f.keys("docs")) != 0 {
+		t.Fatalf("wire holds %d object(s) while parked, want none — the file must not land", len(f.keys("docs")))
+	}
+
+	if !a.ResumeTransfer(id) {
+		t.Fatal("ResumeTransfer(parked mid-file) = false")
+	}
+	// a resumed stream owes its remaining bytes at the throttle: the whole
+	// tail is bounded by file/maxBPS plus the wake, so 15s is generous — and
+	// a miss dumps the goroutines, because a stream that never finishes is
+	// a stuck goroutine somewhere and its stack is the witness.
+	done, ok := JobInfo{}, false
+	deadline = time.Now().Add(15 * time.Second)
+	for {
+		for _, ji := range a.ActiveTransfers() {
+			if ji.ID == id {
+				done, ok = ji, ji.Status == JobDone
+			}
+		}
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			pprof.Lookup("goroutine").WriteTo(os.Stderr, 1)
+			t.Fatalf("resumed job never finished: %+v", done)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if done.DoneFiles != 1 || done.FailedFiles != 0 {
+		t.Fatalf("resumed mid-file job = %d done / %d failed, want 1/0", done.DoneFiles, done.FailedFiles)
+	}
+	if got := remoteContent(t, f, "big.bin"); got != string(body) {
+		t.Fatalf("resumed file differs: %d bytes on the wire, want %d", len(got), len(body))
 	}
 }

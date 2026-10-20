@@ -13,6 +13,17 @@ import { t, has } from './i18n.js';
 const ROW_H = 28;
 const OVERSCAN = 8;
 
+// The big-folder law: a streamed listing may offer far more rows than any
+// view should materialize (a 100M-object folder is real). The grid takes
+// rows in deliberate steps — ROW_STEP at a time, never past ROW_CEIL — and
+// keeps counting the rest as parked: the model stays bounded while the
+// continuation footer (renderMore) offers the next window and the counts
+// stay honest.
+export const ROW_STEP = 100000;
+export const ROW_CEIL = 1000000;
+const MORE_H = 34;    // continuation footer height, canvas pixels
+const APPLY_MS = 200; // coalesced apply cadence while a stream runs
+
 // acceptedMimes lists the drag payload types a pane accepts on folder rows:
 // the remote pane takes same-pane moves plus local-pane uploads; the local
 // pane takes remote downloads only (local moves are Explorer's job). The
@@ -177,6 +188,16 @@ export class Grid {
     this.typeBuf = '';
     this.typeTimer = null;
 
+    // streaming session state (the big-folder law): see beginStream
+    this.streaming = false;
+    this.rowLimit = ROW_STEP; // materialization ceiling while a stream runs
+    this.stepOverride = 0;    // rigs' seat: step/ceiling at a seedable scale
+    this.ceilOverride = 0;
+    this.overflow = 0;        // rows offered past the ceiling (parked)
+    this.universe = null;     // exact total once a full walk landed (null = open)
+    this.applyTimer = null;   // coalesced apply while streaming
+    this.moreEl = null;       // continuation footer (lazily built in renderMore)
+
     this.pool = [];
     this.accepts = null; // optional mime list override (side-pane bindings)
     this.showMarkers = true; // delete-marker badges on (Settings toggle)
@@ -339,6 +360,7 @@ export class Grid {
   rebuildPool() {
     this.canvas.replaceChildren();
     this.pool = [];
+    this.moreEl = null; // wiped with the canvas; renderMore rebuilds on demand
   }
 
   // ---------- setup ----------
@@ -628,8 +650,18 @@ export class Grid {
 
   // ---------- data ----------
   setRows(rows) {
+    // a wholesale swap ends any streaming session: parked rows, footer and
+    // the deferred prune all belong to the model that just left. The swap's
+    // model IS the universe — nothing sits outside it.
+    if (this.streaming) {
+      this.streaming = false;
+      if (this.applyTimer) { clearTimeout(this.applyTimer); this.applyTimer = null; }
+    }
+    this.overflow = 0;
+    this.universe = rows.length;
     this.all = rows;
     this.apply();
+    this.renderMore();
   }
 
   // appendRows extends the model with rows that arrive already in display
@@ -642,6 +674,8 @@ export class Grid {
       this.rows.push(...rows);
       this.render();
       if (this.on.model) this.on.model(); // a streamed page is a model change too — the tiles follow
+    } else if (this.streaming) {
+      this.applySoon(); // filter or non-default sort mid-stream: coalesce
     } else {
       this.apply(); // filter or non-default sort: full recompute
     }
@@ -654,6 +688,123 @@ export class Grid {
     const drop = new Set(keys);
     this.all = this.all.filter((r) => !drop.has(r.key));
     this.apply();
+  }
+
+  // ---------- big-folder streaming (the 100M-object law) ----------
+  // beginStream opens a streaming session: the materialization ceiling
+  // resets to one deliberate step, the universe count reopens, and
+  // filtered applies coalesce (applySoon) so a page never pays a full
+  // re-sort on top of the wire.
+  beginStream() {
+    this.streaming = true;
+    this.rowLimit = this.stepOverride || ROW_STEP;
+    this.overflow = 0;
+    this.universe = null;
+  }
+
+  // appendStreamRows is the cap-aware append: every offered row counts,
+  // only what fits under the ceiling lands, and the accepted slice comes
+  // back so the caller's own bookkeeping (tree dirs, ghost merge) holds
+  // exactly what the grid holds. Rows past the ceiling are parked, not
+  // lost — the footer offers them and on.more() fetches the window.
+  appendStreamRows(rows) {
+    if (!rows.length) return rows;
+    const room = this.rowLimit - this.all.length;
+    let acc = rows;
+    if (room <= 0) acc = [];
+    else if (rows.length > room) acc = rows.slice(0, room);
+    if (acc.length < rows.length) this.overflow += rows.length - acc.length;
+    if (acc.length) this.appendRows(acc);
+    this.renderMore();
+    return acc;
+  }
+
+  // endStream closes the session: the deferred selection prune runs in the
+  // final apply, and a walk that parked nothing settles the universe count
+  // on the materialized model itself (the status can then say "of N").
+  endStream(capped) {
+    this.streaming = false;
+    if (this.applyTimer) { clearTimeout(this.applyTimer); this.applyTimer = null; }
+    if (!capped) this.universe = this.all.length;
+    this.apply();
+    this.renderMore();
+  }
+
+  // growRows raises the ceiling one deliberate step for the window fetch
+  // the footer just asked for — never past the ceiling: a view is always
+  // bounded, however deep the user walks.
+  growRows() {
+    const step = this.stepOverride || ROW_STEP;
+    this.rowLimit = Math.min(this.rowLimit + step, this.ceilOverride || ROW_CEIL);
+    this.overflow = 0;
+  }
+
+  // parkRows re-seats parked rows after a wholesale swap carried them (the
+  // silent-refresh path swaps through setRows, which clears the footer).
+  // A parked view's universe is unknown — setRows' claim retires with it.
+  parkRows(n) {
+    this.overflow = n;
+    if (n > 0) this.universe = null;
+    this.renderMore();
+  }
+
+  // setStreamStep retunes step and ceiling — the rigs' seat, so batteries
+  // can walk the cap law at a seedable scale while production rides the
+  // shipped constants. Falsy args clear the override again (the harness
+  // restores the shipped constants at its tail; 0 must mean "gone", never
+  // a step of one).
+  setStreamStep(step, ceil) {
+    this.stepOverride = step ? Math.max(1, Math.round(step)) : 0;
+    this.ceilOverride = ceil ? Math.max(this.stepOverride, Math.round(ceil)) : 0;
+  }
+
+  // modelInfo reports the honest counts a status bar owes: what is shown,
+  // what the universe holds when that is known exactly, and how many
+  // offered rows sit parked past the ceiling.
+  modelInfo() {
+    return { shown: this.rows.length, universe: this.universe, parked: this.overflow };
+  }
+
+  // lastKey is the highest key held — the StartAfter anchor for the next
+  // window fetch. Arrival order interleaves folders and files (a page's
+  // common prefixes come before its objects), so "last" means max, not
+  // final.
+  lastKey() {
+    let k = '';
+    for (const r of this.all) if (r.key > k) k = r.key;
+    return k;
+  }
+
+  // applySoon coalesces apply() while a stream runs: the first dirty call
+  // schedules one timer and every later call rides it, so a filter or a
+  // non-default sort recomputes at most every APPLY_MS however fast the
+  // pages land.
+  applySoon() {
+    if (this.applyTimer) return;
+    this.applyTimer = setTimeout(() => {
+      this.applyTimer = null;
+      this.apply();
+    }, APPLY_MS);
+  }
+
+  // renderMore seats or clears the continuation footer — the parked rows'
+  // door. It names the bounded count honestly (the universe past a parked
+  // stream is unknown: the walk was cut at the ceiling), and the click is
+  // the host pane's fetch (on.more).
+  renderMore() {
+    const want = this.overflow > 0 && typeof this.on?.more === 'function';
+    if (!want) {
+      if (this.moreEl) { this.moreEl.remove(); this.moreEl = null; }
+      this.render();
+      return;
+    }
+    if (!this.moreEl) {
+      this.moreEl = el('button', { class: 'grid-more', type: 'button' });
+      this.moreEl.addEventListener('click', () => this.on.more());
+      this.canvas.appendChild(this.moreEl);
+    }
+    this.moreEl.textContent = t('grid.more', { n: this.rows.length.toLocaleString() });
+    this.render();
   }
 
   setFilter(f) {
@@ -698,9 +849,12 @@ export class Grid {
       return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
     });
     this.rows = rows;
-    // prune selection to existing rows
-    const live = new Set(rows.map((r) => r.key));
-    for (const k of this.sel) if (!live.has(k)) this.sel.delete(k);
+    // prune selection to existing rows — deferred while a stream runs (the
+    // model only grows mid-stream; endStream's final apply prunes once)
+    if (!this.streaming) {
+      const live = new Set(rows.map((r) => r.key));
+      for (const k of this.sel) if (!live.has(k)) this.sel.delete(k);
+    }
     this.render(true); // force: re-emit select (selection may have been pruned)
     if (this.on.model) this.on.model(); // the gallery re-seats its tiles on every model change
   }
@@ -789,7 +943,10 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
 
   render(force = false) {
     const total = this.rows.length;
-    this.canvas.style.height = `${total * ROW_H}px`;
+    // the continuation footer (when parked rows wait below) extends the
+    // canvas and sits right past the last row
+    this.canvas.style.height = `${total * ROW_H + (this.moreEl ? MORE_H : 0)}px`;
+    if (this.moreEl) this.moreEl.style.top = `${total * ROW_H}px`;
     const scrollTop = this.body.scrollTop;
     const h = this.body.clientHeight;
     const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);

@@ -501,9 +501,16 @@ function shim() {
       // maxAge) — the old mock spoke allowed*-prefixed keys the tab never
       // reads, so its rule inputs rendered empty in every screenshot
       cors: [{ origins: ['https://demo.example'], methods: ['GET'], headers: [], expose: [], maxAge: 3000 }],
-      // the adminops LifecycleRule contract — same drift family: the old
-      // status/days/storageClass keys left every card input empty
-      lifecycle: [{ id: 'archive-old', enabled: true, prefix: 'logs/', transitionDays: 90, transitionClass: 'GLACIER', expirationDays: 365, noncurrentDays: 0, abortMpuDays: 7, deleteMarker: false }],
+      // the adminops LifecycleRule v2 contract — same drift family: the
+      // card renders every field below, and the save pin proves each one
+      // onto the wire (both transition forms, date expiration, the tag +
+      // size filter, noncurrent retention and its own transition)
+      lifecycle: [{ id: 'archive-old', enabled: true, prefix: 'logs/', tagKey: 'team', tagValue: 'core',
+        minBytes: 1024, maxBytes: 1048576,
+        transitions: [{ days: 30, date: '', storageClass: 'STANDARD_IA' }, { days: 0, date: '2030-01-01', storageClass: 'GLACIER' }],
+        expirationDays: 0, expirationDate: '2031-06-01', deleteMarker: false,
+        noncurrentDays: 14, newerNoncurrent: 3,
+        noncurrentTransitions: [{ noncurrentDays: 7, storageClass: 'GLACIER_IR' }], abortMpuDays: 7 }],
       encryption: { algorithm: 'AES256', kmsKeyId: '' },
       website: { index: 'index.html', error: '', redirectHost: '', redirectProtocol: '' },
       tags: [{ key: 'env', value: 'demo' }, { key: 'team', value: 'qa' }],
@@ -919,6 +926,61 @@ function shim() {
       const send = () => emit('list:page', {
         token: t,
         entries: f.listError ? [] : listPrefix(bucket, prefix),
+        done: true,
+        error: f.listError || '',
+      });
+      if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
+      return t;
+    },
+    // the tree's dirs-only stream (sidebar lazy expansion): the same
+    // page grammar filtered to folders — the mirror of the walk
+    // ListSourceDirsStream runs (common prefixes and markers, never
+    // the objects).
+    ListSourceDirsStream: (_src, bucket, prefix) => {
+      const f = world.fault || {};
+      if (f.listBeginError) throw new Error(f.listBeginError);
+      const t = token();
+      const send = () => emit('list:page', {
+        token: t,
+        entries: f.listError ? [] : listPrefix(bucket, prefix).filter((e) => e.isDir),
+        done: true,
+        error: f.listError || '',
+      });
+      if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
+      return t;
+    },
+    // the windowed twins (big-folder law): one bounded window starting
+    // strictly past startAfter in key order — the continuation
+    // footer's fetch. The mirror honors the same grammar over the
+    // world's listing (children whose key sorts past the anchor) and
+    // the same fault knobs as the full streams; the recorded call pins
+    // the fetch the footer drove (the anchor is the highest key held).
+    ListObjectsWindow: (bucket, prefix, startAfter) => {
+      const f = world.fault || {};
+      if (f.listBeginError) throw new Error(f.listBeginError);
+      const t = token();
+      const after = String(startAfter || '');
+      const entries = (f.listError ? [] : listPrefix(bucket, prefix))
+        .filter((e) => e.key > after);
+      const send = () => emit('list:page', {
+        token: t,
+        entries,
+        done: true,
+        error: f.listError || '',
+      });
+      if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
+      return t;
+    },
+    ListSourceObjectsWindow: (_src, bucket, prefix, startAfter) => {
+      const f = world.fault || {};
+      if (f.listBeginError) throw new Error(f.listBeginError);
+      const t = token();
+      const after = String(startAfter || '');
+      const entries = (f.listError ? [] : listPrefix(bucket, prefix))
+        .filter((e) => e.key > after);
+      const send = () => emit('list:page', {
+        token: t,
+        entries,
         done: true,
         error: f.listError || '',
       });
@@ -1552,8 +1614,11 @@ function shim() {
     // content assert pins on the desk. world.fault.preview fails the
     // read so the toast leg stays testable
     PreviewData: async (t) => {
-      const flt = (world.fault || {}).preview;
-      if (flt) throw new Error(flt);
+      const f = world.fault || {};
+      // previewDelayMs holds the answer back so the viewer in-flight
+      // dial is assertable mid-read (the liveness step live leg)
+      if (f.previewDelayMs) await new Promise((r) => setTimeout(r, f.previewDelayMs));
+      if (f.preview) throw new Error(f.preview);
       const name = ((t && (t.key || t.path)) || '').split('/').pop() || '';
       if (/\.(txt|md|json|csv|log|yaml|ini|conf|toml)$/i.test(name)) {
         const text = `# ${name}\n\nThe glance reads text too — readme, config, csv, log:\nthe folder walks its previewable files and the monospace\ndesk seats the bytes without a download.\n`;
@@ -4744,6 +4809,35 @@ await step('admin-panel', async () => {
       return tr.width > 0 && tr.left >= r.left - 0.5 && tr.right <= r.right + 0.5;
     });
   }));
+  // v3 rail: the Settings idiom — the active tab is the set-nav-item pill
+  // (weight 600, radius 6, the sel background, no inset bar) and the rail
+  // carries the Settings search box: a query flattens the book by name or
+  // description, emptied groups hide, clearing returns the book, a pick
+  // clears the query
+  const skinState = await evalPage(() => {
+    const b = document.querySelector('#modal-root .tabstrip .tab.active');
+    if (!b) return { found: false };
+    const cs = getComputedStyle(b);
+    return { found: true, fw: cs.fontWeight, br: cs.borderRadius, bs: cs.boxShadow, bg: cs.backgroundColor };
+  });
+  const skinOk = skinState.found && skinState.fw === '600' && skinState.br === '6px'
+    && skinState.bs === 'none' && skinState.bg !== 'rgba(0, 0, 0, 0)';
+  if (!skinOk) console.log('  skin state: ' + JSON.stringify(skinState));
+  await ok('active tab speaks the settings idiom skin', skinOk);
+  const visibleTabs = () => evalPage(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).filter((t) => !t.hidden).map((t) => t.textContent.trim()));
+  await evalPage(() => { const s = document.querySelector('#modal-root .admin-search'); if (s) s.focus(); });
+  await page.keyboard.type('worm');
+  await ok('a description query flattens the rail to its one page', waitFor(async () => (await visibleTabs()).join('|') === 'Object lock', 4000, 'worm filter'));
+  await ok('the emptied groups hide with their tabs', (await evalPage(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tabgroup')).filter((g) => !g.hidden).map((g) => g.textContent.trim()))).join('|') === 'Security & access');
+  await evalPage(() => { const s = document.querySelector('#modal-root .admin-search'); if (s) { s.value = ''; s.dispatchEvent(new Event('input', { bubbles: true })); } });
+  await ok('clearing the query returns the whole book', waitFor(async () => (await visibleTabs()).length === 11, 4000, 'clear returns'));
+  await evalPage(() => { const s = document.querySelector('#modal-root .admin-search'); if (s) s.focus(); });
+  await page.keyboard.type('bucket');
+  await ok('a shared word gathers every page that speaks it', waitFor(async () => (await visibleTabs()).join('|') === 'Overview|Policy|CORS', 4000, 'bucket filter'));
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).find((t) => !t.hidden && t.textContent.trim() === 'Policy'); if (b) b.click(); });
+  await ok('picking a page clears the query — the book returns whole', waitFor(async () => (await evalPage(() => document.querySelector('#modal-root .admin-search')?.value || '')) === '' && (await visibleTabs()).length === 11 && (await evalPage(() => document.querySelector('#modal-root .tabhead-t')?.textContent.trim() || '')) === 'Policy', 4000, 'pick clears'));
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).find((t) => t.textContent.trim() === 'Overview'); if (b) b.click(); });
+  await ok('overview reseated for the dashboard legs', waitFor(async () => (await evalPage(() => document.querySelector('#modal-root .tabhead-t')?.textContent.trim() || '')) === 'Overview', 4000, 'overview reseat'));
   // v2 rail: three category groups, real tab buttons under a vertical
   // tablist with roving selection, the Overview dashboard, and the walk
   await ok('rail groups the tabs in three categories', (await evalPage(() => Array.from(document.querySelectorAll('#modal-root .tabstrip .tabgroup')).map((g) => g.textContent.trim()))).join('|') === 'General|Security & access|Data & content');
@@ -4839,12 +4933,42 @@ await step('admin-panel', async () => {
     && pabCall.args[1].blockPublicAcls === true && pabCall.args[1].ignorePublicAcls === true
     && pabCall.args[1].blockPublicPolicy === true && pabCall.args[1].restrictPublicBuckets === true);
   await sleep(150); // the save re-fetch re-renders the pane — let it settle
-  // the Lifecycle tab's save + delete-all verbs — GUI-109's offline twin
-  // (the Add path is the live row's walk; the seated rule card proves the
-  // same input bind onto the wire args)
+  // the Lifecycle tab's v2 card, save + delete-all verbs, and the JSON
+  // copy/paste family — GUI-109's offline twins (the Add path is the live
+  // row's walk; the seated rule card proves the same input bind onto the
+  // wire args, the XOR pair proves the mutual-clear law, and the JSON
+  // dialogs prove the round trip the round asked for)
   await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).find((t) => t.textContent.trim() === 'Lifecycle'); if (b) b.click(); });
   await sleep(120);
   await resetCalls();
+  await ok('lifecycle card seats the full v2 contract', evalPage(() => {
+    const card = document.querySelector('#modal-root .rule-card');
+    if (!card) return false;
+    const vals = Array.from(card.querySelectorAll('input')).map((x) => String(x.value));
+    const sels = Array.from(card.querySelectorAll('select')).map((x) => x.value);
+    return vals.includes('archive-old') && vals.includes('logs/') && vals.includes('team') && vals.includes('core')
+      && vals.includes('1024') && vals.includes('1048576') && vals.includes('2031-06-01')
+      && vals.includes('14') && vals.includes('3') && vals.includes('7')
+      && sels.includes('STANDARD_IA') && sels.includes('GLACIER') && sels.includes('GLACIER_IR');
+  }));
+  await ok('expiration is days XOR date in the card', evalPage(() => {
+    const card = document.querySelector('#modal-root .rule-card');
+    const labels = Array.from(card.querySelectorAll('label'));
+    const by = (t) => labels.find((l) => l.textContent.trim().startsWith(t));
+    const d = by('Expire after').querySelector('input');
+    const dt = by('Expire on').querySelector('input');
+    if (!d || !dt || dt.value !== '2031-06-01') return false;
+    d.value = '10';
+    d.dispatchEvent(new Event('change', { bubbles: true }));
+    if (dt.value !== '') return false;
+    // restore the fixture's date form: the save pin below proves it
+    // onto the wire as the XOR twin (days 0, date set)
+    d.value = '';
+    d.dispatchEvent(new Event('change', { bubbles: true }));
+    dt.value = '2031-06-01';
+    dt.dispatchEvent(new Event('change', { bubbles: true }));
+    return d.value === '' && dt.value === '2031-06-01';
+  }));
   const retitled = await evalPage(() => {
     const card = document.querySelector('#modal-root .rule-card');
     if (!card) return false;
@@ -4858,12 +4982,71 @@ await step('admin-panel', async () => {
   await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Save'); if (b) b.click(); });
   let lcCall = null;
   await waitFor(async () => { lcCall = ((await calls()).find((c) => c.m === 'PutBucketLifecycle')) || null; return !!lcCall; }, 4000, 'PutBucketLifecycle recorded');
-  await ok('lifecycle save writes the bound rule', lcCall.args[0] === 'team-files'
+  const lcRule = (lcCall.args[1] || [])[0] || {};
+  const lcOk = lcCall.args[0] === 'team-files'
     && Array.isArray(lcCall.args[1]) && lcCall.args[1].length === 1
-    && lcCall.args[1][0].id === 'visual-life' && lcCall.args[1][0].enabled === true
-    && lcCall.args[1][0].prefix === 'logs/' && lcCall.args[1][0].transitionDays === 90
-    && lcCall.args[1][0].transitionClass === 'GLACIER' && lcCall.args[1][0].abortMpuDays === 7);
-  await sleep(150); // settle the re-fetch before the delete verb
+    && lcRule.id === 'visual-life' && lcRule.enabled === true
+    && lcRule.prefix === 'logs/' && lcRule.tagKey === 'team' && lcRule.tagValue === 'core'
+    && lcRule.minBytes === 1024 && lcRule.maxBytes === 1048576
+    && Array.isArray(lcRule.transitions) && lcRule.transitions.length === 2
+    && lcRule.transitions[0].days === 30 && lcRule.transitions[0].storageClass === 'STANDARD_IA'
+    && lcRule.transitions[1].date === '2030-01-01' && lcRule.transitions[1].storageClass === 'GLACIER'
+    && lcRule.expirationDate === '2031-06-01' && lcRule.expirationDays === 0
+    && lcRule.noncurrentDays === 14 && lcRule.newerNoncurrent === 3
+    && Array.isArray(lcRule.noncurrentTransitions) && lcRule.noncurrentTransitions.length === 1
+    && lcRule.noncurrentTransitions[0].noncurrentDays === 7 && lcRule.noncurrentTransitions[0].storageClass === 'GLACIER_IR'
+    && lcRule.abortMpuDays === 7 && lcRule.deleteMarker === false
+    && lcRule.transitionDays === undefined && lcRule.transitionClass === undefined;
+  if (!lcOk) console.log('  lc state: ' + JSON.stringify(lcRule));
+  await ok('lifecycle save writes the bound rule in the v2 shape', lcOk);
+  await sleep(150); // settle the re-fetch before the JSON legs
+  // Copy JSON: the child modal prints the exact wire array
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Copy JSON'); if (b) b.click(); });
+  await ok('Copy JSON opens the array as text', waitFor(() => evalPage(() => {
+    const ta = document.querySelector('#modal-root .modal-body textarea');
+    if (!ta) return false;
+    try {
+      const arr = JSON.parse(ta.value);
+      return Array.isArray(arr) && arr.length === 1 && arr[0].transitions.length === 2
+        && arr[0].transitionDays === undefined;
+    } catch { return false; }
+  }), 4000, 'copy json textarea'));
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((x) => x.textContent.trim() === 'Close'); if (b) b.click(); });
+  await sleep(90);
+  // Paste JSON: a different array replaces the editor, and Save proves it onto the wire
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Paste JSON'); if (b) b.click(); });
+  await sleep(90);
+  await evalPage(() => {
+    const ta = document.querySelector('#modal-root .modal-body textarea');
+    if (!ta) return false;
+    ta.value = JSON.stringify([{ id: 'json-rule', enabled: true, prefix: 'json/', transitions: [{ days: 5, storageClass: 'GLACIER' }], expirationDays: 10, abortMpuDays: 0 }]);
+    return true;
+  });
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((x) => x.textContent.trim() === 'Apply'); if (b) b.click(); });
+  await ok('Paste JSON adopts the array into the card', waitFor(() => evalPage(() => {
+    const card = document.querySelector('#modal-root .rule-card');
+    return !!card && card.querySelector('input').value === 'json-rule'
+      && Array.from(card.querySelectorAll('select')).some((x) => x.value === 'GLACIER');
+  }), 4000, 'paste adopts'));
+  await resetCalls();
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Save'); if (b) b.click(); });
+  let jCall = null;
+  await waitFor(async () => { jCall = ((await calls()).find((c) => c.m === 'PutBucketLifecycle')) || null; return !!jCall; }, 4000, 'PutBucketLifecycle after paste recorded');
+  await ok('the pasted rule is what Save speaks', jCall.args[0] === 'team-files'
+    && jCall.args[1].length === 1 && jCall.args[1][0].id === 'json-rule'
+    && jCall.args[1][0].transitions[0].days === 5 && jCall.args[1][0].expirationDays === 10);
+  await sleep(150);
+  // refusal: invalid JSON toasts and keeps both the dialog and the card
+  await evalPage(() => { document.getElementById('toasts').innerHTML = ''; });
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Paste JSON'); if (b) b.click(); });
+  await sleep(90);
+  await evalPage(() => { const ta = document.querySelector('#modal-root .modal-body textarea'); if (ta) ta.value = '{oops'; });
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((x) => x.textContent.trim() === 'Apply'); if (b) b.click(); });
+  await ok('invalid JSON toasts and refuses', waitFor(() => evalPage(() =>
+    document.getElementById('toasts').textContent.includes('Invalid JSON')
+    && !!document.querySelector('#modal-root .modal-body textarea')), 4000, 'paste refusal toast'));
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .modal-foot .btn')).find((x) => x.textContent.trim() === 'Cancel'); if (b) b.click(); });
+  await sleep(90);
   await resetCalls();
   await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabbody button')).find((x) => x.textContent.trim() === 'Delete all'); if (b) b.click(); });
   let delCall = null;
@@ -9844,6 +10027,66 @@ await step('pane-empty-paste', async () => {
     localStorage.removeItem('s3b-side-loc');
   });
 });
+await step('pane-menu-copy', async () => {
+  // the pane context menu's Copy answers with the PANE's selection even
+  // while the main grid still holds a stale multi-row selection — the
+  // pane count wins its own verb (GUI-110's offline twin)
+  await resetCalls();
+  await evalPage(() => { localStorage.setItem('s3b-os-clip', '1'); return true; });
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'team-files rows');
+  // arm the stale main selection: two REAL clicks (a synthetic click
+  // would leave the selection empty), no copy — it just sits there
+  // waiting to be wrongly gathered
+  const two = await evalPage(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+    .filter((r) => r._model && !r._model.isDir).slice(0, 2).map((r) => r._model.key));
+  if (two.length < 2) throw new Error('team-files carried ' + two.length + ' file rows');
+  for (let i = 0; i < two.length; i++) {
+    const h = await page.evaluateHandle((k) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === k) || null, two[i]);
+    const el = h.asElement();
+    if (!el) throw new Error('no row for ' + two[i]);
+    await el.click({ modifiers: i ? ['Control'] : [] });
+  }
+  await ok('the stale main selection is armed (two rows)', evalPage(() =>
+    document.querySelectorAll('#grid-body .grid-row[aria-selected="true"]').length === 2));
+  // the pane on the local home, one row selected, its own menu Copy
+  await evalPage(() => {
+    if (document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('btn-panes').click();
+    // normalize the binding: the pane-paste step before this leaves the
+    // pane bound to an S3 bucket (its leave-clean hides the pane and
+    // clears the remembered state but never rebinds), and a pane still
+    // bound there carries no Downloads row — home is the workstation
+    const home = document.getElementById('local-btn-home');
+    if (home) home.click();
+    return true;
+  });
+  await waitFor(async () => !!(await sideRow('Downloads')), 4000, 'pane at local home');
+  await (await sideRow('Pictures')).click();
+  await evalPage(() => { document.getElementById('toasts')?.replaceChildren(); return true; });
+  await evalPage(() => {
+    // local pane rows key on the FULL path (C:\Users\demo\Pictures), so the
+    // row is found by its rendered name — and a miss THROWS: a silent false
+    // here would starve the ctxItem wait below with no diagnostic
+    const row = Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+      .find((r) => r.querySelector('.tname')?.textContent === 'Pictures') || null;
+    if (!row) throw new Error('no Pictures row in the pane');
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 200, clientY: 200 }));
+    return true;
+  });
+  await ctxItem(/^copy/i);
+  const oc = await findCall('OsClipboardSetFiles');
+  await ok('pane menu Copy answers with the pane count, never the stale main two', !!oc
+    && Array.isArray(oc.args[0]) && oc.args[0].length === 1 && /Pictures$/.test(oc.args[0][0]));
+  await ok('the toast names the pane count', evalPage(() =>
+    (document.getElementById('toasts')?.textContent || '').includes('Copied 1 item')));
+  // leave-clean: pane hidden, remembered pane state cleared
+  await evalPage(() => {
+    window.__s3bSidePane.hide();
+    localStorage.removeItem('s3b-side-src');
+    localStorage.removeItem('s3b-side-loc');
+  });
+});
 await step('view-source-switch', async () => {
   // 'from-file-photos' is a bucket-scoped imported source: opening it pins
   // the engine to it (SetViewSource), mirrors it in the content bottom
@@ -11847,6 +12090,71 @@ await step('text-viewer', async () => {
         .some((i) => /^preview/i.test(i.textContent))))
       && (await findCall('PreviewData')) === null;
   })());
+  await page.keyboard.press('Escape');
+});
+
+await step('liveness', async () => {
+  // The in-flight law under reduced motion: the OS accessibility kill
+  // must never freeze a busy state — every liveness surface keeps an
+  // opacity pulse under prefers-reduced-motion (the exemption's
+  // !important classes outrank the global * kill), while full motion
+  // keeps the canonical rotation. The live half pins the viewer dial:
+  // a slow read keeps the dial up with the loading word, and the
+  // landing retires it.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const cascade = await evalPage(() => {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:fixed;left:-9999px;top:0';
+    host.innerHTML = '<div class="empty-state is-loading"><div class="load-skel"><div></div></div></div>'
+      + '<div class="tr-bar tr-indet"></div>'
+      + '<div class="conn-banner cmp busy"><span class="cmp-dot"></span></div>';
+    document.body.appendChild(host);
+    const read = (sel, pseudo) => {
+      const cs = getComputedStyle(document.querySelector(sel), pseudo || null);
+      return { name: cs.animationName, count: cs.animationIterationCount };
+    };
+    const out = {
+      skel: read('.load-skel div'),
+      banner: read('.empty-state.is-loading', '::before'),
+      indet: read('.tr-bar.tr-indet', '::after'),
+      dot: read('.conn-banner.cmp.busy .cmp-dot'),
+      spin: read('#viewer-loading .viewer-spin'),
+    };
+    host.remove();
+    return out;
+  });
+  const pulse = (x) => !!x && x.name === 'load-pulse' && x.count === 'infinite';
+  await ok('reduced motion keeps the skeleton rows pulsing', pulse(cascade.skel));
+  await ok('the loading banner pulse survives reduce', pulse(cascade.banner));
+  await ok('the indeterminate transfer bar keeps pulsing under reduce', pulse(cascade.indet));
+  await ok('the busy connection dot keeps pulsing under reduce', pulse(cascade.dot));
+  await ok('the viewer dial keeps its liveness pulse under reduce', pulse(cascade.spin));
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const full = await evalPage(() => {
+    const cs = getComputedStyle(document.querySelector('#viewer-loading .viewer-spin'));
+    return { name: cs.animationName, count: cs.animationIterationCount };
+  });
+  await ok('full motion keeps the canonical rotation on the dial', full.name === 'load-spin' && full.count === 'infinite');
+  // -- the live leg: a slow glance keeps the dial up, the landing retires --
+  await navObjects('team-files');
+  await dblClickRow('photos');
+  await waitFor(async () => (await rowKeys()).includes('photos/img-001.jpg'), 6000, 'photos rows');
+  await evalPage(() => {
+    window.__shim.world.fault = Object.assign({}, window.__shim.world.fault, { previewDelayMs: 2500 });
+  });
+  await dblClickRow('img-001.jpg');
+  await ok('a slow glance keeps the dial up with the loading word', waitFor(async () => evalPage(() =>
+    !document.getElementById('viewer-loading').classList.contains('hidden')
+    && !!(document.getElementById('viewer-loading-text').textContent || '').trim()), 2000, 'dial up'));
+  await ok('the landed read retires the dial and seats the image', waitFor(async () => evalPage(() =>
+    document.getElementById('viewer-loading').classList.contains('hidden')
+    && !document.getElementById('viewer').classList.contains('hidden')
+    && (document.getElementById('viewer-img').getAttribute('src') || '').startsWith('data:image/png;base64,')), 6000, 'dial retired'));
+  await evalPage(() => {
+    const f = window.__shim.world.fault || {};
+    delete f.previewDelayMs;
+    window.__shim.world.fault = f;
+  });
   await page.keyboard.press('Escape');
 });
 
@@ -13897,12 +14205,15 @@ await step('forced-colors', async () => {
     const pop = document.querySelector('#popout-root .popout[data-pop="guide"]');
     return pop && getComputedStyle(pop).opacity === '1';
   }), 4000, 'guide entrance settles under forced colors');
-  await ok('the active guide tab fills Highlight under forced colors', evalPage((a) => {
+  const gtab = await evalPage(() => {
     const t = document.querySelector('#popout-root .tabstrip .tab.active');
-    if (!t) return false;
+    if (!t) return { found: false };
     const cs = getComputedStyle(t);
-    return cs.backgroundColor === a.hl && cs.color === a.hlt;
-  }, { hl, hlt }));
+    return { found: true, tag: t.tagName, cls: t.className, bg: cs.backgroundColor, color: cs.color };
+  });
+  const gok = gtab.found && gtab.bg === hl && gtab.color === hlt;
+  if (!gok) console.log('  guide tab state: ' + JSON.stringify(gtab) + ' want bg=' + hl + ' color=' + hlt);
+  await ok('the active guide tab fills Highlight under forced colors', gok);
   await closePopout('guide');
   // drop the mode: the theme paint returns to the exact pre-emulation
   // value. The drop's style recalc is asynchronous — poll the settle,
@@ -13932,22 +14243,25 @@ await step('text-zoom', async () => {
   await ok('the listing sits at zoom 1 before any step', (await zoomOf(page)) === 1);
   await evalPage(() => { document.getElementById('toasts').innerHTML = ''; });
   await page.keyboard.press('Control+=');
-  await ok('Ctrl+= steps the level to 1.1', (await zoomOf(page)) === 1.1);
+  // the instant computed reads poll the settle: under a full sweep's load
+  // the computed zoom lags the inline write by a frame while the store,
+  // toast and later legs stay green — a read race, not a verb failure
+  await ok('Ctrl+= steps the level to 1.1', waitFor(async () => (await zoomOf(page)) === 1.1, 1500, 'zoom steps to 1.1'));
   await ok('the level persists to the store', (await zoomKey()) === '1.1');
   await ok('the readout toast speaks the percent', waitFor(() => evalPage(() =>
     document.getElementById('toasts').textContent.includes('Zoom 110%')), 4000, 'zoom toast'));
   // the grammar answers from inside an input too — the desktop law
   await page.focus('#filter');
   await page.keyboard.press('Control+=');
-  await ok('Ctrl+= answers from inside the filter input', evalPage(() =>
+  await ok('Ctrl+= answers from inside the filter input', waitFor(() => evalPage(() =>
     parseFloat(getComputedStyle(document.documentElement).zoom) === 1.2
-    && document.activeElement === document.getElementById('filter')));
+    && document.activeElement === document.getElementById('filter')), 1500, 'filter-input zoom'));
   await page.focus('#grid-body');
   // the ladder clamps at the ceiling without drift
   for (let i = 0; i < 12; i++) await page.keyboard.press('Control+=');
   await ok('the ladder clamps at 1.6', (await zoomOf(page)) === 1.6);
   await page.keyboard.press('Control+0');
-  await ok('Ctrl+0 resets to 1 and clears the store', (await zoomOf(page)) === 1 && (await zoomKey()) === null);
+  await ok('Ctrl+0 resets to 1 and clears the store', waitFor(async () => (await zoomOf(page)) === 1 && (await zoomKey()) === null, 1500, 'zoom reset'));
   // Ctrl+wheel steps the pinch ladder (5% a tick, the same store)
   await page.keyboard.down('Control');
   await page.mouse.wheel(0, -100);
@@ -13956,7 +14270,7 @@ await step('text-zoom', async () => {
   await page.keyboard.down('Control');
   await page.mouse.wheel(0, 100);
   await page.keyboard.up('Control');
-  await ok('Ctrl+wheel steps back out', (await zoomOf(page)) === 1);
+  await ok('Ctrl+wheel steps back out', waitFor(async () => (await zoomOf(page)) === 1, 1500, 'wheel-out zoom'));
   // the layout law: at a deeper zoom the pool still covers the whole
   // listing — scroll to the bottom and the LAST row must be rendered
   await page.keyboard.press('Control+=');
@@ -14436,6 +14750,122 @@ await step('tree-scale', async () => {
     document.querySelectorAll('#tree .tnode').length === 11
     && document.querySelector('#tree + .t-window').classList.contains('hidden')
     && (window.__shim.world.objects['archive-cold'] || []).length === 0), 4000, 'tree folded'));
+});
+
+// ---------- scale: the materialization cap and the continuation footer ----------
+await step('big-listing-cap', async () => {
+  // big-listing pinned the virtualized pool over a fully-seated model;
+  // the hundred-million-object law is stronger: the model itself must
+  // refuse the universe. The stream seats one deliberate step of rows
+  // (setStreamStep is the rigs' seat; production rides the shipped
+  // constants), the walk is cut at the ceiling, the continuation footer
+  // speaks the honest count it holds (the universe past a cut walk is
+  // unknown — never a lie), and the footer's verb fetches the next
+  // window strictly past the highest key held until the last window
+  // lands whole and the footer retires with the universe known. The
+  // dual pane's S3 seat rides the same law through its own window
+  // bridge. archive-cold and team-files host the walks; both worlds are
+  // restored at the tail and the step overrides cleared.
+  await clickTree('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'away seat');
+  await sleep(150);
+  await evalPage(() => {
+    const objs = [];
+    for (let i = 0; i < 27; i += 1) {
+      objs.push({ key: 'file-' + String(i).padStart(4, '0') + '.txt',
+        size: 100 + i, lastModified: Date.now() - (i + 1) * 60000,
+        storageClass: 'STANDARD' });
+    }
+    window.__shim.world.objects['archive-cold'] = objs;
+    window.__s3bGrid.setStreamStep(10, 40);
+  });
+  await resetCalls();
+  await clickTree('archive-cold');
+  await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 10
+    && !!document.querySelector('#grid-body .grid-more')), 5000, 'cap seated');
+  await ok('the ceiling seats one deliberate step, the walk cut mid-universe', evalPage(() => {
+    const g = window.__s3bGrid;
+    const info = g.modelInfo();
+    return g.rows.length === 10 && info.shown === 10 && info.parked === 17
+      && info.universe === null;
+  }));
+  await ok('the continuation footer speaks the honest count it holds', evalPage(() => {
+    const b = document.querySelector('#grid-body .grid-more');
+    return !!b && b.textContent.includes('Show more rows') && b.textContent.includes('10');
+  }));
+  await evalPage(() => document.querySelector('#grid-body .grid-more').click());
+  await ok('the footer verb fetches one window past the highest key held', waitFor(async () => evalPage(() => {
+    const w = window.__shim.calls.filter((c) => c.m === 'ListObjectsWindow').at(-1);
+    const g = window.__s3bGrid;
+    const info = g.modelInfo();
+    const b = document.querySelector('#grid-body .grid-more');
+    return !!w && w.args.length === 3 && w.args[0] === 'archive-cold' && w.args[1] === ''
+      && w.args[2] === 'file-0009.txt' && g.rows.length === 20
+      && info.parked === 7 && info.universe === null
+      && !!b && b.textContent.includes('20');
+  }), 5000, 'first window'));
+  await evalPage(() => document.querySelector('#grid-body .grid-more').click());
+  await ok('the last window lands whole: the footer retires, the universe known', waitFor(async () => evalPage(() => {
+    const w = window.__shim.calls.filter((c) => c.m === 'ListObjectsWindow').at(-1);
+    const g = window.__s3bGrid;
+    const info = g.modelInfo();
+    return !!w && w.args[2] === 'file-0019.txt' && g.rows.length === 27
+      && info.universe === 27 && info.parked === 0
+      && !document.querySelector('#grid-body .grid-more');
+  }), 5000, 'universe known'));
+  // the dual pane's S3 seat rides the same law through its own bridge
+  await evalPage(() => {
+    window.__s3bGrid.setStreamStep(0, 0);
+    window.__shim.world.objects['archive-cold'] = [];
+    window.__s3bKeepTeamFiles = window.__shim.world.objects['team-files'];
+    const objs = [];
+    for (let i = 0; i < 23; i += 1) {
+      objs.push({ key: 'doc-' + String(i).padStart(4, '0') + '.txt',
+        size: 100 + i, lastModified: Date.now() - (i + 1) * 60000,
+        storageClass: 'STANDARD' });
+    }
+    window.__shim.world.objects['team-files'] = objs;
+    window.__s3bSidePane.grid.setStreamStep(8, 24);
+  });
+  await resetCalls();
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(() => evalPage(() => window.__s3bSidePane.grid.rows.length === 8
+    && !!document.querySelector('#local-grid-body .grid-more')), 5000, 'pane cap seated');
+  await ok('the pane ceiling seats its own deliberate step with its own footer', evalPage(() => {
+    const g = window.__s3bSidePane.grid;
+    const info = g.modelInfo();
+    return g.rows.length === 8 && info.parked === 15 && info.universe === null;
+  }));
+  await evalPage(() => document.querySelector('#local-grid-body .grid-more').click());
+  await ok('the pane footer fetches its own window bridge', waitFor(async () => evalPage(() => {
+    const w = window.__shim.calls.filter((c) => c.m === 'ListSourceObjectsWindow').at(-1);
+    const g = window.__s3bSidePane.grid;
+    return !!w && w.args.length === 4 && w.args[0] === 'src-team-files' && w.args[1] === 'team-files'
+      && w.args[2] === '' && w.args[3] === 'doc-0007.txt' && g.rows.length === 16;
+  }), 5000, 'pane window'));
+  await evalPage(() => document.querySelector('#local-grid-body .grid-more').click());
+  await ok('the pane last window lands whole and retires its footer', waitFor(async () => evalPage(() => {
+    const w = window.__shim.calls.filter((c) => c.m === 'ListSourceObjectsWindow').at(-1);
+    const g = window.__s3bSidePane.grid;
+    const info = g.modelInfo();
+    return !!w && w.args[3] === 'doc-0015.txt' && g.rows.length === 23
+      && info.universe === 23 && info.parked === 0
+      && !document.querySelector('#local-grid-body .grid-more');
+  }), 5000, 'pane universe known'));
+  await evalPage(() => {
+    window.__s3bGrid.setStreamStep(0, 0);
+    window.__s3bSidePane.grid.setStreamStep(0, 0);
+    window.__shim.world.objects['team-files'] = window.__s3bKeepTeamFiles;
+    delete window.__s3bKeepTeamFiles;
+  });
+  await ok('big-listing-cap leaves the world canonical', evalPage(() => {
+    const tf = window.__shim.world.objects['team-files'];
+    const g = window.__s3bGrid;
+    return (window.__shim.world.objects['archive-cold'] || []).length === 0
+      && Array.isArray(tf) && tf.some((x) => x.key === 'readme.md')
+      && g.stepOverride === 0 && g.ceilOverride === 0
+      && window.__s3bSidePane.grid.stepOverride === 0;
+  }));
 });
 
 // ---------- settings honor walk (every control + every default) ----------
