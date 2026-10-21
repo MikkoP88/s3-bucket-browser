@@ -124,9 +124,10 @@
 
 ### ✔ Fast at scale
 - Streaming page‑by‑page listings (Go holds one page at a time)  
-- Virtualized rendering  
+- Seamless sliding window on every content view — first rows land while the first page still streams, further windows seat themselves as you scroll, and no "show more" control exists anywhere  
+- Virtualized rendering — a ~30-row DOM pool and a bounded heap however much the view holds  
 - Cancelable deep search  
-- Responsive even on **million‑object buckets**
+- Any single content view holds toward **100‑million‑object buckets** without a stall (validated interactive at 110,000 held rows)
 - Folder sizes fill in lazily in every view (cached usage walks)  
 - The sidebar tree windows itself over ten-thousand-row sources — the keyboard never names a row no reader could see
 

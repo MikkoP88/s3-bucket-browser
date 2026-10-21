@@ -352,6 +352,15 @@ directory compare) with S3 and the secondary pane.
   and reorder by dragging the header itself; widths and order persist
   per pane, and the header picker's Reset columns brings the
   out-of-box set, order and widths back in one click.
+- **Huge listings** — a content view that runs to millions of rows
+  streams in seamlessly: the first rows land while the very first page
+  still streams, further windows seat themselves as the viewport nears
+  the loaded edge, and once the held model outgrows its budget the far
+  edge above the viewport trims away behind a stable scroll height —
+  climbing back refills from a checkpoint. No **Show more** control
+  exists in the content view: scrolling is the whole continuation
+  grammar. The DOM stays a small row pool however many rows the view
+  holds, and the quick filter answers over the held rows.
 - **Content bottom bar** — the strip along the bottom of the content
   view answers *how much is really here*, with the active data
   source's type badge and name in bold on the bar's right end (the
