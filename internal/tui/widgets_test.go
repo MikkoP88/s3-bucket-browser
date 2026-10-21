@@ -208,9 +208,13 @@ func TestTableMouseGrammar(t *testing.T) {
 		t.Fatalf("header click on Name column: got %d", hdrCol)
 	}
 
-	// Wheel scrolls by 3 and clamps at both ends (no selection pinned:
-	// the visibility clamp would otherwise pull the viewport back).
-	tbl.Sel = -1
+	// Wheel scrolls by 3 and clamps at both ends — WITH a selection
+	// pinned (the standing UI state). The wheel is a viewport gesture:
+	// the fold must not snap back to the selected row. The old rig
+	// dodged this by seating Sel = -1, and the dodge masked a dead
+	// wheel in the product: any listing with a selection could never
+	// be scrolled past the selection's fold edge.
+	tbl.Sel = 0
 	tbl.Off = 0
 	tbl.HandleMouse(MouseEvent{X: 10, Y: 5, Type: MouseWheelUp})
 	if tbl.Off != 0 {
@@ -219,17 +223,49 @@ func TestTableMouseGrammar(t *testing.T) {
 	tbl.HandleMouse(MouseEvent{X: 10, Y: 5, Type: MouseWheelDown})
 	tbl.HandleMouse(MouseEvent{X: 10, Y: 5, Type: MouseWheelDown})
 	if tbl.Off != 6 {
-		t.Fatalf("two wheel downs: Off=%d", tbl.Off)
+		t.Fatalf("two wheel downs with a selection: Off=%d", tbl.Off)
 	}
 	tbl.HandleMouse(MouseEvent{X: 10, Y: 5, Type: MouseWheelUp})
 	if tbl.Off != 3 {
 		t.Fatalf("wheel up: Off=%d", tbl.Off)
+	}
+	// The fold survives a redraw: Draw holds bounds only, it must not
+	// drag the viewport back to the selection (the 200ms tick redraws
+	// forever — a snapping Draw is a dead wheel by another door).
+	scr := NewScreen(60, 12, &bytes.Buffer{})
+	tbl.Draw(scr)
+	if tbl.Off != 3 {
+		t.Fatalf("redraw must keep the fold: Off=%d", tbl.Off)
+	}
+	// The fold survives a reload too: SetRows re-lists the view without
+	// dragging the viewport to the selection.
+	tbl.SetRows(tbl.Rows)
+	if tbl.Off != 3 {
+		t.Fatalf("reload must keep the fold: Off=%d", tbl.Off)
 	}
 	tbl.Sel = 2
 	// Hover only highlights when focused.
 	tbl.HandleMouse(MouseEvent{X: 10, Y: 5, Type: MouseMotion})
 	if tbl.hover != tbl.Off+2 {
 		t.Fatalf("hover row: %d", tbl.hover)
+	}
+	// Selection gestures still own the fold: End reveals the tail
+	// (60x12 → 8 visible rows, so Off walks to 12 beside Sel 19).
+	tbl.HandleKey(KeyEvent{Key: KeyEnd})
+	if tbl.Sel != 19 || tbl.Off != 12 {
+		t.Fatalf("End reveals the tail: Sel=%d Off=%d", tbl.Sel, tbl.Off)
+	}
+	// And the wheel clamps at the far end of the universe.
+	for range 12 {
+		tbl.HandleMouse(MouseEvent{X: 10, Y: 5, Type: MouseWheelDown})
+	}
+	if tbl.Off != 19 {
+		t.Fatalf("wheel clamps at the last row: Off=%d", tbl.Off)
+	}
+	// Home is a selection gesture and returns the fold to the top.
+	tbl.HandleKey(KeyEvent{Key: KeyHome})
+	if tbl.Sel != 0 || tbl.Off != 0 {
+		t.Fatalf("Home returns the fold: Sel=%d Off=%d", tbl.Sel, tbl.Off)
 	}
 
 	// Outside the rect: not consumed.

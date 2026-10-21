@@ -634,6 +634,122 @@ func TestBrowserS3PrefixArithmetic(t *testing.T) {
 	}
 }
 
+// TestBrowserNavFoldReset pins the navigation fold law the battery
+// found under the wheel: the fold (grid Off) survives same-view
+// reloads — the 100M-object gesture — but every view change (descent,
+// ascent, :cd) opens the new listing from its top. A fold carried at
+// the wheel floor into a two-row descended listing bounds-clamped into
+// hiding the child's first row entirely above the fold. Every leg
+// carries the fold at an Off that bounds-clamping alone would keep,
+// so the Off==0 asserts name the reset, not the clamp.
+func TestBrowserNavFoldReset(t *testing.T) {
+	cfg := t.TempDir()
+	blob, err := json.Marshal(map[string]any{
+		"sources": []profile.Source{{
+			ID: "s", Name: "s", Type: profile.TypeS3,
+			S3: &profile.Profile{Endpoint: "http://127.0.0.1:1", AccessKeyID: "k", SecretKey: "s", Region: "us-east-1", PathStyle: true},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "profiles.json"), blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("S3B_CONFIG", cfg)
+	t.Setenv("S3B_NO_KEYRING", "1")
+	t.Setenv("S3B_TUI_SIZE", "100x24")
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := profile.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBrowser(app, store, "1.2.0-test")
+	app.SetRoot(b)
+	app.resizeRoot()
+	t.Cleanup(b.Close)
+	t.Cleanup(app.term.Close)
+
+	b.bucket, b.prefix = "bkt", ""
+	listAs := func(es ...listing.Entry) {
+		b.entries = es
+		b.applyView()
+		pumpEvents(t, app)
+	}
+
+	// Descent: the fold carried at 1 must open the 3-row child at 0.
+	listAs(
+		listing.Entry{Key: "tui/", Name: "tui", IsDir: true},
+		listing.Entry{Key: "readme.md", Name: "readme.md"},
+	)
+	b.grid.Sel = 0
+	b.grid.Off = 1
+	app.handle(KeyEvent{Key: KeyEnter})
+	if b.prefix != "tui/" {
+		t.Fatalf("descent must seat prefix form, got %q", b.prefix)
+	}
+	listAs(
+		listing.Entry{Key: "tui/seed.txt", Name: "seed.txt"},
+		listing.Entry{Key: "tui/one.txt", Name: "one.txt"},
+		listing.Entry{Key: "tui/two.txt", Name: "two.txt"},
+	)
+	if b.grid.Off != 0 {
+		t.Fatalf("descent must open the child at the top, Off=%d", b.grid.Off)
+	}
+
+	// Ascent: the fold carried at 2 must open the parent at 0.
+	b.grid.Off = 2
+	app.handle(KeyEvent{Key: KeyBackspace})
+	if b.prefix != "" {
+		t.Fatalf("ascent must return to the bucket root, got %q", b.prefix)
+	}
+	listAs(
+		listing.Entry{Key: "tui/", Name: "tui", IsDir: true},
+		listing.Entry{Key: "readme.md", Name: "readme.md"},
+		listing.Entry{Key: "other.txt", Name: "other.txt"},
+	)
+	if b.grid.Off != 0 {
+		t.Fatalf("ascent must open the parent at the top, Off=%d", b.grid.Off)
+	}
+
+	// :cd — the command-bar road resets too.
+	b.grid.Off = 2
+	typeKeys(t, app, ":cd tui")
+	app.handle(KeyEvent{Key: KeyEnter})
+	pumpEvents(t, app)
+	if b.prefix != "tui/" {
+		t.Fatalf(":cd must seat the target, got %q", b.prefix)
+	}
+	if b.grid.Off != 0 {
+		t.Fatalf(":cd must open the target at the top, Off=%d", b.grid.Off)
+	}
+
+	// Same-view refreshes keep the fold: F5, r, :refresh — the dead
+	// endpoint's errored listings never SetRows, so the fold is the
+	// only thing that could move it, and none of these do.
+	b.grid.Off = 5
+	app.handle(KeyEvent{Key: KeyF5})
+	app.handle(key('r'))
+	typeKeys(t, app, ":refresh")
+	app.handle(KeyEvent{Key: KeyEnter})
+	pumpEvents(t, app)
+	if b.grid.Off != 5 {
+		t.Fatalf("same-view refreshes must keep the fold, Off=%d", b.grid.Off)
+	}
+
+	// The account-root refusal is a same-view reload — the fold stays.
+	b.bucket, b.prefix = "", ""
+	b.grid.Off = 5
+	app.handle(KeyEvent{Key: KeyBackspace})
+	pumpEvents(t, app)
+	if b.grid.Off != 5 {
+		t.Fatalf("the root refusal must keep the fold, Off=%d", b.grid.Off)
+	}
+}
+
 // TestTuiObjectKeyLaw pins the object-key half of the JoinKey contract.
 // Prefixes ride prefix form (descent, :cd — pinned above), but KEYS must
 // not: an upload composed as "dir/name/" lands as a folder marker whose

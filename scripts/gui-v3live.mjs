@@ -114,6 +114,17 @@ async function step(name, fn) {
       if (logs.length) {
         console.log(`   BACKEND log:line (last ${logs.length}):`);
         for (const l of logs) console.log(`     ${l}`);
+      const tstate = await evalPage(() => {
+        const t = window.__s3bTree;
+        return {
+          tguard: document.querySelectorAll('#tree .tguard').length,
+          text: (document.getElementById('tree')?.textContent || '').replace(/\s+/g, ' ').slice(0, 220),
+          nodes: t && t.nodes
+            ? Array.from(t.nodes.values()).map((n) => `${n.kind}:${String(n.id).slice(0, 36)}${n.loaded ? 'L' : ''}${n.expanded ? 'E' : ''}c${(n.children || []).length}`)
+            : null,
+        };
+      });
+      console.log(`   TREE STATE: ${JSON.stringify(tstate)}`);
       }
     } catch { /* recorder optional */ }
   }

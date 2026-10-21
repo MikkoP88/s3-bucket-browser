@@ -526,7 +526,23 @@ func (a *App) bucketGuardC(c *s3client.Client, bucket string) (BucketGuard, erro
 	ctx, cancel := a.quickCtx()
 	defer cancel()
 	var g BucketGuard
-	g.Versioning, _ = versioning.Status(ctx, c.S3, bucket)
+	// A provider that does not speak the versioning API honestly answers
+	// "never configured" (the zero state the tree caches); every other
+	// failure PROPAGATES — a transient dial/timeout error swallowed here
+	// once answered "" as a success, the frontend cached the lie, and the
+	// versioning icon could never appear for the whole session (the
+	// guard-icon flake of 21 Oct 2026). The lock leg keeps its lenient
+	// skip: GetLockConfig already collapses "not configured" and "not
+	// supported" on its own, and a rare transient there only hides the
+	// lock icon until the next guard fetch.
+	st, err := versioning.Status(ctx, c.S3, bucket)
+	if err != nil {
+		if !adminops.UnsupportedByProvider(err) {
+			return BucketGuard{}, err
+		}
+		st = ""
+	}
+	g.Versioning = st
 	if lock, err := adminops.GetLockConfig(ctx, c.S3, bucket); err == nil {
 		g.LockEnabled, g.LockMode, g.LockDays = lock.Enabled, lock.Mode, lock.Days
 	}

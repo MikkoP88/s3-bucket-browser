@@ -48,3 +48,32 @@ func TestIsNoLockConfigured(t *testing.T) {
 		}
 	}
 }
+
+// TestUnsupportedByProvider pins the exported classifier's family: the four
+// "this API is not implemented" dialects answer true (the caller may
+// collapse the failure into a zero state — the bucket guard's "not
+// versioned"), everything else false so the error propagates and the
+// frontend retries instead of caching a lie.
+func TestUnsupportedByProvider(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"not implemented", fakeAPIError{code: "NotImplemented", status: 501}, true},
+		{"ceph x-not-implemented", fakeAPIError{code: "XNotImplemented", status: 501}, true},
+		{"method not allowed", fakeAPIError{code: "MethodNotAllowed", status: 405}, true},
+		{"acl not supported", fakeAPIError{code: "AccessControlListNotSupported", status: 400}, true},
+		{"wrapped dialect", fmt.Errorf("op: %w", fakeAPIError{code: "NotImplemented", status: 501}), true},
+		{"plain error", errors.New("boom"), false},
+		{"internal error", fakeAPIError{code: "InternalError", status: 500}, false},
+		{"timeout is not unsupported", fakeAPIError{code: "RequestTimeout", status: 400}, false},
+		{"denied is not unsupported", fakeAPIError{code: "AccessDenied", status: 403}, false},
+	}
+	for _, tc := range cases {
+		if got := UnsupportedByProvider(tc.err); got != tc.want {
+			t.Errorf("%s: UnsupportedByProvider(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
+		}
+	}
+}

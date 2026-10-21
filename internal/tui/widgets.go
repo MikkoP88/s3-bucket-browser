@@ -98,7 +98,7 @@ func (t *Table) SetRows(rows []Row) {
 		sel = len(rows) - 1
 	}
 	t.Sel = sel
-	t.clamp()
+	t.clampBounds()
 }
 
 // colWidths resolves fixed and flex widths against the available width.
@@ -166,7 +166,7 @@ func (t *Table) Draw(s *Screen) {
 
 	rows := t.Rows
 	visible := ih - 2
-	t.clampTo(visible)
+	t.clampBounds()
 	for vi := range visible {
 		ri := t.Off + vi
 		if ri >= len(rows) {
@@ -253,16 +253,25 @@ func (t *Table) visibleRows() int {
 	return max(ih-2, 1)
 }
 
-func (t *Table) clampTo(visible int) {
-	if visible < 1 {
-		visible = 1
-	}
+// clampBounds holds Off inside the row universe WITHOUT touching the
+// selection: viewport gestures (wheel, redraw, reload) own the fold.
+// The reveal of Sel lives only in clampTo — selection gestures move
+// the fold, scrolling never drags it back.
+func (t *Table) clampBounds() {
 	if t.Off > len(t.Rows)-1 {
 		t.Off = max(len(t.Rows)-1, 0)
 	}
 	if t.Off < 0 {
 		t.Off = 0
 	}
+}
+
+// clampTo additionally reveals the selected row.
+func (t *Table) clampTo(visible int) {
+	if visible < 1 {
+		visible = 1
+	}
+	t.clampBounds()
 	if t.Sel != -1 {
 		if t.Sel < t.Off {
 			t.Off = t.Sel
@@ -353,12 +362,12 @@ func (t *Table) HandleMouse(m MouseEvent) bool {
 			t.hover = ri
 		}
 	case MouseWheelUp:
+		// Viewport gesture: scroll the fold, never drag it back to
+		// the selection — the Off assignment is self-bounding.
 		t.Off = max(t.Off-3, 0)
-		t.clamp()
 		return true
 	case MouseWheelDown:
 		t.Off = min(t.Off+3, max(len(t.Rows)-1, 0))
-		t.clamp()
 		return true
 	case MousePress:
 		// Header click → sort hook.

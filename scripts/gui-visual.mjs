@@ -862,6 +862,22 @@ function shim() {
 
   // Methods whose return values drive rendering get explicit handlers;
   // everything else falls through to record + benign default.
+  // pageList emits a listing answer the way a provider speaks it: one
+  // bounded page per event, done only on the page that reaches the end.
+  // The window law’s rigs seat the page size through world.listPageSize
+  // (unset: one whole page — the harness default every other step rides).
+  const pageList = (t, entries, f) => {
+    const size = Math.max(0, Math.round(world.listPageSize || 0));
+    if (!size || entries.length <= size) {
+      emit('list:page', { token: t, entries, done: true, error: f.listError || '' });
+      return;
+    }
+    for (let i = 0; i < entries.length; i += size) {
+      const last = i + size >= entries.length;
+      emit('list:page', { token: t, entries: entries.slice(i, i + size), done: last, error: f.listError || '' });
+    }
+  };
+
   const H = {
     GetVersion: () => '1.1.0-beta.13',
     GetLicenseState: () => ({ required: false }), // shim world: no setup phase
@@ -910,12 +926,7 @@ function shim() {
       const f = world.fault || {};
       if (f.listBeginError) throw new Error(f.listBeginError);
       const t = token();
-      const send = () => emit('list:page', {
-        token: t,
-        entries: f.listError ? [] : listPrefix(bucket, prefix),
-        done: true,
-        error: f.listError || '',
-      });
+      const send = () => pageList(t, f.listError ? [] : listPrefix(bucket, prefix), f);
       if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
       return t;
     },
@@ -923,12 +934,7 @@ function shim() {
       const f = world.fault || {};
       if (f.listBeginError) throw new Error(f.listBeginError);
       const t = token();
-      const send = () => emit('list:page', {
-        token: t,
-        entries: f.listError ? [] : listPrefix(bucket, prefix),
-        done: true,
-        error: f.listError || '',
-      });
+      const send = () => pageList(t, f.listError ? [] : listPrefix(bucket, prefix), f);
       if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
       return t;
     },
@@ -962,12 +968,7 @@ function shim() {
       const after = String(startAfter || '');
       const entries = (f.listError ? [] : listPrefix(bucket, prefix))
         .filter((e) => e.key > after);
-      const send = () => emit('list:page', {
-        token: t,
-        entries,
-        done: true,
-        error: f.listError || '',
-      });
+      const send = () => pageList(t, entries, f);
       if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
       return t;
     },
@@ -978,12 +979,7 @@ function shim() {
       const after = String(startAfter || '');
       const entries = (f.listError ? [] : listPrefix(bucket, prefix))
         .filter((e) => e.key > after);
-      const send = () => emit('list:page', {
-        token: t,
-        entries,
-        done: true,
-        error: f.listError || '',
-      });
+      const send = () => pageList(t, entries, f);
       if (f.listDelayMs) setTimeout(send, f.listDelayMs); else send();
       return t;
     },
@@ -14118,6 +14114,10 @@ await step('forced-colors', async () => {
   await navObjects('team-files');
   await page.focus('#grid-body');
   await clickRow('readme.md');
+  // the hover paint is a coin the drop leg must not ride: park the
+  // pointer off-grid so both captures read the row UNHOVERED
+  await page.mouse.move(2, 2);
+  await sleep(150);
   const baseBg = await selRowBg();
   await ok('a row selection seated before the mode flips', !!baseBg && (await rowKeys()).includes('readme.md'));
   await page.emulateMedia({ forcedColors: 'active' });
@@ -14220,8 +14220,15 @@ await step('forced-colors', async () => {
   // never a blind sleep (the entrance-settle law above; a fixed 120ms
   // flipped the coin on 18 Oct 2026 and the sweep paid a first-attempt
   // fail for it)
+  // The re-click is load-bearing — the tree walk re-listed the bucket
+  // (clickTree) and the re-list cleared the selection, leaving the read
+  // null forever — and the reads stay UNHOVERED, pointer parked off-grid:
+  // the hover paint is its own coin when a re-render moves the pool row
+  // out from under the pointer
   await page.emulateMedia({ forcedColors: null });
   await clickRow('readme.md');
+  await page.mouse.move(2, 2);
+  await sleep(150);
   await waitFor(async () => (await selRowBg()) === baseBg, 4000, 'the theme paint to return after the mode drops');
   await ok('the mode drops and the theme paint returns', (await selRowBg()) === baseBg);
   await page.focus('#grid-body');
@@ -14504,7 +14511,7 @@ await step('big-listing', async () => {
   // file order), so it hosts the big world: five thousand rows in one
   // listing page, the pool pinned bounded, the scroll extent, the sort /
   // walk / filter / select-all grammars pinned against the model at
-  // scale. Leaves the world canonical: bucket re-emptied, filter clear.
+  // scale. Leaves the world canonical: bucket re-emptied, filter clear, native order restored.
   await evalPage(() => {
     const objs = [];
     for (let i = 0; i < 5000; i += 1) {
@@ -14565,6 +14572,14 @@ await step('big-listing', async () => {
   await ok('select-all again clears the five thousand', waitFor(async () => evalPage(() =>
     window.__s3bGrid.sel.size === 0), 5000, 'cleared'));
   await evalPage(() => { window.__shim.world.objects['archive-cold'] = []; });
+  // the sort the walk clicked is the tail’s own debt: native
+  // name/ascending restored (a leaked sort walks every later view in
+  // display space, and the windowed listing law rides native order —
+  // big-listing-window’s walk seats its geometry on this restore)
+  await page.click('#grid-head .gh[data-col="name"]');
+  await ok('the native order is restored after the sort walk', evalPage(() =>
+    window.__s3bGrid.sortKey === 'name' && window.__s3bGrid.sortDir === 1));
+
   await ok('big-listing walk leaves the world canonical', evalPage(() =>
     (window.__shim.world.objects['archive-cold'] || []).length === 0
     && document.getElementById('filter').value === ''));
@@ -14752,119 +14767,235 @@ await step('tree-scale', async () => {
     && (window.__shim.world.objects['archive-cold'] || []).length === 0), 4000, 'tree folded'));
 });
 
-// ---------- scale: the materialization cap and the continuation footer ----------
-await step('big-listing-cap', async () => {
+// ---------- scale: the sliding window over a huge listing ----------
+await step('big-listing-window', async () => {
   // big-listing pinned the virtualized pool over a fully-seated model;
-  // the hundred-million-object law is stronger: the model itself must
-  // refuse the universe. The stream seats one deliberate step of rows
-  // (setStreamStep is the rigs' seat; production rides the shipped
-  // constants), the walk is cut at the ceiling, the continuation footer
-  // speaks the honest count it holds (the universe past a cut walk is
-  // unknown — never a lie), and the footer's verb fetches the next
-  // window strictly past the highest key held until the last window
-  // lands whole and the footer retires with the universe known. The
-  // dual pane's S3 seat rides the same law through its own window
-  // bridge. archive-cold and team-files host the walks; both worlds are
-  // restored at the tail and the step overrides cleared.
+  // the hundred-million-object law is stronger: the model itself never
+  // seats the universe. The stream seats ONE window and every further
+  // window loads itself as the viewport approaches the loaded edge
+  // (setStreamTune is the rigs' seat; production rides the shipped
+  // constants), the far edge trims past the held ceiling with scroll
+  // compensation, and the climb back seats inert placeholders and
+  // refills from the checkpoint below — a demand that fires BY ITSELF
+  // at the settle when the trim leaves the viewport above the held
+  // window, so a walk that completes keeps the session open and the
+  // trimmed-above rows heal in one fetch round trip. The passive
+  // grid-fill wash seats with every demand and retires at its settle,
+  // and no continuation control exists anywhere (the .grid-more door
+  // is gone from the product). The dual pane's S3 seat rides the same
+  // law through its own window bridge. The synthetic scroll dispatch
+  // is the rig's own law: a programmatic scrollTop alone queues the
+  // scroll task, so the demand arming (and the wash it paints) would
+  // race the next evaluate — dispatching the event runs the whole
+  // chain synchronously inside the evaluate. Every pin is derived from
+  // the model itself (never a hardcoded count), so any viewport height
+  // walks the same law; the done-settle pins hold in BOTH the transient
+  // trim state and the already-refilled one (the auto-heal is the
+  // product working, never a race to observe), and the arm's permanent
+  // trace is the shim call ladder (an up-fetch carries no cursor).
   await clickTree('team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'away seat');
   await sleep(150);
   await evalPage(() => {
     const objs = [];
-    for (let i = 0; i < 27; i += 1) {
+    for (let i = 0; i < 150; i += 1) {
       objs.push({ key: 'file-' + String(i).padStart(4, '0') + '.txt',
         size: 100 + i, lastModified: Date.now() - (i + 1) * 60000,
         storageClass: 'STANDARD' });
     }
     window.__shim.world.objects['archive-cold'] = objs;
-    window.__s3bGrid.setStreamStep(10, 40);
+    window.__shim.world.listPageSize = 50;
+    window.__s3bGrid.setStreamTune({ first: 50, win: 50, max: 100, prefetch: 5, cap: 1000 });
   });
   await resetCalls();
   await clickTree('archive-cold');
-  await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 10
-    && !!document.querySelector('#grid-body .grid-more')), 5000, 'cap seated');
-  await ok('the ceiling seats one deliberate step, the walk cut mid-universe', evalPage(() => {
+  await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 50
+    && !window.__s3bGrid.needDown), 5000, 'first window seated');
+  await ok('one first window seats and the walk rests cut mid-universe', evalPage(() => {
     const g = window.__s3bGrid;
     const info = g.modelInfo();
-    return g.rows.length === 10 && info.shown === 10 && info.parked === 17
-      && info.universe === null;
+    // the geometry itself is pinned here — fail loud at the top rather
+    // than ten evaluates deep if a predecessor leaves the grid sorted
+    // off native order (a sorted listing honestly walks display space)
+    return g.isWindowed() === true && g.rows.length === 50 && info.held === 50
+      && info.above === 0 && info.universe === null
+      && String(g.rows[49].name) === 'file-0049.txt'
+      && !document.querySelector('#grid-body .grid-more')
+      && !document.querySelector('#grid-body .grid-fill');
   }));
-  await ok('the continuation footer speaks the honest count it holds', evalPage(() => {
-    const b = document.querySelector('#grid-body .grid-more');
-    return !!b && b.textContent.includes('Show more rows') && b.textContent.includes('10');
-  }));
-  await evalPage(() => document.querySelector('#grid-body .grid-more').click());
-  await ok('the footer verb fetches one window past the highest key held', waitFor(async () => evalPage(() => {
+  // the dive: the viewport's approach to the loaded edge IS the request
+  // — the wash seats with the demand in the same synchronous chain, and
+  // no click exists anywhere
+  const armed = await evalPage(() => {
+    const b = document.querySelector('#grid-body');
+    b.scrollTop = b.scrollHeight;
+    b.dispatchEvent(new Event('scroll'));
+    return { needDown: window.__s3bGrid.needDown, fill: !!document.querySelector('#grid-body .grid-fill') };
+  });
+  if (armed.needDown !== true) throw new Error('the dive did not arm the down demand');
+  if (!armed.fill) throw new Error('the grid-fill wash did not seat with the armed demand');
+  await ok('the second window loads itself past the highest key held', waitFor(async () => evalPage(() => {
     const w = window.__shim.calls.filter((c) => c.m === 'ListObjectsWindow').at(-1);
     const g = window.__s3bGrid;
     const info = g.modelInfo();
-    const b = document.querySelector('#grid-body .grid-more');
     return !!w && w.args.length === 3 && w.args[0] === 'archive-cold' && w.args[1] === ''
-      && w.args[2] === 'file-0009.txt' && g.rows.length === 20
-      && info.parked === 7 && info.universe === null
-      && !!b && b.textContent.includes('20');
-  }), 5000, 'first window'));
-  await evalPage(() => document.querySelector('#grid-body .grid-more').click());
-  await ok('the last window lands whole: the footer retires, the universe known', waitFor(async () => evalPage(() => {
-    const w = window.__shim.calls.filter((c) => c.m === 'ListObjectsWindow').at(-1);
+      && w.args[2] === 'file-0049.txt' && g.rows.length === 100 && info.held === 100
+      && info.above === 0 && info.universe === null
+      && String(g.rows[50].name) === 'file-0050.txt'
+      && !document.querySelector('#grid-body .grid-fill')
+      && !document.querySelector('#grid-body .grid-more');
+  }), 5000, 'second window'));
+  await evalPage(() => {
+    const b = document.querySelector('#grid-body');
+    b.scrollTop = b.scrollHeight;
+    b.dispatchEvent(new Event('scroll'));
+  });
+  // the done settle: both-worlds pins — every held row names its own
+  // absolute index (the held set is a CONTIGUOUS slice of the listing
+  // at baseIndex), true in the transient trim state (a suffix of the
+  // walked universe) and in the already-refilled one (a prefix around
+  // the climbed viewport) alike
+  await ok('the done window trims past the ceiling and the universe settles', waitFor(async () => evalPage(() => {
     const g = window.__s3bGrid;
     const info = g.modelInfo();
-    return !!w && w.args[2] === 'file-0019.txt' && g.rows.length === 27
-      && info.universe === 27 && info.parked === 0
+    const contiguous = g.all.length > 0 && g.all.every((r, i) =>
+      r.name === 'file-' + String(info.above + i).padStart(4, '0') + '.txt');
+    return g.streamDone === true && info.universe === 150 && contiguous
       && !document.querySelector('#grid-body .grid-more');
-  }), 5000, 'universe known'));
+  }), 5000, 'done settle'));
+  // the climb back over a DONE walk: the session never folded — the
+  // trim's compensation lands the viewport above the held window, the
+  // demand arms (by itself at the settle, or at this jog), and the
+  // refill from the index-0 checkpoint lands in one compensated paint
+  await evalPage(() => {
+    const b = document.querySelector('#grid-body');
+    b.scrollTop = 0;
+    b.dispatchEvent(new Event('scroll'));
+  });
+  await ok('the backward refill resets the window from the index-0 checkpoint', waitFor(async () => evalPage(() => {
+    const g = window.__s3bGrid;
+    const info = g.modelInfo();
+    return info.above === 0 && g.all.length === 100 && !g.needUp
+      && String(g.all[0].name) === 'file-0000.txt'
+      && String(g.all[99].name) === 'file-0099.txt';
+  }), 5000, 'backward refill'));
+  await ok('the climb demand fired past done (the up-fetch carries no cursor)', evalPage(() =>
+    window.__shim.calls.some((c) => c.m === 'ListObjectsWindow'
+      && c.args.length === 3 && c.args[0] === 'archive-cold'
+      && c.args[1] === '' && c.args[2] === '')));
+  // the stride: past the DOM pixel ceiling the canvas compresses — one
+  // slot per pxScale rows, the honest scrollbar over a huge extent.
+  // The dive back after the climb IS the down-past-done law: the rows
+  // trimBottom parked below the window reload through the same window
+  // fetch (only held rows reaching the KNOWN universe is the
+  // empty-fetch guard), and the regrown extent crosses the ceiling in
+  // the same motion
+  const stride = await evalPage(() => {
+    const g = window.__s3bGrid;
+    g.setStreamTune({ first: 50, win: 50, max: 100, prefetch: 5, cap: 40 });
+    g.calcScale();
+    g.render();
+    return { scale: g.pxScale, info: g.modelInfo() };
+  });
+  if (stride.scale !== 3)
+    throw new Error('the held window did not compress onto the 40-slot ceiling: ' + JSON.stringify(stride));
+  await evalPage(() => {
+    const b = document.querySelector('#grid-body');
+    b.scrollTop = b.scrollHeight;
+    b.dispatchEvent(new Event('scroll'));
+  });
+  await ok('the dive past done reloads the parked tail and crosses the pixel ceiling', waitFor(async () => evalPage(() => {
+    const w = window.__shim.calls.filter((c) => c.m === 'ListObjectsWindow' && c.args[2] === 'file-0099.txt');
+    const g = window.__s3bGrid;
+    const info = g.modelInfo();
+    const contiguous = g.all.every((r, i) =>
+      r.name === 'file-' + String(info.above + i).padStart(4, '0') + '.txt');
+    return w.length >= 2 && g.pxScale === 4 && info.scale === 4
+      && info.universe === 150 && info.above + g.all.length === 150
+      && contiguous && String(g.all[g.all.length - 1].name) === 'file-0149.txt'
+      && !document.querySelector('#grid-body .grid-more');
+  }), 5000, 'stride dive'));
   // the dual pane's S3 seat rides the same law through its own bridge
   await evalPage(() => {
-    window.__s3bGrid.setStreamStep(0, 0);
+    window.__s3bGrid.setStreamTune(null);
     window.__shim.world.objects['archive-cold'] = [];
     window.__s3bKeepTeamFiles = window.__shim.world.objects['team-files'];
     const objs = [];
-    for (let i = 0; i < 23; i += 1) {
+    for (let i = 0; i < 120; i += 1) {
       objs.push({ key: 'doc-' + String(i).padStart(4, '0') + '.txt',
         size: 100 + i, lastModified: Date.now() - (i + 1) * 60000,
         storageClass: 'STANDARD' });
     }
     window.__shim.world.objects['team-files'] = objs;
-    window.__s3bSidePane.grid.setStreamStep(8, 24);
+    window.__s3bSidePane.grid.setStreamTune({ first: 40, win: 40, max: 80, prefetch: 5, cap: 1000 });
   });
   await resetCalls();
   await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
-  await waitFor(() => evalPage(() => window.__s3bSidePane.grid.rows.length === 8
-    && !!document.querySelector('#local-grid-body .grid-more')), 5000, 'pane cap seated');
-  await ok('the pane ceiling seats its own deliberate step with its own footer', evalPage(() => {
+  await waitFor(() => evalPage(() => window.__s3bSidePane.grid.rows.length === 40
+    && !window.__s3bSidePane.grid.needDown), 5000, 'pane first window seated');
+  await ok('the pane seats its own first window through its own bridge', evalPage(() => {
     const g = window.__s3bSidePane.grid;
     const info = g.modelInfo();
-    return g.rows.length === 8 && info.parked === 15 && info.universe === null;
-  }));
-  await evalPage(() => document.querySelector('#local-grid-body .grid-more').click());
-  await ok('the pane footer fetches its own window bridge', waitFor(async () => evalPage(() => {
-    const w = window.__shim.calls.filter((c) => c.m === 'ListSourceObjectsWindow').at(-1);
-    const g = window.__s3bSidePane.grid;
-    return !!w && w.args.length === 4 && w.args[0] === 'src-team-files' && w.args[1] === 'team-files'
-      && w.args[2] === '' && w.args[3] === 'doc-0007.txt' && g.rows.length === 16;
-  }), 5000, 'pane window'));
-  await evalPage(() => document.querySelector('#local-grid-body .grid-more').click());
-  await ok('the pane last window lands whole and retires its footer', waitFor(async () => evalPage(() => {
-    const w = window.__shim.calls.filter((c) => c.m === 'ListSourceObjectsWindow').at(-1);
-    const g = window.__s3bSidePane.grid;
-    const info = g.modelInfo();
-    return !!w && w.args[3] === 'doc-0015.txt' && g.rows.length === 23
-      && info.universe === 23 && info.parked === 0
+    return g.isWindowed() === true && g.rows.length === 40 && info.held === 40
+      && info.above === 0 && info.universe === null
       && !document.querySelector('#local-grid-body .grid-more');
-  }), 5000, 'pane universe known'));
+  }));
   await evalPage(() => {
-    window.__s3bGrid.setStreamStep(0, 0);
-    window.__s3bSidePane.grid.setStreamStep(0, 0);
+    const g = window.__s3bSidePane.grid;
+    g.body.scrollTop = g.body.scrollHeight;
+    g.body.dispatchEvent(new Event('scroll'));
+  });
+  await ok('the pane dive fetches its own window past its highest key', waitFor(async () => evalPage(() => {
+    const w = window.__shim.calls.filter((c) => c.m === 'ListSourceObjectsWindow').at(-1);
+    const g = window.__s3bSidePane.grid;
+    const info = g.modelInfo();
+    return !!w && w.args.length === 4 && w.args[0] === 'src-team-files' && w.args[1] === 'team-files'
+      && w.args[2] === '' && w.args[3] === 'doc-0039.txt' && g.rows.length === 80
+      && info.held === 80 && info.above === 0 && info.universe === null;
+  }), 5000, 'pane window'));
+  await evalPage(() => {
+    const g = window.__s3bSidePane.grid;
+    g.body.scrollTop = g.body.scrollHeight;
+    g.body.dispatchEvent(new Event('scroll'));
+  });
+  await ok('the pane done window trims and settles its universe open', waitFor(async () => evalPage(() => {
+    const g = window.__s3bSidePane.grid;
+    const info = g.modelInfo();
+    const contiguous = g.all.length > 0 && g.all.every((r, i) =>
+      r.name === 'doc-' + String(info.above + i).padStart(4, '0') + '.txt');
+    return g.streamDone === true && info.universe === 120 && contiguous
+      && !document.querySelector('#local-grid-body .grid-more');
+  }), 5000, 'pane done'));
+  await evalPage(() => {
+    const g = window.__s3bSidePane.grid;
+    g.body.scrollTop = 0;
+    g.body.dispatchEvent(new Event('scroll'));
+  });
+  await ok('the pane climb refills from its own checkpoint', waitFor(async () => evalPage(() => {
+    const g = window.__s3bSidePane.grid;
+    const info = g.modelInfo();
+    return info.above === 0 && g.all.length === 80 && !g.needUp
+      && String(g.all[0].name) === 'doc-0000.txt'
+      && String(g.all[79].name) === 'doc-0079.txt';
+  }), 5000, 'pane refill'));
+  await ok('the pane climb demand fired past done through its own bridge', evalPage(() =>
+    window.__shim.calls.some((c) => c.m === 'ListSourceObjectsWindow'
+      && c.args.length === 4 && c.args[0] === 'src-team-files'
+      && c.args[2] === '' && c.args[3] === '')));
+  await evalPage(() => {
+    window.__s3bGrid.setStreamTune(null);
+    window.__s3bSidePane.grid.setStreamTune(null);
     window.__shim.world.objects['team-files'] = window.__s3bKeepTeamFiles;
     delete window.__s3bKeepTeamFiles;
+    delete window.__shim.world.listPageSize;
   });
-  await ok('big-listing-cap leaves the world canonical', evalPage(() => {
+  await ok('big-listing-window leaves the world canonical', evalPage(() => {
     const tf = window.__shim.world.objects['team-files'];
-    const g = window.__s3bGrid;
     return (window.__shim.world.objects['archive-cold'] || []).length === 0
       && Array.isArray(tf) && tf.some((x) => x.key === 'readme.md')
-      && g.stepOverride === 0 && g.ceilOverride === 0
-      && window.__s3bSidePane.grid.stepOverride === 0;
+      && !('listPageSize' in window.__shim.world)
+      && window.__s3bGrid.tune === null
+      && window.__s3bSidePane.grid.tune === null;
   }));
 });
 

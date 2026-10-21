@@ -766,7 +766,7 @@ export class SidePane {
     this.setLoading(true);
     try {
       const target = dir === '' || dir === '~' ? await app().LocalHome() : dir;
-      this.grid.on.more = null; // the footer is the S3 stream's door only
+      this.grid.on.needRows = null; // the stream demand is the S3 seat’s only's door only
       const ents = await app().ListLocal(target);
       if (seq !== this.navSeq) return; // superseded — user navigated on
       this.dir = target;
@@ -794,7 +794,7 @@ export class SidePane {
     this.setLoading(true);
     try {
       const path = dir && dir !== '~' ? dir : '/';
-      this.grid.on.more = null; // the footer is the S3 stream's door only
+      this.grid.on.needRows = null; // the stream demand is the S3 seat’s only's door only
       const ents = await app().RemoteList(this.binding.source, path);
       if (seq !== this.navSeq) return; // superseded — user navigated on
       this.dir = path;
@@ -826,9 +826,9 @@ export class SidePane {
 
   // navigateS3 lists the bound S3 source: the buckets view at the root,
   // one streamed prefix inside a bucket. Same one-page memory contract
-  // as the main view, and the same big-folder law: the model caps at
-  // one deliberate step, the parked rows ride the continuation footer,
-  // and extendS3 fetches the next window past the last key held.
+  // as the main view, and the same 100M-object law: the model seats one
+  // first window and further windows load themselves on demand — the
+  // pane twin of the main view’s grammar, over the same windowed bridge.
   async navigateS3({ bucket, prefix }) {
     this.cancelS3Stream();
     this.dropUsage(`${this.binding.source}|${bucket}|`); // mutation refreshes land here
@@ -840,7 +840,7 @@ export class SidePane {
         if (seq !== this.s3Seq) return;
         this.bucket = '';
         this.dir = '';
-        this.grid.on.more = null; // buckets never park rows
+        this.grid.on.needRows = null; // buckets never stream
         this.grid.setRows(buckets.map((b) => ({
           name: b.name, key: b.name, bucket: b.name, isDir: true, isBucket: true,
           lastModified: b.createdAt,
@@ -852,37 +852,40 @@ export class SidePane {
       }
       return;
     }
-    this.grid.on.more = () => { this.extendS3(); };
-    let parked = 0; // rows the ceiling refused (this stream's own count)
+    // the demand engine’s wires — the pane twin. The pane keeps no host
+    // mirror (everything reads the grid’s own rows), so the trim reports
+    // need no mirror splice here.
+    this.grid.on.needRows = (dir, cp) => { if (dir === 'up') this.backfillS3(cp); else this.extendS3(); };
     let token;
     const stream = subscribeStream(
       () => app().ListSourceObjectsStream(this.binding.source, bucket, prefix || ''),
       (p) => {
         if (seq !== this.s3Seq) return; // superseded while pages still arrived
-        if (p.error) { this.listFail(p.error); this.cancelS3Stream(); return; }
+        if (p.error) { this.listFail(p.error); this.grid.settleDown({ error: true }); this.cancelS3Stream(); return; }
         this.setLoading(false);
         this.hideOnboarding();
         this.hasListed = true;
         const entries = (p.entries || []).map((e) => ({ ...e, bucket }));
         const acc = this.grid.appendStreamRows(entries);
-        parked += entries.length - acc.length;
         if (!this.painted) { this.painted = true; this.hideEmpty(); this.landUpbar(); this.updateNav(); }
         this.updateStatus();
         this.scheduleFill(); // every page re-arms the lazy folder sizes
-        if (parked > 0) {
-          // the materialization ceiling: cut the walk, settle capped —
-          // the footer offers the parked rows from here
+        if (p.done) {
+          if (acc.length < entries.length) {
+            // the final page lands whole: its tail past the window target
+            // is the listing’s own end, never a parked count to lose
+            this.grid.appendRows(entries.slice(acc.length));
+          }
           this.cancelS3Stream();
-          this.grid.endStream(true);
+          this.grid.settleDown({ done: true });
+          if (!this.grid.rows.length) this.showEmpty(t('emptyFolder'), t('emptyFolderSub'), []);
           this.updateCrumb();
           this.consumePendingSelect();
-          this.updateStatus();
           return;
         }
-        if (p.done) {
-          this.cancelS3Stream();
-          this.grid.endStream(false);
-          if (!this.grid.rows.length) this.showEmpty(t('emptyFolder'), t('emptyFolderSub'), []);
+        if (this.grid.windowFull()) {
+          this.cancelS3Stream(); // the budget: the wire stops, the window stands open
+          this.grid.settleDown({});
           this.updateCrumb();
           this.consumePendingSelect();
         }
@@ -893,7 +896,7 @@ export class SidePane {
       token = await stream.begin;
     } catch (e) {
       if (this.s3Off === stream.off) this.s3Off = null;
-      if (seq === this.s3Seq) this.listFail(e);
+      if (seq === this.s3Seq) { this.listFail(e); this.grid.settleDown({ error: true }); }
       return;
     }
     if (seq !== this.s3Seq) { app().CancelList(token).catch(() => {}); return; }
@@ -908,42 +911,28 @@ export class SidePane {
     stream.flush();
   }
 
-  // extendS3 answers the pane grid's continuation footer: one more
-  // bounded window from the last key held, the ceiling grown one
-  // deliberate step — the pane twin of the main view's
-  // extendObjectStream, over the same windowed bridge.
-  async extendS3() {
-    if (this.binding.kind !== 's3' || !this.bucket) return;
-    const startAfter = this.grid.lastKey();
-    if (!startAfter) return;
-    this.grid.growRows();
+  // backfillS3 is the pane demand engine’s up wire — the twin of the
+  // main view’s backfillObjectStream: pages arrive ascending from the
+  // checkpoint the grid named, appendBackRows stops them at the held
+  // window’s head, and settleUp paints them in one compensated unshift.
+  // A failure stays quiet: the backward fill repairs already-known
+  // territory, never an error surface.
+  async backfillS3(cp) {
+    if (this.binding.kind !== 's3' || !this.bucket) { this.grid.settleUp(); return; }
+    const after = (cp && cp.after) || '';
     this.cancelS3Stream();
     const seq = this.s3Seq;
-    let parked = 0;
     const stream = subscribeStream(
-      () => app().ListSourceObjectsWindow(this.binding.source, this.bucket, this.dir || '', startAfter),
+      () => app().ListSourceObjectsWindow(this.binding.source, this.bucket, this.dir || '', after),
       (p) => {
         if (seq !== this.s3Seq) return; // superseded while the window paged
-        if (p.error) { this.listFail(p.error); this.cancelS3Stream(); return; }
-        const entries = (p.entries || []).map((e) => ({ ...e, bucket: this.bucket }));
-        const acc = this.grid.appendStreamRows(entries);
-        parked += entries.length - acc.length;
-        this.updateStatus();
-        this.scheduleFill();
-        if (parked > 0) {
-          // the ceiling again: cut and settle capped — the footer
-          // re-offers with the new honest count
+        if (p.error) { this.cancelS3Stream(); this.grid.settleUp(); return; }
+        this.grid.appendBackRows((p.entries || []).map((e) => ({ ...e, bucket: this.bucket })), !!p.done);
+        if (p.done || this.grid.backfillDone()) {
           this.cancelS3Stream();
-          this.grid.endStream(true);
-          this.updateCrumb();
-          this.consumePendingSelect();
-          return;
-        }
-        if (p.done) {
-          this.cancelS3Stream();
-          this.grid.endStream(false);
-          this.updateCrumb();
-          this.consumePendingSelect();
+          this.grid.settleUp();
+          this.updateStatus();
+          this.scheduleFill();
         }
       },
     );
@@ -953,7 +942,54 @@ export class SidePane {
       token = await stream.begin;
     } catch (e) {
       if (this.s3Off === stream.off) this.s3Off = null;
-      if (seq === this.s3Seq) this.listFail(e);
+      if (seq === this.s3Seq) this.grid.settleUp();
+      return;
+    }
+    if (seq !== this.s3Seq) { app().CancelList(token).catch(() => {}); return; }
+    this.s3Token = token;
+    stream.flush();
+  }
+
+  // extendS3 is the pane demand engine’s down wire: one more window from
+  // the last key held — the pane twin of the main view’s
+  // extendObjectStream, over the same windowed bridge. Every exit
+  // settles the fetch; a window that hit its target detaches the wire
+  // (the budget lives at the caller, never in Go).
+  async extendS3() {
+    if (this.binding.kind !== 's3' || !this.bucket) { this.grid.settleDown({}); return; }
+    const startAfter = this.grid.lastKey();
+    this.cancelS3Stream();
+    const seq = this.s3Seq;
+    const stream = subscribeStream(
+      () => app().ListSourceObjectsWindow(this.binding.source, this.bucket, this.dir || '', startAfter),
+      (p) => {
+        if (seq !== this.s3Seq) return; // superseded while the window paged
+        if (p.error) { this.listFail(p.error); this.grid.settleDown({ error: true }); this.cancelS3Stream(); return; }
+        const entries = (p.entries || []).map((e) => ({ ...e, bucket: this.bucket }));
+        const acc = this.grid.appendStreamRows(entries);
+        this.updateStatus();
+        this.scheduleFill();
+        if (p.done) {
+          if (acc.length < entries.length) this.grid.appendRows(entries.slice(acc.length));
+          this.cancelS3Stream();
+          this.grid.settleDown({ done: true });
+          this.updateCrumb();
+          this.consumePendingSelect();
+          return;
+        }
+        if (this.grid.windowFull()) {
+          this.cancelS3Stream();
+          this.grid.settleDown({});
+        }
+      },
+    );
+    this.s3Off = stream.off;
+    let token;
+    try {
+      token = await stream.begin;
+    } catch (e) {
+      if (this.s3Off === stream.off) this.s3Off = null;
+      if (seq === this.s3Seq) { this.listFail(e); this.grid.settleDown({ error: true }); }
       return;
     }
     if (seq !== this.s3Seq) { app().CancelList(token).catch(() => {}); return; }

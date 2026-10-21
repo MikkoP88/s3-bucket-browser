@@ -478,7 +478,7 @@ func (b *Browser) dial(i int) {
 	b.sel = i
 	b.src.Sel = i
 	b.src.MoveSel(0)
-	b.reload()
+	b.navReload()
 }
 
 // crumb answers where we are: source › bucket › path.
@@ -526,6 +526,16 @@ func (b *Browser) reload() {
 		}
 		b.app.Post(AppMsg{Kind: MsgList, Data: listResult{seq: seq, entries: entries, err: err}})
 	}()
+}
+
+// navReload re-lists a CHANGED view from its top: dial, descent,
+// ascent, :cd. The fold never survives a view change — an Off carried
+// from the previous listing (bounds-clamped into a shorter universe)
+// hides the new view's early rows. reload() keeps the fold for
+// same-view refreshes (F5, r, post-verb re-lists, the root refusal).
+func (b *Browser) navReload() {
+	b.grid.Off = 0
+	b.reload()
 }
 
 // listBucketsAsEntries lists the account's buckets as folder rows.
@@ -758,7 +768,7 @@ func (b *Browser) openEntry() {
 	} else {
 		b.prefix = remotefs.CleanPath(path.Join(strings.TrimPrefix(b.prefix, "/"), e.Name))
 	}
-	b.reload()
+	b.navReload()
 }
 
 func (b *Browser) up() {
@@ -766,6 +776,8 @@ func (b *Browser) up() {
 		switch {
 		case b.bucket == "":
 			b.flash("already at the account root", false)
+			b.reload() // same view — the refusal keeps the fold
+			return
 		case b.prefix == "":
 			b.bucket = ""
 		default:
@@ -783,7 +795,7 @@ func (b *Browser) up() {
 		}
 		b.prefix = remotefs.CleanPath(path.Dir(strings.TrimSuffix(b.prefix, "/")))
 	}
-	b.reload()
+	b.navReload()
 }
 
 // ── verbs: folders and names ──────────────────────────────────────────────
@@ -1259,14 +1271,14 @@ func (b *Browser) navigate(target string) {
 				p += "/" // prefix form — a bare s3://bucket lists its root
 			}
 			b.bucket, b.prefix = bk, p
-			b.reload()
+			b.navReload()
 			return
 		}
 		for si, src := range b.sources {
 			if strings.EqualFold(src.Name, scheme) {
 				b.dial(si) // dial seats the source itself
 				b.prefix = remotefs.CleanPath(rest)
-				b.reload()
+				b.navReload()
 				return
 			}
 		}
@@ -1278,5 +1290,5 @@ func (b *Browser) navigate(target string) {
 	} else {
 		b.prefix = remotefs.CleanPath(path.Join(strings.TrimPrefix(b.prefix, "/"), target))
 	}
-	b.reload()
+	b.navReload()
 }

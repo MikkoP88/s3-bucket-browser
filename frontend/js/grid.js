@@ -14,15 +14,22 @@ const ROW_H = 28;
 const OVERSCAN = 8;
 
 // The big-folder law: a streamed listing may offer far more rows than any
-// view should materialize (a 100M-object folder is real). The grid takes
-// rows in deliberate steps — ROW_STEP at a time, never past ROW_CEIL — and
-// keeps counting the rest as parked: the model stays bounded while the
-// continuation footer (renderMore) offers the next window and the counts
-// stay honest.
-export const ROW_STEP = 100000;
-export const ROW_CEIL = 1000000;
-const MORE_H = 34;    // continuation footer height, canvas pixels
-const APPLY_MS = 200; // coalesced apply cadence while a stream runs
+// view should materialize (a 100M-object folder is real). The grid holds a
+// SLIDING WINDOW over the listing — never a cap with a door: the first walk
+// streams FIRST_STEP rows, further windows load themselves as the viewport
+// approaches the loaded edge (on.needRows — no continuation control of any
+// kind), memory stays bounded by trimming the far edge past MAX_HELD, and
+// start-after checkpoints let a scroll back above the window refill it from
+// the wire. The scrollbar spans the known extent — S3 answers no total
+// count, so it grows as the walk deepens, compressed past the DOM's own
+// pixel ceiling (pxScale) rather than lying or breaking.
+export const FIRST_STEP = 100000; // rows the initial walk streams before pausing
+export const WIN_STEP = 25000;    // rows each demand window adds at the loaded edge
+export const MAX_HELD = 200000;   // window ceiling — the far edge trims past it
+const SCROLL_ROWS_CAP = 1000000; // rows the canvas can spell in pixels (the 33M px DOM ceiling)
+const PREFETCH_ROWS = 1500;      // viewport proximity that arms a demand window
+const FILL_H = 28;               // open-end liveness row height, canvas pixels
+const APPLY_MS = 200;            // coalesced apply cadence while a stream runs
 
 // acceptedMimes lists the drag payload types a pane accepts on folder rows:
 // the remote pane takes same-pane moves plus local-pane uploads; the local
@@ -190,13 +197,25 @@ export class Grid {
 
     // streaming session state (the big-folder law): see beginStream
     this.streaming = false;
-    this.rowLimit = ROW_STEP; // materialization ceiling while a stream runs
-    this.stepOverride = 0;    // rigs' seat: step/ceiling at a seedable scale
-    this.ceilOverride = 0;
-    this.overflow = 0;        // rows offered past the ceiling (parked)
-    this.universe = null;     // exact total once a full walk landed (null = open)
-    this.applyTimer = null;   // coalesced apply while streaming
-    this.moreEl = null;       // continuation footer (lazily built in renderMore)
+    this.streamDone = false; // the listing finished (or no session runs)
+    this.tune = null;        // rigs' seat: window constants at a seedable scale
+    this.winTarget = 0;      // absolute listing index the current fetch stops at
+    this.baseIndex = 0;      // listing rows trimmed above the held window
+    this.tops = [];          // start-after checkpoints [{after, index}] (never empty while open)
+    this.needDown = false;   // a downward fetch is in flight
+    this.needUp = false;     // a backward (upward) fetch is in flight
+    this.upBuf = [];         // backfilled rows awaiting one settleUp paint
+    this.upDone = false;     // the walk reached the listing's head — nothing above
+    this.upHit = false;      // a backfill met the held window (its early stop)
+    this.upStart = 0;        // absolute listing index of upBuf's first row (the fill's target)
+    this.upScanned = 0;      // rows the current up demand passed over (the chase's budget)
+    this.winGrew = true;     // last window added display rows (filter-chain gate)
+    this.winFrom = 0;        // display rows before the current window fetch
+    this.universe = null;    // exact total once a full walk landed (null = open)
+    this.applyTimer = null;  // coalesced apply while streaming
+    this.fillEl = null;      // open-end liveness row (lazily built in renderFill)
+    this.pxScale = 1;        // rows per pool slot when the extent outgrows the pixel ceiling
+    this.downErrAt = 0;      // last fetch failure (epoch ms) — the demand retry's backoff
 
     this.pool = [];
     this.accepts = null; // optional mime list override (side-pane bindings)
@@ -360,7 +379,7 @@ export class Grid {
   rebuildPool() {
     this.canvas.replaceChildren();
     this.pool = [];
-    this.moreEl = null; // wiped with the canvas; renderMore rebuilds on demand
+    this.fillEl = null; // wiped with the canvas; renderFill rebuilds on demand
   }
 
   // ---------- setup ----------
@@ -549,6 +568,7 @@ export class Grid {
     inp.addEventListener('click', (e) => e.stopPropagation());
     inp.addEventListener('input', () => {
       this.colFilters[id] = inp.value;
+      this.winGrew = true; // a new needle re-arms the demand chain
       this.apply();
     });
     inp.addEventListener('keydown', (e) => {
@@ -557,6 +577,7 @@ export class Grid {
         e.preventDefault();
         e.stopPropagation();
         this.colFilters[id] = '';
+        this.winGrew = true;
         this.apply();
         this.renderHead();
       }
@@ -650,18 +671,13 @@ export class Grid {
 
   // ---------- data ----------
   setRows(rows) {
-    // a wholesale swap ends any streaming session: parked rows, footer and
-    // the deferred prune all belong to the model that just left. The swap's
-    // model IS the universe — nothing sits outside it.
-    if (this.streaming) {
-      this.streaming = false;
-      if (this.applyTimer) { clearTimeout(this.applyTimer); this.applyTimer = null; }
-    }
-    this.overflow = 0;
+    // a wholesale swap ends any streaming session: window bookkeeping and
+    // the deferred prune all belong to the model that just left. The
+    // swap's model IS the universe — nothing sits outside it.
+    this.endSession();
     this.universe = rows.length;
     this.all = rows;
     this.apply();
-    this.renderMore();
   }
 
   // appendRows extends the model with rows that arrive already in display
@@ -669,7 +685,15 @@ export class Grid {
   // page; call apply() once when the stream ends if the sort must change.
   appendRows(rows) {
     if (!rows.length) return;
-    this.all.push(...rows);
+    // a trailing tombstone band materializes first: the down wire walks
+    // from lastKey, and the band's slots are exactly the listing rows
+    // that follow it — those land in their slots, only the remainder
+    // pushes past the old edge
+    let band = 0;
+    while (band < rows.length && this.all.length - 1 - band >= 0
+      && this.all[this.all.length - 1 - band] === null) band++;
+    if (band) this.all.splice(this.all.length - band, band, ...rows.slice(0, band));
+    this.all.push(...rows.slice(band));
     if (!this.hasFilters() && this.sortKey === 'name' && this.sortDir === 1) {
       this.rows.push(...rows);
       this.render();
@@ -686,92 +710,450 @@ export class Grid {
   removeRows(keys) {
     if (!keys.length) return;
     const drop = new Set(keys);
-    this.all = this.all.filter((r) => !drop.has(r.key));
+    this.all = this.all.filter((r) => r && !drop.has(r.key)); // tombstones survive row drops — geometry, not rows
     this.apply();
   }
 
   // ---------- big-folder streaming (the 100M-object law) ----------
-  // beginStream opens a streaming session: the materialization ceiling
-  // resets to one deliberate step, the universe count reopens, and
-  // filtered applies coalesce (applySoon) so a page never pays a full
-  // re-sort on top of the wire.
-  beginStream() {
-    this.streaming = true;
-    this.rowLimit = this.stepOverride || ROW_STEP;
-    this.overflow = 0;
-    this.universe = null;
+  // A streamed listing may hold far more rows than any view should
+  // materialize. The grid answers with a SLIDING WINDOW over the
+  // listing, never a cap with a door: the first walk streams tuned
+  // ('first') rows, further windows load themselves as the viewport
+  // approaches the loaded edge (checkNeed -> on.needRows — no
+  // continuation control exists), the far edge trims past tuned('max')
+  // so memory stays bounded however deep the user walks, and start-after
+  // checkpoints (tops) refill the window when the viewport climbs back
+  // above it. The scrollbar spans the known extent — S3 answers no total
+  // count — compressed past the DOM's own pixel ceiling (pxScale)
+  // rather than lying or breaking.
+
+  // tuned reads a window constant through the rigs' seat.
+  tuned(k) {
+    const v = this.tune ? this.tune[k] : 0;
+    if (v) return v;
+    return { first: FIRST_STEP, win: WIN_STEP, max: MAX_HELD, prefetch: PREFETCH_ROWS, cap: SCROLL_ROWS_CAP }[k] || 0;
   }
 
-  // appendStreamRows is the cap-aware append: every offered row counts,
-  // only what fits under the ceiling lands, and the accepted slice comes
-  // back so the caller's own bookkeeping (tree dirs, ghost merge) holds
-  // exactly what the grid holds. Rows past the ceiling are parked, not
-  // lost — the footer offers them and on.more() fetches the window.
+  // setStreamTune retunes the window constants — the rigs' seat, so
+  // batteries can walk the window law at a seedable scale while
+  // production rides the shipped constants. A falsy tune clears the
+  // seat again (the harness restores the shipped constants at its tail).
+  setStreamTune(t) {
+    this.tune = t ? {
+      first: Math.max(1, Math.round(t.first || 0)),
+      win: Math.max(1, Math.round(t.win || 0)),
+      max: Math.max(1, Math.round(t.max || 0)),
+      prefetch: Math.max(1, Math.round(t.prefetch || 0)),
+      cap: Math.max(1, Math.round(t.cap || 0)),
+    } : null;
+  }
+
+  // beginStream opens a streaming session: the window resets, the
+  // universe count reopens, and filtered applies coalesce (applySoon) so
+  // a page never pays a full re-sort on top of the wire. The initial
+  // walk IS the first downward fetch — needDown stays armed until the
+  // walk's settle, so the demand engine cannot double-fire under it.
+  beginStream() {
+    this.streaming = true;
+    this.streamDone = false;
+    this.winTarget = this.baseIndex + this.all.length + this.tuned('first');
+    this.winFrom = 0;
+    this.winGrew = true;
+    this.baseIndex = 0;
+    this.tops = [{ after: '', index: 0 }];
+    this.needDown = true;
+    this.needUp = false;
+    this.upHit = false;
+    this.upBuf = [];
+    this.upDone = false;
+    this.upStart = 0;
+    this.upScanned = 0;
+    this.universe = null;
+    this.renderFill(); // the walk's liveness wash seats with the session
+  }
+
+  // windowFull is the pause oracle: the current downward fetch stops
+  // once the walk's absolute edge holds its target of listing rows —
+  // ABSOLUTE, because the trim inside appendStreamRows can hand back a
+  // held count below the target the same fetch just reached (a window
+  // fetched to absolute 2,000 trims to 1,500 held; a held-count oracle
+  // would never pause, the stream would run to the folder's end, and
+  // its done page would settle a universe the window never accepted).
+  windowFull() { return this.baseIndex + this.all.length >= this.winTarget; }
+
+  // pushTop seats a start-after checkpoint: `after` is the last key
+  // known contiguous at listing index `index` (rows from that index
+  // refetch from that key — the listing's ascending order makes every
+  // observed key/index pair a true binding, whichever direction the
+  // walk observed it in). The index-0 entry never drops; the ring stays
+  // bounded so a very long walk cannot grow it without end — and the
+  // eviction keeps a SPREAD, thinning the older half's odd steps, so a
+  // climb at any depth always has an anchor within reach: a linear tail
+  // would strand a 100M-row scrollback miles from every checkpoint.
+  pushTop(after, index) {
+    const last = this.tops[this.tops.length - 1];
+    if (last && last.index === index) { last.after = String(after || ''); return; }
+    this.tops.push({ after: String(after || ''), index });
+    if (this.tops.length > 192) {
+      const half = this.tops.length >> 1;
+      for (let i = half - 1; i >= 1; i -= 2) this.tops.splice(i, 1);
+      if (this.tops.length > 192) this.tops.splice(1, this.tops.length - 192);
+    }
+  }
+
+  // topBelow picks the tightest checkpoint at or below a listing index —
+  // the resume point a backward fill wants.
+  topBelow(index) {
+    if (!this.tops.length) return { after: '', index: 0 };
+    let best = this.tops[0];
+    for (const cp of this.tops) if (cp.index <= index && cp.index >= best.index) best = cp;
+    return best;
+  }
+
+  // appendStreamRows is the window-aware append: rows land until the
+  // fetch's target is met, the accepted slice comes back so the caller's
+  // own bookkeeping (tree dirs, ghost merge) holds exactly what the grid
+  // holds, and every page boundary seats a checkpoint for the backward
+  // fill that may someday scroll back to it.
   appendStreamRows(rows) {
     if (!rows.length) return rows;
-    const room = this.rowLimit - this.all.length;
+    const room = this.winTarget - (this.baseIndex + this.all.length);
     let acc = rows;
     if (room <= 0) acc = [];
     else if (rows.length > room) acc = rows.slice(0, room);
-    if (acc.length < rows.length) this.overflow += rows.length - acc.length;
-    if (acc.length) this.appendRows(acc);
-    this.renderMore();
+    if (acc.length) {
+      this.appendRows(acc);
+      this.pushTop(this.lastKey(), this.baseIndex + this.all.length);
+      this.trimTop();
+    }
     return acc;
   }
 
-  // endStream closes the session: the deferred selection prune runs in the
-  // final apply, and a walk that parked nothing settles the universe count
-  // on the materialized model itself (the status can then say "of N").
-  endStream(capped) {
+  // settleDown closes the current downward fetch — every exit of the
+  // host's stream loop lands here, error paths included (a dangling
+  // needDown would starve every later demand). `done` marks the listing
+  // exhausted: the universe settles but the session NEVER folds — a walk
+  // completed deep in a huge folder holds rows trimmed above it, and the
+  // climb back must still refill them, so the windowed geometry (canvas,
+  // checkpoints, stride) stands past done. Only the downward side dies
+  // with streamDone; a wholesale setRows is the one true fold. Windowed,
+  // the listing's own order IS the settled order — folders-first is
+  // display space's law and takes over the moment a sort or filter
+  // leaves native order.
+  settleDown(info) {
+    // a settle with no open session and no dangling fetch is a stray —
+    // folding hands already settled must not re-apply the window grammar
+    if (!this.streaming && !this.needDown && !this.needUp) return;
+    this.needDown = false;
+    this.downErrAt = info && info.error ? Date.now() : 0;
+    this.winGrew = !this.hasFilters() || this.rows.length > this.winFrom;
+    if (info && info.done) {
+      this.streamDone = true;
+      this.universe = this.baseIndex + this.all.length;
+      this.applyWindow();
+      this.renderFill(); // retires the wash — the open end is now closed
+      return;
+    }
+    this.applyWindow();
+    this.renderFill();
+  }
+
+  // endSession folds an open session: every window field retires and
+  // the final apply runs the full folders-first grammar — the listing
+  // order the window preserved yields to the display order every
+  // settled view carries.
+  endSession() {
     this.streaming = false;
+    this.streamDone = true;
+    this.winTarget = 0;
+    this.baseIndex = 0;
+    this.tops = [];
+    this.needDown = false;
+    this.needUp = false;
+    this.upBuf = [];
+    this.upDone = false;
+    this.upStart = 0;
+    this.upScanned = 0;
+    this.winGrew = true;
+    this.winFrom = 0;
     if (this.applyTimer) { clearTimeout(this.applyTimer); this.applyTimer = null; }
-    if (!capped) this.universe = this.all.length;
+    this.all = this.all.filter(Boolean); // the fold drops tombstone slots — display space holds only rows
     this.apply();
-    this.renderMore();
+    this.renderFill();
   }
 
-  // growRows raises the ceiling one deliberate step for the window fetch
-  // the footer just asked for — never past the ceiling: a view is always
-  // bounded, however deep the user walks.
-  growRows() {
-    const step = this.stepOverride || ROW_STEP;
-    this.rowLimit = Math.min(this.rowLimit + step, this.ceilOverride || ROW_CEIL);
-    this.overflow = 0;
+  // appendBackRows is the backward-fill append: pages arrive ascending
+  // from the checkpoint, and every row's TRUE slot is the checkpoint's
+  // own binding — cp.index + k, whatever the walk met on its way. So
+  // acceptance is slot-based, never key-based: a row lands only where
+  // the model is missing (above the window's head, or inside a gapped
+  // fill's tombstone band), rows the model already holds pass over
+  // silently toward the gap, and the first held ground met ABOVE the
+  // new rows ends the walk (upHit — the early stop). Acceptance stops
+  // at one window's worth so a single demand stays bounded; the pass-
+  // over has its own budget (one first window), and every examined page
+  // seats its boundary checkpoint — a long chase through held ground
+  // never walks the same page twice.
+  appendBackRows(rows, done, cp) {
+    if (done) this.upDone = true;
+    const cpIndex = (cp && cp.index) || 0;
+    const win = this.tuned('win');
+    const acc = [];
+    for (let k = 0; k < rows.length; k++) {
+      if (this.upBuf.length + acc.length >= win) break; // one window's worth per demand
+      const rel = cpIndex + k - this.baseIndex;
+      const held = rel >= 0 && rel < this.all.length && !!this.all[rel];
+      if (held) {
+        if (acc.length) { this.upHit = true; break; } // the fill met held ground above it
+        this.upScanned++;
+        if (this.upScanned >= this.tuned('first')) { this.upHit = true; break; }
+        continue;
+      }
+      if (rel >= this.all.length) { this.upHit = true; break; } // below the model: the down wire's ground
+      if (!this.upBuf.length && !acc.length) this.upStart = cpIndex + k;
+      acc.push(rows[k]);
+    }
+    this.upBuf = this.upBuf.concat(acc);
+    if (rows.length) this.pushTop(String(rows[rows.length - 1].key), cpIndex + rows.length);
+    return acc.length;
   }
 
-  // parkRows re-seats parked rows after a wholesale swap carried them (the
-  // silent-refresh path swaps through setRows, which clears the footer).
-  // A parked view's universe is unknown — setRows' claim retires with it.
-  parkRows(n) {
-    this.overflow = n;
-    if (n > 0) this.universe = null;
-    this.renderMore();
+  // backfillDone is the backward fetch's stop oracle: the head of the
+  // listing, the held window met, or the buffer full all end the walk.
+  backfillDone() { return this.upDone || this.upHit || this.upBuf.length >= this.tuned('win'); }
+
+  // settleUp closes the backward fetch: the buffered rows land in ONE
+  // paint at their TRUE slots. A fill that reached or passed the model's
+  // head prepends (the unbridged span between the fill's end and the old
+  // head seats as tombstones — honest blanks for rows not yet held,
+  // never a silent gap the contiguous arithmetic would misplace); a fill
+  // inside the held span splices straight into its tombstone band. The
+  // canvas never shifts — blanks become rows exactly where the viewport
+  // already sat, so no scroll compensation exists (the old compensated
+  // prepend jumped the view a full window down on every climb); the tail
+  // trims past the ceiling and the fill's boundary seats as a checkpoint.
+  // Returns the count for the host's own mirror.
+  settleUp() {
+    // the stray-settle law of settleDown, mirrored: nothing in flight and
+    // nothing buffered means there is nothing to settle
+    if (!this.needUp && !this.upBuf.length) return 0;
+    const n = this.upBuf.length;
+    if (n) {
+      const lastKeyAbove = this.upBuf[n - 1].key;
+      const lo = this.upStart;
+      const hi = lo + n;
+      const rel = lo - this.baseIndex;
+      if (rel <= 0) {
+        // at/above the model's head: prepend, tombstoning the unbridged
+        // span. A negative gap is the crossing fill — its tail overlaps
+        // the old head's own leading tombstones (acceptance guarantees
+        // every covered held slot was one), so the overlap drops out
+        const gap = this.baseIndex - hi;
+        const ts = gap > 0 ? new Array(gap).fill(null) : [];
+        const overlap = gap < 0 ? -gap : 0;
+        this.all = this.upBuf.concat(ts, this.all.slice(overlap));
+        this.baseIndex = lo;
+      } else {
+        // inside the held span: the tombstone band materializes in place
+        this.all = this.all.slice(0, rel).concat(this.upBuf, this.all.slice(rel + n));
+      }
+      this.upBuf = [];
+      this.pushTop(lastKeyAbove, hi);
+      this.trimBottom();
+      this.applyWindow();
+      this.render();
+    }
+    this.needUp = false;
+    this.upHit = false;
+    this.upScanned = 0;
+    this.renderFill();
+    return n;
   }
 
-  // setStreamStep retunes step and ceiling — the rigs' seat, so batteries
-  // can walk the cap law at a seedable scale while production rides the
-  // shipped constants. Falsy args clear the override again (the harness
-  // restores the shipped constants at its tail; 0 must mean "gone", never
-  // a step of one).
-  setStreamStep(step, ceil) {
-    this.stepOverride = step ? Math.max(1, Math.round(step)) : 0;
-    this.ceilOverride = ceil ? Math.max(this.stepOverride, Math.round(ceil)) : 0;
+  // trimTop drops the oldest held rows past the ceiling — never into
+  // the viewport (a screen of headroom stays), compensating the scroll
+  // so the view does not jump, seating the boundary checkpoint, and
+  // telling the host (on.trim) so its own mirror stays aligned.
+  trimTop() {
+    const max = this.tuned('max');
+    if (this.all.length <= max) return;
+    const over = this.all.length - max;
+    const win = this.isWindowed();
+    let safe;
+    if (win) {
+      const absTop = (this.body.scrollTop / ROW_H) * this.pxScale;
+      const screen = (this.body.clientHeight / ROW_H) * this.pxScale;
+      safe = Math.max(0, Math.floor(absTop - screen) - this.baseIndex);
+    } else {
+      safe = Math.max(0, Math.floor(this.body.scrollTop / ROW_H) - 2);
+    }
+    const cut = Math.min(over, safe);
+    if (cut <= 0) return;
+    // the boundary checkpoint seats at the cut span's last REAL row — a
+    // tombstone has no key to bind (the ring's older entries already
+    // cover territory the cut leaves keyless)
+    let real = -1;
+    for (let i = cut - 1; i >= 0; i--) if (this.all[i]) { real = i; break; }
+    if (real >= 0) this.pushTop(this.all[real].key, this.baseIndex + real + 1);
+    const cutRows = this.all.slice(0, cut);
+    const cutSet = new Set(cutRows);
+    this.all = this.all.slice(cut);
+    this.baseIndex += cut;
+    let cutReal = 0; // the mirror counts rows, never tombstone slots
+    for (const r of cutRows) {
+      if (!r) continue;
+      cutReal++;
+      this.sel.delete(r.key);
+      if (this.focusKey === r.key) this.focusKey = null;
+      if (this.anchorKey === r.key) this.anchorKey = null;
+    }
+    this.rows = this.rows.filter((r) => !cutSet.has(r));
+    if (win) this.body.scrollTop = Math.max(0, this.body.scrollTop - (cut / this.pxScale) * ROW_H);
+    else {
+      let kept = 0;
+      for (const r of cutRows) if (r && this.passesFilters(r)) kept++;
+      this.body.scrollTop = Math.max(0, this.body.scrollTop - kept * ROW_H);
+    }
+    this.on.trim?.(cutReal);
   }
 
-  // modelInfo reports the honest counts a status bar owes: what is shown,
-  // what the universe holds when that is known exactly, and how many
-  // offered rows sit parked past the ceiling.
+  // trimBottom is the backfill's mirror: the tail trims past the
+  // ceiling once the viewport keeps a screen of room below it. No
+  // compensation is needed — only content below the view leaves.
+  trimBottom() {
+    const max = this.tuned('max');
+    if (this.all.length <= max) return;
+    const over = this.all.length - max;
+    const absBot = ((this.body.scrollTop + this.body.clientHeight) / ROW_H) * this.pxScale - this.baseIndex;
+    const screen = (this.body.clientHeight / ROW_H) * this.pxScale;
+    const safe = Math.max(0, Math.floor(this.all.length - absBot - screen));
+    const cut = Math.min(over, safe);
+    if (cut <= 0) return;
+    const dropSet = new Set(this.all.slice(this.all.length - cut));
+    this.all = this.all.slice(0, this.all.length - cut);
+    this.rows = this.rows.filter((r) => !dropSet.has(r));
+    let cutReal = 0; // the mirror counts rows, never tombstone slots
+    for (const r of dropSet) {
+      if (!r) continue;
+      cutReal++;
+      this.sel.delete(r.key);
+      if (this.focusKey === r.key) this.focusKey = null;
+      if (this.anchorKey === r.key) this.anchorKey = null;
+    }
+    this.on.trimEnd?.(cutReal);
+  }
+
+  // checkNeed arms the demand engine at every render's end: in windowed
+  // mode the viewport's edges speak in listing space (through the
+  // stride), upward when the window's head sits within reach (a
+  // backward fill from the tightest checkpoint), downward at the loaded
+  // edge; in display space (filter or off-native sort on an open
+  // listing) the loaded edge is the filtered bottom. One fetch at a
+  // time — the view owns a single stream slot — and the winGrew gate
+  // parks a filter's chain after a window that added nothing (never
+  // walk 100M rows for an absent needle; the next filter change
+  // re-arms it).
+  checkNeed() {
+    if (!this.streaming) return;
+    if (this.needDown || this.needUp) return;
+    // a failed fetch backs off five seconds — a dead provider must not
+    // turn the render loop into a retry storm (the up-branch stays live:
+    // its failure is a courtesy repair, not an error surface)
+    if (this.downErrAt && Date.now() - this.downErrAt < 5000) return;
+    const pre = this.tuned('prefetch');
+    if (this.isWindowed()) {
+      const absTop = (this.body.scrollTop / ROW_H) * this.pxScale;
+      const absBot = absTop + (this.body.clientHeight / ROW_H) * this.pxScale;
+      // the up-branch outlives done: a completed walk still holds its
+      // trimmed-above rows, and the climb back refills them — the arm
+      // fires on a head within reach OR any tombstone band the viewport
+      // can see (a gap's blanks demand their rows exactly the way a
+      // trimmed-away head does)
+      const relTop = Math.floor(Math.max(0, absTop - pre)) - this.baseIndex;
+      const relBot = Math.floor(absBot) - this.baseIndex;
+      let miss = relTop < 0;
+      if (!miss) {
+        const stop = Math.min(this.all.length - 1, relBot);
+        for (let i = Math.max(0, relTop); i <= stop; i++) {
+          if (this.all[i] === null) { miss = true; break; }
+        }
+      }
+      if (miss) {
+        this.needUp = true;
+        this.upScanned = 0;
+        this.on.needRows?.('up', this.topBelow(Math.max(0, Math.floor(absTop))));
+        return;
+      }
+      // ...but the down-branch dies at the END, never at done: a done
+      // walk still holds rows below a climbed window (the climb's
+      // trimBottom parked them), and the dive back re-arms the same
+      // window fetch — the known universe is the empty-fetch guard
+      const heldBot = this.baseIndex + this.all.length;
+      if (!(this.streamDone && heldBot >= this.universe)
+        && absBot + pre >= heldBot && (this.winGrew || !this.hasFilters())) this.fireDown();
+    } else {
+      const bottom = this.rows.length - (this.body.scrollTop + this.body.clientHeight) / ROW_H;
+      if (!(this.streamDone && this.rows.length >= this.universe)
+        && bottom < pre && (this.winGrew || !this.hasFilters())) this.fireDown();
+    }
+  }
+
+  // fireDown opens the next downward window at the loaded edge. The
+  // target is the ABSOLUTE edge the fetch walks to (baseIndex plus
+  // held) — trims move baseIndex, never the absolute truth.
+  fireDown() {
+    if (this.needDown || this.needUp) return;
+    this.needDown = true;
+    this.winTarget = this.baseIndex + this.all.length + this.tuned('win');
+    this.winFrom = this.rows.length;
+    this.renderFill(); // the fetch's liveness wash seats with the demand
+    this.on.needRows?.('down', null);
+  }
+
+  // isWindowed: the geometry mode where the canvas spells listing
+  // space — an open, native-order, unfiltered session. Done does not
+  // end it (the climb back still refills); only a fold (setRows) or a
+  // departure into display space (sort or filter) does.
+  isWindowed() {
+    return !!(this.streaming && this.sortKey === 'name' && this.sortDir === 1 && !this.hasFilters());
+  }
+
+  // extent: the listing rows the canvas spans. Loaded rows — S3
+  // answers no total count, so the scrollbar grows as the walk
+  // deepens; pxScale keeps it honest past the pixel ceiling.
+  extent() { return this.baseIndex + this.all.length; }
+
+  // calcScale seats the stride: one pool slot per row until the extent
+  // would outgrow the DOM's own pixel ceiling, then rows compress into
+  // slots — the display reads as a stride, an honest proportional
+  // scrollbar past ~33.5M pixels, never a broken canvas. A stride change
+  // re-anchors the scroll in listing space so the viewport keeps its
+  // rows instead of jumping.
+  calcScale() {
+    const prev = this.pxScale;
+    this.pxScale = this.isWindowed() ? Math.max(1, Math.ceil(this.extent() / this.tuned('cap'))) : 1;
+    if (this.pxScale !== prev && this.body.scrollTop > 0) {
+      this.body.scrollTop = ((this.body.scrollTop / ROW_H) * prev / this.pxScale) * ROW_H;
+    }
+  }
+
+  // modelInfo reports the honest counts a status bar owes: what is
+  // shown, what the universe holds when that is known exactly, and —
+  // for an open window — how many listing rows sit held, how many sit
+  // above the window, and the stride when the canvas compresses.
   modelInfo() {
-    return { shown: this.rows.length, universe: this.universe, parked: this.overflow };
+    let held = 0; // real rows only — tombstone slots are owed rows, not held ones
+    for (const r of this.all) if (r) held++;
+    return { shown: this.rows.length, universe: this.universe, held, above: this.baseIndex, scale: this.pxScale };
   }
 
-  // lastKey is the highest key held — the StartAfter anchor for the next
-  // window fetch. Arrival order interleaves folders and files (a page's
-  // common prefixes come before its objects), so "last" means max, not
-  // final.
+  // lastKey is the highest key held — the StartAfter anchor for the
+  // next window fetch. Arrival order interleaves folders and files (a
+  // page's common prefixes come before its objects), so "last" means
+  // max, not final.
   lastKey() {
     let k = '';
-    for (const r of this.all) if (r.key > k) k = r.key;
+    for (const r of this.all) if (r && r.key > k) k = r.key;
     return k;
   }
 
@@ -787,28 +1169,24 @@ export class Grid {
     }, APPLY_MS);
   }
 
-  // renderMore seats or clears the continuation footer — the parked rows'
-  // door. It names the bounded count honestly (the universe past a parked
-  // stream is unknown: the walk was cut at the ceiling), and the click is
-  // the host pane's fetch (on.more).
-  renderMore() {
-    const want = this.overflow > 0 && typeof this.on?.more === 'function';
-    if (!want) {
-      if (this.moreEl) { this.moreEl.remove(); this.moreEl = null; }
-      this.render();
-      return;
+  // renderFill seats or retires the open end's liveness row — a passive
+  // animated wash, never a control: the window loads itself, so there
+  // is nothing to click. It rides while a downward fetch is in flight —
+  // a done listing's re-dive is as live as the first walk.
+  renderFill() {
+    const want = !!(this.streaming && this.needDown);
+    if (!want && this.fillEl) { this.fillEl.remove(); this.fillEl = null; }
+    else if (want && !this.fillEl) {
+      this.fillEl = el('div', { class: 'grid-fill' });
+      this.fillEl.setAttribute('aria-hidden', 'true');
+      this.canvas.appendChild(this.fillEl);
     }
-    if (!this.moreEl) {
-      this.moreEl = el('button', { class: 'grid-more', type: 'button' });
-      this.moreEl.addEventListener('click', () => this.on.more());
-      this.canvas.appendChild(this.moreEl);
-    }
-    this.moreEl.textContent = t('grid.more', { n: this.rows.length.toLocaleString() });
     this.render();
   }
 
   setFilter(f) {
     this.filter = f;
+    this.winGrew = true; // a new needle re-arms the demand chain
     this.apply();
   }
 
@@ -817,19 +1195,27 @@ export class Grid {
     return !!this.filter || this.cols.some((c) => this.colFilters[c.id]);
   }
 
-  apply() {
-    let rows = this.all;
-    // the navbar filter is global — a hit in ANY visible column keeps the
-    // row; per-column funnels stack on top, each matching its own column
+  // passesFilters: the filter grammar in one place — the navbar filter
+  // is global (a hit in ANY visible column keeps the row); per-column
+  // funnels stack on top, each matching its own column.
+  passesFilters(r) {
     const q = (this.filter || '').toLowerCase();
-    if (q) rows = rows.filter((r) => this.cols.some((c) => colText(r, c.id).toLowerCase().includes(q)));
+    if (q && !this.cols.some((c) => colText(r, c.id).toLowerCase().includes(q))) return false;
     for (const c of this.cols) {
       const f = this.colFilters[c.id];
-      if (f) {
-        const cq = f.toLowerCase();
-        rows = rows.filter((r) => colText(r, c.id).toLowerCase().includes(cq));
-      }
+      if (f && !colText(r, c.id).toLowerCase().includes(f.toLowerCase())) return false;
     }
+    return true;
+  }
+
+  apply() {
+    // an open native-order session keeps the listing's own order — the
+    // window geometry (placeholders, checkpoints, stride) depends on it;
+    // folders-first and every other sort settle at the session's fold or
+    // once the view leaves native order (filter or sort: display space)
+    if (this.isWindowed()) return this.applyWindow();
+    let rows = this.all.filter(Boolean); // tombstones never enter display space
+    if (this.hasFilters()) rows = rows.filter((r) => this.passesFilters(r));
     const dir = this.sortDir;
     const key = this.sortKey;
     rows = [...rows].sort((a, b) => {
@@ -850,13 +1236,28 @@ export class Grid {
     });
     this.rows = rows;
     // prune selection to existing rows — deferred while a stream runs (the
-    // model only grows mid-stream; endStream's final apply prunes once)
+    // model only grows mid-fetch; the fold's final apply prunes once)
     if (!this.streaming) {
       const live = new Set(rows.map((r) => r.key));
       for (const k of this.sel) if (!live.has(k)) this.sel.delete(k);
     }
     this.render(true); // force: re-emit select (selection may have been pruned)
     if (this.on.model) this.on.model(); // the gallery re-seats its tiles on every model change
+  }
+
+  // applyWindow is the open session's apply: filter without sorting —
+  // the display keeps the provider's own listing order so the window
+  // geometry holds. It never aliases this.all into this.rows (trims and
+  // backfills swap the held array), tombstones never enter display rows
+  // (a blank slot is geometry, not a row), and it never prunes the
+  // selection (the model only grows mid-fetch; trims prune their own
+  // cuts).
+  applyWindow() {
+    let rows = this.all.filter(Boolean);
+    if (this.hasFilters()) rows = rows.filter((r) => this.passesFilters(r));
+    this.rows = rows;
+    this.render(true);
+    if (this.on.model) this.on.model();
   }
 
   selectedRows() { return this.rows.filter((r) => this.sel.has(r.key)); }
@@ -866,7 +1267,7 @@ export class Grid {
   // setCmp decorates rows with directory-compare statuses (name -> status)
   // and repaints; null clears the decorations.
   setCmp(map) {
-    for (const r of this.all) r.cmp = map ? (map.get(r.name) || '') : '';
+    for (const r of this.all) if (r) r.cmp = map ? (map.get(r.name) || '') : '';
     this.render();
   }
 
@@ -880,6 +1281,7 @@ export class Grid {
   // folders are dimmed like ghost rows. null clears the decorations.
   setMarkers(map) {
     for (const r of this.all) {
+      if (!r) continue; // a tombstone slot carries nothing to decorate
       const s = map ? (map.get(`${r.isDir ? 'd' : 'f'}:${r.name}`) || null) : null;
       r.vcount = s ? s.versions : 0;
       r.mcount = s ? s.markers : 0;
@@ -942,15 +1344,30 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
   }
 
   render(force = false) {
-    const total = this.rows.length;
-    // the continuation footer (when parked rows wait below) extends the
-    // canvas and sits right past the last row
-    this.canvas.style.height = `${total * ROW_H + (this.moreEl ? MORE_H : 0)}px`;
-    if (this.moreEl) this.moreEl.style.top = `${total * ROW_H}px`;
+    const win = this.isWindowed();
+    if (win) this.calcScale();
+    const slots = win ? Math.ceil(this.extent() / this.pxScale) : this.rows.length;
+    // the open end's liveness row (while a fetch runs) extends the canvas
+    // and sits right past the last slot
+    this.canvas.style.height = `${slots * ROW_H + (this.fillEl ? FILL_H : 0)}px`;
+    if (this.fillEl) this.fillEl.style.top = `${slots * ROW_H}px`;
     const scrollTop = this.body.scrollTop;
     const h = this.body.clientHeight;
     const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
-    const last = Math.min(total - 1, Math.ceil((scrollTop + h) / ROW_H) + OVERSCAN);
+    const last = Math.min(slots - 1, Math.ceil((scrollTop + h) / ROW_H) + OVERSCAN);
+    // slot -> model: windowed slots spell listing space (through the
+    // stride when the extent outgrows the pixel ceiling); a slot outside
+    // the held window renders as a blank placeholder — the honest
+    // not-loaded region above a trimmed window
+    const p = this.pxScale;
+    const bi = this.baseIndex;
+    const al = this.all.length;
+    const rs = this.rows;
+    const rowAt = (i) => {
+      if (!win) return rs[i] || null;
+      const rel = Math.floor(i * p) - bi;
+      return rel >= 0 && rel < al ? this.all[rel] : null;
+    };
 
     // recycle pool
     let focusRowId = null; // the pool row holding focusKey, for activedescendant
@@ -963,11 +1380,48 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
     for (let i = 0; i < this.pool.length; i++) {
       const row = this.pool[i];
       const idx = first + i;
-      if (idx > last) { row.style.display = 'none'; continue; }
-      const m = this.rows[idx];
+      if (idx > last) {
+        // a hidden pool row keeps no ghost state: rows re-enter range
+        // with every class recomputed, so the classes a hidden row
+        // carries are stale — a computed-style read (or a bug) can trip
+        // on a selection the viewport cannot even show
+        row.style.display = 'none';
+        row.classList.remove('sel', 'focus', 'ghost');
+        row.setAttribute('aria-selected', 'false');
+        continue;
+      }
+      const m = rowAt(idx);
       row.style.display = '';
       row.style.top = `${idx * ROW_H}px`;
       row._model = m;
+      if (!m) {
+        // placeholder: nothing held at this slot — a quiet blank, inert
+        row.classList.remove('sel', 'focus', 'ghost');
+        row.classList.add('placeholder');
+        row.setAttribute('aria-selected', 'false');
+        row.dataset.cmp = '';
+        const cells = row.children;
+        const pcb = cells[0].children[0];
+        pcb.checked = false;
+        pcb.setAttribute('aria-label', '');
+        for (let ci = 0; ci < this.cols.length; ci++) {
+          const cell = cells[1 + ci];
+          const c = this.cols[ci];
+          if (c.id === 'name') {
+            cell.children[0].textContent = '';
+            cell.children[1].textContent = '';
+            cell.children[2].textContent = '';
+            cell.children[2].title = '';
+            cell.children[3].textContent = '';
+            cell.children[3].title = '';
+          } else {
+            cell.textContent = '';
+            cell.title = '';
+          }
+        }
+        continue;
+      }
+      row.classList.remove('placeholder');
       row.classList.toggle('sel', this.sel.has(m.key));
       row.classList.toggle('focus', m.key === this.focusKey);
       row.classList.toggle('ghost', !!(m.ghost || m.dimmed));
@@ -989,14 +1443,14 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
           // Versions window (file) / Content Versions window (folder)
           const vb = cell.children[2];
           const vn = this.showVersions === true && m.vcount ? m.vcount : 0;
-          vb.textContent = vn ? `\u27F2 ${vn}` : '';
+          vb.textContent = vn ? `⟲ ${vn}` : '';
           vb.title = vn ? t('ver.count', { n: vn }) : '';
           // marker badge: files carry at most one marker so they show the
           // bare flag; directories aggregate a count. Rendered when
           // enabled in Settings; click opens the Delete Marker window
           const mb = cell.children[3];
           const hasM = this.showMarkers === true && !!m.mcount;
-          mb.textContent = hasM ? (m.isDir ? `\u26D4 ${m.mcount}` : '\u26D4') : '';
+          mb.textContent = hasM ? (m.isDir ? `⛔ ${m.mcount}` : '⛔') : '';
           mb.title = hasM ? (m.isDir ? t('mark.count', { n: m.mcount }) : t('mark.has')) : '';
         } else if (c.id === 'type') {
           cell.textContent = typeOf(m.name, m.isDir);
@@ -1030,6 +1484,9 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
       this.headCb.indeterminate = this.sel.size > 0 && this.sel.size < n;
     }
     if (force) this.on.select?.(this.selectedRows());
+    // the demand engine rides every render: a viewport that approached a
+    // loaded edge arms the next window fetch
+    this.checkNeed();
   }
 
   wireRow(row) {
@@ -1065,6 +1522,7 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
     row.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       const m = row._model;
+      if (!m) return; // a placeholder slot holds nothing to select
       if (e.ctrlKey || e.metaKey) {
         this.sel.has(m.key) ? this.sel.delete(m.key) : this.sel.add(m.key);
       } else if (e.shiftKey && this.anchorKey) {
@@ -1083,10 +1541,14 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
       this.render();
       this.on.select?.(this.selectedRows());
     });
-    row.addEventListener('dblclick', () => this.on.activate?.(row._model));
+    row.addEventListener('dblclick', () => {
+      if (!row._model) return;
+      this.on.activate?.(row._model);
+    });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       const m = row._model;
+      if (!m) return;
       if (!this.sel.has(m.key)) {
         this.sel.clear();
         this.sel.add(m.key);
@@ -1099,6 +1561,7 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
     row.addEventListener('dragstart', (e) => {
       if (e.target.type === 'checkbox') { e.preventDefault(); return; } // no drag from the checkbox
       const m = row._model;
+      if (!m) { e.preventDefault(); return; } // a placeholder drags nothing
       if (!this.sel.has(m.key)) {
         this.sel.clear();
         this.sel.add(m.key);
@@ -1226,7 +1689,9 @@ row.appendChild(el('div', { class: 'gc check' }, el('input', { type: 'checkbox',
   }
 
   scrollTo(idx) {
-    const top = idx * ROW_H;
+    // display rows speak listing space in windowed mode (through the
+    // stride) — the one scroll write beside render's own geometry
+    const top = this.isWindowed() ? ((this.baseIndex + idx) / this.pxScale) * ROW_H : idx * ROW_H;
     if (top < this.body.scrollTop) this.body.scrollTop = top;
     else if (top + ROW_H > this.body.scrollTop + this.body.clientHeight)
       this.body.scrollTop = top + ROW_H - this.body.clientHeight;

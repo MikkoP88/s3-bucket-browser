@@ -46,17 +46,24 @@ export function onEvent(name, handler) {
 // never complete). Pages arriving before the token is known are buffered
 // and replayed by flush(), which the caller runs once it has committed its
 // own navigation state; pages of other tokens (concurrent streams, canceled
-// predecessors) never reach `handle`.
+// predecessors) never reach `handle`. `off` also stops the flush replay: a
+// handler that detached itself mid-replay (the window law's budget detach)
+// has settled its fetch — a done page queued behind the page that filled
+// the window would settle the session a second time with a lying universe
+// (the remainder the walk never accepted is real, but the model would
+// forever refuse to fetch it).
 export function subscribeStream(start, handle) {
   let token = null;
+  let live = true;
   const early = [];
-  const off = onEvent('list:page', (p) => {
+  const rawOff = onEvent('list:page', (p) => {
     if (token === null) { early.push(p); return; }
-    if (p.token === token) handle(p);
+    if (live && p.token === token) handle(p);
   });
+  const off = () => { live = false; rawOff(); };
   return {
     off,
     begin: start().then((t) => (token = t), (e) => { off(); throw e; }),
-    flush: () => { for (const p of early.splice(0)) if (p.token === token) handle(p); },
+    flush: () => { for (const p of early.splice(0)) { if (!live) break; if (p.token === token) handle(p); } },
   };
 }

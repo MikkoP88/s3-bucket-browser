@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/policy"
@@ -642,6 +643,17 @@ func mapUnsupported(err error, what string) error {
 	return err
 }
 
+// UnsupportedByProvider reports whether err is the provider's honest
+// "this API is not implemented" family — an answer a caller may collapse
+// into a zero state ("off") instead of an error. The guard fetch is the
+// consumer: a provider that never speaks GetBucketVersioning honestly
+// answers "not versioned", while every other failure must propagate so
+// the frontend retries instead of caching a timeout as "never
+// configured" (the missing-guard-icon flake of 21 Oct 2026).
+func UnsupportedByProvider(err error) bool {
+	return err != nil && isCode(err, "NotImplemented", "XNotImplemented", "MethodNotAllowed", "AccessControlListNotSupported")
+}
+
 // isCode reports whether err carries one of the given smithy error codes.
 // (This SDK generation does not model every "not found" as a Go type, so
 // code matching is the portable way to detect "not configured".)
@@ -650,12 +662,7 @@ func isCode(err error, codes ...string) bool {
 	if !errors.As(err, &apiErr) {
 		return false
 	}
-	for _, c := range codes {
-		if apiErr.ErrorCode() == c {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(codes, apiErr.ErrorCode())
 }
 
 func firstNonEmpty(vals ...string) string {

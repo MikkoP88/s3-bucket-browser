@@ -1483,25 +1483,30 @@ async function loadView(loc, { silent = false } = {}) {
 }
 
 // finishObjectsStream is the shared settle for the objects view: the
-// canonical apply (folders-first, active sort, the deferred selection
-// prune), tree dir sync, version decoration, pending select and status —
-// whether the walk ended on its own done page or was cut at the
-// materialization ceiling (capped), the view settles the same honest way.
-function finishObjectsStream(loc, seq, { capped = false } = {}) {
-  grid.endStream(capped);
+// canonical apply at the walk's end (folders-first, active sort, the
+// deferred selection prune), tree dir sync, version decoration, pending
+// select and status — whether the listing ended on its own done page
+// (done) or parked the window at its target with more rows known to
+// exist beneath (no opts: the session stays open and the demand engine
+// owns the rest). The window law itself lives in the grid (settleDown).
+function finishObjectsStream(loc, seq, { done = false } = {}) {
+  // the silent path already folded the session through setRows — only a
+  // live session settles here (and every host exit must settle somehow,
+  // or the dangling fetch starves every later demand)
+  if (grid.streaming) grid.settleDown(done ? { done: true } : {});
   decorateVersionMarkers(loc, seq);
   // Keep the sidebar tree in step with what the grid now shows —
   // the S3 twin of the remote path's updateRemoteDir call: folders
   // created, deleted or renamed anywhere appear in the tree without
   // a manual re-expand. currentEntries holds exactly the rows the grid
-  // accepted (the cap law feeds both the same slice). loc.source is
+  // holds (the window law feeds both the same slice). loc.source is
   // unset on the local-pane sync-up path; the listing went through the
   // pinned viewSource there, which is also the tree node's source.
   tree.updateObjectsDir(loc.source || viewSource, loc.bucket, loc.prefix || '',
     currentEntries.filter((e) => e.isDir));
-  if (!capped && !currentEntries.length && !view.filter) {
+  if (done && !currentEntries.length && !view.filter) {
     showEmpty(t('emptyFolder'), t('dropToUpload'), [
-      el('button', { class: 'btn primary', text: '\u2191 Upload', onclick: (ev) => openMenu(ev.currentTarget, uploadChoices(uploadFiles, uploadFolder)) }),
+      el('button', { class: 'btn primary', text: '↑ Upload', onclick: (ev) => openMenu(ev.currentTarget, uploadChoices(uploadFiles, uploadFolder)) }),
     ]);
   }
   consumePendingSelect();
@@ -1509,47 +1514,48 @@ function finishObjectsStream(loc, seq, { capped = false } = {}) {
   viewLandedHealthy(loc.source || viewSource); // a settled listing = healthy
 }
 
-// extendObjectStream answers the grid's continuation footer: one more
-// bounded window from the last key the model holds, the ceiling grown
-// one deliberate step (the big-folder law). The window rides the same
-// stream machinery as the initial load — a navigation away supersedes
-// it exactly the same way.
+// extendObjectStream is the demand engine's down wire: one more window
+// from the last key the model holds. The grid asked (on.needRows) —
+// no footer, no button, no cap door; the viewport's approach to the
+// loaded edge IS the request. Every exit settles the fetch, error paths
+// included; the walk's own done page ends the session with the universe
+// known, and a window that hit its target detaches the wire — the
+// budget is enforced right here, because Go would happily page forever.
 async function extendObjectStream() {
   const loc = nav.current;
-  if (!loc || loc.kind !== 'objects') return;
+  if (!loc || loc.kind !== 'objects') { grid.settleDown({}); return; }
   const startAfter = grid.lastKey();
-  if (!startAfter) return;
-  grid.growRows();
   const seq = ++listSeq;
   cancelListStream();
-  let parked = 0;
   const stream = subscribeStream(
     () => api.ListObjectsWindow(loc.bucket, loc.prefix || '', startAfter),
     (p) => {
       if (seq !== listSeq) return; // superseded while the window paged
       if (p.error) {
+        detachStream(stream);
+        grid.settleDown({ error: true });
         showListError(p.error);
         viewFailed(loc.source || viewSource, p.error, { silent: false });
         return;
       }
-      const acc = grid.appendStreamRows(p.entries || []);
-      currentEntries.push(...acc);
-      parked += (p.entries || []).length - acc.length;
-      updateStatus();
-      if (parked > 0) {
-        // the ceiling again: cut the walk and settle capped — the footer
-        // re-offers with the new honest count
-        if (listStream.token) { api.CancelList(listStream.token).catch(() => {}); listStream.token = null; }
-        stream.off?.();
-        if (listStream.off === stream.off) listStream.off = null;
-        finishObjectsStream(loc, seq, { capped: true });
+      const entries = p.entries || [];
+      const acc = grid.appendStreamRows(entries);
+      currentEntries.push(...acc); // the mirror holds exactly what the grid holds
+      if (p.done) {
+        // the final page lands whole: its tail past the window target is
+        // the listing's own end, never a parked count to lose
+        if (acc.length < entries.length) {
+          const tail = entries.slice(acc.length);
+          grid.appendRows(tail);
+          currentEntries.push(...tail);
+        }
+        detachStream(stream);
+        finishObjectsStream(loc, seq, { done: true });
         return;
       }
-      if (p.done) {
-        listStream.token = null;
-        stream.off?.();
-        if (listStream.off === stream.off) listStream.off = null;
-        finishObjectsStream(loc, seq, {});
+      if (grid.windowFull()) {
+        detachStream(stream); // the budget: the wire stops, the window stands open
+        finishObjectsStream(loc, seq);
       }
     },
   );
@@ -1560,6 +1566,7 @@ async function extendObjectStream() {
   } catch (err) {
     if (listStream.off === stream.off) listStream.off = null;
     if (seq !== listSeq) return;
+    grid.settleDown({ error: true });
     showListError(err);
     viewFailed(loc.source || viewSource, err, { silent: false });
     return;
@@ -1569,51 +1576,105 @@ async function extendObjectStream() {
   stream.flush();
 }
 
-// loadObjectsStream fills the grid incrementally from the streaming
-// listing API: the first page renders immediately, Go-side memory stays
-// at one page for million-object folders, and stale streams are
-// canceled on navigation (M5). The big-folder law rides the same wire:
-// the model materializes at most one deliberate step (grid.beginStream);
-// a folder larger than the ceiling is cut mid-walk, settled as capped,
-// and the continuation footer offers the parked rows (extendObjectStream).
+// backfillObjectStream is the demand engine's up wire: the viewport
+// climbed above a trimmed window and the grid named the start-after
+// checkpoint to refill from. Pages arrive ascending from that anchor;
+// appendBackRows seats rows only where the model is missing (the slot
+// law — a gap above the head seats as tombstone blanks), and settleUp paints them at their true slots in one materialization. A failure
+// stays quiet — the backward fill repairs already-known territory, it
+// is never an error surface (the rows it could not recover simply
+// remain trimmed, one scroll away from a retry).
+async function backfillObjectStream(cp) {
+  const loc = nav.current;
+  if (!loc || loc.kind !== 'objects') { grid.settleUp(); return; }
+  const after = (cp && cp.after) || '';
+  const seq = ++listSeq;
+  cancelListStream();
+  const stream = subscribeStream(
+    () => api.ListObjectsWindow(loc.bucket, loc.prefix || '', after),
+    (p) => {
+      if (seq !== listSeq) return;
+      if (p.error) {
+        detachStream(stream);
+        grid.settleUp();
+        return;
+      }
+      grid.appendBackRows(p.entries || [], !!p.done, cp);
+      if (p.done || grid.backfillDone()) {
+        detachStream(stream);
+        const n = grid.settleUp();
+        if (n > 0) currentEntries = grid.all.filter(Boolean);
+        updateStatus();
+      }
+    },
+  );
+  listStream.off = stream.off;
+  let token;
+  try {
+    token = await stream.begin;
+  } catch (err) {
+    if (listStream.off === stream.off) listStream.off = null;
+    if (seq !== listSeq) return;
+    grid.settleUp();
+    return;
+  }
+  if (seq !== listSeq) { api.CancelList(token).catch(() => {}); return; }
+  listStream.token = token;
+  stream.flush();
+}
+
+// loadObjectsStream fills the grid from the streaming listing API: the
+// first page renders immediately, Go-side memory stays at one page, and
+// stale streams are canceled on navigation (M5). The 100M-object law
+// rides the same wire: the model materializes one first window
+// (grid.beginStream) and further windows load themselves as the
+// viewport approaches the loaded edge — there is no continuation
+// control anywhere, because there is nothing to continue; the view is
+// simply always live at any depth.
 async function loadObjectsStream(loc, silent = false) {
   const seq = ++listSeq;
   cancelListStream();
   if (pendingSelect && (pendingSelect.bucket !== loc.bucket || pendingSelect.prefix !== (loc.prefix || ''))) {
     pendingSelect = null; // user navigated elsewhere
   }
+  // a silent refresh never disturbs a deep model: an open windowed walk,
+  // or a settled listing bigger than one first window, keeps its state —
+  // autoTick must not snap a walked-down seat back to its first window
+  if (silent && (grid.streaming ? !grid.streamDone : grid.all.length > grid.tuned('first'))) return;
   if (!silent) {
     currentEntries = [];
     grid.setRows([]);
+    grid.setFilter(view.filter);
+    grid.beginStream();
   }
-  grid.setFilter(view.filter);
-  grid.beginStream();
-  let parked = 0; // rows the ceiling refused (this stream's own count)
-  // silent: pages buffer off-screen under the same ceiling and the grid
-  // swaps once, when done. Both modes feed through acceptPage so the
-  // grid and currentEntries always hold exactly the same rows.
+  // silent: pages buffer off-screen and the grid swaps once, at done —
+  // never mid-walk, so nothing flashes; a folder that outgrew the buffer
+  // abandons the refresh untouched (the model stands; an explicit
+  // refresh re-walks). Both modes feed through one acceptor so the grid
+  // and currentEntries always hold exactly the same rows.
   const buffered = [];
   const acceptPage = (entries) => {
-    if (silent) {
-      const room = grid.rowLimit - buffered.length;
-      const acc = room <= 0 ? [] : entries.slice(0, room);
-      parked += entries.length - acc.length;
-      buffered.push(...acc);
-      currentEntries = buffered;
-      return;
+    if (!silent) {
+      const acc = grid.appendStreamRows(entries);
+      currentEntries.push(...acc);
+      return acc.length;
     }
-    const acc = grid.appendStreamRows(entries);
-    currentEntries.push(...acc); // the mirror holds exactly what the grid holds
-    parked += entries.length - acc.length;
+    const room = grid.tuned('first') - buffered.length;
+    const acc = room <= 0 ? [] : entries.slice(0, room);
+    buffered.push(...acc);
+    return acc.length;
   };
   const stream = subscribeStream(
     () => api.ListObjectsStream(loc.bucket, loc.prefix || ''),
     (p) => {
       if (seq !== listSeq) return; // superseded while pages still arrived
       if (p.error) {
-        if (!silent) showListError(p.error);
         viewFailed(loc.source || viewSource, p.error, { silent });
-        return;
+        if (!silent) {
+          grid.settleDown({ error: true });
+          showListError(p.error);
+        }
+        return; // silent: nothing was touched — the model stands
       }
       if (!silent) {
         // First data landed: the skeleton/loading overlay has done its
@@ -1624,36 +1685,42 @@ async function loadObjectsStream(loc, silent = false) {
         hideEmpty();
         setUpbar(parentUp(loc) ? 'on' : 'off');
       }
-      acceptPage(p.entries);
+      const entries = p.entries || [];
+      const accLen = acceptPage(entries);
       updateStatus();
-      if (parked > 0) {
-        // The materialization ceiling: cut the walk (it would page the
-        // whole universe for nothing), detach, and settle the view as
-        // capped — the footer offers the parked rows from here.
-        if (listStream.token) { api.CancelList(listStream.token).catch(() => {}); listStream.token = null; }
-        stream.off?.();
-        if (listStream.off === stream.off) listStream.off = null;
-        if (silent) {
-          // the off-screen buffer swaps now, carrying its ghosts — the
-          // parked count rides with it (setRows clears the footer state)
-          grid.setRows([...buffered, ...ghostCarryFor(loc, buffered)]);
-          grid.parkRows(parked);
+      if (silent) {
+        if (p.done) {
+          detachStream(stream);
+          // the final page lands whole here too — its tail past the
+          // buffer is the folder's true end, never a parked count to lose
+          if (accLen < entries.length) buffered.push(...entries.slice(accLen));
+          const rows = [...buffered, ...ghostCarryFor(loc, buffered)];
+          grid.setRows(rows); // folds the session; universe = the true count
+          currentEntries = rows;
+          finishObjectsStream(loc, seq, { done: true });
+        } else if (accLen < entries.length) {
+          // this page parked rows: the folder outgrew what a silent
+          // refresh may seat — abandon it, the old model stands
+          detachStream(stream);
         }
-        finishObjectsStream(loc, seq, { capped: true });
         return;
       }
       if (p.done) {
-        listStream.token = null;
-        listStream.off?.();
-        listStream.off = null;
-        if (silent) {
-          // merge the folder's ghost rows in BEFORE this single paint: the
-          // fresh listing can't contain delete-marked children, and without
-          // the carry they'd flash out here and only return once the
-          // version-summary pass re-appends them (auto-refresh)
-          grid.setRows([...buffered, ...ghostCarryFor(loc, buffered)]);
+        if (accLen < entries.length) {
+          // the final page lands whole (the same law as the silent path)
+          const tail = entries.slice(accLen);
+          grid.appendRows(tail);
+          currentEntries.push(...tail);
         }
-        finishObjectsStream(loc, seq, {});
+        detachStream(stream);
+        finishObjectsStream(loc, seq, { done: true });
+        return;
+      }
+      if (grid.windowFull()) {
+        // the budget: the wire stops here, the window stands open — the
+        // demand engine fetches more when the viewport approaches
+        detachStream(stream);
+        finishObjectsStream(loc, seq);
       }
     },
   );
@@ -1665,6 +1732,7 @@ async function loadObjectsStream(loc, silent = false) {
     if (listStream.off === stream.off) listStream.off = null;
     if (seq !== listSeq) return;
     if (silent) { viewFailed(loc.source || viewSource, err, { silent: true }); return; }
+    grid.settleDown({ error: true });
     showListError(err);
     viewFailed(loc.source || viewSource, err, { silent: false });
     return;
@@ -1678,6 +1746,16 @@ function cancelListStream() {
   if (listStream.token) { api.CancelList(listStream.token).catch(() => {}); listStream.token = null; }
   listStream.off?.();
   listStream.off = null;
+}
+
+// detachStream ends one stream's delivery: the token cancels the Go-side
+// walk (the window budget is enforced by the caller, never by Go), the
+// handler unsubscribes, and the shared slot is cleared only if this
+// stream still owns it — a successor may have taken it already.
+function detachStream(stream) {
+  if (listStream.token) { api.CancelList(listStream.token).catch(() => {}); listStream.token = null; }
+  stream.off?.();
+  if (listStream.off === stream.off) listStream.off = null;
 }
 
 // vmarkRowCap bounds delete-marker decoration: beyond it the extra
@@ -1737,10 +1815,10 @@ async function decorateVersionMarkers(loc, seq) {
         .filter((c) => c.allDeleted)
         .map((c) => `${c.isDir ? 'd' : 'f'}:${c.name}`));
       const stale = grid.all
-        .filter((r) => r.ghost && !deleted.has(`${r.isDir ? 'd' : 'f'}:${r.name}`))
+        .filter((r) => r && r.ghost && !deleted.has(`${r.isDir ? 'd' : 'f'}:${r.name}`))
         .map((r) => r.key);
       if (stale.length) grid.removeRows(stale);
-      const have = new Set(grid.all.map((r) => `${r.isDir ? 'd' : 'f'}:${r.name}`));
+      const have = new Set(grid.all.filter(Boolean).map((r) => `${r.isDir ? 'd' : 'f'}:${r.name}`));
       const ghosts = kids
         .filter((c) => c.allDeleted && !have.has(`${c.isDir ? 'd' : 'f'}:${c.name}`))
         .map((c) => ({
@@ -1754,7 +1832,7 @@ async function decorateVersionMarkers(loc, seq) {
         grid.appendRows(ghosts);
         grid.apply(); // canonical folders-first ordering for the appended ghosts
       }
-      lastGhosts = { key: ghostsKey(loc), rows: grid.all.filter((r) => r.ghost) };
+      lastGhosts = { key: ghostsKey(loc), rows: grid.all.filter((r) => r && r.ghost) };
     } else {
       lastGhosts = { key: '', rows: [] }; // setting off: nothing to carry
     }
@@ -2192,10 +2270,14 @@ function wireGrid() {
   // the tile face follows every selection change the rows own — the
   // grid verbs (Ctrl+A, Invert, the Escape clear) all re-emit here
   grid.on.select = () => { updateStatus(); refreshDragUrls(); gallery.syncSel(); inspSeat = 'main'; inspectorRender(); };
-  // the continuation footer's fetch — the big-folder law's door. Wired
-  // unconditionally: renderMore seats the footer only while rows are
-  // actually parked under a live stream session.
-  grid.on.more = () => { extendObjectStream(); };
+  // the demand engine’s wires — the 100M-object law’s voice. The grid
+  // owns the window law and asks for rows by direction: down at the
+  // loaded edge, up from a start-after checkpoint when the viewport
+  // climbs back above a trimmed window. The trims report back so the
+  // host’s mirror (currentEntries — tree sync, size bar) stays aligned.
+  grid.on.needRows = (dir, cp) => { if (dir === 'up') backfillObjectStream(cp); else extendObjectStream(); };
+  grid.on.trim = (cut) => { currentEntries.splice(0, cut); };
+  grid.on.trimEnd = (cut) => { currentEntries.splice(Math.max(0, currentEntries.length - cut), cut); };
   grid.on.dragOS = (e, rows) => {
     // OS drag-out. Desktop: a plain drag of a files-only selection floats
     // a native OLE drag — Go stages the selection and Explorer drops real

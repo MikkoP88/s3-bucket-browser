@@ -446,27 +446,37 @@ body.col-dragging, body.col-dragging * { cursor: grabbing !important; }
 .grid-body { flex: 1; overflow: auto; position: relative; outline: none; }
 .grid-canvas { position: relative; width: 100%; }
 
-/* The continuation footer (big-folder law): sits past the last row inside
-   the grid canvas and offers the next bounded window of a parked stream —
-   a quiet accent text button, the grid's own "Show more rows". */
-.grid-more {
+/* The open end’s liveness wash (the 100M-object law): a passive animated
+   band past the last row while a window fetch is in flight — the window
+   loads itself on demand, so there is nothing to click and this is not
+   a control; it retires the moment the fetch settles. */
+.grid-fill {
   position: absolute;
   left: 0;
   right: 0;
   top: 0;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
+  height: 28px;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border-soft);
 }
-.grid-more:hover { text-decoration: underline; }
-.grid-more:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.grid-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, var(--accent-soft), transparent);
+  animation: grid-fill-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes grid-fill-shimmer { 0% { transform: translateX(-110%); } 100% { transform: translateX(400%); } }
+@media (prefers-reduced-motion: reduce) { .grid-fill::after { left: 35%; right: auto; } }
+
+/* A placeholder slot: the honest not-loaded region above a trimmed
+   window or under the stride — present in the geometry, inert to
+   every gesture. */
+.grid-row.placeholder { cursor: default; }
+.grid-row.placeholder:hover { background: var(--panel); }
 
 .grid-row {
   height: var(--row-h);

@@ -2995,6 +2995,18 @@ async function tuiBattery() {
     await writeFile(seed, payload);
     r = await cli(['cp', seed, 's3://' + BUCKET + '/tui/seed.txt', '--profile', 'tuis3'], { cfg, nokeyring: true, timeout: 60000 });
     need(r.code === 0, 'seed cp: ' + r.out + r.err);
+    // the provider-settle law on the bucket-creation face: the mb/cp acks
+    // do not promise the next LIST sees the new bucket — the TUI boots a
+    // fresh process whose account-wide ListBuckets is exactly such a list,
+    // and a MinIO digesting heavy churn can serve the stale account list
+    // past the row wait (both TUI S3 rows starved this way with the crumb
+    // honestly at the buckets face). Settle out-of-band through the CLI
+    // face first — the seed exit loud, a provider lag never masquerading
+    // as a terminal listing bug.
+    await waitFor(async () => {
+      const s = await cli(['ls', '--profile', 'tuis3'], { cfg, nokeyring: true });
+      return s.code === 0 && s.out.includes(BUCKET);
+    }, 30000, 'the new bucket to settle in the account list');
     const storePath = path.join(cfg, 'profiles.json');
     const store = JSON.parse(await readFile(storePath, 'utf8'));
     delete store.sources.find((x) => x.name === 'tuis3').bucket; // ids are generated — key on the name
@@ -3014,7 +3026,28 @@ async function tuiBattery() {
       // the settled face redraws nothing — one predicate takes the
       // coordinates off the frame IT matched (a second waitNext would
       // scan for a newer frame that never comes)
-      const bk = await waitNext((fr) => !!tuiAt(fr, BUCKET), 'the bucket list');
+      // the account list carries every battery's residue — the run's
+      // minted name sorts at the tail (base36 stamps only grow), and
+      // once the account passes the ~18-row fold the grid's visible
+      // fold hides the seeded bucket: the assert must REVEAL first.
+      // Wheel the Objects pane (positional — no focus seat needed)
+      // to the FLOOR of the list (the run-minted tail) and take the
+      // click off the clamped fold — the drift law is below.
+      let bk = await waitNext((fr) => (fr.lines[0] || '').includes('tuis3 › buckets') && (fr.lines || []).some((l) => l.includes('▸ ')), 'the bucket list');
+      for (let w = 0; w < 32; w++) {
+        send('\x1b[<65;50;10M'); // wheel down inside the Objects pane — to the FLOOR
+        bk = await waitNext(() => true, 'the wheeled fold', 2000);
+      }
+      // the FLOOR law: wheel past any reveal to where Off clamps at
+      // len-1. A reveal-frame click can drift — one queued wheel
+      // render landing after the matched frame moves the fold before
+      // the press (rowAtY reads the LIVE fold, the coordinates
+      // orphan at ri=-1, and Enter descends the stale row-0
+      // selection). At the floor the fold cannot move under the
+      // click: the tail row rides the first data line and every
+      // further wheel redraws the same clamped fold.
+      need(tuiAt(bk, BUCKET), 'the seeded bucket must reach the fold floor');
+      need(tuiAt(bk, BUCKET).y === 4, 'the tail bucket must sit on the fold floor line');
       need(tuiHas(bk, 'tuis3'), 'the crumb must name the seated source — dial seats b.sel');
       const at = tuiAt(bk, BUCKET);
       send('\x1b[<0;' + (at.x + 1) + ';' + (at.y + 1) + 'M'); // select the bucket row
@@ -3099,7 +3132,28 @@ async function tuiBattery() {
       // answering AFTER :sources is the verb's own pin
       const click = '\x1b[<0;' + (rail.x + 1) + ';' + (rail.y + 1) + 'M';
       send(click + click);
-      const bk = await waitNext((fr) => !!tuiAt(fr, BUCKET), 'the bucket list');
+      // the account list carries every battery's residue — the run's
+      // minted name sorts at the tail (base36 stamps only grow), and
+      // once the account passes the ~18-row fold the grid's visible
+      // fold hides the seeded bucket: the assert must REVEAL first.
+      // Wheel the Objects pane (positional — no focus seat needed)
+      // to the FLOOR of the list (the run-minted tail) and take the
+      // click off the clamped fold — the drift law is below.
+      let bk = await waitNext((fr) => (fr.lines[0] || '').includes('tuis3 › buckets') && (fr.lines || []).some((l) => l.includes('▸ ')), 'the bucket list');
+      for (let w = 0; w < 32; w++) {
+        send('\x1b[<65;50;10M'); // wheel down inside the Objects pane — to the FLOOR
+        bk = await waitNext(() => true, 'the wheeled fold', 2000);
+      }
+      // the FLOOR law: wheel past any reveal to where Off clamps at
+      // len-1. A reveal-frame click can drift — one queued wheel
+      // render landing after the matched frame moves the fold before
+      // the press (rowAtY reads the LIVE fold, the coordinates
+      // orphan at ri=-1, and Enter descends the stale row-0
+      // selection). At the floor the fold cannot move under the
+      // click: the tail row rides the first data line and every
+      // further wheel redraws the same clamped fold.
+      need(tuiAt(bk, BUCKET), 'the seeded bucket must reach the fold floor');
+      need(tuiAt(bk, BUCKET).y === 4, 'the tail bucket must sit on the fold floor line');
       need(tuiHas(bk, 'tuis3'), 'the crumb must name the seated source');
       const at = tuiAt(bk, BUCKET);
       send('\x1b[<0;' + (at.x + 1) + ';' + (at.y + 1) + 'M');
@@ -5899,7 +5953,7 @@ async function guiBattery() {
     return 'pane copy beats a stale two-row main selection, the paste lands byte-exact, and pane focus owns the keyboard copy';
   });
 
-  await verify({ id: 'GUI-111', area: 'objects', action: 'Big-folder law: the materialization cap and the windowed continuation over live MinIO', ds: 'S3 (MinIO)', scenario: 'a folder seeded with 2,500 objects (tools/seedbig) seats exactly one deliberate step of the model through the streaming listing, the continuation footer names the bounded count and its verb fetches the next window strictly past the highest key held until the last window lands whole and the universe is known — the walk is asserted on row identities at the seams, never on wall-clock', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-111', area: 'objects', action: 'Sliding-window law: demand-driven windows, trim, and backward refill over live MinIO — no continuation control anywhere', ds: 'S3 (MinIO)', scenario: 'a folder seeded with 2,500 objects (tools/seedbig) seats exactly one first window through the streaming listing, every further window loads itself as the viewport approaches the loaded edge (the passive grid-fill wash seats with the demand and retires at its settle), the far edge trims past the held ceiling with scroll compensation and a start-after checkpoint, the climb back above the trimmed window seats inert placeholders and then refills from the checkpoint below, the climb past done parks the tail rows below the window and the dive past done reloads them on the same self-arming demand, and the walk ends with the universe known while the held model stays bounded — asserted on row identities at the seams and on the model counts, never on wall-clock, and no .grid-more control may ever exist', face: 'GUI' }, async () => {
     const AB = BUCKET + '-big';
     // seedbig is the seeder this law owes: one process, 16-wide zero-byte
     // puts, deterministic zero-padded keys, and -rm sweeps the exact key
@@ -5917,74 +5971,220 @@ async function guiBattery() {
     // the first listing after a fresh seed pays the provider's cold
     // directory scan (~8-10s per page on local MinIO over NTFS with
     // Defender; a warm walk rides the FS cache at sub-second). Warm once
-    // through the CLI face so the descent asserts the cap law, not the
+    // through the CLI face so the descent asserts the window law, not the
     // cold-scan latency.
     r = await s3(['ls', 's3://' + AB + '/seeded/']);
     need(r.code === 0, 'warmup ls: ' + (r.out + r.err).trim().slice(0, 200));
     await addGuiBucketSource(AB);
     await treeOpen(AB);
     await waitFor(async () => (await rowKeys()).includes('seeded'), 10000, 'the seeded folder at the root');
-    // the rigs seat: one deliberate step of 1,000 against a 5,000 ceiling
-    // (production rides the shipped constants — the walk is the same law).
-    // The folder is named seeded on purpose: the scratch bucket name ends
-    // in -big, and enterFolder proves the descent through the breadcrumb —
-    // a folder named big would satisfy that proof at the root itself.
-    await evalPage(() => { window.__s3bGrid.setStreamStep(1000, 5000); });
+    // the rigs seat the window constants at a seedable scale: first
+    // window 1,000, further windows 500, held ceiling 1,500 (production
+    // rides the shipped constants — the walk is the same law). The
+    // folder is named seeded on purpose: the scratch bucket name ends
+    // in -big, and enterFolder proves the descent through the breadcrumb
+    // — a folder named big would satisfy that proof at the root itself.
+    // The synthetic scroll dispatch is the rig's own law: a programmatic
+    // scrollTop alone queues the scroll task, so the demand arming (and
+    // the wash and the placeholders it paints) would race the next
+    // evaluate — dispatching the event runs the whole chain
+    // synchronously inside the evaluate.
+    const dive = () => {
+      const b = document.querySelector('#grid-body');
+      b.scrollTop = b.scrollHeight;
+      b.dispatchEvent(new Event('scroll'));
+      return { needDown: window.__s3bGrid.needDown, fill: !!document.querySelector('#grid-body .grid-fill') };
+    };
+    const climb = () => {
+      const b = document.querySelector('#grid-body');
+      b.scrollTop = 0;
+      b.dispatchEvent(new Event('scroll'));
+      return { needUp: window.__s3bGrid.needUp, ph: !!document.querySelector('#grid-body .grid-row.placeholder') };
+    };
+    await evalPage(() => { window.__s3bGrid.setStreamTune({ first: 1000, win: 500, max: 1500, prefetch: 50, cap: 1000000 }); });
     try {
       await enterFolder('seeded');
-      // parked===1000 is the settle-stable pin, and the count is the
-      // cut law made visible: the walk is canceled the moment the
-      // ceiling refuses its first page (the parked>0 branch cancels the
-      // token — fetching on would page the universe for nothing), so
-      // parked names exactly the one refused page, never the folder's
-      // true remainder. 2,500 against a 1,000 ceiling settle shown 1000
-      // · parked 1000 · universe null, terminal until the footer's own
-      // window walk settles the same way.
+      // the first window settles on exactly its target, the walk cut by
+      // the host's own budget — never a footer, never a button: the
+      // demand engine owns the rest
       await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 1000
-        && window.__s3bGrid.modelInfo().parked === 1000
-        && !!document.querySelector('#grid-body .grid-more')), 20000, 'the cap seated');
-      const cap = await evalPage(() => {
+        && !window.__s3bGrid.needDown), 20000, 'the first window seated');
+      let snap = await evalPage(() => {
         const g = window.__s3bGrid;
-        const info = g.modelInfo();
-        const foot = document.querySelector('#grid-body .grid-more');
-        return { shown: info.shown, universe: info.universe, parked: info.parked,
-          foot: !!foot, footText: foot ? foot.textContent : '', last: g.rows[999] ? String(g.rows[999].name) : '' };
+        return { ...g.modelInfo(), last: String(g.rows[999].name), more: !!document.querySelector('#grid-body .grid-more') };
       });
-      need(cap.shown === 1000 && cap.parked === 1000 && cap.universe === null,
-        'the ceiling did not seat one deliberate step: ' + JSON.stringify(cap));
-      need(cap.last === 'big-000000999.txt', 'the highest held row is ' + cap.last + ', want big-000000999.txt');
-      need(cap.foot && /[0-9]/.test(cap.footText), 'the continuation footer did not name the bounded count');
+      need(snap.held === 1000 && snap.above === 0 && snap.universe === null,
+        'the first window did not seat one target: ' + JSON.stringify(snap));
+      need(snap.last === 'big-000000999.txt', 'the highest held row is ' + snap.last + ', want big-000000999.txt');
+      need(!snap.more, 'a continuation control exists — the 100M law forbids the door');
       await shot('111-big-cap');
-      await evalPage(() => document.querySelector('#grid-body .grid-more').click());
-      await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 2000
-        && !!document.querySelector('#grid-body .grid-more')), 20000, 'the first window');
-      const w1 = await evalPage(() => {
+      // window 2 loads itself: the viewport's approach to the loaded edge
+      // IS the request, the passive wash seats with the demand in the
+      // same synchronous chain, and no click exists anywhere
+      let armed = await evalPage(dive);
+      need(armed.needDown === true, 'the dive did not arm the down demand');
+      need(armed.fill, 'the grid-fill wash did not seat with the armed demand');
+      await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 1500
+        && !window.__s3bGrid.needDown), 20000, 'the second window');
+      snap = await evalPage(() => {
         const g = window.__s3bGrid;
-        const info = g.modelInfo();
-        return { first: String(g.rows[0].name), seam: String(g.rows[1000].name),
-          parked: info.parked, universe: info.universe };
+        return { ...g.modelInfo(), seam: String(g.rows[1000].name), fill: !!document.querySelector('#grid-body .grid-fill') };
       });
-      // the seam is the window law made visible: the fetch started strictly
-      // past the highest key held — no duplicate, no gap, nothing skipped
-      need(w1.seam === 'big-000001000.txt', 'the seam row after the first window is ' + w1.seam + ', want big-000001000.txt');
-      need(w1.first === 'big-000000000.txt', 'the first row moved: ' + w1.first);
-      need(w1.parked === 500 && w1.universe === null, 'the first window left the walk cut: ' + JSON.stringify(w1));
-      await evalPage(() => document.querySelector('#grid-body .grid-more').click());
-      await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 2500
-        && !document.querySelector('#grid-body .grid-more')), 20000, 'the universe known');
-      const w2 = await evalPage(() => {
+      // the seam is the window law made visible: the fetch started
+      // strictly past the highest key held — no duplicate, no gap
+      need(snap.seam === 'big-000001000.txt', 'the seam row after the first window is ' + snap.seam + ', want big-000001000.txt');
+      need(snap.held === 1500 && snap.above === 0 && snap.universe === null,
+        'the second window left the walk uncut: ' + JSON.stringify(snap));
+      need(!snap.fill, 'the wash outlived its fetch — it retires at the settle');
+      // window 3 walks past the held ceiling: the far edge trims with
+      // scroll compensation and seats the boundary checkpoint
+      await evalPage(dive);
+      await waitFor(() => evalPage(() => window.__s3bGrid.rows.length === 1500
+        && window.__s3bGrid.baseIndex === 500 && !window.__s3bGrid.needDown), 20000, 'the trimmed third window');
+      snap = await evalPage(() => {
         const g = window.__s3bGrid;
-        const info = g.modelInfo();
-        return { shown: info.shown, universe: info.universe, parked: info.parked, last: String(g.rows[2499].name) };
+        return { ...g.modelInfo(), head: String(g.all[0].name), first: String(g.rows[0].name) };
       });
-      need(w2.shown === 2500 && w2.universe === 2500 && w2.parked === 0,
-        'the last window did not settle the universe: ' + JSON.stringify(w2));
-      need(w2.last === 'big-000002499.txt', 'the final row is ' + w2.last + ', want big-000002499.txt');
+      need(snap.held === 1500 && snap.above === 500 && snap.universe === null,
+        'the trim did not hold the ceiling: ' + JSON.stringify(snap));
+      need(snap.head === 'big-000000500.txt', 'the trimmed head is ' + snap.head + ', want big-000000500.txt');
+      need(snap.first === 'big-000000500.txt', 'the first shown row after trim is ' + snap.first + ', want big-000000500.txt');
+      await shot('111-big-trim');
+      // the climb back: the viewport above the window sees honest
+      // placeholders (inert slots over the not-held region) in the same
+      // synchronous chain that arms the refill, then the checkpoint
+      // refill lands in one compensated paint
+      const rose = await evalPage(climb);
+      need(rose.needUp === true, 'the climb did not arm the up demand');
+      need(rose.ph, 'no placeholder seats the not-loaded region above a trimmed window');
+      await waitFor(() => evalPage(() => window.__s3bGrid.baseIndex === 0
+        && !window.__s3bGrid.needUp), 20000, 'the backward refill');
+      snap = await evalPage(() => {
+        const g = window.__s3bGrid;
+        return { ...g.modelInfo(), head: String(g.all[0].name), foot: String(g.all[g.all.length - 1].name) };
+      });
+      need(snap.above === 0 && snap.held === 1500, 'the refill did not reset the window: ' + JSON.stringify(snap));
+      need(snap.head === 'big-000000000.txt', 'the refilled head is ' + snap.head + ', want big-000000000.txt');
+      need(snap.foot === 'big-000001499.txt', 'the refilled foot is ' + snap.foot + ', want big-000001499.txt (the tail trimmed past the ceiling)');
+      // the walk to the end speaks the dive grammar a scrolling user
+      // speaks: every window's trim compensates the viewport mid-window
+      // by design (the view stays visually stable across the trim), so
+      // the demand re-arms on the NEXT dive toward the grown edge — one
+      // dive per window until the listing's own done page settles the
+      // universe. The final window's single done page carries its whole
+      // remainder (the done-tail law) while the held model stays bounded
+      // at the ceiling
+      for (let diveN = 0; diveN < 8
+        && !(await evalPage(() => window.__s3bGrid.streamDone === true)); diveN++) {
+        await evalPage(dive);
+        await waitFor(() => evalPage(() => !window.__s3bGrid.needDown), 20000, 'the next window settled');
+      }
+      snap = await evalPage(() => {
+        const g = window.__s3bGrid;
+        return { ...g.modelInfo(), done: g.streamDone, first: String(g.rows[0].name),
+          last: String(g.rows[g.rows.length - 1].name), more: !!document.querySelector('#grid-body .grid-more') };
+      });
+      need(snap.universe === 2500 && snap.done === true,
+        'the final window did not settle the universe: ' + JSON.stringify(snap));
+      need(snap.held === 1500 && snap.above === 1000,
+        'the settled model broke the held ceiling: ' + JSON.stringify(snap));
+      need(snap.first === 'big-000001000.txt' && snap.last === 'big-000002499.txt',
+        'the settled window edges are ' + snap.first + '..' + snap.last + ', want big-000001000.txt..big-000002499.txt');
+      need(!snap.more, 'a continuation control exists at the settled end — the 100M law forbids the door');
       await shot('111-big-full');
+      // the climb PAST DONE from a fully-walked window: the fill cannot
+      // know the span it never held, so the unbridged gap above the old
+      // head seats as honest tombstones (inert placeholder slots at their
+      // true listing indices) while the viewport sits at the very top —
+      // the no-jump law: nothing moves, the blanks simply exist below the
+      // climb. And the walk TERMINATES: one window per demand, never a
+      // re-arm loop
+      await evalPage(climb);
+      await waitFor(() => evalPage(() => window.__s3bGrid.baseIndex === 0
+        && !window.__s3bGrid.needUp), 20000, 'the climb past done refills to the top');
+      snap = await evalPage(() => {
+        const g = window.__s3bGrid;
+        const b = document.querySelector('#grid-body');
+        const r = document.querySelector('#grid-body .grid-row');
+        return { ...g.modelInfo(), done: g.streamDone, head: String(g.all[0].name),
+          mid: g.all[1000] ? String(g.all[1000].name) : String(g.all[1000]),
+          gapA: g.all[500], gapB: g.all[999], foot: String(g.all[g.all.length - 1].name),
+          top: b.scrollTop, seen: r && r._model ? String(r._model.name) : '' };
+      });
+      need(snap.above === 0 && snap.held === 1000 && snap.universe === 2500 && snap.done === true,
+        'the climb past done misfiled the window: ' + JSON.stringify(snap));
+      need(snap.head === 'big-000000000.txt' && snap.mid === 'big-000001000.txt' && snap.foot === 'big-000001499.txt',
+        'the climbed edges are ' + snap.head + '..' + snap.foot + ' over mid ' + snap.mid + ', want big-000000000..big-000001499 over big-000001000');
+      need(snap.gapA === null && snap.gapB === null,
+        'the gap above the old head must stay tombstones (honest blanks), got ' + JSON.stringify([snap.gapA, snap.gapB]));
+      need(snap.top === 0 && snap.seen === 'big-000000000.txt',
+        'the climb jumped the viewport — the no-jump law wants scrollTop 0 showing big-000000000.txt, got ' + snap.top + ' showing ' + snap.seen);
+      await shot('111-big-climb-gap');
+      // the loop law the old defect broke: a settled climb RE-ARMS
+      // NOTHING. Stillness is the oracle — 700ms later no up demand, no
+      // buffer, no lost rows
+      await new Promise((s) => setTimeout(s, 700));
+      snap = await evalPage(() => ({ nu: window.__s3bGrid.needUp, buf: window.__s3bGrid.upBuf.length,
+        held: window.__s3bGrid.modelInfo().held }));
+      need(snap.nu === false && snap.buf === 0 && snap.held === 1000,
+        'the climbed window re-armed the up wire — the infinite refill loop is back: ' + JSON.stringify(snap));
+      // the gap-fill gesture: park the viewport INSIDE the tombstone band —
+      // the blanks demand their own rows on the same up wire, and the fill
+      // MATERIALIZES in place (blanks become rows exactly where the
+      // viewport already sat — the scrollTop never moves)
+      const seat = await evalPage(() => {
+        const b = document.querySelector('#grid-body');
+        const r = document.querySelector('#grid-body .grid-row');
+        const rowH = (r && r.offsetHeight) || 28;
+        b.scrollTop = 500 * rowH;
+        b.dispatchEvent(new Event('scroll'));
+        return { needUp: window.__s3bGrid.needUp, rowH };
+      });
+      need(seat.needUp === true, 'the tombstone band did not arm the up demand — the gap would strand');
+      await waitFor(() => evalPage(() => window.__s3bGrid.all[500]
+        && !window.__s3bGrid.needUp), 20000, 'the gap fill materialized');
+      snap = await evalPage(() => {
+        const g = window.__s3bGrid;
+        const b = document.querySelector('#grid-body');
+        const r = document.querySelector('#grid-body .grid-row');
+        return { ...g.modelInfo(), a: String(g.all[500].name), z: String(g.all[999].name),
+          head: String(g.all[0].name), foot: String(g.all[g.all.length - 1].name),
+          top: b.scrollTop, want: 500 * ((r && r.offsetHeight) || 28) };
+      });
+      need(snap.above === 0 && snap.held === 1500 && snap.universe === 2500,
+        'the gap fill left the window short: ' + JSON.stringify(snap));
+      need(snap.a === 'big-000000500.txt' && snap.z === 'big-000000999.txt',
+        'the filled band edges are ' + snap.a + '..' + snap.z + ', want big-000000500..big-000000999');
+      need(snap.head === 'big-000000000.txt' && snap.foot === 'big-000001499.txt',
+        'the gap fill moved the window edges: ' + snap.head + '..' + snap.foot);
+      need(Math.abs(snap.top - snap.want) < 2,
+        'the fill moved the viewport — materialization must sit still, scrollTop ' + snap.top + ' want ' + snap.want);
+      await shot('111-big-gapfill');
+      // the dive PAST DONE: the parked tail reloads through the same
+      // self-arming demand — two windows, one per dive, the trims
+      // compensating mid-window exactly as the first walk did
+      const reDive = await evalPage(dive);
+      need(reDive.needDown === true, 'the dive past done did not re-arm the down demand — the parked tail would strand');
+      for (let d2 = 0; d2 < 4
+        && !(await evalPage(() => window.__s3bGrid.baseIndex === 1000 && window.__s3bGrid.streamDone === true)); d2++) {
+        await waitFor(() => evalPage(() => !window.__s3bGrid.needDown), 20000, 'the parked tail window settled');
+        if (await evalPage(() => window.__s3bGrid.baseIndex === 1000 && window.__s3bGrid.streamDone === true)) break;
+        await evalPage(dive);
+      }
+      await waitFor(() => evalPage(() => window.__s3bGrid.baseIndex === 1000
+        && window.__s3bGrid.streamDone === true && !window.__s3bGrid.needDown), 20000, 'the dive past done reloads the parked tail');
+      snap = await evalPage(() => {
+        const g = window.__s3bGrid;
+        return { ...g.modelInfo(), first: String(g.rows[0].name), last: String(g.rows[g.rows.length - 1].name) };
+      });
+      need(snap.universe === 2500 && snap.above === 1000 && snap.held === 1500,
+        'the dive past done did not restore the settled window: ' + JSON.stringify(snap));
+      need(snap.first === 'big-000001000.txt' && snap.last === 'big-000002499.txt',
+        'the restored edges are ' + snap.first + '..' + snap.last + ', want big-000001000.txt..big-000002499.txt');
     } finally {
       // the rigs seat clears whatever the walk left — the shipped constants
       // own every listing the rows ahead will drive
-      await evalPage(() => { window.__s3bGrid.setStreamStep(0, 0); }).catch(() => {});
+      await evalPage(() => { window.__s3bGrid.setStreamTune(null); }).catch(() => {});
     }
     await treeOpen(SRCNAME);
     r = await seed(['-bucket', AB, '-prefix', 'seeded/', '-n', '2500', '-rm']);
@@ -5992,7 +6192,7 @@ async function guiBattery() {
     r = await s3(['rb', 's3://' + AB, '--force']);
     need(r.code === 0, 'rb: ' + r.out + r.err);
     await removeGuiSource(AB);
-    return '2,500-object folder: one deliberate step of 1,000, both window seams exact, the universe 2,500 with the footer retired';
+    return '2,500-object folder: the first window 1,000 on demand with the wash, the ceiling held at 1,500 with checkpoints above, the backward refill whole over inert placeholders, the tail parked and reloaded past done on the same demand, and the universe 2,500 at done with no continuation control anywhere';
   });
 
   await verify({ id: 'GUI-37', area: 'gates', action: 'Delete Window keepcurrent mode: history destroyed, current version survives', ds: 'S3 (MinIO)', scenario: 'an object with THREE versions through the keepcurrent mode: the older versions are destroyed while the CURRENT bytes stay live and identical — the window never auto-confirms (explicit mode + typed word), and CLI re-reads the collapsed timeline (exactly 1 version, zero markers) and the bytes', face: 'GUI' }, async () => {
