@@ -1330,6 +1330,8 @@ export class SidePane {
     return {
       kind: pane.binding.kind,
       bound: pane.bound,
+      // the binding's source (id or name) — the read-only law reads it
+      source: pane.binding.kind === 'local' ? '' : pane.binding.source,
       dir: pane.dir,
       bucket: pane.bucket,
       selCount: () => pane.grid.selectedRows().length,

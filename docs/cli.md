@@ -2759,7 +2759,8 @@ Add or update a data source
 Add or update a data source of any type:
   s3    --endpoint --region --access-key --secret-key --session-token
         --bucket (every S3 source is ONE bucket) --path-style/
-        --virtual-hosted --insecure
+        --virtual-hosted --insecure --read-only (the GUI
+        refuses every write on it)
         shorthand URL: add [NAME] s3://bucket (flags supply the rest;
         without NAME the bucket is the name)
   sftp/scp/ftp/ftps/webdav/webdavs
@@ -2784,6 +2785,7 @@ s3b source add NAME --type TYPE [flags]
       --password string        remote password ($S3B_PASSWORD)
       --path-style             path-style addressing (s3)
       --port int               port (0 = per-type default at dial time)
+      --read-only              mount the source read-only: the GUI refuses every write on it before dialing (shows 🔒 in source list)
       --region string          region (default us-east-1)
       --root string            starting directory (remote) or directory root (local)
       --secret-key string      secret access key ($S3B_SECRET_KEY)

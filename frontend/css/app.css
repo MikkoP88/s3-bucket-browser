@@ -141,6 +141,20 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 @container (max-width: 579px) {
   #btn-theme, #btn-help { display: none; }
 }
+/* dual-pane + the docked inspector: both pane toolbars lose the
+   panel's width to their column, and at the default 50/50 split a
+   1440px window leaves each column ~450px - narrow enough that the
+   tail buttons overflow the column and slide under the inspector,
+   unreachable by mouse. The chrome tightens here instead of folding
+   verbs: leaner button padding and closer separators keep every
+   control inside its column (a container query cannot restyle its
+   own establishing element, so the toolbar's own gap and padding
+   stay put - the descendants carry the reclaim); the deeper tiers
+   below keep folding. */
+@container (max-width: 479px) {
+  #toolbar .tb-btn, #local-toolbar .tb-btn { padding: 4px 5px; }
+  #toolbar .tb-sep, #local-toolbar .tb-sep { margin: 0 2px; }
+}
 @container (max-width: 379px) {
   #btn-find, #btn-newfile,
   #local-btn-find, #local-btn-newfile { display: none; }
@@ -2035,6 +2049,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
    selection — the row's own facts (never a round trip), quick verbs
    that follow the seat, a view summary when nothing is selected. */
 .inspector {
+  position: relative; /* the resize handle seats on the left edge */
   flex: none; width: 300px; min-height: 0;
   display: flex; flex-direction: column;
   background: var(--panel); border-left: 1px solid var(--border);
@@ -2076,6 +2091,87 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .insp-btn:hover { background: var(--hover); border-color: var(--accent); }
 .insp-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
+/* ============ inspector v2: verb groups, resize handle ============ */
+/* The verbs sit in two professional groups: the primary row carries the
+   seat's main actions in the dialog-primary idiom (solid accent), the
+   secondary row the quiet utilities. The resizer owns the panel's left
+   edge — drag to resize (220–560px, persisted in s3b-inspector-w),
+   double-click resets to 300px; a body class freezes the page mid-drag
+   so no text paints selected under the moving edge. */
+.insp-verb-groups { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.insp-verb-groups .insp-verbs { margin-top: 0; }
+.insp-verbs.primary .insp-btn {
+  background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+}
+.insp-verbs.primary .insp-btn:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 1px 4px rgba(11, 99, 206, .45); }
+.insp-verbs.secondary .insp-btn { font-size: 11.5px; padding: 3px 9px; }
+.insp-btn:disabled { opacity: .5; cursor: default; }
+.insp-resizer {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 7px;
+  cursor: ew-resize; z-index: 5;
+}
+.insp-resizer:hover, body.insp-dragging .insp-resizer {
+  background: var(--hover); box-shadow: inset 3px 0 0 var(--accent);
+}
+body.insp-dragging, body.insp-dragging * { cursor: ew-resize !important; user-select: none !important; }
+
+/* ============ tree: the read-only source glyph ============ */
+.t-ro { margin-left: 5px; font-size: 10px; line-height: 1; cursor: help; }
+
+/* ============ bucket picker: the modal list over the datalist dropdown ============ */
+.bpick { display: flex; flex-direction: column; min-height: 0; gap: 6px; }
+.bpick-count { color: var(--text-dim); font-size: 12px; }
+.bpick-list {
+  overflow-y: auto; max-height: 320px; min-height: 120px;
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.bpick-row {
+  padding: 7px 10px; cursor: pointer; user-select: text;
+  border-bottom: 1px solid var(--border-soft);
+}
+.bpick-row:last-child { border-bottom: none; }
+.bpick-row:hover { background: var(--hover); }
+.bpick-row:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.bpick-empty { color: var(--text-dim); padding: 18px; text-align: center; }
+
+/* ============ shares window: the session's share registry ============ */
+.shares-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; max-height: 55vh; overflow-y: auto; }
+.share-row {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--panel-alt);
+}
+.share-row.expired { opacity: .55; }
+.share-ico { flex: none; font-size: 16px; }
+.share-main { flex: 1; min-width: 0; }
+.share-key { font-size: 12.5px; overflow-wrap: anywhere; }
+.share-sub { color: var(--text-dim); font-size: 11.5px; margin-top: 2px; }
+.share-acts { flex: none; display: flex; gap: 6px; align-items: center; }
+.shares-empty {
+  color: var(--text-dim); padding: 18px; text-align: center;
+  border: 1px dashed var(--border); border-radius: 6px; margin-top: 8px;
+}
+
+/* ============ properties: the tabbed card over the kv grid ============ */
+.prop-head { display: flex; align-items: center; gap: 12px; padding: 2px 2px 12px; }
+.prop-icon { flex: none; font-size: 34px; line-height: 1; }
+.prop-names { min-width: 0; }
+.prop-name { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.prop-sub { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+.prop-body { margin-top: 10px; }
+
+/* ============ the selectable-information law ============ */
+/* The chrome is unselectable by design (clicks are gestures), but every
+   surface whose text IS the product — inspector facts, property values,
+   share paths, the dialogs' status truth, toasts — opts back in:
+   information is text the user owns, can select and copy. */
+.insp-name, .insp-sub, .insp-props dt, .insp-props dd,
+.kv .k, .kv .v, .prop-name, .prop-sub,
+.share-key, .share-sub, .bpick-row, .shares-empty,
+.dlg-status, .banner, .toast-msg {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* Windows High Contrast (forced-colors): the mode strips author
    backgrounds and box-shadows, so every state that spoke through
    paint speaks through the system palette instead — selections
@@ -2093,10 +2189,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   .g-tile.sel { border-color: HighlightText; }
   .grid-row.focus:not(.sel), .tnode.focus:not(.sel),
   .mb-title:focus, .mb-item:focus, .ctxmenu .item:focus,
-  .gh-sort:focus, .picker-row:focus, .pane-dest .dest-opt:focus, .set-colrow:focus {
+  .gh-sort:focus, .picker-row:focus, .pane-dest .dest-opt:focus, .set-colrow:focus,
+  .bpick-row:focus {
     outline: 2px solid Highlight;
     outline-offset: -2px;
   }
   .mb-item.disabled, .ctxmenu .item.disabled { color: GrayText; }
+  .insp-resizer { background: GrayText; }
   .tab.active, .admin .tab.active { box-shadow: none; background: Highlight; color: HighlightText; }
 }

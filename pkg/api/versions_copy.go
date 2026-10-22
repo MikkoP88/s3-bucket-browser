@@ -33,6 +33,14 @@ type vcopyItem struct {
 // cleanly. Fails up front when the destination bucket is not versioning
 // enabled — the copied timeline would collapse to the last write.
 func (a *App) CopySelectionVersions(srcSource, srcBucket string, keys []string, dstSource, dstBucket, dstPrefix string, move bool) (string, error) {
+	if err := a.requireWritableName(dstSource); err != nil {
+		return "", err
+	}
+	if move {
+		if err := a.requireWritableName(srcSource); err != nil {
+			return "", err
+		}
+	}
 	if len(keys) == 0 {
 		return "", fmt.Errorf("nothing selected")
 	}

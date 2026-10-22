@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path"
 	"strings"
-	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/listing"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/s3client"
@@ -96,6 +95,9 @@ func (a *App) previewDeleteC(c *s3client.Client, bucket string, keys []string) (
 // after the typed-confirmation dialog (L2) — same contract as `s3b rm --force`.
 // Addresses the source the main view is browsing (SetViewSource).
 func (a *App) DeleteSelection(bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	if err := a.requireWritable(""); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -105,6 +107,9 @@ func (a *App) DeleteSelection(bucket string, keys []string, force bool) (transfe
 
 // SourceDeleteSelection is DeleteSelection pinned to one named S3 source.
 func (a *App) SourceDeleteSelection(idOrName, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -218,6 +223,9 @@ func expandSelection(ctx context.Context, c *s3client.Client, bucket string, key
 // of the original (S3 has no native rename). Works for folders too.
 // Addresses the source the main view is browsing (SetViewSource).
 func (a *App) RenameObject(bucket, key, newName string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -227,6 +235,9 @@ func (a *App) RenameObject(bucket, key, newName string) error {
 
 // SourceRenameObject is RenameObject pinned to one named S3 source.
 func (a *App) SourceRenameObject(idOrName, bucket, key, newName string) error {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return err
+	}
 	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return err
@@ -338,6 +349,9 @@ type CopyResult struct {
 // behavior — kept valid for programmatic callers. Runs as a tracked task
 // (Running tasks window).
 func (a *App) CopySelection(bucket string, keys []string, dstBucket, dstPrefix string, move bool, policy string, decisions map[string]string) (res CopyResult, err error) {
+	if err := a.requireWritable(""); err != nil {
+		return CopyResult{}, err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return CopyResult{}, err
@@ -564,21 +578,12 @@ func (a *App) PresignObject(bucket, key string, ttlSeconds int) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if ttlSeconds <= 0 {
-		ttlSeconds = 3600
-	}
-	if ttlSeconds > 7*24*3600 {
-		ttlSeconds = 7 * 24 * 3600 // S3 presign maximum
-	}
-	presigner := s3.NewPresignClient(c.S3)
-	req, err := presigner.PresignGetObject(a.ctx, &s3.GetObjectInput{
-		Bucket: aws.String(bucket), Key: aws.String(key),
-	}, s3.WithPresignExpires(time.Duration(ttlSeconds)*time.Second))
+	url, ttl, err := a.presignGet(c, bucket, key, ttlSeconds)
 	if err != nil {
 		return "", err
 	}
-	a.emitLogSrc(LogInfo, "share", bucket, fmt.Sprintf("presigned GET %s (valid %s)", key, ttlLabel(ttlSeconds)))
-	return req.URL, nil
+	a.emitLogSrc(LogInfo, "share", bucket, fmt.Sprintf("presigned GET %s (valid %s)", key, ttlLabel(ttl)))
+	return url, nil
 }
 
 // ttlLabel renders a presign TTL as a compact human string.

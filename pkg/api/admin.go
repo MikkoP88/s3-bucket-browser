@@ -117,6 +117,9 @@ func (a *App) GetBucketAdmin(bucket string) (AdminPanel, error) {
 
 // SetBucketVersioning enables or suspends versioning.
 func (a *App) SetBucketVersioning(bucket string, enable bool) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -140,6 +143,9 @@ func (a *App) SetBucketVersioning(bucket string, enable bool) error {
 
 // PutBucketPolicy validates and stores a policy document (JSON).
 func (a *App) PutBucketPolicy(bucket, raw string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -157,6 +163,9 @@ func (a *App) PutBucketPolicy(bucket, raw string) error {
 
 // DeleteBucketPolicy removes the policy.
 func (a *App) DeleteBucketPolicy(bucket string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -173,6 +182,9 @@ func (a *App) DeleteBucketPolicy(bucket string) error {
 
 // PutBucketCORS replaces the CORS rules.
 func (a *App) PutBucketCORS(bucket string, rules []adminops.CORSRule) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -193,6 +205,9 @@ func (a *App) PutBucketCORS(bucket string, rules []adminops.CORSRule) error {
 
 // DeleteBucketCORS removes all CORS rules.
 func (a *App) DeleteBucketCORS(bucket string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -209,6 +224,9 @@ func (a *App) DeleteBucketCORS(bucket string) error {
 
 // PutBucketLifecycle replaces lifecycle rules.
 func (a *App) PutBucketLifecycle(bucket string, rules []adminops.LifecycleRule) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -229,6 +247,9 @@ func (a *App) PutBucketLifecycle(bucket string, rules []adminops.LifecycleRule) 
 
 // DeleteBucketLifecycle removes lifecycle rules.
 func (a *App) DeleteBucketLifecycle(bucket string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -245,6 +266,9 @@ func (a *App) DeleteBucketLifecycle(bucket string) error {
 
 // PutBucketEncryption sets default encryption ("AES256" | "aws:kms").
 func (a *App) PutBucketEncryption(bucket, algorithm, kmsKeyID string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -265,6 +289,9 @@ func (a *App) PutBucketEncryption(bucket, algorithm, kmsKeyID string) error {
 
 // DeleteBucketEncryption removes default encryption.
 func (a *App) DeleteBucketEncryption(bucket string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -281,6 +308,9 @@ func (a *App) DeleteBucketEncryption(bucket string) error {
 
 // PutBucketPAB stores public-access-block settings.
 func (a *App) PutBucketPAB(bucket string, pab adminops.PABInfo) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -297,6 +327,9 @@ func (a *App) PutBucketPAB(bucket string, pab adminops.PABInfo) error {
 
 // PutBucketWebsite stores website hosting configuration.
 func (a *App) PutBucketWebsite(bucket string, w adminops.WebsiteInfo) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -313,6 +346,9 @@ func (a *App) PutBucketWebsite(bucket string, w adminops.WebsiteInfo) error {
 
 // DeleteBucketWebsite removes website hosting.
 func (a *App) DeleteBucketWebsite(bucket string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -329,6 +365,9 @@ func (a *App) DeleteBucketWebsite(bucket string) error {
 
 // PutBucketTags replaces the bucket tag set.
 func (a *App) PutBucketTags(bucket string, tags []adminops.Tag) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -345,6 +384,9 @@ func (a *App) PutBucketTags(bucket string, tags []adminops.Tag) error {
 
 // DeleteBucketTags removes all bucket tags.
 func (a *App) DeleteBucketTags(bucket string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err

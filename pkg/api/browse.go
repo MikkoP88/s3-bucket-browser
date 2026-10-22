@@ -205,6 +205,9 @@ func (a *App) statObjectC(c *s3client.Client, bucket, key string) (ObjectStat, e
 // sources area). Callers follow up with a bucket-scoped SaveSource so the
 // new bucket becomes its own data source.
 func (a *App) CreateBucketInSource(idOrName, name, region string) error {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return err
+	}
 	src, err := a.sourceByIDOrName(idOrName)
 	if err != nil {
 		return err
@@ -270,6 +273,9 @@ func (a *App) PreviewBucketDelete(bucket string) (BucketDeletePreview, error) {
 // limit: emptying a big versioned bucket takes minutes, and the
 // Running-tasks window is where the user watches and kills such a run.
 func (a *App) DeleteBucket(bucket string, force bool) (res transfer.DeleteResult, err error) {
+	if err := a.requireWritable(""); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -312,6 +318,9 @@ func (a *App) DeleteBucket(bucket string, force bool) (res transfer.DeleteResult
 // source the main view is browsing (SetViewSource). Tracked as a task so
 // the Running-tasks window shows folder creation like every other op.
 func (a *App) CreateFolder(bucket, prefix, name string) (err error) {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -324,6 +333,9 @@ func (a *App) CreateFolder(bucket, prefix, name string) (err error) {
 
 // SourceCreateFolder is CreateFolder pinned to one named S3 source.
 func (a *App) SourceCreateFolder(idOrName, bucket, prefix, name string) (err error) {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return err
+	}
 	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return err
@@ -378,6 +390,9 @@ func composeFileName(name, ext string) string {
 // created key is returned so the caller can hand it straight to the
 // editor. Addresses the source the main view is browsing (SetViewSource).
 func (a *App) CreateFile(bucket, prefix, name, ext string) (key string, err error) {
+	if err := a.requireWritable(""); err != nil {
+		return "", err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return "", err
@@ -391,6 +406,9 @@ func (a *App) CreateFile(bucket, prefix, name, ext string) (key string, err erro
 // SourceCreateFile is CreateFile pinned to one named S3 source — the
 // secondary pane's New file lands in its own binding's bucket/prefix.
 func (a *App) SourceCreateFile(idOrName, bucket, prefix, name, ext string) (key string, err error) {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return "", err
+	}
 	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return "", err
@@ -427,6 +445,11 @@ func (a *App) createFileC(ctx context.Context, c *s3client.Client, bucket, prefi
 // The write round-trip only runs when the caller allowed it (allowWrite):
 // a diagnosis must never write to the user's data unasked.
 func (a *App) RunDoctor(bucket string, allowWrite bool) (rep *doctor.Report, err error) {
+	if allowWrite {
+		if err := a.requireWritable(""); err != nil {
+			return nil, fmt.Errorf("%w — run the doctor read-only", err)
+		}
+	}
 	c, err := a.client("")
 	if err != nil {
 		return nil, err
@@ -468,6 +491,11 @@ func (a *App) DoctorChecks() []string {
 // full run — single checks dial out too. The write round-trip honors the
 // same opt-in law (allowWrite) as the full run.
 func (a *App) RunDoctorCheck(bucket, name string, allowWrite bool) (res *doctor.CheckResult, err error) {
+	if allowWrite {
+		if err := a.requireWritable(""); err != nil {
+			return nil, fmt.Errorf("%w — run the doctor read-only", err)
+		}
+	}
 	c, err := a.client("")
 	if err != nil {
 		return nil, err

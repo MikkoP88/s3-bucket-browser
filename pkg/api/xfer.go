@@ -135,6 +135,18 @@ type xferPlan struct {
 // never appears in the transfers/tasks UI (the drag-out scratch download
 // uses it).
 func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest, policy string, maxBPS int64, move bool, decisions map[string]string, hidden bool) (string, error) {
+	if dest.Kind == "s3" || dest.Kind == "remote" {
+		if err := a.requireWritableName(dest.Source); err != nil {
+			return "", err
+		}
+	}
+	if move {
+		for _, it := range items {
+			if err := a.requireWritableName(it.Source); err != nil {
+				return "", err
+			}
+		}
+	}
 	switch policy {
 	case "", PolicyOverwrite, PolicySkip, PolicyRename:
 	default:

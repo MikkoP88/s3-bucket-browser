@@ -788,6 +788,9 @@ type uploadPair struct {
 // overrides the policy per destination object key (the conflict dialog's
 // per-file choices — keys are the CheckConflicts decisionKeys).
 func (a *App) Upload(paths []string, bucket, prefix, policy string, maxBPS int64, decisions map[string]string) (string, error) {
+	if err := a.requireWritable(""); err != nil {
+		return "", err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return "", err

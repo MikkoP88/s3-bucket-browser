@@ -64,6 +64,10 @@ type App struct {
 	pendingCreds map[string]pendingCred // import-candidate stash (secrets stay Go-side)
 
 	splitMu sync.Mutex // serializes SplitAccountSource: popout windows and the main window can both reach for it
+
+	shareMu  sync.Mutex
+	shares   map[string]*shareEntry // the session's share registry (shares.go)
+	shareSeq int                    // share id minting
 }
 
 // New creates the service. version is shown in the About dialog / status bar.
@@ -77,6 +81,7 @@ func New(version string) *App {
 		editors:  map[string]*editSession{},
 		searches: map[string]context.CancelFunc{},
 		streams:  map[string]context.CancelFunc{},
+		shares:   map[string]*shareEntry{},
 	}
 	a.tasks = newTaskRegistry()
 	a.tasks.notify = func() { a.emit(EventTasksUpdate) }

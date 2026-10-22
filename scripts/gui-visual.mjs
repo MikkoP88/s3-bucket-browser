@@ -304,6 +304,8 @@ function shim() {
       { id: 'src-box', name: 'backup-box', type: 'sftp', color: '#1b7f3b' },
       { id: 'src-dav', name: 'dav-claims', type: 'webdav', color: '#7c3aed' },
     ],
+    // the session share registry (CreateShare seeds, StopShare drains)
+    shares: [],
     buckets: [
       { name: 'team-files', createdAt: daysAgo(220) },
       { name: 'logs-2026', createdAt: daysAgo(120) },
@@ -512,7 +514,7 @@ function shim() {
         noncurrentDays: 14, newerNoncurrent: 3,
         noncurrentTransitions: [{ noncurrentDays: 7, storageClass: 'GLACIER_IR' }], abortMpuDays: 7 }],
       encryption: { algorithm: 'AES256', kmsKeyId: '' },
-      website: { index: 'index.html', error: '', redirectHost: '', redirectProtocol: '' },
+      website: { indexSuffix: 'index.html', errorKey: '404.html', redirectHost: '', redirectProtocol: '' },
       tags: [{ key: 'env', value: 'demo' }, { key: 'team', value: 'qa' }],
       lock: { enabled: false, mode: '', days: 0 },
     },
@@ -1286,6 +1288,33 @@ function shim() {
     RemoteDeletePreview: (_src, keys) => ({ files: keys.length, folders: 0, bytes: 4096 }),
     RemoteRemove: (_src, keys) => ({ deleted: keys.length, errors: [] }),
     PresignObject: (bucket, key) => `https://${bucket}.s3.visual.shim/${key}?X-Amz-Signature=visual`,
+    // the bucket picker draft test — the world answers its own bucket
+    // list, so Pick… and Test see exactly what a connection would see
+    TestS3Draft: () => ({ ok: true, buckets: world.buckets.map((b) => b.name), message: 'draft connection ok' }),
+    // the session share registry: CreateShare mints (id/kind/url/expiry),
+    // ListShares deep-copies with the expired flag derived at read time,
+    // StopShare filters — both mutations emit shares:changed so every
+    // open Shares window re-renders itself
+    CreateShare: (source, bucket, key, ttl) => {
+      const secs = Math.max(1, Number(ttl) || 3600);
+      const s = {
+        id: `sh-${world.shares.length + 1}`, kind: 'presign', source: source || '',
+        bucket, key, url: `https://${bucket}.s3.visual.shim/${key}?X-Amz-Signature=share`,
+        created: new Date().toISOString(),
+        expires: new Date(Date.now() + secs * 1000).toISOString(), expired: false,
+      };
+      world.shares.push(s);
+      emit('shares:changed');
+      return JSON.parse(JSON.stringify(s));
+    },
+    ListShares: () => JSON.parse(JSON.stringify(world.shares.map((s) => ({
+      ...s, expired: !!s.expired || Date.parse(s.expires) <= Date.now(),
+    })))),
+    StopShare: (id) => {
+      world.shares = world.shares.filter((s) => s.id !== id);
+      emit('shares:changed');
+      return {};
+    },
     StatObject: (bucket, key) => (key.endsWith('/')
       ? { key, name: String(key).replace(/\/+$/, '').split('/').pop(), isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
       : { key, name: String(key).split('/').pop(), size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD', contentType: 'text/plain', sse: '' }),
@@ -6052,27 +6081,63 @@ await step('props-dialogs', async () => {
   await ok('folder props layout clean', (await layoutAudit()).ok);
   await shot('props-folder');
   await closeModal();
-  // object properties
+  // object properties — the Windows card: the identity card over a
+  // category strip, General the glance facts, Details the storage truth
   await openCtx('readme.md');
   await ctxItem(/properties/i);
   await waitFor(modalVisible, 4000, 'object props');
-  await ok('object props rows', evalPage(() => document.querySelectorAll('#modal-root .kv .k').length >= 4));
+  const propTabs = () => evalPage(() => Array.from(document.querySelectorAll('#modal-root .prop-strip .tab')).map((b) => b.textContent.trim()));
+  const clickPropTab = (nm) => evalPage((n) => { const b = Array.from(document.querySelectorAll('#modal-root .prop-strip .tab')).find((x) => x.textContent.trim() === n); if (b) b.click(); }, nm);
+  await waitFor(async () => (await propTabs()).length >= 3, 4000, 'object props tabs');
+  const tsObj = await propTabs();
+  await ok('object props carry the category tabs', ['General', 'Details', 'Security'].every((x) => tsObj.includes(x)));
+  await ok('object General carries the Windows size grammar', evalPage(() => {
+    const ks = Array.from(document.querySelectorAll('#modal-root .kv .k')).map((k) => k.textContent);
+    const vs = Array.from(document.querySelectorAll('#modal-root .kv .v')).map((v) => v.textContent);
+    return ks.includes('Size') && vs.some((v) => v.includes('(1,234 bytes)'));
+  }));
+  await clickPropTab('Details');
+  await ok('Details carries the storage facts', evalPage(() => {
+    const ks = Array.from(document.querySelectorAll('#modal-root .kv .k')).map((k) => k.textContent);
+    return ['ETag', 'Storage class', 'Content type'].every((x) => ks.includes(x));
+  }));
+  await ok('property values are selectable text', evalPage(() => {
+    const v = document.querySelector('#modal-root .kv .v');
+    const u = v ? getComputedStyle(v).userSelect : '';
+    return v && (u === 'text' || u === '');
+  }));
   await ok('object props layout clean', (await layoutAudit()).ok);
   await shot('props-object');
   await closeModal();
-  // bucket properties (the scoped source row owns the bucket now)
+  // bucket properties — the four-category card (the scoped source row
+  // owns the bucket now): General / Versioning / Security / Configuration,
+  // each tab asserting its own page (the body renders one tab at a time)
   await rightClick(await treeRow('team-files'));
   await sleep(60);
   await ctxItem(/properties/i);
   await waitFor(modalVisible, 4000, 'bucket props');
-  await waitFor(async () => (await evalPage(() => document.querySelectorAll('#modal-root .kv .k').length)) >= 6, 4000, 'bucket props rows');
-  await ok('bucket props are comprehensive', evalPage(() => {
+  await waitFor(async () => (await propTabs()).length >= 4, 4000, 'bucket props tabs');
+  const tsBkt = await propTabs();
+  await ok('bucket props carry the four categories', ['General', 'Versioning', 'Security', 'Configuration'].every((x) => tsBkt.includes(x)));
+  await ok('bucket General carries the glance facts', evalPage(() => {
     const ks = Array.from(document.querySelectorAll('#modal-root .kv .k')).map((k) => k.textContent);
-    return ['Provider', 'Versioning'].every((w) => ks.some((k) => k.includes(w)));
+    const vs = Array.from(document.querySelectorAll('#modal-root .kv .v')).map((v) => v.textContent);
+    return ks.includes('Provider') && ks.includes('Region') && vs.includes('eu-central');
   }));
-  await ok('guard rows render as Enabled/Disabled pills', evalPage(() => {
+  await clickPropTab('Versioning');
+  await ok('guard rows render as Enabled pills (team-files fixture)', evalPage(() => {
     const pills = Array.from(document.querySelectorAll('#modal-root .pill'));
     return pills.length >= 2 && pills.some((p) => /enabled/i.test(p.textContent) && p.classList.contains('on'));
+  }));
+  await clickPropTab('Security');
+  await ok('Security reads the admin panel truth', evalPage(() => {
+    const vs = Array.from(document.querySelectorAll('#modal-root .kv .v')).map((v) => v.textContent);
+    return vs.includes('AES256') && vs.includes('1 statement(s)') && vs.includes('2 of 4 on');
+  }));
+  await clickPropTab('Configuration');
+  await ok('Configuration counts the rule surfaces', evalPage(() => {
+    const vs = Array.from(document.querySelectorAll('#modal-root .kv .v')).map((v) => v.textContent);
+    return vs.includes('1') && vs.includes('2') && vs.includes('enabled');
   }));
   await ok('bucket props layout clean', (await layoutAudit()).ok);
   await shot('props-bucket');
@@ -13942,7 +14007,7 @@ await step('inspector', async () => {
   await ok('a selection seats the row facts instantly', waitFor(async () =>
     (await inspName()) === 'readme.md'
     && (await inspVal('Kind')) === 'Object'
-    && (await inspVal('Size')) === '1.2 KB'
+    && (await inspVal('Size')) === '1.2 KB (1,234 bytes)'
     && (await inspVal('Key')) === 'readme.md', 3000, 'row facts'));
   await ok('selection changes never dial a file stat', evalPage(() =>
     !window.__shim.calls.some((c) => ['StatObject', 'SourceStatObject', 'RemoteStat'].includes(c.m)
@@ -13975,7 +14040,16 @@ await step('inspector', async () => {
   await (await inspBtn('Properties\u2026')).asElement().click();
   await ok('the properties verb opens the deep modal', waitFor(() => evalPage(() =>
     !document.getElementById('modal-root').classList.contains('hidden')
-    && (document.getElementById('modal-root').textContent || '').includes('ETag')), 4000, 'deep modal'));
+    && (document.getElementById('modal-root').textContent || '').includes('readme.md')), 4000, 'deep modal'));
+  // the storage facts moved under their own category: the Details tab
+  // owns the ETag now, so the walk seats the tab before the fact assert
+  await ok('the Details tab carries the storage facts', waitFor(() => evalPage(() => {
+    const btn = Array.from(document.querySelectorAll('.prop-strip .tab'))
+      .find((b) => (b.textContent || '').trim() === 'Details');
+    if (!btn) return false;
+    btn.click();
+    return (document.getElementById('modal-root').textContent || '').includes('ETag');
+  }), 4000, 'details facts'));
   await page.keyboard.press('Escape');
   await waitFor(() => evalPage(() => document.getElementById('modal-root').classList.contains('hidden')), 3000, 'modal closed');
   // the pane: whichever grid spoke last owns the panel
@@ -14022,6 +14096,372 @@ await step('inspector', async () => {
   await page.click('#btn-inspector');
   await waitFor(() => evalPage(() => document.getElementById('inspector').classList.contains('hidden')), 3000, 'panel closed');
   await evalPage(() => localStorage.removeItem('s3b-inspector'));
+});
+
+
+await step('source-editor-v2', async () => {
+  // the bucket picker replaces the dropdown: Pick… tests the DRAFT
+  // connection and lists the buckets it can see; the read-only mount
+  // sits beside Skip TLS verify
+  await page.click('#sidebar-head .side-add');
+  await waitFor(modalVisible, 4000, 'source editor');
+  await page.selectOption('#modal-root select', 's3');
+  await ok('Read-only sits beside Skip TLS verify', evalPage(() => {
+    const row = Array.from(document.querySelectorAll('#modal-root label')).find((l) => /skip tls verify/i.test(l.textContent));
+    const ro = Array.from(document.querySelectorAll('#modal-root label')).find((l) => /^read-only$/i.test(l.textContent.trim()));
+    return !!row && !!ro && row.parentElement === ro.parentElement && !!ro.querySelector('input[type=checkbox]');
+  }));
+  const pick = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /pick/i.test(b.textContent.trim())) || null);
+  await ok('Pick… button present', !!pick);
+  if (pick) {
+    await resetCalls();
+    await pick.asElement().click();
+    await waitFor(async () => /pick bucket/i.test(await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '')), 4000, 'bucket picker');
+    await ok('Pick… tested the DRAFT connection first', evalPage(() =>
+      window.__shim.calls.some((c) => c.m === 'TestS3Draft')));
+    await ok('the picker lists the world buckets', waitFor(async () => {
+      const rows = await evalPage(() => Array.from(document.querySelectorAll('#modal-root .bpick-row')).map((r) => r.textContent.trim()));
+      return rows.length === 4 && rows.includes('team-files') && rows.includes('archive-cold');
+    }, 4000, 'picker rows'));
+    await ok('the count speaks the whole list', evalPage(() => /4 bucket/i.test(document.querySelector('#modal-root .bpick-count')?.textContent || '')));
+    // the filter narrows instantly; a miss shows the empty state
+    const fq = await elOrNull(() => document.querySelector('#modal-root .bpick .input') || null);
+    await ok('filter input present', !!fq);
+    if (fq) {
+      await fq.asElement().fill('logs');
+      await ok('the filter narrows to one bucket', waitFor(async () =>
+        (await evalPage(() => Array.from(document.querySelectorAll('#modal-root .bpick-row')).map((r) => r.textContent.trim()))).join(',') === 'logs-2026', 3000, 'narrowed'));
+      await ok('the count speaks the filter', evalPage(() => /1 of 4/.test(document.querySelector('#modal-root .bpick-count')?.textContent || '')));
+      await fq.asElement().fill('zzz');
+      await ok('a miss shows the empty state', waitFor(async () =>
+        (await evalPage(() => document.querySelector('#modal-root .bpick-empty')?.textContent || '')).includes('No bucket matches'), 3000, 'empty state'));
+      await fq.asElement().fill('');
+    }
+    // Enter on the focused row seats the bucket back into the form
+    await evalPage(() => { const r = document.querySelector('#modal-root .bpick-row'); if (r) r.focus(); });
+    await page.keyboard.press('Enter');
+    await ok('Enter seats the bucket back into the editor', waitFor(async () => {
+      const t = await evalPage(() => document.querySelector('#modal-root .modal-head span')?.textContent || '');
+      const v = await evalPage(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
+        .find((i) => /bucket this source opens/.test(i.placeholder || ''))?.value || '');
+      return /add data source/i.test(t) && v === 'team-files';
+    }, 4000, 'bucket seated'));
+  }
+  await closeModal();
+});
+
+await step('ro-source-laws', async () => {
+  // a read-only source end to end: every write affordance rests, reads
+  // stay live — seeded on its own bucket so no split-era source is touched
+  await evalPage(() => {
+    window.__shim.world.objects['ro-vault'] = [
+      { key: 'notes.txt', size: 521, lastModified: new Date().toISOString(), storageClass: 'STANDARD', etag: '"ro1"' },
+    ];
+  });
+  await page.click('#sidebar-head .side-add');
+  await waitFor(modalVisible, 4000, 'source editor');
+  await page.selectOption('#modal-root select', 's3');
+  const bkIn = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root input.mono'))
+    .find((i) => /bucket this source opens/.test(i.placeholder || '')) || null);
+  if (bkIn) { await bkIn.asElement().fill('ro-vault'); await bkIn.asElement().dispatchEvent('change'); }
+  await ok('Read-only ticks', waitFor(() => evalPage(() => {
+    const l = Array.from(document.querySelectorAll('#modal-root label')).find((x) => /^read-only$/i.test(x.textContent.trim()));
+    const c = l && l.querySelector('input[type=checkbox]');
+    if (c && !c.checked) c.click();
+    return !!(c && c.checked);
+  }), 3000, 'ro ticked'));
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .modal-foot button')).find((x) => x.textContent.trim() === 'Save'); if (b) b.click(); });
+  await waitFor(async () => (await evalPage(() => Array.from(document.querySelectorAll('#tree .tlabel')).some((l) => l.textContent === 'ro-vault'))), 8000, 'ro source seated');
+  await ok('the seat speaks read-only', waitFor(() => evalPage(() => window.__s3bCmdState.readOnly === true), 4000, 'ro state'));
+  await ok('the tree wears the read-only glyph', evalPage(() => {
+    const g = document.querySelectorAll('#tree .t-ro');
+    return g.length === 1 && g[0].title === 'Read-only';
+  }));
+  await waitFor(async () => (await rowKeys()).includes('notes.txt'), 8000, 'ro objects');
+  // the ROW menu: writes rest, reads live
+  await clickRow('notes.txt');
+  await openCtx('notes.txt');
+  const readMenu = () => evalPage(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+    .filter((i) => i.textContent.trim())
+    .map((i) => ({ t: i.textContent.trim(), d: i.classList.contains('disabled') })));
+  const m1 = await readMenu();
+  const d1 = (re) => m1.find((x) => re.test(x.t));
+  await ok('row write verbs rest on a read-only seat', !!((d1(/rename/i) || {}).d && (d1(/^delete/i) || {}).d && (d1(/new folder/i) || {}).d));
+  const e1 = d1(/^edit/i);
+  await ok('Edit rests too', !e1 || e1.d === true);
+  await ok('read verbs stay live', !!((d1(/pre-sign/i) || {}) && !d1(/pre-sign/i).d && (d1(/properties/i) || {}) && !d1(/properties/i).d));
+  await closeCtx();
+  // the TREE source menu: bucket writes rest, source management lives
+  await rightClick(await treeRow('ro-vault'));
+  await sleep(60);
+  const m2 = await readMenu();
+  const d2 = (re) => m2.find((x) => re.test(x.t));
+  await ok('tree bucket writes rest', !!((d2(/new bucket/i) || {}).d && (d2(/delete bucket/i) || {}).d));
+  const up2 = m2.find((x) => /upload/i.test(x.t));
+  await ok('tree uploads rest', !up2 || up2.d === true);
+  await ok('source management stays live', !!((d2(/properties/i) || {}) && !d2(/properties/i).d && (d2(/remove source/i) || {}) && !d2(/remove source/i).d));
+  await closeCtx();
+  // the ADMIN panel: the banner + every write button down
+  await rightClick(await treeRow('ro-vault'));
+  await sleep(60);
+  await ctxItem(/admin panel/i);
+  await waitFor(modalVisible, 4000, 'admin panel');
+  await ok('the admin panel answers read-only with the banner', waitFor(async () =>
+    (await evalPage(() => document.querySelector('#modal-root .admin .ro-banner')?.textContent || '')).includes('Read-only data source'), 4000, 'ro banner'));
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .tabstrip .tab')).find((t) => t.textContent.trim() === 'Security'); if (b) b.click(); });
+  await sleep(150);
+  await ok('admin write verbs are down', evalPage(() => {
+    const bs = Array.from(document.querySelectorAll('#modal-root .tabbody button.btn.primary, #modal-root .tabbody button.btn.danger'));
+    return bs.length >= 1 && bs.every((b) => b.disabled);
+  }));
+  await closeModal();
+  // the DUAL PANE bound to the read-only source: the pane's own write
+  // affordances rest under the binding's lock, and the paste belt refuses
+  // the guarded seat before any dialog opens
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'ro-vault', bucket: 'ro-vault', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('notes.txt'), 6000, 'pane ro rows');
+  const roRow = await elOrNull((c) => Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+    .find((x) => x.querySelector('.tname')?.textContent.trim() === c) || null, 'notes.txt');
+  await ok('the pane lists the read-only seat', !!roRow);
+  if (roRow) {
+    await rightClick(roRow);
+    await sleep(60);
+    const m3 = await readMenu();
+    const d3 = (re) => m3.find((x) => re.test(x.t));
+    await ok('pane row write verbs rest under the lock', !!((d3(/rename/i) || {}).d && (d3(/^delete/i) || {}).d && (d3(/^edit/i) || {}).d && (d3(/^cut/i) || {}).d));
+    // the read verbs stay live: the copy family speaks the glue law
+    // (item text glues label+accelerator, so the match is the family
+    // prefix, never a bare /^copy$/ anchor), and Properties rests only
+    // when the menu carries it at all
+    const c3 = m3.filter((x) => /^copy/i.test(x.t));
+    await ok('pane read verbs stay live', !!(!((d3(/^properties/i) || {}).d) && c3.length > 0 && c3.every((x) => !x.d)));
+    await closeCtx();
+  }
+  // the pane empty menu: paste/uploads/new folder all rest
+  await evalPage(() => {
+    const b = document.getElementById('local-grid-body');
+    const rc = b.getBoundingClientRect();
+    b.dispatchEvent(new MouseEvent('contextmenu', {
+      bubbles: true, cancelable: true, button: 2,
+      clientX: Math.round(rc.left + 30), clientY: Math.round(rc.bottom - 12),
+    }));
+    return true;
+  });
+  await sleep(60);
+  const m4 = await readMenu();
+  const d4 = (re) => m4.find((x) => re.test(x.t));
+  await ok('the pane empty menu rests its writes', !!((d4(/^paste/i) || {}).d && (d4(/upload/i) || {}).d && (d4(/^new folder/i) || {}).d));
+  await closeCtx();
+  // the paste belt: the clipboard holds the row (Copy is live on a
+  // read-only seat), the main view sits on the guarded seat — the
+  // keyboard paste refuses with the same honest toast the drag owns
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  await clickRow('notes.txt');
+  await page.keyboard.press('Control+c');
+  await sleep(60);
+  // the belt's own copy is LIVE on the guarded seat (the read-verb
+  // law), so the transfer oracle scopes to the paste's own tail:
+  // snapshot the log once the copy lands, then no transfer verb may
+  // follow it
+  await evalPage(() => { window.__cut = window.__shim.calls.length; return true; });
+  await page.keyboard.press('Control+v');
+  await ok('the guarded paste refuses with the toast', waitFor(async () =>
+    (await evalPage(() => document.getElementById('toasts').textContent)).includes('read-only data source'), 4000, 'paste toast'));
+  await ok('no transfer started toward the guarded seat', evalPage(() =>
+    !window.__shim.calls.slice(window.__cut).some((c) => ['TransferCross', 'CheckConflicts', 'CopySelection', 'UploadFiles'].includes(c.m))));
+  // leave the pane canonical
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed ro');
+  // leave the world canonical: remove the source, drop the seed
+  await rightClick(await treeRow('ro-vault'));
+  await sleep(60);
+  await ctxItem(/remove source/i);
+  await waitFor(modalVisible, 4000, 'remove confirm');
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .modal-foot button')).find((x) => /remove/i.test(x.textContent)); if (b) b.click(); });
+  await waitFor(() => evalPage(() => !Array.from(document.querySelectorAll('#tree .tlabel')).some((l) => l.textContent === 'ro-vault')), 6000, 'ro source gone');
+  await evalPage(() => { delete window.__shim.world.objects['ro-vault']; });
+  await navObjects('team-files');
+});
+
+await step('presign-share', async () => {
+  // the share lifecycle: duration choice rides the signing call, Share
+  // registers in the session registry and flips to Stop share, the View
+  // menu opens the Shares window, Stop drains it, and a reopened dialog
+  // re-seeds its state honestly
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'share objects');
+  await clickRow('readme.md');
+  await openCtx('readme.md');
+  await ctxItem(/pre-sign/i);
+  await waitFor(modalVisible, 4000, 'presign modal');
+  await ok('duration defaults to 1 hour over the offered family', evalPage(() => {
+    const s = document.querySelector('#modal-root select');
+    return !!s && s.value === '3600'
+      && Array.from(s.options).some((o) => o.textContent.trim() === '5 minutes')
+      && Array.from(s.options).some((o) => o.textContent.trim() === '7 days');
+  }));
+  await resetCalls();
+  await page.selectOption('#modal-root select', '86400');
+  await ok('the chosen duration rides the signing call', waitFor(async () => {
+    const c = await evalPage(() => window.__shim.calls.filter((x) => x.m === 'PresignObject').slice(-1)[0] || null);
+    return !!c && c.args[2] === 86400;
+  }, 4000, 'ttl rides'));
+  await resetCalls();
+  await evalPage(() => { const b = Array.from(document.querySelectorAll('#modal-root .modal-foot button')).find((x) => x.textContent.trim() === 'Share'); if (b) b.click(); });
+  await ok('Share registers with the chosen validity', waitFor(async () => {
+    const c = await evalPage(() => window.__shim.calls.filter((x) => x.m === 'CreateShare').slice(-1)[0] || null);
+    return !!c && c.args[0] === '' && c.args[1] === 'team-files' && c.args[2] === 'readme.md' && c.args[3] === 86400;
+  }, 4000, 'CreateShare args'));
+  // the whole predicate rides ONE evalPage: page.evaluate serializes a
+  // DOM node to undefined, so returning the element and reading its
+  // classList outside the page would doom the check to forever-false
+  await ok('the button flips to Stop share in the danger idiom', waitFor(() => evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .modal-foot button')).find((x) => /stop share/i.test(x.textContent));
+    return !!b && b.classList.contains('danger');
+  }), 4000, 'stop share'));
+  await ok('presign share layout clean', (await layoutAudit()).ok);
+  await shot('presign-share');
+  await closeModal();
+  // the Shares window from the View menu
+  await page.locator('#menubar .mb-title', { hasText: /view/i }).first().click();
+  await sleep(80);
+  await evalPage(() => { const it = Array.from(document.querySelectorAll('.mb-dd:not(.hidden) .mb-item')).find((i) => /active shares/i.test(i.textContent)); if (it) it.click(); });
+  await waitFor(modalVisible, 4000, 'shares window');
+  await ok('the shares window lists the share with its horizon', waitFor(async () => {
+    const key = await evalPage(() => document.querySelector('#modal-root .share-key')?.textContent || '');
+    const sub = await evalPage(() => document.querySelector('#modal-root .share-sub')?.textContent || '');
+    return key === 'team-files/readme.md' && /in 1 day/.test(sub);
+  }, 4000, 'share row'));
+  await ok('the share key is selectable text', evalPage(() => {
+    const k = document.querySelector('#modal-root .share-key');
+    const u = k ? getComputedStyle(k).userSelect : '';
+    return k && (u === 'text' || u === '');
+  }));
+  await ok('shares window layout clean', (await layoutAudit()).ok);
+  await shot('shares-window');
+  await resetCalls();
+  await evalPage(() => { const b = document.querySelector('#modal-root .share-acts .btn.danger'); if (b) b.click(); });
+  await ok('Stop drains the registry and re-renders empty', waitFor(async () =>
+    (await evalPage(() => document.querySelector('#modal-root .shares-empty')?.textContent || '')).includes('No shares yet'), 4000, 'shares empty'));
+  await ok('StopShare spoke the registry', evalPage(() => window.__shim.calls.some((x) => x.m === 'StopShare')));
+  await closeModal();
+  // an honest re-open: with the registry empty the button reads Share again
+  await clickRow('readme.md');
+  await openCtx('readme.md');
+  await ctxItem(/pre-sign/i);
+  await waitFor(modalVisible, 4000, 'presign reopen');
+  await ok('a reopened dialog re-seeds its share state', waitFor(() => evalPage(() => {
+    const b = Array.from(document.querySelectorAll('#modal-root .modal-foot button')).find((x) => /share/i.test(x.textContent));
+    return !!b && b.textContent.trim() === 'Share';
+  }), 4000, 're-seeded'));
+  await closeModal();
+});
+
+await step('inspector-v2', async () => {
+  // the professional inspector: verb groups, selectable facts, and the
+  // drag-resize handle with persistence + double-click reset
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'v2 objects');
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await evalPage(() => document.getElementById('toasts').replaceChildren());
+  // own the precondition: a failed earlier step can leave the panel
+  // open with its preference staged, and clicking the toggle would
+  // CLOSE it - starve the open wait. Close it first (the button keeps
+  // aria and the preference honest), then the real click opens fresh
+  await evalPage(() => { if (!document.getElementById('inspector').classList.contains('hidden')) document.getElementById('btn-inspector').click(); });
+  await page.click('#btn-inspector');
+  await waitFor(() => evalPage(() => !document.getElementById('inspector').classList.contains('hidden')), 4000, 'panel open');
+  await clickRow('readme.md');
+  await waitFor(() => evalPage(() => (document.querySelector('#inspector-body .insp-name')?.textContent || '') === 'readme.md'), 3000, 'row seated');
+  await ok('verbs sit in two professional groups', evalPage(() => {
+    const p = document.querySelectorAll('#inspector-body .insp-verbs.primary .insp-btn').length;
+    const s = document.querySelectorAll('#inspector-body .insp-verbs.secondary .insp-btn').length;
+    return p >= 2 && s >= 2;
+  }));
+  await ok('the primary group carries the main verbs', evalPage(() => {
+    const ps = Array.from(document.querySelectorAll('#inspector-body .insp-verbs.primary .insp-btn')).map((b) => b.textContent);
+    return ps.includes('Download') || ps.includes('Preview') || ps.includes('Open');
+  }));
+  await shot('inspector-v2');
+  await ok('inspector facts are selectable text', evalPage(() => {
+    const sel = (n) => !!n && ['text', ''].includes(getComputedStyle(n).userSelect || '');
+    return sel(document.querySelector('#inspector-body .insp-name'))
+      && sel(document.querySelector('#inspector-body dt'))
+      && sel(document.querySelector('#inspector-body dd'));
+  }));
+  // the resize handle: drag widens the panel, the width persists,
+  // double-click resets to the canonical 300
+  const rz = await page.$('#inspector .insp-resizer');
+  await ok('the resize handle seats the left edge', !!rz);
+  if (rz) {
+    const bb = await rz.boundingBox();
+    await page.mouse.move(bb.x + 2, bb.y + 60);
+    await page.mouse.down();
+    await page.mouse.move(bb.x - 82, bb.y + 60, { steps: 10 });
+    await ok('the drag freezes the page under the moving edge', evalPage(() => document.body.classList.contains('insp-dragging')));
+    await page.mouse.up();
+    await ok('the drag widens the inspector', waitFor(async () => {
+      const w = await evalPage(() => document.getElementById('inspector').offsetWidth);
+      return w >= 360 && w <= 400;
+    }, 3000, 'width applied'));
+    await ok('the width persists', evalPage(() => Number(localStorage.getItem('s3b-inspector-w') || 0) >= 360));
+    await evalPage(() => { const h = document.querySelector('#inspector .insp-resizer'); if (h) h.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); });
+    await ok('double-click resets to 300', waitFor(async () =>
+      (await evalPage(() => document.getElementById('inspector').offsetWidth)) === 300, 3000, 'reset'));
+    await ok('the reset clears the stored width', evalPage(() => localStorage.getItem('s3b-inspector-w') === null));
+  }
+  // leave canonical: panel closed
+  await page.click('#btn-inspector');
+  await waitFor(() => evalPage(() => document.getElementById('inspector').classList.contains('hidden')), 4000, 'panel closed');
+});
+
+await step('properties-tabs', async () => {
+  // the multi-select Properties keeps the aggregate on one card, and the
+  // dual pane speaks the same grammar from its own S3 seat
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'tabs objects');
+  await clickRow('readme.md');
+  await (await (async () => {
+    const r = await elOrNull((c) => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((x) => x.querySelector('.tname')?.textContent.trim() === c) || null, 'budget-2026.xlsx');
+    return r;
+  })()).asElement().click({ modifiers: ['Control'] });
+  await openCtx('budget-2026.xlsx');
+  await ctxItem(/properties/i);
+  await waitFor(modalVisible, 4000, 'multi props');
+  await ok('multi properties stays one General card with the aggregate', evalPage(() => {
+    const tabs = document.querySelectorAll('#modal-root .prop-strip .tab').length;
+    const ks = Array.from(document.querySelectorAll('#modal-root .kv .k')).map((k) => k.textContent);
+    return tabs === 1 && ks.includes('Items');
+  }));
+  await closeModal();
+  // the pane twin: the side pane bound to the same S3 seat speaks the
+  // tabbed grammar from its own row menu
+  await evalPage(() => { window.__s3bSidePane.openAt({ kind: 's3', source: 'team-files', bucket: 'team-files', prefix: '' }); });
+  await waitFor(async () => (await sideKeys()).includes('readme.md'), 6000, 'pane root rows');
+  const paneRow = await elOrNull((c) => Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+    .find((x) => x.querySelector('.tname')?.textContent.trim() === c) || null, 'readme.md');
+  await ok('the pane lists its own rows', !!paneRow);
+  if (paneRow) {
+    await rightClick(paneRow);
+    await sleep(60);
+    const pi = await elOrNull(() => Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .find((i) => /properties/i.test(i.textContent)) || null);
+    await ok('the pane row menu offers Properties', !!pi);
+    if (pi) {
+      await pi.asElement().click();
+      await waitFor(modalVisible, 4000, 'pane props');
+      await ok('the pane twin speaks the tabbed grammar', evalPage(() => {
+        const ts = Array.from(document.querySelectorAll('#modal-root .prop-strip .tab')).map((b) => b.textContent.trim());
+        return ts.includes('General') && ts.includes('Details') && ts.length >= 2;
+      }));
+      await closeModal();
+    }
+  }
+  // leave canonical: pane closed
+  await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
+  await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'pane closed');
 });
 
 await step('toasts-cleanup', async () => {

@@ -126,6 +126,7 @@ export class Tree {
       const n = keep.get(id);
       n.stype = s.type;
       n.color = s.color;
+      n.readOnly = !!s.readOnly;
       // S3 sources are bucket-scoped by definition: the node adopts the
       // bucket identity up front (bucket-grade navigation, guard icons,
       // drop target). Legacy account-wide sources (no bucket) keep the
@@ -887,6 +888,9 @@ export class Tree {
       twist,
       ticon,
       el('span', { class: 'tlabel', text: n.label }),
+      // a read-only source wears its lock right after the name — the
+      // same law the verbs honor (every write refuses, Go-side too)
+      ...(n.kind === 'source' && n.readOnly ? [el('span', { class: 't-ro', title: 'Read-only', text: '🔒' })] : []),
       // source rows carry their connectivity ball right after the name
       ...(n.kind === 'source' ? [this.statusBall(n.source)] : []),
       // bucket rows carry their versioning / lock state right after the name

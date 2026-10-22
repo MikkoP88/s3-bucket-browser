@@ -124,6 +124,7 @@ func sourceAddCmd() *cobra.Command {
 		host, username, password, root                       string
 		port                                                 int
 		pathStyle, virtualHosted, insecure                   bool
+		readOnly                                             bool
 	)
 	cmd := &cobra.Command{
 		Use:   "add NAME --type TYPE",
@@ -131,7 +132,8 @@ func sourceAddCmd() *cobra.Command {
 		Long: "Add or update a data source of any type:\n" +
 			"  s3    --endpoint --region --access-key --secret-key --session-token\n" +
 			"        --bucket (every S3 source is ONE bucket) --path-style/\n" +
-			"        --virtual-hosted --insecure\n" +
+			"        --virtual-hosted --insecure --read-only (the GUI\n" +
+			"        refuses every write on it)\n" +
 			"        shorthand URL: add [NAME] s3://bucket (flags supply the rest;\n" +
 			"        without NAME the bucket is the name)\n" +
 			"  sftp/scp/ftp/ftps/webdav/webdavs\n" +
@@ -225,6 +227,9 @@ func sourceAddCmd() *cobra.Command {
 					return opErr(err)
 				}
 				m.Bucket = bucket
+				// the read-only mount rides the source (profiles cannot
+				// carry it) — the same law the GUI editor's checkbox saves
+				m.ReadOnly = readOnly
 				if err := s.UpsertSource(m); err != nil {
 					return usageErr("%v", err)
 				}
@@ -239,6 +244,9 @@ func sourceAddCmd() *cobra.Command {
 				fmt.Printf("  endpoint: %s\n", orDefault(p.Endpoint, "(AWS default)"))
 				fmt.Printf("  bucket:   %s\n", bucket)
 				fmt.Printf("  style:    %s\n", styleName(p.PathStyle))
+				if m.ReadOnly {
+					col.hi.Println("  read-only: mounted read-only (the GUI refuses every write on it)")
+				}
 				if p.Insecure {
 					col.warn.Println("  warning:  TLS verification disabled (--insecure)")
 				}
@@ -257,10 +265,15 @@ func sourceAddCmd() *cobra.Command {
 					Username: username,
 					Password: password,
 					Root:     root,
+					// the read-only mount: remote writes share the S3 law
+					ReadOnly: readOnly,
 				}
 			case profile.TypeLocal:
 				if strings.TrimSpace(root) == "" {
 					return usageErr("--root is required for local sources")
+				}
+				if readOnly {
+					return usageErr("--read-only cannot mount a local root read-only (the GUI editor carries the same law)")
 				}
 				if _, err := os.Stat(root); err != nil {
 					return usageErr("local root: %v", err)
@@ -325,6 +338,7 @@ func sourceAddCmd() *cobra.Command {
 	f.BoolVar(&pathStyle, "path-style", false, "path-style addressing (s3)")
 	f.BoolVar(&virtualHosted, "virtual-hosted", false, "virtual-hosted addressing (s3)")
 	f.BoolVar(&insecure, "insecure", false, "skip TLS verification (labs only)")
+	f.BoolVar(&readOnly, "read-only", false, "mount the source read-only: the GUI refuses every write on it before dialing (shows \U0001F512 in source list)")
 	return cmd
 }
 
@@ -404,7 +418,13 @@ func sourceListCmd() *cobra.Command {
 				return nil
 			}
 			for _, src := range s.SortedSources() {
-				rprintf("  %-26s %s\n", sourceTypeLabel(src.Type)+" · "+src.Name, sourceDetail(src))
+				// the read-only mount wears its lock in the name column —
+				// the tree glyph's plain-text twin
+				name := sourceTypeLabel(src.Type) + " · " + src.Name
+				if src.ReadOnly {
+					name += " 🔒"
+				}
+				rprintf("  %-26s %s\n", name, sourceDetail(src))
 			}
 			return nil
 		},

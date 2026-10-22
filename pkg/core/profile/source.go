@@ -33,6 +33,12 @@ type Source struct {
 	Type  string `json:"type"` // one of the Type* constants
 	Color string `json:"color,omitempty"`
 
+	// ReadOnly mounts the source read-only: every write verb on the app
+	// refuses before it dials (pkg/api's ErrReadOnlySource) — a safe seat
+	// for production browsing, auditing and restores. The flag survives
+	// Public() like every bool, so the GUI's source list carries it.
+	ReadOnly bool `json:"readOnly,omitempty"`
+
 	// S3 (Type == s3): the complete legacy profile, secrets included.
 	S3 *Profile `json:"s3,omitempty"`
 

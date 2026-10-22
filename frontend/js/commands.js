@@ -17,6 +17,7 @@ let ctx = {
   localPaneOpen: () => false,
   osClipFiles: () => false, // Explorer files waiting on the OS clipboard
   paneAdapter: () => null,  // the secondary pane's view adapter, when open
+  sourceReadOnly: () => false, // (name-or-id) => bool — a source mounted read-only
 };
 
 export function setCommandContext(sources) {
@@ -48,15 +49,19 @@ export function commandState(pane = null) {
     // gate on the pane; local New folder/File rest (no local mkdir/create
     // APIs), like the pane's context menus already do.
     const transferable = bound && (inObjects || inRemote || inLocalDir);
+    // a read-only seat writes nothing: every mutating verb rests while
+    // downloads, copy-as-read and navigation stay live
+    const readOnly = !!(pane.source && ctx.sourceReadOnly(pane.source));
     return {
+      readOnly,
       canBack: bound && pane.canBack(),
       canForward: bound && pane.canForward(),
-      canUpload: transferable,
+      canUpload: transferable && !readOnly,
       // Download pulls from a remote store — the local binding already IS
       // the workstation, so its Download rests (uploads still land there)
       canDownload: bound && (inObjects || inRemote) && sel >= 1,
-      canNewFolder: bound && (inObjects || inRemote),
-      canNewFile: bound && (inObjects || inRemote),
+      canNewFolder: bound && (inObjects || inRemote) && !readOnly,
+      canNewFile: bound && (inObjects || inRemote) && !readOnly,
       // Search scopes to the pane's own binding — a whole pane-content run,
       // local workstation FS included — so it rides on bound, not the S3
       // profile gate the main view's copy answers to
@@ -74,22 +79,34 @@ export function commandState(pane = null) {
   const sel = ctx.selectionCount();
   const localSel = ctx.localSelectionCount();
   const hasClipboard = clipHasItems();
+  // the main seat's write law: a read-only source deactivates every
+  // mutating verb (the Go gate enforces the same refusal on the wire —
+  // the two must never disagree; reads stay fully live)
+  const readOnly = !!(loc?.source && ctx.sourceReadOnly(loc.source));
+  // the pane binding's own law, for paste-target availability
+  const paneRO = () => {
+    const p = ctx.paneAdapter?.();
+    return !!(p?.source && ctx.sourceReadOnly(p.source));
+  };
 
   return {
     hasProfile,
+    readOnly,
     canBack: nav.canBack(),
     canForward: nav.canForward(),
-    canUpload: (inObjects && hasProfile) || inRemote || inLocal,
+    canUpload: ((inObjects && hasProfile) || inRemote || inLocal) && !readOnly,
     canDownload: ((inObjects && hasProfile) || inRemote) && sel >= 1,
-    canNewFolder: (inObjects && hasProfile) || inRemote,
-    canCreateBucket: inBuckets && hasProfile,
-    canDelete: ((inObjects && hasProfile) || inRemote || inLocal) && sel >= 1,
-    canRename: ((inObjects && hasProfile) || inRemote) && sel === 1,
+    canNewFolder: ((inObjects && hasProfile) || inRemote) && !readOnly,
+    canCreateBucket: inBuckets && hasProfile && !readOnly,
+    canDelete: (((inObjects && hasProfile) || inRemote || inLocal) && sel >= 1) && !readOnly,
+    canRename: (((inObjects && hasProfile) || inRemote) && sel === 1) && !readOnly,
     canCopy: (((inObjects && hasProfile) || inRemote || inLocal) && sel >= 1) || localSel >= 1,
-    canCut: (((inObjects && hasProfile) || inRemote || inLocal) && sel >= 1) || localSel >= 1,
+    canCut: ((((inObjects && hasProfile) || inRemote || inLocal) && sel >= 1) || localSel >= 1) && !readOnly,
     // Paste acts on the app clipboard OR Explorer files waiting on the OS
-    // clipboard (Ctrl+C in Explorer — see main.js osClipPayload).
-    canPaste: (hasClipboard || ctx.osClipFiles()) && ((inObjects && hasProfile) || inRemote || inLocal || paneTarget()),
+    // clipboard (Ctrl+C in Explorer — see main.js osClipPayload). Each
+    // receiving seat honors its own read-only law.
+    canPaste: (hasClipboard || ctx.osClipFiles())
+      && ((((inObjects && hasProfile) || inRemote) && !readOnly) || inLocal || (paneTarget() && !paneRO())),
     // Compare needs the secondary pane to be open on something
     canCompare: ctx.localPaneOpen() && !!ctx.paneAdapter?.()?.bound,
     // Synchronize rides the same seating — the same-side refusal is

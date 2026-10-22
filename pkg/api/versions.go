@@ -32,6 +32,9 @@ func (a *App) ObjectVersions(bucket, key string) ([]versioning.Version, error) {
 
 // RestoreVersion makes an old version current again (server-side copy).
 func (a *App) RestoreVersion(bucket, key, versionID string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -50,6 +53,9 @@ func (a *App) RestoreVersion(bucket, key, versionID string) error {
 // UndoDelete removes a delete marker: the object reappears with its previous
 // current version ("delete marker UX").
 func (a *App) UndoDelete(bucket, key, versionID string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -68,6 +74,9 @@ func (a *App) UndoDelete(bucket, key, versionID string) error {
 // DeleteVersionPermanent permanently deletes one version (L3: the frontend
 // gates this behind a typed "permanent" confirmation).
 func (a *App) DeleteVersionPermanent(bucket, key, versionID string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -99,6 +108,9 @@ func (a *App) PurgePreview(bucket, prefix, mode string) (int, error) {
 // force mirrors `--force` on the CLI). Runs as a tracked task — a purge
 // too big for the quick-op bound stays visible and cancelable.
 func (a *App) PurgeVersions(bucket, prefix, mode string, force bool) (res transfer.DeleteResult, err error) {
+	if err := a.requireWritable(""); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -232,6 +244,9 @@ func (a *App) prefixMarkersC(c *s3client.Client, bucket, prefix string, exactKey
 // as DeleteSelection; the frontend gates it behind the typed "permanent"
 // confirmation. Addresses the source the main view is browsing.
 func (a *App) DeleteSelectionPermanent(bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	if err := a.requireWritable(""); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -242,6 +257,9 @@ func (a *App) DeleteSelectionPermanent(bucket string, keys []string, force bool)
 // SourceDeleteSelectionPermanent is DeleteSelectionPermanent pinned to one
 // named S3 source.
 func (a *App) SourceDeleteSelectionPermanent(idOrName, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -297,6 +315,9 @@ func (a *App) deleteSelectionPermanentC(c *s3client.Client, bucket string, keys 
 // the frontend's Delete Window gates it behind the typed "delete"
 // confirmation. Addresses the source the main view is browsing.
 func (a *App) DeleteSelectionKeepCurrent(bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	if err := a.requireWritable(""); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -307,6 +328,9 @@ func (a *App) DeleteSelectionKeepCurrent(bucket string, keys []string, force boo
 // SourceDeleteSelectionKeepCurrent is DeleteSelectionKeepCurrent pinned to
 // one named S3 source.
 func (a *App) SourceDeleteSelectionKeepCurrent(idOrName, bucket string, keys []string, force bool) (transfer.DeleteResult, error) {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.s3ClientFor(idOrName)
 	if err != nil {
 		return transfer.DeleteResult{}, err
@@ -410,6 +434,9 @@ func (a *App) purgePermanent(ctx context.Context, c *s3client.Client, bucket, ke
 // the call refuses without it, exactly like DeleteBucket. Runs as a tracked
 // task — the one purge that can legitimately run for a long time.
 func (a *App) EmptyBucketAllVersions(bucket string, force bool) (res transfer.DeleteResult, err error) {
+	if err := a.requireWritable(""); err != nil {
+		return transfer.DeleteResult{}, err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return transfer.DeleteResult{}, err

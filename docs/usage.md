@@ -84,6 +84,19 @@ Data Sources…** opens the manager: every configured source in one
 list with its type and target, Edit reopening the editor on the
 row, Remove beside it, Add starting a fresh one.
 
+The **+** opens the source editor: type the connection (endpoint,
+region, keys, session token), tick the wire options — **Path-style
+addressing** for MinIO-style endpoints, **Skip TLS verify** for
+self-signed labs — and prove it before saving with the footer's
+**Test** (a ✅/❌ verdict on the exact draft, nothing written). The
+bucket field needs no typing either: **Pick…** opens a modal picker
+listing every bucket the credentials can see, with a live filter and
+a count, and choosing one seats it into the field. Tick **Read-only**
+and the source mounts read-only: a 🔒 sits after its name in the
+tree, and the app refuses every write on it before a wire is touched.
+Every source type carries the same checkbox — S3, remote and local
+alike.
+
 ![Data sources in the sidebar](screenshots/sources-tree.png)
 
 ### Import existing credentials
@@ -245,6 +258,16 @@ the CLI every source is reachable as a URI (`team-files://docs/`,
 All of them browse, upload, download, rename and delete like any other
 source — and join the same transfer matrix (drag & drop, copy/paste,
 directory compare) with S3 and the secondary pane.
+
+Any of them can mount read-only — tick **Read-only** in the editor
+(or `--read-only` on the CLI's `source add`): the source carries a 🔒
+after its name in the tree, and the app refuses every write on it
+before a wire is touched — uploads, pastes, renames, deletions, transfers in,
+admin-panel mutations and version destruction all answer with the
+read-only refusal, their buttons resting disabled, and a write
+slipped past the resting buttons is refused at the bridge just the
+same. A read-only seat is the safe posture for browsing and auditing
+an account you must not disturb: nothing you can click mutates it.
 
 ---
 
@@ -600,12 +623,20 @@ sources carry the
   seats a docked details panel on the right edge: whatever you
   select shows its facts the instant the selection changes —
   kind, size, modified, key — read from the row itself with no
-  round trip, quick verbs that follow the seat (Open, Preview,
-  Edit, Download…, Copy path, Properties…), a multi-selection
-  aggregated (items, total size, modified range), and with nothing
-  selected the panel summarizes the view — the location, item and
-  size counts, the source. The deep facts (ETag, encryption,
-  retention, usage) stay one Properties… click away. Whichever
+  round trip, and every fact on the panel is real selectable text —
+  select it, copy it, paste it anywhere. The verbs sit in two
+  professional groups: the primary row carries the seat’s main
+  actions in the dialog-primary idiom (Preview or Open, Edit,
+  Download… — Edit resting disabled when the source is read-only),
+  the quiet secondary row the utilities (Copy path, Copy name,
+  Properties…). A multi-selection aggregates (items, total size,
+  modified range), and with nothing selected the panel summarizes
+  the view — the location, item and size counts, the source. The
+  panel’s width is yours: drag the handle on its left edge to
+  resize it (clamped between 220 and 560 pixels, remembered across
+  sessions; double-click the handle resets it). The deep facts
+  (ETag, encryption, retention, usage) stay one Properties… click
+  away. Whichever
   grid spoke last owns the panel — the main view or the dual
   pane — and the choice persists across sessions.
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
@@ -1021,11 +1052,28 @@ the job's own source.
   the NOTICE file and release SBOM; the About box carries the same
   one-line identity from a single shared source.
 - **Presign & storage class** — the context menu creates time-limited
-  pre-signed URLs (computed locally) and converts objects between
-  storage classes via server-side self-copy.
-- **Properties** — full metadata for buckets, folders, objects and
-  sources: provider, region, versioning, lock, encryption, policy
-  state — from the context menu or **Alt+Enter** on the selection.
+  pre-signed URLs (computed locally): pick how long the link stays
+  valid — 5 minutes to 7 days — and the URL mints for exactly that
+  window on the spot (a different window is one reopen away).
+  **Share** registers the link in the share registry and the button
+  turns into **Stop share**; **View → Active shares** opens the
+  shares window listing every live share — the object, shared when,
+  valid until, Copy URL, Stop — and a presign dialog reopened on an
+  already-shared object says so honestly. Stopping removes the share
+  from the registry; the signed URL itself stays valid until it
+  expires, because S3 pre-signs cannot be revoked server-side.
+  The same menu converts objects between storage classes via
+  server-side self-copy.
+- **Properties** — the Windows file-properties shape: a top card
+  naming what you are looking at (icon, name, subtitle) with
+  category tabs beneath. Objects carry General (name, type, size in
+  both grammars, modified, path), Details (ETag, storage class,
+  content type, the full metadata set) and Security (SSE, retention,
+  legal hold); buckets carry General, Versioning (the guard pills),
+  Security and Configuration; a multi-selection answers with one
+  summary card (items, total size); folders and sources keep their
+  own faces. Every value is selectable text — from the context menu
+  or **Alt+Enter** on the selection.
 
 ![Connection doctor](screenshots/doctor.png)
 
@@ -1147,6 +1195,7 @@ s3b profile add lab --endpoint http://localhost:9000 \
     --access-key minioadmin --secret-key minioadmin --default
 s3b source add vault sftp://deploy@backups.example.com
 s3b source split old-account                # legacy account → one source per bucket
+s3b source add s3://prod-b --read-only      # mounted read-only (GUI writes refuse)
 
 s3b ls            s3b ls vault://media      # any source, same flags
 s3b cp ./site s3://b/site/ -r               # upload (or download, or copy)

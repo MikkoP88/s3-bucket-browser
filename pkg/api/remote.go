@@ -182,6 +182,9 @@ func (a *App) RemoteStat(idOrName, path string) (listing.Entry, error) {
 // RemoteMkdir creates a directory (and missing parents) on a non-S3
 // source. Tracked as a task (Running tasks window) like its S3 twin.
 func (a *App) RemoteMkdir(idOrName, dir string) (err error) {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return err
+	}
 	src, fs, err := a.remoteSource(idOrName)
 	if err != nil {
 		return err
@@ -208,6 +211,9 @@ func (a *App) RemoteMkdir(idOrName, dir string) (err error) {
 // no remote editor flow — the file is simply created, WinSCP's "leave it
 // empty" outcome.)
 func (a *App) RemoteCreateFile(idOrName, dir, name, ext string) (created string, err error) {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return "", err
+	}
 	src, fs, err := a.remoteSource(idOrName)
 	if err != nil {
 		return "", err
@@ -236,6 +242,9 @@ func (a *App) RemoteCreateFile(idOrName, dir, name, ext string) (created string,
 // entry keeps its parent directory and its kind (folder keys keep the
 // trailing slash).
 func (a *App) RemoteRename(idOrName, path, newName string) error {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return err
+	}
 	src, fs, err := a.remoteSource(idOrName)
 	if err != nil {
 		return err
@@ -352,6 +361,9 @@ type RemoteDeleteResult struct {
 // typed confirmation), so a stale preview can never silently wipe a large
 // tree. Remote filesystems have no trash and no versions: this is final.
 func (a *App) RemoteRemove(idOrName string, paths []string, force bool) (out *RemoteDeleteResult, err error) {
+	if err := a.requireWritableName(idOrName); err != nil {
+		return nil, err
+	}
 	src, fs, err := a.remoteSource(idOrName)
 	if err != nil {
 		return nil, err

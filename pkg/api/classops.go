@@ -21,6 +21,9 @@ const guiConvertThreshold = 50
 // guiConvertThreshold. Returns how many objects were converted. Runs as
 // a tracked task (Running tasks window) with live progress.
 func (a *App) ConvertStorageClass(bucket string, keys []string, class string, force bool) (n int, err error) {
+	if err := a.requireWritable(""); err != nil {
+		return 0, err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return 0, err
@@ -69,6 +72,9 @@ func (a *App) ConvertStorageClass(bucket string, keys []string, class string, fo
 // PutBucketLockConfig enables object lock (optionally a default retention
 // rule: mode GOVERNANCE|COMPLIANCE + days).
 func (a *App) PutBucketLockConfig(bucket string, enabled bool, mode string, days int32) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -94,6 +100,9 @@ func (a *App) GetObjectLock(bucket, key, versionID string) (adminops.ObjectLock,
 // PutObjectRetention sets retention until an RFC3339 instant
 // ("+Nd"/"+Nh" relative forms are also accepted).
 func (a *App) PutObjectRetention(bucket, key, versionID, mode, until string) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err
@@ -123,6 +132,9 @@ func (a *App) ClearObjectRetention(bucket, key, versionID string) error {
 
 // SetObjectLegalHold toggles the legal hold on one object version.
 func (a *App) SetObjectLegalHold(bucket, key, versionID string, on bool) error {
+	if err := a.requireWritable(""); err != nil {
+		return err
+	}
 	c, err := a.client("")
 	if err != nil {
 		return err

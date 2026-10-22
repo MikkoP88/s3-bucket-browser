@@ -260,6 +260,11 @@ func (a *App) EditObject(bucket, key string, chooseApp bool) (EditInfo, error) {
 // never stage and never push — the file IS the store, and the
 // frontend opens it in place with the OS.
 func (a *App) EditFile(t EditTarget, chooseApp bool) (EditInfo, error) {
+	if t.Kind == "" || t.Kind == "s3" || t.Kind == "remote" {
+		if err := a.requireWritableName(t.Source); err != nil {
+			return EditInfo{}, err
+		}
+	}
 	switch t.Kind {
 	case "", "s3":
 		return a.editS3(t.Source, t.Bucket, t.Key, chooseApp)

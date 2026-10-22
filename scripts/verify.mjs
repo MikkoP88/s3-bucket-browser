@@ -4388,7 +4388,39 @@ async function guiBattery() {
     try { await closeModal(); } catch { /* best effort */ }
     try { await clearFilter(); } catch { /* best effort */ }
     await treeOpen(SRCNAME);
-    await waitFor(async () => (await rowKeys()).some((k) => k.includes('verify-gui')), 10000, 's3 root');
+    try {
+      // exactly ONE forced listing (first poll only): a caller can leave
+      // the seat already on this source home with a reset grid - GUI-98's
+      // Clear All does exactly that - and treeOpen's click on the
+      // already-seated source navigates nowhere, so no re-list ever fires;
+      // a per-poll refresh would race itself (every click bumps listSeq
+      // and cancels the prior stream)
+      let listed104 = false;
+      await waitFor(async () => {
+        if (!listed104) { listed104 = true; await refresh(); }
+        return (await rowKeys()).some((k) => k.includes('verify-gui'));
+      }, 10000, 's3 root');
+    } catch (e) {
+      // the failure-state oracle: the seat (crumb), the grid attractor —
+      // held rows in all against view rows in the model, the pair that
+      // names a filter eating the landing — the standing overlays, and
+      // the first rows/tree labels
+      const d = await evalPage(() => JSON.stringify({
+        empty: document.getElementById('empty-state')?.className || '',
+        model: window.__s3bGrid && Array.isArray(window.__s3bGrid.rows) ? window.__s3bGrid.rows.length : '?',
+        gridSt: { streaming: !!(window.__s3bGrid && window.__s3bGrid.streaming), streamDone: !!(window.__s3bGrid && window.__s3bGrid.streamDone), all: window.__s3bGrid && Array.isArray(window.__s3bGrid.all) ? window.__s3bGrid.all.length : '?' },
+        overlays: {
+          ctxmenu: !document.getElementById('ctxmenu')?.classList.contains('hidden'),
+          modal: !!document.querySelector('#modal-root .modal:not(.hidden)'),
+          popouts: document.querySelectorAll('#popout-root .popout:not(.hidden)').length,
+          toasts: document.querySelectorAll('#toasts .toast').length,
+        },
+        crumb: (document.getElementById('breadcrumb')?.textContent || '').slice(0, 120),
+        rows: Array.from(document.querySelectorAll('#grid-body .grid-row')).filter((r) => r.style.display !== 'none').slice(0, 12).map((r) => (r.querySelector('.tname')?.textContent || '').trim()),
+        tree: Array.from(document.querySelectorAll('#tree .tlabel')).map((n) => (n.textContent || '').trim()).slice(0, 20),
+      })).catch(() => '?');
+      throw new Error(e.message + ' [state: ' + d + ']');
+    }
     await enterFolder('verify-gui');
   };
   // One root, one source (the a537026 model): every scratch bucket this
@@ -6193,6 +6225,518 @@ async function guiBattery() {
     need(r.code === 0, 'rb: ' + r.out + r.err);
     await removeGuiSource(AB);
     return '2,500-object folder: the first window 1,000 on demand with the wash, the ceiling held at 1,500 with checkpoints above, the backward refill whole over inert placeholders, the tail parked and reloaded past done on the same demand, and the universe 2,500 at done with no continuation control anywhere';
+  });
+
+  // ---- the inspector/properties/read-only/shares round: four live rows ----
+
+  await verify({ id: 'GUI-112', area: 'sources', action: 'Read-only data source: the lock rests every write affordance and the backend upholds the mount', ds: 'S3 (MinIO)', scenario: 'a bucket source saved with the editor Read-only checkbox: the tree row wears its lock glyph, the seat speaks read-only, every write affordance rests (row menu rename/delete/new folder/edit/storage class, tree menu new bucket/delete bucket/upload/paste, the admin panel banner with every mutating button resting on its Security tab, the inspector Edit verb) while reads stay fully live (rows list, Properties and Pre-sign armed, Versions view opens with its Destroy resting), and a write slipped past every resting button through the app own bridge refuses with the read-only error while the object survives untouched, and the dual pane bound to the same source rests its own write affordances (row menu rename/delete/edit/cut, empty menu paste/upload/new folder) while the keyboard paste into the guarded seat refuses before any dialog', face: 'GUI' }, async () => {
+    const AB = BUCKET + '-ro';
+    const K = 'ro-note-' + RUNID + '.txt';
+    const seedf = path.join(ART, 'ro112-seed.txt');
+    const PAY = 'read-only seat payload ' + RUNID + '\n';
+    await writeFile(seedf, PAY);
+    let r = await s3(['mb', 's3://' + AB]);
+    need(r.code === 0, 'mb: ' + r.out + r.err);
+    await s3(['bucket', 'versioning', 's3://' + AB, 'on']);
+    r = await s3(['cp', seedf, 's3://' + AB + '/' + K]);
+    need(r.code === 0, 'seed cp: ' + r.out + r.err);
+    // the real editor gesture with the Read-only box ticked — the third
+    // checkbox in the S3 field set (path-style, skip TLS, read-only)
+    await closeModal();
+    await page.locator('#sidebar-head .side-add').click();
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n >= 6), 5000, 'the source editor');
+    const ins112 = page.locator('#modal-root .modal input.input');
+    await ins112.nth(0).fill(AB);
+    await ins112.nth(1).fill(AB);
+    await ins112.nth(2).fill(ENDPOINT);
+    await ins112.nth(3).fill(REGION);
+    await ins112.nth(4).fill(KEY);
+    await ins112.nth(5).fill(SECRET);
+    await page.locator('#modal-root .modal input[type="checkbox"]').nth(0).check(); // path-style — MinIO
+    await page.locator('#modal-root .modal input[type="checkbox"]').nth(2).check();
+    await clickFooter(/^save$/i);
+    await waitFor(() => evalPage((l) => Array.from(document.querySelectorAll('#tree .tnode'))
+      .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), AB), 10000, 'tree row "' + AB + '"');
+    await sleep(300);
+    // reads stay live: the bucket lists through the mounted source
+    await treeOpen(AB);
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.endsWith(K)); }, 15000, 'the read-only row lists');
+    await waitFor(() => evalPage(() => window.__s3bCmdState && window.__s3bCmdState.readOnly === true), 5000, 'the seat read-only state');
+    const glyph = await evalPage((l) => {
+      const n = Array.from(document.querySelectorAll('#tree .tnode'))
+        .find((x) => (x.querySelector('.tlabel')?.textContent || '').trim() === l);
+      const g = n?.querySelector('.t-ro');
+      return g ? { title: g.title || '' } : null;
+    }, AB);
+    need(glyph && /read-only/i.test(glyph.title), 'the tree row lacks its lock glyph: ' + JSON.stringify(glyph));
+    await shot('112-ro-tree');
+    // the row menu: every write rests, the read verbs stay armed
+    await rightClickRow(K);
+    const menuTxt = await evalPage(() => JSON.stringify(Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .map((i) => ({ t: (i.textContent || '').trim(), dis: i.classList.contains('disabled') }))));
+    const items = JSON.parse(menuTxt);
+    const item112 = (re) => items.find((i) => re.test(i.t));
+    const dis112 = (re, label) => {
+      const it = item112(re);
+      need(it, 'the row menu lacks its ' + label + ' item: ' + menuTxt.slice(0, 300));
+      need(it.dis === true, 'the ' + label + ' affordance did not rest under read-only');
+    };
+    dis112(/^rename/i, 'Rename');
+    dis112(/^delete/i, 'Delete');
+    dis112(/^new folder/i, 'New folder');
+    if (item112(/^edit/i)) need(item112(/^edit/i).dis === true, 'Edit did not rest under read-only');
+    if (item112(/^storage class/i)) need(item112(/^storage class/i).dis === true, 'Storage class did not rest under read-only');
+    const props112 = item112(/^properties/i);
+    need(props112 && !props112.dis, 'Properties rested under read-only (reads stay live)');
+    const pre112 = item112(/^pre-sign/i);
+    need(pre112 && !pre112.dis, 'Pre-sign rested under read-only (signing is local)');
+    await page.keyboard.press('Escape');
+    await sleep(120);
+    // the tree source menu: the source-scoped writes rest
+    await treeMenu(AB);
+    const treeTxt = await evalPage(() => JSON.stringify(Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .map((i) => ({ t: (i.textContent || '').trim(), dis: i.classList.contains('disabled') }))));
+    const titems = JSON.parse(treeTxt);
+    const titem112 = (re) => titems.find((i) => re.test(i.t));
+    if (titem112(/^new bucket/i)) need(titem112(/^new bucket/i).dis === true, 'tree New bucket did not rest');
+    if (titem112(/^delete bucket/i)) need(titem112(/^delete bucket/i).dis === true, 'tree Delete bucket did not rest');
+    if (titem112(/^upload/i)) need(titem112(/^upload/i).dis === true, 'tree Upload did not rest');
+    if (titem112(/^paste/i)) need(titem112(/^paste/i).dis === true, 'tree Paste did not rest');
+    const rm112 = titem112(/^remove source/i);
+    need(rm112 && !rm112.dis, 'Remove source rested (unseating stays possible)');
+    await page.keyboard.press('Escape');
+    await sleep(120);
+    // the admin panel: the banner speaks and every mutating button rests
+    await treeMenu(AB);
+    await ctxItem(/admin panel/i);
+    await waitFor(async () => /admin panel/i.test(await modalText()), 10000, 'the admin panel');
+    // walk EVERY admin tab: a tab whose API the provider speaks renders
+    // its mutating buttons and each must rest under the lock; a tab the
+    // provider does not speak renders the honest error box (zero buttons,
+    // never a vacuous pass) — Security alone was the PAB recorded gap here
+    const adm112 = await evalPage(async () => {
+      const m = document.querySelector('#modal-root .modal') || document.body;
+      const banner = m.querySelector('.ro-banner');
+      const tabs = Array.from(m.querySelectorAll('.tab[data-tab]'));
+      let total = 0;
+      const armed = [];
+      const perTab = [];
+      for (const t of tabs) {
+        t.click();
+        await new Promise((r) => setTimeout(r, 60));
+        const mut = Array.from(m.querySelectorAll('button.btn.primary, button.btn.danger'));
+        total += mut.length;
+        if (mut.length) perTab.push((t.dataset.tab || '') + ':' + mut.length);
+        for (const b of mut) if (!b.disabled) armed.push((t.dataset.tab || '') + ' ' + (b.textContent || '').trim());
+      }
+      return { banner: banner ? banner.textContent.trim() : '', total, armed, perTab };
+    });
+    need(/read-only/i.test(adm112.banner), 'the admin panel lacks its read-only banner: ' + JSON.stringify(adm112.banner));
+    need(adm112.total > 0, 'no admin tab exposes a mutating button to gate: ' + JSON.stringify(adm112.perTab));
+    need(adm112.armed.length === 0, 'mutating buttons armed under read-only: ' + adm112.armed.join(', '));
+    await shot('112-admin-ro');
+    await closeModal();
+    // the inspector: the Edit verb rests, Download stays armed — the row
+    // is re-seated through the grid's own mousedown grammar first (the
+    // inspector renders the live selection; the admin walk's modal turns
+    // must not leave a stale seat speaking), and the panel opens only
+    // when hidden — the toolbar toggle would close an open one
+    const inspWas112 = await evalPage(() => !document.getElementById('inspector')?.classList.contains('hidden'));
+    if (!inspWas112) await page.locator('#btn-inspector').click();
+    await waitFor(() => evalPage((k) => {
+      const row = Array.from(document.querySelectorAll('#grid-body .grid-row'))
+        .filter((r) => r.style.display !== 'none')
+        .find((r) => ((r.querySelector('.tname')?.textContent || '') === k || (r.dataset.key || '') === k));
+      if (!row) return false;
+      const rc = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, clientX: Math.round(rc.left + 20), clientY: Math.round(rc.top + rc.height / 2) }));
+      return true;
+    }, K), 10000, 'the read-only row to re-seat');
+    await sleep(200);
+    const verbs112 = await evalPage(() => JSON.stringify({
+      edit: Array.from(document.querySelectorAll('#inspector .insp-verbs .insp-btn'))
+        .filter((b) => /^edit/i.test(b.textContent || ''))
+        .map((b) => !!b.disabled),
+      dl: Array.from(document.querySelectorAll('#inspector .insp-verbs .insp-btn'))
+        .filter((b) => /^download/i.test(b.textContent || ''))
+        .map((b) => !!b.disabled),
+    }));
+    const v112 = JSON.parse(verbs112);
+    need(v112.edit.length === 1 && v112.edit[0] === true, 'the inspector Edit verb did not rest: ' + verbs112);
+    need(v112.dl.length === 1 && v112.dl[0] === false, 'the inspector Download verb rested (downloads stay live)');
+    if (!inspWas112) await page.locator('#btn-inspector').click();
+    // the Versions dialog: Destroy rests inside its own buttons
+    await rightClickRow(K);
+    await ctxItem(/^versions/i);
+    await waitFor(async () => /versions/i.test(await modalText()), 10000, 'the versions dialog');
+    const vers112 = await waitFor(() => evalPage(() => {
+      const bs = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .filter((b) => /destroy/i.test(b.textContent || ''));
+      return bs.length ? bs.map((b) => !!b.disabled) : null;
+    }), 10000, 'the versions Destroy buttons');
+    need(vers112.every((d) => d), 'a Destroy button stayed armed under read-only: ' + JSON.stringify(vers112));
+    await closeModal();
+    // the DUAL PANE bound to the read-only source: the pane's own write
+    // affordances rest under the binding's lock, and the paste belt refuses
+    // the guarded seat before any dialog opens
+    await treeMenu(AB);
+    await ctxItem(/open on secondary pane/i);
+    await waitFor(async () => (await sideKeys()).includes(K), 10000, 'the pane lists the read-only seat');
+    await waitFor(() => evalPage((k) => {
+      const row = Array.from(document.querySelectorAll('#local-grid-body .grid-row'))
+        .filter((r) => r.style.display !== 'none')
+        .find((r) => ((r.querySelector('.tname')?.textContent || '').trim() === k || (r.dataset.key || '') === k));
+      if (!row) return false;
+      const rc = row.getBoundingClientRect();
+      row.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, button: 2,
+        clientX: Math.round(rc.left + rc.width / 2), clientY: Math.round(rc.top + rc.height / 2),
+      }));
+      return true;
+    }, K).catch(() => false), 10000, 'the pane row for its context menu');
+    const paneTxt = await evalPage(() => JSON.stringify(Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .map((i) => ({ t: (i.textContent || '').trim(), dis: i.classList.contains('disabled') }))));
+    const pitems = JSON.parse(paneTxt);
+    const pitem112 = (re) => pitems.find((i) => re.test(i.t));
+    const pdis112 = (re, label) => {
+      const it = pitem112(re);
+      need(it, 'the pane row menu lacks its ' + label + ' item: ' + paneTxt.slice(0, 300));
+      need(it.dis === true, 'the pane ' + label + ' affordance did not rest under read-only');
+    };
+    pdis112(/^rename/i, 'Rename');
+    pdis112(/^delete/i, 'Delete');
+    pdis112(/^edit/i, 'Edit');
+    pdis112(/^cut/i, 'Cut');
+    const pcopy112 = pitem112(/^copy/i); // glued accelerator: 'CopyCtrl+C' - prefix anchor only
+    need(pcopy112 && !pcopy112.dis, 'the pane Copy rested (reads stay live): ' + paneTxt.slice(0, 400));
+    const pprops112 = pitem112(/^properties/i);
+    need(pprops112 && !pprops112.dis, 'the pane Properties rested (reads stay live)');
+    await page.keyboard.press('Escape');
+    await sleep(120);
+    // the pane empty menu: paste/uploads/new folder all rest
+    await evalPage(() => {
+      const b = document.getElementById('local-grid-body');
+      const rc = b.getBoundingClientRect();
+      b.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, button: 2,
+        clientX: Math.round(rc.left + 30), clientY: Math.round(rc.bottom - 12),
+      }));
+      return true;
+    });
+    const paneTxt2 = await evalPage(() => JSON.stringify(Array.from(document.querySelectorAll('#ctxmenu:not(.hidden) .item'))
+      .map((i) => ({ t: (i.textContent || '').trim(), dis: i.classList.contains('disabled') }))));
+    const pitems2 = JSON.parse(paneTxt2);
+    const p2 = (re) => pitems2.find((i) => re.test(i.t));
+    need(p2(/^paste/i) && p2(/^paste/i).dis === true, 'the pane Paste did not rest: ' + paneTxt2.slice(0, 300));
+    need(p2(/upload/i) && p2(/upload/i).dis === true, 'the pane Upload did not rest');
+    need(p2(/^new folder/i) && p2(/^new folder/i).dis === true, 'the pane New folder did not rest');
+    await page.keyboard.press('Escape');
+    await sleep(120);
+    // the paste belt: the clipboard holds the row (Copy is live), the main
+    // view sits on the guarded seat — the keyboard paste must refuse
+    // with the honest toast before any transfer dialog opens
+    await evalPage(() => { document.getElementById('toasts').replaceChildren(); return true; });
+    await page.keyboard.press('Control+c');
+    await sleep(150);
+    await page.keyboard.press('Control+v');
+    await waitFor(() => evalPage(() => (document.getElementById('toasts')?.textContent || '').includes('read-only data source')), 5000, 'the pane paste refusal toast');
+    need(await evalPage(() => document.getElementById('modal-root').classList.contains('hidden')), 'the refused paste still opened a dialog');
+    // leave the pane clean before the source goes away
+    await evalPage(() => { const b = document.getElementById('local-btn-close'); if (b) b.click(); return true; });
+    await waitFor(() => evalPage(() => document.getElementById('local-pane').classList.contains('hidden')), 4000, 'the pane closed');
+    // THE BACKEND ORACLE: a write slipped past every resting button through
+    // the app own bridge must meet the read-only gate itself
+    const refused = await evalPage(([b, k]) => window.wails.Call.ByName(
+      'github.com/MikkoP88/s3-bucket-browser/pkg/api.App.DeleteSelection', b, [k], false,
+    ).then(() => ({ ok: true }), (e) => ({ ok: false, e: String(e) })), [AB, K]);
+    need(refused.ok === false && /read-only/i.test(refused.e || ''),
+      'the slipped write did not meet the read-only gate: ' + JSON.stringify(refused).slice(0, 300));
+    r = await s3(['stat', 's3://' + AB + '/' + K]);
+    need(r.code === 0, 'the refused write still touched the object: ' + r.out + r.err);
+    await removeGuiSource(AB);
+    r = await s3(['rb', 's3://' + AB, '--force']);
+    need(r.code === 0, 'rb: ' + r.out + r.err);
+    return 'the lock rests every write affordance (row, tree, admin panel across every tab, inspector, versions, dual pane) and the backend refuses a slipped DeleteSelection with the read-only error, the keyboard paste into the guarded seat refuses up front, reads fully live throughout';
+  });
+
+  await verify({ id: 'GUI-113', area: 'sources', action: 'Bucket picker: the modal list over the input dropdown', ds: 'S3 (MinIO)', scenario: 'the source editor Pick button dials the endpoint with the draft values (the Test connection family), lists the real buckets in a modal with a live filter, Enter seats the chosen bucket into the parked editor (the modal stack law), and the saved source opens that bucket', face: 'GUI' }, async () => {
+    const AB = BUCKET + '-pick';
+    let r = await s3(['mb', 's3://' + AB]);
+    need(r.code === 0, 'mb: ' + r.out + r.err);
+    // the editor with everything EXCEPT the bucket — the picker is the seat
+    await closeModal();
+    await page.locator('#sidebar-head .side-add').click();
+    await waitFor(() => page.locator('#modal-root .modal input.input').count().then((n) => n >= 6), 5000, 'the source editor');
+    const ins113 = page.locator('#modal-root .modal input.input');
+    await ins113.nth(0).fill(AB);
+    await ins113.nth(2).fill(ENDPOINT);
+    await ins113.nth(3).fill(REGION);
+    await ins113.nth(4).fill(KEY);
+    await ins113.nth(5).fill(SECRET);
+    await page.locator('#modal-root .modal input[type="checkbox"]').first().check(); // path-style — MinIO
+    // Pick dials the endpoint with the draft values
+    await page.locator('#modal-root .modal button', { hasText: /^pick/i }).click();
+    const pickModal = page.locator('#modal-root .modal', { hasText: 'Pick bucket' });
+    await waitFor(() => pickModal.locator('.bpick-row').count().then((n) => n >= 1), 15000, 'the picker to dial and list');
+    await waitFor(() => pickModal.locator('.bpick-row', { hasText: AB }).count().then((n) => n === 1), 5000, 'the fresh bucket in the picker list');
+    const totalTxt = await pickModal.locator('.bpick-count').textContent();
+    need(/\d+ bucket\(s\)/.test(totalTxt || ''), 'the picker count reads wrong: ' + totalTxt);
+    // the live filter narrows to exactly the fresh bucket
+    await pickModal.locator('input.input').fill(AB);
+    await sleep(150);
+    const narrowed = await pickModal.locator('.bpick-row').count();
+    need(narrowed === 1, 'the filter left ' + narrowed + ' rows, want exactly the fresh bucket');
+    const nTxt = await pickModal.locator('.bpick-count').textContent();
+    need(/^1 of \d+$/.test((nTxt || '').trim()), 'the narrowed count reads wrong: ' + nTxt);
+    // the empty filter answer
+    await pickModal.locator('input.input').fill('zzz-nomatch-' + RUNID);
+    await sleep(150);
+    await waitFor(() => pickModal.locator('.bpick-empty').count().then((n) => n === 1), 3000, 'the empty-filter answer');
+    // Enter seats the focused row: refocus the real bucket through the filter
+    await pickModal.locator('input.input').fill(AB);
+    await sleep(150);
+    await pickModal.locator('.bpick-row', { hasText: AB }).click();
+    await waitFor(() => page.locator('#modal-root .modal', { hasText: 'Pick bucket' }).count().then((n) => n === 0), 5000, 'the picker to close');
+    // the parked editor returns with the bucket seated (the modal stack law)
+    const seatVal = await evalPage(() => {
+      const m = Array.from(document.querySelectorAll('#modal-root .modal'))
+        .find((x) => /data source/i.test(x.textContent || '') && x.querySelector('input.input'));
+      return m ? (m.querySelectorAll('input.input')[1]?.value || '') : '';
+    });
+    need(seatVal === AB, 'the picked bucket did not seat into the editor: ' + JSON.stringify(seatVal));
+    await clickFooter(/^save$/i);
+    await waitFor(() => evalPage((l) => Array.from(document.querySelectorAll('#tree .tnode'))
+      .some((n) => (n.querySelector('.tlabel')?.textContent || '').trim() === l), AB), 10000, 'tree row "' + AB + '"');
+    await removeGuiSource(AB);
+    r = await s3(['rb', 's3://' + AB, '--force']);
+    need(r.code === 0, 'rb: ' + r.out + r.err);
+    return 'Pick dials the draft, lists the real buckets, the filter narrows and answers empty honestly, and the chosen bucket seats into the parked editor and saves';
+  });
+
+  await verify({ id: 'GUI-114', area: 'transfers', action: 'Pre-signed share lifecycle: validity on the wire, the Share button toggles, the Shares window, Stop, honest reopen', ds: 'S3 (MinIO)', scenario: 'the Pre-signed URL dialog mints with a chosen validity (86400s on the signature itself), the minted URL actually downloads the object byte-exact over HTTP, Share registers it (the button flips to Stop share), the View menu Shares window lists it with its countdown, its URL downloads too, Stop empties the registry, and reopening the dialog answers an honest Share again', face: 'GUI' }, async () => {
+    const K = 'share-' + RUNID + '.txt';
+    const PAY = 'share payload ' + RUNID + '\n';
+    const seedf = path.join(ART, 'share114-seed.txt');
+    await writeFile(seedf, PAY);
+    let r = await s3(['cp', seedf, 's3://' + BUCKET + '/verify-gui/' + K]);
+    need(r.code === 0, 'seed cp: ' + r.out + r.err);
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.endsWith(K)); }, 15000, 'the seeded share row');
+    await rightClickRow(K);
+    await ctxItem(/^pre-sign/i);
+    await waitFor(async () => /pre-signed url/i.test(await modalText()), 5000, 'the presign dialog');
+    // the validity selector: default 1 hour, the ladder carries minutes to days
+    const ttlVal = await page.locator('#modal-root .modal select.input').inputValue();
+    need(ttlVal === '3600', 'the default validity reads ' + ttlVal + ', want 3600');
+    const optTxt = await page.locator('#modal-root .modal select.input').locator('option').allTextContents();
+    need(optTxt.some((o) => /5 minutes/i.test(o)) && optTxt.some((o) => /7 days/i.test(o)), 'the validity ladder misses its ends: ' + optTxt.join(' | '));
+    await page.locator('#modal-root .modal select.input').selectOption('86400');
+    // the signature itself carries the chosen validity
+    const url1 = await waitFor(async () => {
+      const v = await page.locator('#modal-root .modal input.mono').inputValue();
+      return /X-Amz-Expires=86400/.test(v) ? v : '';
+    }, 8000, 'the 86400s signature to mint');
+    need(url1.startsWith('http'), 'the minted URL reads wrong: ' + url1.slice(0, 60));
+    // THE STRONGEST ORACLE: the URL downloads the object byte-exact
+    const res1 = await fetch(url1);
+    need(res1.status === 200, 'the presigned URL answered ' + res1.status);
+    const body1 = await res1.text();
+    need(body1 === PAY, 'the presigned download is not byte-exact');
+    // Share registers it — the button flips
+    await evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .find((x) => /^share$/i.test((x.textContent || '').trim()));
+      if (!b) return false;
+      b.click();
+      return true;
+    });
+    await waitFor(() => evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .find((x) => /stop share/i.test((x.textContent || '').trim()));
+      return !!b && b.classList.contains('danger');
+    }), 5000, 'the Share button to flip to Stop share');
+    await shot('114-presign-shared');
+    await closeModal();
+    // the Shares window from the View menu
+    await menuClick(/^view$/i, /active shares/i);
+    await waitFor(async () => /shares/i.test(await modalText()), 5000, 'the shares window');
+    const shareRow = await waitFor(() => evalPage((k) => {
+      const rows = Array.from(document.querySelectorAll('#modal-root .share-row'));
+      const hit = rows.find((x) => (x.querySelector('.share-key')?.textContent || '').includes(k));
+      if (!hit) return null;
+      return { key: (hit.querySelector('.share-key')?.textContent || '').trim(),
+        sub: (hit.querySelector('.share-sub')?.textContent || '').trim(),
+        url: hit.querySelector('.share-key')?.title || '' };
+    }, BUCKET + '/verify-gui/' + K), 5000, 'the share listed in the window');
+    need(/in 1 day|in 24 hour/.test(shareRow.sub), 'the share countdown reads wrong: ' + shareRow.sub);
+    need(shareRow.url.startsWith('http'), 'the share row carries no URL');
+    const res2 = await fetch(shareRow.url);
+    need(res2.status === 200 && (await res2.text()) === PAY, 'the listed share URL does not download byte-exact');
+    await shot('114-shares-window');
+    // Stop empties the registry
+    await evalPage(() => {
+      const b = document.querySelector('#modal-root .share-row .share-acts .btn.danger');
+      if (!b) return false;
+      b.click();
+      return true;
+    });
+    await waitFor(() => page.locator('#modal-root .shares-empty').count().then((n) => n === 1), 5000, 'the emptied registry');
+    await closeModal();
+    // reopening answers an honest Share again (ListShares seeds the state)
+    await rightClickRow(K);
+    await ctxItem(/^pre-sign/i);
+    await waitFor(async () => /pre-signed url/i.test(await modalText()), 5000, 'the reopened presign dialog');
+    await waitFor(() => evalPage(() => {
+      const bs = Array.from(document.querySelectorAll('#modal-root .modal button'))
+        .filter((x) => /share/i.test((x.textContent || '').trim()) && !/valid|cannot/i.test(x.textContent || ''));
+      return bs.length === 1 && /^share$/i.test((bs[0].textContent || '').trim());
+    }), 5000, 'the honest Share button on reopen');
+    await closeModal();
+    r = await s3(['rm', 's3://' + BUCKET + '/verify-gui/' + K]);
+    need(r.code === 0, 'rm: ' + r.out + r.err);
+    return 'the 86400s validity rides the signature, the URL downloads byte-exact from both the dialog and the Shares window, Share flips to Stop share, Stop empties the registry, and a reopen is honest';
+  });
+
+  await verify({ id: 'GUI-115', area: 'ui', action: 'Inspector v2 and the tabbed Properties card, live', ds: 'S3 (MinIO)', scenario: 'the inspector renders its two arranged verb groups with selectable facts and a drag-resizable edge (real mouse drag, persisted width, double-click reset), the object Properties card carries the Windows grammar (bytes in parentheses) across General/Details/Security tabs with the live ETag, a multi-selection collapses to one summary card, and the bucket Properties card walks all four tabs against the real admin state', face: 'GUI' }, async () => {
+    const KA = 'p115-a-' + RUNID + '.txt';
+    const KB = 'p115-b-' + RUNID + '.txt';
+    const PAYA = 'inspector v2 payload ' + RUNID + ' alpha\n';
+    const PAYB = 'inspector v2 payload ' + RUNID + ' beta\n';
+    await writeFile(path.join(ART, 'p115a.txt'), PAYA);
+    await writeFile(path.join(ART, 'p115b.txt'), PAYB);
+    let r = await s3(['cp', path.join(ART, 'p115a.txt'), 's3://' + BUCKET + '/verify-gui/' + KA]);
+    need(r.code === 0, 'seed a: ' + r.out + r.err);
+    r = await s3(['cp', path.join(ART, 'p115b.txt'), 's3://' + BUCKET + '/verify-gui/' + KB]);
+    need(r.code === 0, 'seed b: ' + r.out + r.err);
+    await navCertGui();
+    await waitFor(async () => { await refresh(); return (await rowKeys()).some((k) => k.endsWith(KA)); }, 15000, 'the seeded rows');
+    // the inspector: two arranged verb groups over a real object seat
+    const inspWas = await evalPage(() => !document.getElementById('inspector')?.classList.contains('hidden'));
+    if (!inspWas) await page.locator('#btn-inspector').click();
+    await clickRow(KA);
+    await sleep(300);
+    const ins115 = await evalPage(() => {
+      const p = document.getElementById('inspector');
+      const sec = p.querySelectorAll('.insp-verbs.secondary .insp-btn').length;
+      const pri = p.querySelectorAll('.insp-verbs.primary .insp-btn').length;
+      const priTxt = Array.from(p.querySelectorAll('.insp-verbs.primary .insp-btn')).map((b) => (b.textContent || '').trim());
+      const name = (p.querySelector('.insp-name')?.textContent || '').trim();
+      const dd = p.querySelector('.insp-props dd');
+      return { pri, sec, priTxt, name, ddSel: dd ? getComputedStyle(dd).userSelect : '' };
+    });
+    need(ins115.pri >= 2, 'the primary verb group carries ' + ins115.pri + ' verbs, want the arranged pair at least');
+    need(ins115.sec >= 2, 'the secondary verb group carries ' + ins115.sec + ' verbs');
+    need(ins115.priTxt.some((t) => /^download/i.test(t)) && ins115.priTxt.some((t) => /^edit$|^preview$|^open$/i.test(t)),
+      'the primary group misses its solid verbs: ' + ins115.priTxt.join(' | '));
+    need((ins115.name || '').endsWith(KA), 'the inspector name reads ' + ins115.name);
+    need(ins115.ddSel === 'text', 'the inspector facts are not selectable: ' + ins115.ddSel);
+    await shot('115-inspector');
+    // the resizer: a real drag widens the panel and persists the width
+    const bb = await page.locator('#inspector .insp-resizer').boundingBox();
+    need(!!bb, 'the resize handle is missing');
+    await page.mouse.move(bb.x + 3, bb.y + 60);
+    await page.mouse.down();
+    await page.mouse.move(bb.x - 90, bb.y + 60, { steps: 8 });
+    const midDrag = await evalPage(() => document.body.classList.contains('insp-dragging'));
+    need(midDrag === true, 'the drag did not take the panel');
+    await page.mouse.up();
+    await sleep(200);
+    const wState = await evalPage(() => ({
+      w: Math.round(document.getElementById('inspector').getBoundingClientRect().width),
+      saved: localStorage.getItem('s3b-inspector-w'),
+    }));
+    need(wState.w >= 360 && wState.w <= 560, 'the dragged width reads ' + wState.w);
+    need(wState.saved !== null && parseInt(wState.saved, 10) >= 360, 'the width did not persist: ' + wState.saved);
+    // double-click resets
+    await page.locator('#inspector .insp-resizer').dispatchEvent('dblclick');
+    await sleep(200);
+    const rst = await evalPage(() => ({
+      w: Math.round(document.getElementById('inspector').getBoundingClientRect().width),
+      saved: localStorage.getItem('s3b-inspector-w'),
+    }));
+    need(rst.w === 300 && rst.saved === null, 'the reset reads ' + rst.w + ' / ' + rst.saved);
+    if (!inspWas) await page.locator('#btn-inspector').click();
+    // the object Properties card: three tabs, Windows grammar, live ETag
+    await rightClickRow(KA);
+    await ctxItem(/^properties/i);
+    await waitFor(async () => /properties/i.test(await modalText()), 5000, 'the properties card');
+    const tabNames = () => evalPage(() => Array.from(document.querySelectorAll('#modal-root .prop-strip .tab'))
+      .map((b) => (b.textContent || '').trim()));
+    let tabs = await tabNames();
+    need(tabs.length === 3 && tabs.includes('General') && tabs.includes('Details') && tabs.includes('Security'),
+      'the object card tabs read wrong: ' + JSON.stringify(tabs));
+    const kvGet = () => evalPage(() => {
+      const b = document.querySelector('#modal-root .modal .prop-body') || document.querySelector('#modal-root .modal');
+      const kv = {};
+      b.querySelectorAll('.k').forEach((k) => { kv[(k.textContent || '').trim()] = (k.nextElementSibling?.textContent || '').trim(); });
+      return kv;
+    });
+    let kv = await kvGet();
+    need((kv.Size || '').includes(PAYA.length + ' bytes'), 'the Windows size grammar reads wrong: ' + kv.Size);
+    need((kv.Name || '').endsWith(KA), 'the card name reads ' + kv.Name);
+    const clickTab = (nm) => evalPage((n) => {
+      const b = Array.from(document.querySelectorAll('#modal-root .prop-strip .tab'))
+        .find((x) => (x.textContent || '').trim() === n);
+      if (!b) return false;
+      b.click();
+      return true;
+    }, nm);
+    await clickTab('Details');
+    await sleep(150);
+    kv = await kvGet();
+    need((kv['ETag'] || '').length > 0, 'the Details tab carries no live ETag');
+    need(/STANDARD/i.test(kv['Storage class'] || '') || kv['Storage class'] === '\u2014', 'the storage class reads ' + kv['Storage class']);
+    await clickTab('Security');
+    await sleep(150);
+    const secSel = await evalPage(() => {
+      const v = document.querySelector('#modal-root .modal .kv .v');
+      return v ? getComputedStyle(v).userSelect : '';
+    });
+    need(secSel === 'text', 'the property values are not selectable');
+    await closeModal();
+    // a multi-selection collapses to one summary card
+    await clickRow(KA);
+    await ctrlClickRow(KB);
+    await rightClickRow(KB);
+    await ctxItem(/^properties/i);
+    await waitFor(async () => /2 item/i.test(await modalText()), 5000, 'the multi card');
+    tabs = await tabNames();
+    need(tabs.length === 1 && tabs[0] === 'General', 'the multi card shows ' + JSON.stringify(tabs) + ', want one General tab');
+    kv = await kvGet();
+    need(/^2 /.test(kv.Items || ''), 'the Items row reads ' + kv.Items);
+    await closeModal();
+    // the bucket card: all four tabs against the real admin state
+    await treeMenu(SRCNAME);
+    await ctxItem(/^properties/i);
+    await waitFor(async () => /s3 bucket/i.test(await modalText()), 8000, 'the bucket card');
+    tabs = await tabNames();
+    need(tabs.length === 4 && tabs.includes('General') && tabs.includes('Versioning') && tabs.includes('Security') && tabs.includes('Configuration'),
+      'the bucket card tabs read wrong: ' + JSON.stringify(tabs));
+    kv = await kvGet();
+    need((kv.Name || '') === BUCKET, 'the bucket card names ' + kv.Name);
+    need(Object.prototype.hasOwnProperty.call(kv, 'Region') && (kv.Region || '').length > 0, 'the bucket region reads ' + kv.Region);
+    const clickBTab = (nm) => evalPage((n) => {
+      const b = Array.from(document.querySelectorAll('#modal-root .prop-strip .tab'))
+        .find((x) => (x.textContent || '').trim() === n);
+      if (!b) return false;
+      b.click();
+      return true;
+    }, nm);
+    await clickBTab('Versioning');
+    await sleep(150);
+    const pillState = await evalPage(() => {
+      const pills = Array.from(document.querySelectorAll('#modal-root .modal .pill'));
+      return pills.map((p) => ({ on: p.classList.contains('on'), t: (p.textContent || '').trim() }));
+    });
+    need(pillState.length >= 1 && pillState.every((p) => /^(Enabled|Disabled)$/.test(p.t)),
+      'the versioning pills read wrong: ' + JSON.stringify(pillState));
+    await shot('115-bucket-props');
+    await closeModal();
+    r = await s3(['rm', 's3://' + BUCKET + '/verify-gui/' + KA]);
+    need(r.code === 0, 'rm a: ' + r.out + r.err);
+    r = await s3(['rm', 's3://' + BUCKET + '/verify-gui/' + KB]);
+    need(r.code === 0, 'rm b: ' + r.out + r.err);
+    return 'the verb groups, the selectable facts, the drag-resize round trip with reset, the Windows grammar with the live ETag, the multi summary card, and the four-tab bucket card all hold live';
   });
 
   await verify({ id: 'GUI-37', area: 'gates', action: 'Delete Window keepcurrent mode: history destroyed, current version survives', ds: 'S3 (MinIO)', scenario: 'an object with THREE versions through the keepcurrent mode: the older versions are destroyed while the CURRENT bytes stay live and identical — the window never auto-confirms (explicit mode + typed word), and CLI re-reads the collapsed timeline (exactly 1 version, zero markers) and the bytes', face: 'GUI' }, async () => {
@@ -9638,6 +10182,15 @@ async function guiBattery() {
       row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0, ctrlKey: ctrl, clientX: Math.round(rc.left + 20), clientY: Math.round(rc.top + rc.height / 2) }));
       return true;
     }, [label, !!add]).catch(() => false), 10000, `row "${label}" to select`).then(() => sleep(60));
+    // the Windows grammar walks its categories: a category tab click
+    // redraws the whole body, so a fact assert walks to its tab first
+    const propTab = (label) => waitFor(() => evalPage((lab) => {
+      const btn = Array.from(document.querySelectorAll('.prop-strip .tab'))
+        .find((b) => (b.textContent || '').trim() === lab);
+      if (!btn) return false;
+      btn.click();
+      return true;
+    }, label), 6000, `the ${label} tab`).then(() => sleep(80));
     // leg 1: the keyboard door — Alt+Enter on the selected row
     await treeOpen(SRCNAME);
     await waitFor(async () => (await rowKeys()).some((k) => k.includes('props')), 10000, 's3 root with props');
@@ -9648,7 +10201,11 @@ async function guiBattery() {
     await waitFor(modalVisible, 6000, 'the object properties modal');
     let mt = await modalText();
     need(/properties — props-pin\.txt/i.test(mt), `the object modal title: "${mt.slice(0, 80)}"`);
+    await propTab('Details');
+    mt = await modalText();
     need(mt.includes(st.etag), `the modal carries the stat oracle ETag ${st.etag}`);
+    await propTab('Security');
+    mt = await modalText();
     need(st.sse ? mt.includes(String(st.sse)) : mt.includes('SSEnone'), 'the SSE row answers the oracle');
     await closeModal();
     // leg 2: the menu door on the tree source — the bucket-grade modal
@@ -9659,9 +10216,16 @@ async function guiBattery() {
     mt = await modalText();
     need(mt.includes(BUCKET), 'the bucket modal names the bucket');
     if (bi.region) need(mt.includes(bi.region), `the modal region matches the oracle (${bi.region})`);
+    await propTab('Versioning');
+    mt = await modalText();
     need(mt.includes(`Versioning${bi.versioning === 'Enabled' ? 'Enabled' : 'Disabled'}`), `the versioning pill answers the oracle (${bi.versioning})`);
+    await propTab('Security');
+    mt = await modalText();
     need(/none set/i.test(mt), 'the default-encryption row reads none set');
-    need(/bucket policy/i.test(mt) && /cors rules/i.test(mt), 'the admin summary rows are present');
+    need(/bucket policy/i.test(mt), 'the bucket policy state row is present');
+    await propTab('Configuration');
+    mt = await modalText();
+    need(/cors rules/i.test(mt), 'the CORS rules count row is present');
     await closeModal();
     // goThen navigated to the bucket root — re-seat the props view for leg 3
     await waitFor(async () => (await rowKeys()).some((k) => k.includes('props')), 10000, 'root rows after the bucket leg');
@@ -10031,6 +10595,13 @@ async function guiBattery() {
     await writeFile(p, randomBytes(2048));
     let r = await s3(['cp', p, `s3://${BUCKET}/verify-gui/search-deep-${RUNID}/nested/${fname}`]);
     need(r.code === 0, 'seed needle: ' + r.out + r.err);
+    // the seed-settle law: the local MinIO can lag a fresh write's listing
+    // visibility - settle the new prefix out-of-band through the CLI before
+    // the app waits on a root listing that must carry it
+    await waitFor(async () => {
+      const l = await s3(['ls', `s3://${BUCKET}/verify-gui/`, '--json']);
+      return l.code === 0 && l.out.includes(`search-deep-${RUNID}/`);
+    }, 15000, 'the seeded prefix settled');
     try {
       await navCertGui();
       await page.locator('#btn-find').click();

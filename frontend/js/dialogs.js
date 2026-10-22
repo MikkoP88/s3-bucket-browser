@@ -1371,6 +1371,7 @@ function markersHiddenGate(status, list, redraw) {
 function markerDialog(bucket, key, onChanged) {
   const status = el('div', { class: 'dlg-status', text: t('loading') });
   const list = el('div', { class: 'ver-list' });
+  const ro = mainSeatReadOnly(); // removing a marker restores the object: a write
   let listed = [];
 
   const undo = async (mk) => {
@@ -1406,7 +1407,7 @@ function markerDialog(bucket, key, onChanged) {
           el('div', { class: 'ver-sub', text: `${mk.lastModified ? fmtDate(asMillis(mk.lastModified)) : ''}${mk.versionId ? ` — ${mk.versionId}` : ''}` }),
         ),
         el('span', { class: 'ver-actions' },
-          el('button', { class: 'btn', text: t('markw.remove'), title: t('markw.removeTip'), onclick: () => undo(mk) }),
+          el('button', { class: 'btn', text: t('markw.remove'), title: t('markw.removeTip'), disabled: ro, onclick: () => undo(mk) }),
         ),
       )));
     } catch (err) {
@@ -1444,6 +1445,7 @@ export function markersDialog(bucket, items, prefix, onChanged) {
   // machinery); folders and multi-selections list
   if (items.length === 1 && !items[0].isDir) return markerDialog(bucket, items[0].key, onChanged);
   const status = el('div', { class: 'dlg-status', text: t('loading') });
+  const ro = mainSeatReadOnly(); // removing a marker restores the object: a write
   const list = el('div', { class: 'ver-list' });
   let listed = [];
   const sel = new Set(); // selected versionIds
@@ -1520,7 +1522,7 @@ export function markersDialog(bucket, items, prefix, onChanged) {
         cb.checked = sel.has(mk.versionId);
         cb.addEventListener('change', () => {
           if (cb.checked) sel.add(mk.versionId); else sel.delete(mk.versionId);
-          selBtn.disabled = sel.size === 0;
+          selBtn.disabled = ro || sel.size === 0;
         });
         return el('div', { class: 'ver-row' },
           el('span', { class: 'ver-check' }, cb),
@@ -1530,7 +1532,7 @@ export function markersDialog(bucket, items, prefix, onChanged) {
             el('div', { class: 'ver-sub', text: `${mk.lastModified ? fmtDate(asMillis(mk.lastModified)) : ''}${mk.versionId ? ` — ${mk.versionId}` : ''}` }),
           ),
           el('span', { class: 'ver-actions' },
-            el('button', { class: 'btn', text: t('markw.remove'), title: t('markw.removeTip'), onclick: () => undo(mk) }),
+            el('button', { class: 'btn', text: t('markw.remove'), title: t('markw.removeTip'), disabled: ro, onclick: () => undo(mk) }),
           ),
         );
       }));
@@ -1538,7 +1540,7 @@ export function markersDialog(bucket, items, prefix, onChanged) {
       status.textContent = String(err);
       status.style.color = 'var(--danger)';
     }
-    selBtn.disabled = sel.size === 0;
+    selBtn.disabled = ro || sel.size === 0;
   }
 
   const m = openModal({
@@ -1553,7 +1555,7 @@ export function markersDialog(bucket, items, prefix, onChanged) {
       // no danger styling: removing a delete marker RESTORES the object
       // (UndoDelete) — red overstated the risk and drew the eye away from
       // the safe default; both bulk actions still confirm before running.
-      { label: t('markw.removeAll'), onclick: () => removeAll() },
+      { label: t('markw.removeAll'), disabled: ro, onclick: () => removeAll() },
     ],
   });
   const selBtn = m.btns[1];
@@ -1727,6 +1729,15 @@ export function promptFile({ title = 'New file', dir = '' } = {}) {
   });
 }
 
+// mainSeatReadOnly: the main view’s read-only law, read at dialog open
+// — the bucket-grade dialogs (admin, doctor, versions, markers, class,
+// lock) all address the view source’s bucket, so the seat’s law is
+// the dialog’s law. window.__s3bCmdState is the app’s own established
+// channel, kept current by updateCommandState on every navigation and
+// selection change.
+const mainSeatReadOnly = () => !!(window.__s3bCmdState && window.__s3bCmdState.readOnly);
+const roBanner = () => el('div', { class: 'banner warn ro-banner', text: '\u{1F512} Read-only data source — write actions are disabled' });
+
 // ---------- properties ----------
 // rows values are strings or DOM nodes (pills etc.).
 export function properties(title, rows) {
@@ -1743,6 +1754,41 @@ export function properties(title, rows) {
 // bucket properties).
 export function pill(on) {
   return el('span', { class: `pill ${on ? 'on' : 'off'}`, text: on ? 'Enabled' : 'Disabled' });
+}
+
+// propertiesTabs is the Windows file-Properties grammar: a top card
+// (icon, name, subtitle) over a category tab strip, each tab one keyed
+// rows page (values are strings, DOM nodes like pills — or a trailing
+// free-form node). Every value renders as selectable text.
+// tabs: [{ id, label, rows: [[k, v]], node?: DOM }]
+export function propertiesTabs(title, { icon, name, subtitle, tabs }) {
+  let active = tabs[0]?.id;
+  const head = el('div', { class: 'prop-head' },
+    el('span', { class: 'prop-icon', text: icon || '' }),
+    el('div', { class: 'prop-names' },
+      el('div', { class: 'prop-name', text: name }),
+      subtitle ? el('div', { class: 'prop-sub', text: subtitle }) : null,
+    ),
+  );
+  const strip = el('div', { class: 'tabstrip prop-strip', role: 'tablist' });
+  const body = el('div', { class: 'kv prop-body' });
+  const draw = () => {
+    strip.replaceChildren(...tabs.map((tb) => el('button', {
+      class: `tab${tb.id === active ? ' active' : ''}`, type: 'button', role: 'tab',
+      'aria-selected': tb.id === active ? 'true' : 'false',
+      text: tb.label, onclick: () => { active = tb.id; draw(); },
+    })));
+    const tb = tabs.find((x) => x.id === active) || tabs[0];
+    body.replaceChildren();
+    for (const [k, v] of (tb.rows || [])) {
+      body.appendChild(el('div', { class: 'k', text: k }));
+      if (v && v.nodeType === 1) body.appendChild(el('div', { class: 'v' }, v));
+      else body.appendChild(el('div', { class: 'v mono', text: String(v ?? '') }));
+    }
+    if (tb.node) body.appendChild(tb.node);
+  };
+  draw();
+  openModal({ title, body: el('div', { class: 'prop-tabs' }, head, strip, body), buttons: [{ label: 'Close' }] });
 }
 
 // ---------- doctor (v2: per-check rows, run-all, per-check re-run) ----------
@@ -1773,6 +1819,9 @@ export function doctorDialog(bucket) {
   // call time, so ticking it mid-session widens the next run honestly.
   const allowWrite = el('input', { type: 'checkbox' });
   const allowRow = el('label', { class: 'doc-allow' }, allowWrite, ' ', t('doctor.allowWrite'));
+  // a read-only seat never probes with writes — the opt-in disappears
+  // and the box reads false, so both run paths stay diagnostic-only
+  if (mainSeatReadOnly()) allowRow.hidden = true;
   const warnBox = el('div', {});
   const meta = el('div', { class: 'kv' });
 
@@ -2906,6 +2955,44 @@ const s3FormDial = (f, name) => ({
   pathStyle: f.pathStyle.checked,
   insecure: f.insecure.checked,
 });
+// pickBucketDialog: the bucket picker — a modal list with instant filter
+// and Enter-to-choose, not the bucket input's datalist dropdown (whose
+// reach, positioning and keyboard grammar differ from every other dialog
+// in the app). Click or Enter seats the bucket into the form and applies
+// the name suggestion, exactly like typing it.
+function pickBucketDialog(names, onPick) {
+  const q = el('input', { class: 'input', placeholder: 'Filter buckets…', spellcheck: 'false' });
+  const count = el('div', { class: 'bpick-count' });
+  const list = el('div', { class: 'bpick-list' });
+  let closeFn = null;
+  const choose = (b) => { closeFn?.(); onPick(b); };
+  const draw = () => {
+    const needle = q.value.trim().toLowerCase();
+    const rows = (names || []).filter((b) => !needle || b.toLowerCase().includes(needle));
+    count.textContent = rows.length === (names || []).length
+      ? `${rows.length} bucket(s)` : `${rows.length} of ${names.length}`;
+    list.replaceChildren(...(rows.length
+      ? rows.map((b) => el('div', {
+          class: 'bpick-row mono', text: b, title: b, tabindex: '0',
+          onclick: () => choose(b),
+          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); choose(b); } },
+        }))
+      : [el('div', { class: 'bpick-empty', text: 'No bucket matches the filter' })]));
+  };
+  q.addEventListener('input', draw);
+  draw();
+  const m = openModal({
+    title: 'Pick bucket',
+    // the editor's fixed-width law: an unbreakable bucket name must not
+    // stretch the dialog (srcw-modal caps the width and scrolls)
+    cls: 'srcw-modal',
+    body: el('div', { class: 'bpick' }, q, count, list),
+    buttons: [{ label: 'Cancel' }],
+  });
+  closeFn = () => m.close();
+  q.focus();
+}
+
 // sourceEditor edits one data source of any type. existing is a (masked)
 // Source from ListSources or null. Secret fields arrive empty with the
 // stored mask as placeholder; the backend re-attaches stored values.
@@ -2918,7 +3005,7 @@ export function sourceEditor(existing, onSaved) {
     name: el('input', { class: 'input', value: existing?.name || '', spellcheck: 'false' }),
     type: el('select', { class: 'input' }, SOURCE_TYPES.map(([v, l]) => el('option', { value: v }, l))),
     // s3 (legacy profile fields)
-    bucket: el('input', { class: 'input mono', value: existing?.bucket || '', placeholder: 'the bucket this source opens (required)', spellcheck: 'false', list: 'src-bucket-list', autocomplete: 'off' }),
+    bucket: el('input', { class: 'input mono', value: existing?.bucket || '', placeholder: 'the bucket this source opens (required)', spellcheck: 'false', autocomplete: 'off' }),
     endpoint: el('input', { class: 'input mono', value: existing?.s3?.endpoint || '', placeholder: 'https://s3.amazonaws.com (empty = AWS)' }),
     region: el('input', { class: 'input', value: existing?.s3?.region || '', placeholder: 'us-east-1' }),
     accessKey: el('input', { class: 'input mono', value: existing?.s3?.accessKeyId || '', autocomplete: 'off' }),
@@ -2926,6 +3013,10 @@ export function sourceEditor(existing, onSaved) {
     token: el('input', { class: 'input mono', type: 'password', placeholder: 'optional (temporary credentials)', autocomplete: 'new-password' }),
     pathStyle: el('input', { type: 'checkbox' }),
     insecure: el('input', { type: 'checkbox' }),
+    // read-only mount: every write verb on the source is refused before
+    // it dials (the backend gate), and every write affordance in the UI
+    // rests with it — reads stay fully live
+    readOnly: el('input', { type: 'checkbox' }),
     // remote filesystems
     host: el('input', { class: 'input mono', value: existing?.host || '', placeholder: 'server.example.com', spellcheck: 'false' }),
     port: el('input', { class: 'input mono', type: 'number', min: '0', max: '65535', value: existing?.port || '', placeholder: 'type default' }),
@@ -2938,6 +3029,7 @@ export function sourceEditor(existing, onSaved) {
   f.type.value = existing?.type || 's3';
   f.pathStyle.checked = !!existing?.s3?.pathStyle;
   f.insecure.checked = !!existing?.s3?.insecure;
+  f.readOnly.checked = !!existing?.readOnly;
 
   let color = existing?.color || SOURCE_COLORS[0];
   const chips = el('div', { class: 'chips' }, SOURCE_COLORS.map((c) =>
@@ -2991,13 +3083,6 @@ export function sourceEditor(existing, onSaved) {
   for (const inp of [f.bucket, f.endpoint, f.host, f.root, f.localRoot]) inp.addEventListener('input', applySuggest);
   if (!nameDirty) applySuggest();
 
-  // bucket completions: a successful account-wide Test reports the visible
-  // bucket names; they become the bucket field's datalist options.
-  const bucketList = el('datalist', { id: 'src-bucket-list' });
-  const fillBucketList = (names) => {
-    bucketList.replaceChildren(...(names || []).map((b) => el('option', { value: b })));
-  };
-
   // draftSource builds the Source the form currently describes (for the
   // remote Test dial and the start-directory browser).
   const draftSource = () => {
@@ -3023,7 +3108,6 @@ export function sourceEditor(existing, onSaved) {
     el('label', { class: 'field', text: 'Bucket' }),
     el('div', { style: 'display:flex;gap:8px' },
       f.bucket,
-      bucketList,
       el('button', {
         class: 'btn', text: 'Pick\u2026', title: 'Connect with the values above and list the buckets you can see (Test fills the same list)',
         onclick: async () => {
@@ -3037,10 +3121,9 @@ export function sourceEditor(existing, onSaved) {
               s3: s3FormDial(f, f.name.value.trim() || 'draft'),
             });
             if (res.ok && res.buckets?.length) {
-              fillBucketList(res.buckets);
-              status.textContent = `\u2705 ${res.buckets.length} bucket(s) visible — pick one`;
+              status.textContent = `\u2705 ${res.buckets.length} bucket(s) visible`;
               status.style.color = 'var(--ok)';
-              f.bucket.focus();
+              pickBucketDialog(res.buckets, (b) => { f.bucket.value = b; applySuggest(); f.bucket.focus(); });
             } else {
               status.textContent = res.ok ? `\u2705 ${res.message} (no buckets visible)` : `\u274C ${res.message}`;
               status.style.color = res.ok ? 'var(--ok)' : 'var(--danger)';
@@ -3062,6 +3145,7 @@ export function sourceEditor(existing, onSaved) {
     el('div', { style: 'display:flex;gap:18px;margin-top:10px' },
       el('label', { style: 'display:flex;align-items:center;gap:6px' }, f.pathStyle, 'Path-style addressing'),
       el('label', { style: 'display:flex;align-items:center;gap:6px' }, f.insecure, 'Skip TLS verify'),
+      el('label', { style: 'display:flex;align-items:center;gap:6px', title: 'Every write verb on this source is refused before it dials — safe browsing, auditing and restores' }, f.readOnly, 'Read-only'),
     ),
   );
   const remoteFields = () => el('div', {},
@@ -3088,6 +3172,9 @@ export function sourceEditor(existing, onSaved) {
           if (p) { f.root.value = p; applySuggest(); }
         },
       }),
+    ),
+    el('div', { style: 'display:flex;gap:18px;margin-top:10px' },
+      el('label', { style: 'display:flex;align-items:center;gap:6px', title: 'Every write verb on this source is refused before it dials — safe browsing, auditing and restores' }, f.readOnly, 'Read-only'),
     ),
   );
   const localFields = () => el('div', {},
@@ -3173,7 +3260,6 @@ export function sourceEditor(existing, onSaved) {
                 bucket: f.bucket.value.trim(),
                 s3: s3FormDial(f, f.name.value.trim()),
               });
-              if (res.ok && res.buckets?.length) fillBucketList(res.buckets);
             } else if (f.type.value === 'local') {
               res = await api.TestSource(existing?.id || f.name.value.trim());
             } else {
@@ -3221,6 +3307,7 @@ export function sourceEditor(existing, onSaved) {
             src.password = f.password.value;
             src.root = f.root.value.trim();
           }
+          if (t !== 'local') src.readOnly = f.readOnly.checked;
           try {
             await api.SaveSource(src);
             close();
@@ -3800,25 +3887,114 @@ function conflictChoices(conflicts) {
   });
 }
 
-// ---------- presign ----------
-export function presignDialog(url) {
-  const input = el('input', { class: 'input mono', value: url, readonly: 'readonly' });
-  openModal({
-    title: 'Pre-signed URL (expires as configured)',
-    body: el('div', {}, el('label', { class: 'field', text: 'Share this URL — anyone with it can download the object' }), input),
+// ---------- presign & shares ----------
+// Share durations the dialog offers, shortest first: a pre-signed URL is
+// signed at creation and cannot be revoked remotely, so a short validity
+// is the honest mitigation for sensitive objects. The backend's clamps
+// are the law (<=0 becomes 1h, over 7d becomes 7d — the S3 presign
+// maximum) and this list stays inside them.
+const SHARE_TTLS = [
+  [300, '5 minutes'],
+  [3600, '1 hour'],
+  [21600, '6 hours'],
+  [43200, '12 hours'],
+  [86400, '1 day'],
+  [259200, '3 days'],
+  [604800, '7 days'],
+];
+const shareTtlLabel = (s) => (SHARE_TTLS.find(([v]) => v === s) || [0, `${s}s`])[1];
+
+// presignDialog owns the whole share flow: the duration selector (each
+// change re-signs locally — presigning never touches the wire), Copy,
+// and Share → Stop share once the object is in the Shares registry.
+// The honest law sits in the body text: stopping removes the record and
+// scrubs the local clipboard, but the URL keeps working for anyone who
+// saved it until it expires.
+export function presignDialog(bucket, key) {
+  const input = el('input', { class: 'input mono', value: '', readonly: 'readonly' });
+  const status = el('div', { class: 'dlg-status' });
+  const ttl = el('select', { class: 'input', style: 'width:auto' },
+    SHARE_TTLS.map(([v, l]) => el('option', { value: String(v) }, l)));
+  ttl.value = '3600';
+  let shareId = null; // the active share on this object (View → Shares)
+  let shareBtn = null;
+
+  const renderShare = () => {
+    if (!shareBtn) return;
+    shareBtn.textContent = shareId ? 'Stop share' : 'Share';
+    shareBtn.classList.toggle('danger', !!shareId);
+    shareBtn.title = shareId
+      ? 'Removes the share from the Shares list and clears the local clipboard — the URL itself keeps working until it expires (pre-signed URLs cannot be revoked)'
+      : 'Registers this URL in the Shares window with the chosen validity';
+  };
+  const mint = async () => {
+    const secs = parseInt(ttl.value, 10) || 3600;
+    status.textContent = 'Signing…';
+    status.style.color = 'var(--text-dim)';
+    try {
+      input.value = await api.PresignObject(bucket, key, secs);
+      input.select();
+      status.textContent = `\u2705 valid for ${shareTtlLabel(secs)} from signing`;
+      status.style.color = 'var(--ok)';
+    } catch (err) {
+      status.textContent = `\u274C ${err}`;
+      status.style.color = 'var(--danger)';
+    }
+  };
+  const toggleShare = async () => {
+    const secs = parseInt(ttl.value, 10) || 3600;
+    if (shareId) {
+      try {
+        await api.StopShare(shareId);
+        shareId = null;
+        renderShare();
+        toast('Share stopped — the URL itself keeps working until it expires (pre-signed URLs cannot be revoked)', 'ok');
+      } catch (err) { toast(`${err}`, 'error'); }
+      return;
+    }
+    try {
+      const s = await api.CreateShare('', bucket, key, secs);
+      shareId = s.id;
+      renderShare();
+      toast(`Shared — valid for ${shareTtlLabel(secs)} (View → Shares)`, 'ok');
+    } catch (err) { toast(`${err}`, 'error'); }
+  };
+  ttl.addEventListener('change', mint);
+  // seed the share state: an active share on this exact object makes the
+  // button honest ("Stop share") from the first paint
+  api.ListShares().then((list) => {
+    const hit = (list || []).find((s) => s.bucket === bucket && s.key === key && !s.expired);
+    if (hit) { shareId = hit.id; renderShare(); }
+  }).catch(() => { /* the Shares window still lists the truth */ });
+
+  const m = openModal({
+    title: `Pre-signed URL — s3://${bucket}/${key}`,
+    body: el('div', {},
+      el('label', { class: 'field', text: 'Share this URL — anyone with it can download the object' }),
+      input,
+      el('div', { style: 'display:flex;gap:8px;align-items:center;margin-top:10px' },
+        el('label', { class: 'field', style: 'margin:0', text: 'Valid for' }), ttl,
+      ),
+      el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'A pre-signed URL cannot be revoked remotely — Stop share removes it from the Shares list and clears the local clipboard, but the URL works for anyone who saved it until it expires.' }),
+      status,
+    ),
     buttons: [
       {
         label: 'Copy',
         onclick: async () => {
           input.select();
-          try { await navigator.clipboard.writeText(url); } catch { document.execCommand('copy'); }
+          try { await navigator.clipboard.writeText(input.value); } catch { document.execCommand('copy'); }
         },
       },
+      { label: 'Share', onclick: toggleShare },
       { label: 'Close', class: 'primary' },
     ],
   });
+  shareBtn = (m.btns || [])[1] || null;
+  renderShare();
   input.focus();
   input.select();
+  mint();
 }
 
 // presignListDialog shows one pre-signed URL per selected object with
@@ -3845,12 +4021,77 @@ export function presignListDialog(list) {
   });
 }
 
+// sharesWindow (View → Shares): the session's share registry — every
+// pre-signed URL the user chose to keep sharing, live (the backend's
+// shares:changed event re-renders the list from either seat). Copy takes
+// the URL again; Stop removes the record and scrubs the local clipboard.
+export function sharesWindow() {
+  const list = el('div', { class: 'shares-list' });
+  const status = el('div', { class: 'dlg-status' });
+  const off = onEvent('shares:changed', () => draw());
+  const until = (iso) => {
+    const ms = Date.parse(iso || '');
+    if (Number.isNaN(ms)) return '';
+    const d = ms - Date.now();
+    const mins = Math.max(1, Math.round(Math.abs(d) / 60000));
+    const human = mins < 60 ? `${mins} minute(s)`
+      : mins < 1440 ? `${Math.round(mins / 60)} hour(s)` : `${Math.round(mins / 1440)} day(s)`;
+    return d >= 0 ? `in ${human}` : `expired ${human} ago`;
+  };
+  async function draw() {
+    let shares = [];
+    try {
+      shares = await api.ListShares();
+    } catch (err) {
+      status.textContent = String(err);
+      status.style.color = 'var(--danger)';
+      return;
+    }
+    status.replaceChildren();
+    if (!shares.length) {
+      list.replaceChildren(el('div', { class: 'shares-empty', text: 'No shares yet — open an object’s Pre-signed URL dialog and press Share.' }));
+      return;
+    }
+    list.replaceChildren(...shares.map((s) => el('div', { class: `share-row${s.expired ? ' expired' : ''}` },
+      el('span', { class: 'share-ico', text: '\u{1F517}' }),
+      el('span', { class: 'share-main' },
+        el('div', { class: 'share-key mono', text: `${s.source ? `${s.source}://` : ''}${s.bucket}/${s.key}`, title: s.url }),
+        el('div', { class: 'share-sub', text: `shared ${s.created ? fmtDate(Date.parse(s.created)) : ''} \u00b7 ${until(s.expires)}` }),
+      ),
+      el('span', { class: 'share-acts' },
+        s.expired ? el('span', { class: 'tag', text: 'expired' }) : null,
+        el('button', {
+          class: 'btn', text: 'Copy URL', title: s.url,
+          onclick: async () => { try { await navigator.clipboard.writeText(s.url); toast('URL copied', 'ok'); } catch { toast('Clipboard unavailable', 'error'); } },
+        }),
+        el('button', {
+          class: 'btn danger', text: 'Stop',
+          title: 'Removes the share and clears the local clipboard — the URL itself keeps working until it expires',
+          onclick: async () => { try { await api.StopShare(s.id); } catch (err) { toast(`${err}`, 'error'); } },
+        }),
+      ),
+    )));
+  }
+  openModal({
+    title: 'Shares — active pre-signed URLs',
+    body: el('div', {},
+      el('div', { class: 'field', style: 'color:var(--text-dim)', text: 'A pre-signed URL cannot be revoked remotely — Stop removes the record and clears the local clipboard; the URL works for anyone who saved it until it expires.' }),
+      list,
+      status,
+    ),
+    buttons: [{ label: 'Close', class: 'primary' }],
+    onClose: () => off(),
+  });
+  draw();
+}
+
 // ---------- object versions (M4) ----------
 const asMillis = (v) => (typeof v === 'string' ? Date.parse(v) : v);
 
 export function versionsDialog(bucket, key, onChanged) {
   const list = el('div', { class: 'ver-list' });
   const status = el('div', { class: 'dlg-status' });
+  const ro = mainSeatReadOnly(); // restore/undo/destroy are writes
   // A/B version picks (Panels v2): any two versions can be compared —
   // metadata always, a unified text diff when both sides are text.
   const pick = { a: null, b: null };
@@ -3963,13 +4204,13 @@ export function versionsDialog(bucket, key, onChanged) {
         !v.isLatest && !v.isDeleteMarker && latest
           ? el('button', { class: 'btn', text: 'vs current', title: 'Diff this version against the current one', onclick: () => versionDiffDialog(bucket, key, v, latest) })
           : null,
-        !v.isLatest && !v.isDeleteMarker
+        !v.isLatest && !v.isDeleteMarker && !ro
           ? el('button', { class: 'btn', text: 'Restore as latest', onclick: () => act(() => api.RestoreVersion(bucket, key, v.versionId), 'Restored as latest') })
           : null,
-        v.isDeleteMarker
+        v.isDeleteMarker && !ro
           ? el('button', { class: 'btn', text: 'Undo delete', onclick: () => act(() => api.UndoDelete(bucket, key, v.versionId), 'Delete removed — object is back') })
           : null,
-        el('button', { class: 'btn danger', text: 'Destroy', title: 'Delete this version permanently', onclick: () => destroy(v) }),
+        el('button', { class: 'btn danger', text: 'Destroy', title: 'Delete this version permanently', disabled: ro, onclick: () => destroy(v) }),
       ),
     )));
   }
@@ -4101,6 +4342,9 @@ function renderDiff(box, aText, bText) {
 
 // ---------- bucket admin panel (M3) ----------
 export function adminDialog(bucket, onChanged) {
+  // the seat's law is the panel's law: a read-only source administers
+  // nothing — every write affordance rests and the central save refuses
+  const ro = mainSeatReadOnly();
   const TABS = ['Overview', 'Security', 'Policy', 'ACL', 'CORS', 'Lifecycle', 'Encryption', 'Website', 'Tags', 'Versions', 'Object lock'];
   // The rail: the same eleven tabs arranged in three categories (rail order
   // is the groups' own; TABS stays the flat registry).
@@ -4210,6 +4454,7 @@ export function adminDialog(bucket, onChanged) {
   const errBox = (e) => el('div', { class: 'banner warn', text: String(e) });
 
   async function save(fn, okMsg, btn) {
+    if (ro) { toast('This data source is read-only — the admin panel is view-only here', 'error'); return; }
     if (btn) { btn.disabled = true; btn.classList.add('busy'); }
     try {
       await fn();
@@ -4737,7 +4982,7 @@ export function adminDialog(bucket, onChanged) {
             ),
             el('div', { style: 'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center' },
               el('button', {
-                class: `btn${panel.versions === 'Enabled' ? '' : ' primary'}`,
+                class: 'btn primary',
                 text: panel.versions === 'Enabled' ? 'Suspend versioning' : 'Enable versioning',
                 onclick: (e) => save(() => api.SetBucketVersioning(bucket, panel.versions !== 'Enabled'), 'Versioning updated', e.currentTarget),
               }),
@@ -4745,8 +4990,8 @@ export function adminDialog(bucket, onChanged) {
             ),
             el('div', { class: 'field', style: 'margin-top:12px', text: 'Cleanup tools (bucket-wide, permanent)' }),
             el('div', { style: 'display:flex;flex-direction:column;gap:8px;align-items:flex-start' },
-              el('button', { class: 'btn', text: 'Purge noncurrent versions\u2026', onclick: () => purge('noncurrent', 'noncurrent version(s)') }),
-              el('button', { class: 'btn', text: 'Purge delete markers\u2026', onclick: () => purge('markers', 'delete marker(s)') }),
+              el('button', { class: 'btn danger', text: 'Purge noncurrent versions\u2026', onclick: () => purge('noncurrent', 'noncurrent version(s)') }),
+              el('button', { class: 'btn danger', text: 'Purge delete markers\u2026', onclick: () => purge('markers', 'delete marker(s)') }),
               el('button', {
                 class: 'btn danger',
                 text: 'Empty bucket (all versions)\u2026',
@@ -4780,8 +5025,8 @@ export function adminDialog(bucket, onChanged) {
               }),
             ),
           );
-        }).catch((e) => content.replaceChildren(errBox(e)));
-        break;
+          applyRO();
+        }).catch((e) => content.replaceChildren(errBox(e)));        break;
       }
       case 'Object lock': {
         if (panel.lockErr) { content.replaceChildren(errBox(panel.lockErr)); break; }
@@ -4836,11 +5081,18 @@ export function adminDialog(bucket, onChanged) {
       default:
         content.replaceChildren(el('div', { text: name }));
     }
-  }
+    // a read-only seat deactivates every write affordance the pages carry
+    // (primary and danger buttons are writes here — navigation seats are
+    // .stat-card / .admin-chip buttons) and the central save() refuses
+    // anyway: the wire gate stays the wall
+    // the Versions tab fills its rows asynchronously - that fill
+    // re-applies the same belt (primary/danger are the write classes)
+    const applyRO = () => { if (ro) content.querySelectorAll('button.btn.primary, button.btn.danger').forEach((b) => { b.disabled = true; }); };
+    applyRO();  }
 
   openModal({
     title: `Admin panel — ${bucket}`,
-    body: el('div', { class: 'admin' }, strip, el('div', { class: 'admin-main' }, tabhead, content)),
+    body: el('div', { class: 'admin' }, strip, el('div', { class: 'admin-main' }, ro ? roBanner() : null, tabhead, content)),
     cls: 'admin-modal',
     buttons: [{ label: 'Close' }],
   });
@@ -5502,6 +5754,7 @@ function searchWindowDom(scopes, selIdx, onOpen, pane = false, srcs = []) {
 // ---------- storage-class conversion (M5) ----------
 export function classDialog(bucket, rows, onChanged) {
   if (!rows?.length) return;
+  const ro = mainSeatReadOnly(); // a storage-class conversion is a server-side self-copy: a write
   const targets = ['STANDARD', 'REDUCED_REDUNDANCY', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING', 'GLACIER_IR', 'GLACIER', 'DEEP_ARCHIVE'];
   const sel = el('select', { class: 'input', style: 'width:auto' }, targets.map((c) => el('option', { value: c }, c)));
   sel.value = 'GLACIER';
@@ -5543,7 +5796,7 @@ export function classDialog(bucket, rows, onChanged) {
       status,
     ),
     buttons: [
-      { label: 'Convert', class: 'primary', onclick: () => run(false) },
+      { label: 'Convert', class: 'primary', disabled: ro, onclick: () => run(false) },
       { label: 'Close' },
     ],
   });
@@ -5609,6 +5862,7 @@ function batchDialog({ title, intro = '', items, run, onDone }) {
 export function lockDialog(bucket, rows, onChanged) {
   if (!rows?.length) return;
   if (rows.length === 1) return lockDialogOne(bucket, rows[0], onChanged);
+  const ro = mainSeatReadOnly(); // retention and legal hold are writes
 
   const mode = el('select', { class: 'input', style: 'width:auto' },
     ['GOVERNANCE', 'COMPLIANCE'].map((m) => el('option', { value: m }, m)));
@@ -5629,13 +5883,13 @@ export function lockDialog(bucket, rows, onChanged) {
       el('div', { class: 'field', style: 'margin-top:10px', text: 'Retention (current version of each object)' }),
       el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
         mode, until,
-        el('button', { class: 'btn primary', text: 'Set\u2026', onclick: launch('Set retention', (key) => api.PutObjectRetention(bucket, key, '', mode.value, until.value.trim())) }),
-        el('button', { class: 'btn', text: 'Clear\u2026', title: 'Removes GOVERNANCE retention (COMPLIANCE cannot be removed)', onclick: launch('Clear retention', (key) => api.ClearObjectRetention(bucket, key, '')) }),
+        el('button', { class: 'btn primary', text: 'Set\u2026', disabled: ro, onclick: launch('Set retention', (key) => api.PutObjectRetention(bucket, key, '', mode.value, until.value.trim())) }),
+        el('button', { class: 'btn', text: 'Clear\u2026', title: 'Removes GOVERNANCE retention (COMPLIANCE cannot be removed)', disabled: ro, onclick: launch('Clear retention', (key) => api.ClearObjectRetention(bucket, key, '')) }),
       ),
       el('div', { class: 'field', style: 'margin-top:14px', text: 'Legal hold' }),
       el('div', { style: 'display:flex;gap:8px;align-items:center' },
-        el('button', { class: 'btn', text: 'Hold ON\u2026', onclick: launch('Legal hold ON', (key) => api.SetObjectLegalHold(bucket, key, '', true)) }),
-        el('button', { class: 'btn', text: 'Hold OFF\u2026', onclick: launch('Legal hold OFF', (key) => api.SetObjectLegalHold(bucket, key, '', false)) }),
+        el('button', { class: 'btn', text: 'Hold ON\u2026', disabled: ro, onclick: launch('Legal hold ON', (key) => api.SetObjectLegalHold(bucket, key, '', true)) }),
+        el('button', { class: 'btn', text: 'Hold OFF\u2026', disabled: ro, onclick: launch('Legal hold OFF', (key) => api.SetObjectLegalHold(bucket, key, '', false)) }),
       ),
       el('div', { class: 'field', style: 'margin-top:14px;color:var(--text-dim)', text: 'COMPLIANCE retention cannot be shortened or removed. GOVERNANCE can. Legal hold keeps every version until turned off.' }),
     ),
@@ -5646,6 +5900,7 @@ export function lockDialog(bucket, rows, onChanged) {
 function lockDialogOne(bucket, row, onChanged) {
   const key = row.key;
   const status = el('div', { class: 'dlg-status' });
+  const ro = mainSeatReadOnly(); // retention and legal hold are writes
   const mode = el('select', { class: 'input', style: 'width:auto' },
     ['GOVERNANCE', 'COMPLIANCE'].map((m) => el('option', { value: m }, m)));
   const until = el('input', { class: 'input mono', value: '+30d', spellcheck: 'false' });
@@ -5688,14 +5943,14 @@ function lockDialogOne(bucket, row, onChanged) {
       el('div', { class: 'field', style: 'margin-top:10px', text: 'Retention (applies to the current version)' }),
       el('div', { style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap' },
         mode, until,
-        el('button', { class: 'btn primary', text: 'Set', onclick: () => act(() => api.PutObjectRetention(bucket, key, '', mode.value, until.value.trim()), 'Retention set') }),
-        el('button', { class: 'btn', text: 'Clear', title: 'Removes GOVERNANCE retention (COMPLIANCE cannot be removed)', onclick: () => act(() => api.ClearObjectRetention(bucket, key, ''), 'Retention cleared') }),
+        el('button', { class: 'btn primary', text: 'Set', disabled: ro, onclick: () => act(() => api.PutObjectRetention(bucket, key, '', mode.value, until.value.trim()), 'Retention set') }),
+        el('button', { class: 'btn', text: 'Clear', title: 'Removes GOVERNANCE retention (COMPLIANCE cannot be removed)', disabled: ro, onclick: () => act(() => api.ClearObjectRetention(bucket, key, ''), 'Retention cleared') }),
       ),
       el('div', { class: 'field', style: 'margin-top:14px', text: 'Legal hold' }),
       el('div', { style: 'display:flex;gap:8px;align-items:center' },
         el('span', { class: 'kv' }, el('div', { class: 'k', text: 'State' }), holdState),
-        el('button', { class: 'btn', text: 'On', onclick: () => act(() => api.SetObjectLegalHold(bucket, key, '', true), 'Legal hold ON') }),
-        el('button', { class: 'btn', text: 'Off', onclick: () => act(() => api.SetObjectLegalHold(bucket, key, '', false), 'Legal hold OFF') }),
+        el('button', { class: 'btn', text: 'On', disabled: ro, onclick: () => act(() => api.SetObjectLegalHold(bucket, key, '', true), 'Legal hold ON') }),
+        el('button', { class: 'btn', text: 'Off', disabled: ro, onclick: () => act(() => api.SetObjectLegalHold(bucket, key, '', false), 'Legal hold OFF') }),
       ),
       el('div', { class: 'field', style: 'margin-top:14px;color:var(--text-dim)', text: 'COMPLIANCE retention cannot be shortened or removed. GOVERNANCE can. Legal hold keeps every version until turned off.' }),
     ),
