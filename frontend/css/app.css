@@ -1407,8 +1407,8 @@ kbd {
 
 /* Bucket guard icons in the tree + vs-current delta (M10.4) */
 .tguard {
-  margin-left: 5px; font-size: 11px; cursor: pointer;
-  color: var(--accent); user-select: none; padding: 0 2px;
+  margin-left: 4px; font-size: 11px; cursor: pointer;
+  color: var(--accent); user-select: none; padding: 0 1px;
 }
 .tguard.dim { color: var(--text-dim); opacity: .7; }
 /* hover is a chip tint, never an underline: the guard is an emoji glyph and
@@ -1752,7 +1752,7 @@ button.stat-card:hover .stat-go { color: var(--accent); transform: translateX(1p
 /* Source status balls in the tree (ok / error / busy) */
 .sball {
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  margin-left: 6px; flex: none; vertical-align: middle;
+  margin-left: 4px; flex: none; vertical-align: middle;
   background: var(--text-dim); opacity: .45;
 }
 .sball.ok { background: var(--ok); opacity: 1; }
@@ -2116,7 +2116,12 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 body.insp-dragging, body.insp-dragging * { cursor: ew-resize !important; user-select: none !important; }
 
 /* ============ tree: the read-only source glyph ============ */
-.t-ro { margin-left: 5px; font-size: 10px; line-height: 1; cursor: help; }
+.t-ro {
+  display: inline-flex; align-items: center; flex: none;
+  margin-left: 4px; color: var(--text-dim); line-height: 1;
+  cursor: help; user-select: none; vertical-align: middle;
+}
+.t-ro svg { display: block; }
 
 /* ============ bucket picker: the modal list over the datalist dropdown ============ */
 .bpick { display: flex; flex-direction: column; min-height: 0; gap: 6px; }
