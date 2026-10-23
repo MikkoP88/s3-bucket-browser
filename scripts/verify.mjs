@@ -4202,8 +4202,23 @@ async function guiBattery() {
         return (await rowKeys()).some((k) => k.includes(F));
       }, 20000, 'the seeded ftps row');
       await shot('106-ftps-listed');
-      // leg 4: the GUI transfer off the TLS wire - copy the row into S3
-      await clickRow(F);
+      // leg 4: the GUI transfer off the TLS wire - copy the row into S3.
+      // The FTPS listing is the slowest engine on the box: leg 3's refresh
+      // polls can leave one more TLS listing landing exactly as this real
+      // click hunts stability, starving the handle its whole 20s window -
+      // the row is present (the finder answers), the click, not the row,
+      // times out. One disclosed fresh-handle retry, the sweepGate law at
+      // row scale: a deterministic starvation fails both attempts; a
+      // transient settle passes and says so in the row detail.
+      let clickRetried = false;
+      try {
+        await clickRow(F);
+      } catch (e) {
+        if (!/Timeout \d+ms exceeded/.test(String((e && e.message) || e))) throw e;
+        await sleep(1500); // let the in-flight listing settle and re-render
+        clickRetried = true;
+        await clickRow(F);
+      }
       await page.keyboard.press('Control+c');
       await sleep(600); // the hidden Explorer staging job also starts
       await treeOpen(SRCNAME);
@@ -4234,7 +4249,7 @@ async function guiBattery() {
       need(wl.code === 0 && wl.out.includes(F), 'engine data lost with the source: ' + (wl.out || '').slice(0, 120) + wl.err);
       await cli(['rm', 'ftps-w106://' + F, '--force']).catch(() => {});
       await cli(['source', 'remove', 'ftps-w106']).catch(() => {});
-      return 'editor Test \u2705 over TLS, the transfer byte-exact off the TLS wire, the store entry removed with the data surviving';
+      return 'editor Test \u2705 over TLS, the transfer byte-exact off the TLS wire, the store entry removed with the data surviving' + (clickRetried ? ' - the row click passed on a disclosed fresh-handle retry (the first starved on a listing settle)' : '');
     });
   } else {
     await verify({ id: 'GUI-106', area: 'sources', action: 'FTPS source seated live (GUI)', ds: 'FTPS', scenario: 'vsftpd TLS fixture not running', face: 'GUI' }, () => skip('FTPS :2122 not reachable'));
