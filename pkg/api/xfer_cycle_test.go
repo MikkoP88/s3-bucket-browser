@@ -55,8 +55,8 @@ func hasCycleError(res CopyResult) bool {
 // its own subtree, onto its own spot, and a file onto its own folder are
 // refused synchronously — before any server call — for a move and a
 // copy alike, through a second name over the same endpoint, while a
-// different bucket and a disjoint prefix in the same bucket still plan
-// and start.
+// different bucket and a disjoint prefix in the same bucket still get
+// past the guard and start.
 func TestTransferCrossCycleS3(t *testing.T) {
 	ep := newUsageServer(t, labBucket())
 	a := usageApp(t, ep)
@@ -93,13 +93,17 @@ func TestTransferCrossCycleS3(t *testing.T) {
 	wantRefusal(t, "alias over one endpoint", err, "a folder cannot be moved or copied into itself")
 
 	// A different bucket never nests inside the source: the guard lets
-	// it through and planning starts (the fake serves no such bucket, so
-	// the walk fails — with a non-cycle error).
+	// it through and the job starts — the fake serves no such bucket, so
+	// the walk inside the registered job settles with a non-cycle error.
 	other := dir
 	other.Bucket = "other"
-	if _, err := a.TransferCross([]XferItem{other}, nil, inLab("docs/sub/"), PolicyOverwrite, 0, false, nil, false); err == nil ||
-		strings.Contains(err.Error(), "into itself") || strings.Contains(err.Error(), "are the same") {
-		t.Fatalf("different bucket: want a planning error, not a cycle refusal, got %v", err)
+	id, err := a.TransferCross([]XferItem{other}, nil, inLab("docs/sub/"), PolicyOverwrite, 0, false, nil, false)
+	if err != nil || id == "" {
+		t.Fatalf("different bucket: want a started job, got id=%q err=%v", id, err)
+	}
+	ji := waitJobSettled(t, a, id)
+	if ji.Status != JobError || strings.Contains(ji.Error, "into itself") || strings.Contains(ji.Error, "are the same") {
+		t.Fatalf("different bucket: want a non-cycle planning error on the row, got %+v", ji)
 	}
 
 	// The same-bucket sibling transfers that must keep working: a file

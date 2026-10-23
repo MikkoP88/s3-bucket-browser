@@ -107,7 +107,7 @@ type JobInfo struct {
 	From         string         `json:"from,omitempty"`      // human source label
 	To           string         `json:"to,omitempty"`        // human destination label
 	Dest         XferDest       `json:"dest"`                // where the bytes land, typed (XferDest reused — one wire grammar); Kind "" = unknown, the GUI hides the affordance
-	Phase        string         `json:"phase"`               // "transfer" | "paused" | "cleanup"
+	Phase        string         `json:"phase"`               // "transfer" | "paused" | "cleanup" | "count" (a transfer still planning)
 	FileIndex    int            `json:"fileIndex"`           // 1-based in-flight file ordinal
 	CurrentSent  int64          `json:"currentSent"`         // bytes of the in-flight file
 	CurrentTotal int64          `json:"currentTotal"`        // its size (0 = unknown/server-side)

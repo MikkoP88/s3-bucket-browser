@@ -44,6 +44,8 @@ type App struct {
 
 	jobs *jobManager
 
+	planMemo xferPlanMemo // CheckConflicts → TransferCross plan handoff (conflicts.go): single-use, TTL-bounded
+
 	tasks *taskRegistry // every non-transfer task (tasks.go)
 
 	editorsMu sync.Mutex

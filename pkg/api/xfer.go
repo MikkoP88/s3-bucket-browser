@@ -1,10 +1,12 @@
 // xfer.go: cross-source transfers (M9) — stream copies between any two
 // sources: S3 (the view source or a named S3 source), the remote
-// engines (sftp/scp/ftp/ftps/local-dir sources) and the local pane. One
-// synchronous planner expands the items (remote dirs via remotefs.Walk,
-// S3 dirs via listing.Walk, local dirs via the bounded strict local
-// walk, collecting empty directories as it goes); the background job
-// then streams each file read-side → write-side under the per-source
+// engines (sftp/scp/ftp/ftps/local-dir sources) and the local pane. The
+// gesture returns the moment its wire-free refusals pass and the job
+// registers; a planner on the job's goroutine then expands the items
+// (remote dirs via remotefs.Walk, S3 dirs via listing.Walk, local dirs
+// via the bounded strict local walk, collecting empty directories as it
+// goes — taking the pre-check's memo when the same walk just ran) and
+// the job streams each file read-side → write-side under the per-source
 // operation locks, acquired in sorted-ID order so multi-source
 // transfers can never deadlock.
 //
@@ -132,8 +134,18 @@ type xferPlan struct {
 // transferred cleanly. decisions optionally overrides the policy per
 // planned destination path (the conflict dialog's decisionKeys). hidden
 // registers the job as internal staging — it runs through the engine but
-// never appears in the transfers/tasks UI (the drag-out scratch download
-// uses it).
+// never appears in the transfers/tasks UI (the drag-out scratch
+// download uses it).
+//
+// The reactivity law: the verb answers in the time of a registry read.
+// Every refusal that needs no wire (read-only sources, an unknown
+// policy, an empty item list, the cycle guard over resolved sides with
+// a cached engine) stays synchronous so an honest mistake answers at
+// gesture time — and the moment those pass, the job registers: the
+// badge, the transfers-window row and the cancel verb exist from the
+// first millisecond, while the destination dial, the plan walk and the
+// copy itself run inside the registered job, visible as its counting
+// phase and cancelable mid-walk.
 func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest, policy string, maxBPS int64, move bool, decisions map[string]string, hidden bool) (string, error) {
 	if dest.Kind == "s3" || dest.Kind == "remote" {
 		if err := a.requireWritableName(dest.Source); err != nil {
@@ -162,31 +174,15 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 	if err := a.xferCycleRefusal(items, localPaths, dest, dst); err != nil {
 		return "", err
 	}
-	pctx, cancel := a.quickCtx()
-	plan, err := a.planXfer(pctx, items, localPaths, dst)
-	cancel()
-	if err != nil {
-		return "", err
-	}
-	if len(plan.files) == 0 && len(plan.emptyDirs) == 0 {
-		return "", fmt.Errorf("nothing to transfer")
-	}
-	j := a.jobs.add("transfer", len(plan.files), plan.total)
+	// Registration before any wire work. The totals are unknown until
+	// the plan lands, so the row seats in the counting phase (the same
+	// chip tracked tasks wear) with the item count the gesture already
+	// knows — never an invisible void between gesture and first row.
+	j := a.jobs.add("transfer", 0, 0)
 	j.src = xferDestSource(dest)
+	j.setPhase(TaskPhaseCount)
 	j.setMeta(xferTitle(items, localPaths), xferFromLabel(items, localPaths), xferDestLabel(dest), len(items)+len(localPaths), move)
 	j.setDest(dest)
-	its := make([]TransferItem, 0, len(items)+len(localPaths))
-	for _, it := range items {
-		its = append(its, TransferItem{Name: it.Key})
-	}
-	for _, lp := range localPaths {
-		its = append(its, TransferItem{Name: lp})
-	}
-	for i := range plan.files {
-		its[plan.files[i].item].Files++
-		its[plan.files[i].item].Total += plan.files[i].size
-	}
-	j.setItems(its)
 	// Retry rides the same skip-semantics contract as the upload entry,
 	// with move kept intact: a failed item's source still stands (an item
 	// is deleted only when every file under it verifiably transferred),
@@ -217,16 +213,79 @@ func (a *App) TransferCross(items []XferItem, localPaths []string, dest XferDest
 		j.info.Hidden = true
 		j.mu.Unlock()
 	}
+	j.emit(true)
 	id := j.info.ID
+	go a.planAndRunXfer(j, items, localPaths, dest, dst, policy, maxBPS, move, decisions)
+	return id, nil
+}
+
+// planAndRunXfer is the transfer worker proper: plan the walk (taking
+// the pre-check's memo when the identical gesture just built it), seat
+// the plan's totals and item rows, then stream the files. It runs on
+// its own goroutine from the instant the job registers, so the walk
+// that discovers what to move answers to a visible, cancelable row
+// instead of the gesture's return value — and a panic anywhere in it
+// settles the job through the same net every worker rides.
+func (a *App) planAndRunXfer(j *jobHandle, items []XferItem, localPaths []string, dest XferDest, dst xferDestSide, policy string, maxBPS int64, move bool, decisions map[string]string) {
+	defer a.guardJob("transfer", j) // the worker panic net (guard.go)
+	ctx := j.ctx
+	plan, err := a.planTheXfer(ctx, items, localPaths, dest, dst)
+	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+			a.finishJob(j, JobCanceled, "canceled")
+			return
+		}
+		a.finishJob(j, JobError, err.Error())
+		return
+	}
+	if len(plan.files) == 0 && len(plan.emptyDirs) == 0 {
+		a.finishJob(j, JobError, "nothing to transfer")
+		return
+	}
+	// Seat the plan's facts, and leave the counting phase only when the
+	// copy is about to flow: a pause parked while planning keeps its
+	// paused phase — the run's first between-files gate honors it.
+	j.mu.Lock()
+	j.info.TotalFiles = len(plan.files)
+	j.info.TotalBytes = plan.total
+	if j.info.Status == JobRunning && j.hold == nil && j.info.Phase == TaskPhaseCount {
+		j.info.Phase = PhaseTransfer
+	}
+	j.mu.Unlock()
+	its := make([]TransferItem, 0, len(items)+len(localPaths))
+	for _, it := range items {
+		its = append(its, TransferItem{Name: it.Key})
+	}
+	for _, lp := range localPaths {
+		its = append(its, TransferItem{Name: lp})
+	}
+	for i := range plan.files {
+		its[plan.files[i].item].Files++
+		its[plan.files[i].item].Total += plan.files[i].size
+	}
+	j.setItems(its)
+	j.emit(true)
 	verb := "copying"
 	if move {
 		verb = "moving"
 	}
 	a.emitLogSrc(LogInfo, "transfer", j.src,
-		fmt.Sprintf("job %s: %s %d file(s) (%d bytes) to %s", id, verb, len(plan.files), plan.total, xferDestLabel(dest)))
+		fmt.Sprintf("job %s: %s %d file(s) (%d bytes) to %s", j.info.ID, verb, len(plan.files), plan.total, xferDestLabel(dest)))
 	logDecisions(a, "transfer", decisions)
-	go a.runXfer(j, plan, dst, policy, maxBPS, move, decisions)
-	return id, nil
+	a.runXfer(j, plan, dst, policy, maxBPS, move, decisions)
+}
+
+// planTheXfer walks the transfer once: the pre-check's memo hands over
+// the identical plan the user just approved (single-use, short-lived),
+// and a miss plans fresh under the job's own context — cancelable
+// mid-walk — with the same listing budget the pre-check rides.
+func (a *App) planTheXfer(ctx context.Context, items []XferItem, localPaths []string, dest XferDest, dst xferDestSide) (*xferPlan, error) {
+	if plan, ok := a.planMemo.take(xferPlanKey(items, localPaths, dest)); ok {
+		return plan, nil
+	}
+	pctx, cancel := context.WithTimeout(ctx, a.quickBudget())
+	defer cancel()
+	return a.planXfer(pctx, items, localPaths, dst)
 }
 
 // xferTitle names a cross-source job after the first dropped item (S3

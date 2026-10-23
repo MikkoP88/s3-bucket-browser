@@ -2378,6 +2378,7 @@ function openTransferManagerDom(onClose) {
     if (stKey) chips.push(el('span', { class: `tr-chip st-${j.status}`, text: t(stKey) }));
     if (running && j.phase === 'cleanup') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.phaseCleanup') }));
     if (running && j.phase === 'paused') chips.push(el('span', { class: 'tr-chip st-phase', text: t('transfer.pausedChip') }));
+    if (running && j.phase === 'count') chips.push(el('span', { class: 'tr-chip st-phase', text: t('tasks.counting') }));
     if (running && j.stalled) chips.push(el('span', { class: 'tr-chip st-warn', text: t('transfer.stalled') }));
     if (j.errorKind === 'timeout') chips.push(el('span', { class: 'tr-chip st-crit', text: t('transfer.timedOut') }));
     // byteless in-flight transfer = server-side copy: activity without
@@ -3704,7 +3705,15 @@ export async function resolveTransferOpts(kind, target, check) {
   }
   let conflicts = null;
   if (check) {
+    // The pre-check plans the whole transfer and can walk for seconds on a
+    // big one — the gesture still answers instantly: a short-delayed toast
+    // says the walk is running, and only when it truly is the long pole (a
+    // check that settles inside the delay stays silent).
+    let prep = null;
+    const prepTimer = setTimeout(() => { prep = toast(t('transfer.preparing')); }, 250);
     try { conflicts = await check(); } catch { conflicts = null; }
+    clearTimeout(prepTimer);
+    if (prep) prep.remove();
   }
   if (conflicts && conflicts.length) {
     return conflictChoices(conflicts);
@@ -5977,6 +5986,7 @@ export function toast(message, type = '') {
     }));
   const timer = setTimeout(kill, type === 'error' ? 7000 : 3500);
   box.appendChild(t);
+  return t;
 }
 
 // ---------- browse-style directory picker (any source) ----------

@@ -1218,8 +1218,60 @@ function shim() {
     // the xfer:dest event the main window listens for. A floating
     // transfers window picks Show destination; the main window navigates.
     GotoTransferDest: (d) => { emit('xfer:dest', d); },
-    // conflict pre-check (M12): whatever the step seeded, the dialog gets
-    CheckConflicts: () => JSON.parse(JSON.stringify(world.conflicts || [])),
+    // TransferCross mirrors the reactivity law when a step opts in
+    // (world.xferLive): the job registers inside the verb — a running row
+    // in the counting phase with totals honestly unknown — and the walk
+    // "lands" (phase flip, then done) world.xferPlanMs later;
+    // world.xferPlanHold parks the walk in the count phase forever, the
+    // shape a cancel-during-planning step needs. Without the opt-in the
+    // mirror stays inert (recorded call, no row): the paste and drag steps
+    // pin their routing contracts, not a simulated transfer.
+    TransferCross: (items, localPaths, dest, policy, maxBPS, move, decisions, hidden) => {
+      if (!world.xferLive) return '';
+      world.xferSeq = (world.xferSeq || 0) + 1;
+      const id = 'xg-' + world.xferSeq;
+      const n = Math.max((items || []).length + (localPaths || []).length, 1);
+      const first = (items && items[0]) || null;
+      const name = first ? ((first.key || '').replace(/\/$/, '').split('/').pop() || first.key) : (localPaths || [])[0];
+      const row = {
+        id, op: 'transfer', status: 'running', phase: 'count',
+        currentFile: '', fileIndex: 0, currentSent: 0, currentTotal: 0,
+        totalFiles: 0, doneFiles: 0, failedFiles: 0, skippedFiles: 0,
+        totalBytes: 0, sentBytes: 0, speedBps: 0, startedAt: Date.now(),
+        name: name || id, items: n, from: '', to: (dest && (dest.bucket || dest.dir)) || '',
+        dest, move: !!move, hidden: !!hidden, itemRows: null,
+      };
+      world.transfers = [...(world.transfers || []), row];
+      emit('transfer:update', { ...row });
+      if (!world.xferPlanHold) {
+        setTimeout(() => {
+          if (row.status !== 'running') return;
+          Object.assign(row, { phase: 'transfer', totalFiles: n, totalBytes: 4096 * n, currentFile: name || id, currentTotal: 4096 });
+          emit('transfer:update', { ...row });
+          setTimeout(() => {
+            if (row.status !== 'running') return;
+            Object.assign(row, { status: 'done', phase: '', doneFiles: n, sentBytes: 4096 * n, currentFile: '', endedAt: Date.now() });
+            emit('transfer:update', { ...row });
+          }, world.xferPlanMs || 300);
+        }, world.xferPlanMs || 300);
+      }
+      return id;
+    },
+    // CancelTransfer works from the first millisecond: a counting row
+    // (planning) cancels exactly like a transferring one.
+    CancelTransfer: (id) => {
+      const j = (world.transfers || []).find((x) => x.id === id);
+      if (!j || j.status !== 'running') return false;
+      Object.assign(j, { status: 'canceled', error: 'canceled', endedAt: Date.now() });
+      emit('transfer:update', { ...j });
+      return true;
+    },
+    // conflict pre-check (M12): whatever the step seeded, the dialog gets;
+    // world.checkHold parks the probe so a step can watch the walk run
+    CheckConflicts: async () => {
+      if (world.checkHold) await world.checkHold;
+      return JSON.parse(JSON.stringify(world.conflicts || []));
+    },
     ObjectVersions: () => JSON.parse(JSON.stringify(world.versions)),
     VersionDiffText: () => ({ truncated: false, aText: 'alpha\nold line A\nomega', bText: 'alpha\nnew line B\nomega' }),
     GetBucketAdmin: () => JSON.parse(JSON.stringify(world.admin)),
@@ -7199,6 +7251,189 @@ await step('transfers', async () => {
   await closePopout('transfers');
 });
 
+await step('transfer-reactivity', async () => {
+  // The reactivity law through the real gesture: a paste into the pane
+  // answers the moment its cheap checks pass. The mirror (world.xferLive)
+  // models the backend contract — the job registers inside the verb, the
+  // plan walk runs inside the registered job — so while the walk is parked
+  // (world.xferPlanHold) the row is already in the window: counting, totals
+  // honestly unknown, Cancel live from the first millisecond.
+  //
+  // Two seating laws shape the step. First, the copy gesture always runs
+  // with the mirror inert: Ctrl+C mirrors onto the OS clipboard through a
+  // HIDDEN staging transfer that polls ActiveTransfers until the queue is
+  // quiet — an armed live mirror parks that walk forever and the copy
+  // mirror never lands. Each leg arms its paste state only AFTER the copy
+  // has landed. Second, the world wipes below never emit: a
+  // transfer:update over an empty list re-floats the closed window at its
+  // bottom-edge default, and a floating popout starves trusted clicks into
+  // silent timeouts (the standing-overlay law).
+  await navObjects('team-files');
+  await waitFor(async () => (await rowKeys()).includes('readme.md'), 6000, 'team-files rows');
+  const leaveClean = async () => {
+    // the mirror inert again, the default seeds back, the pane hidden and
+    // its remembered state cleared — finally-wrapped so a failed leg cannot
+    // starve the steps that follow (running-tasks reads the t1 seed)
+    await evalPage(() => {
+      const w = window.__shim.world;
+      w.xferLive = false;
+      delete w.xferPlanHold;
+      delete w.xferPlanMs;
+      delete w.checkHold;
+      delete w.releaseCheck;
+      w.transfers = [
+        { id: 't1', op: 'upload', status: 'running', currentFile: 'video-final.mp4', totalFiles: 3, doneFiles: 1, totalBytes: 224975891, sentBytes: 71803392, speedBps: 8388608,
+          name: 'video-final.mp4', items: 3, from: 'D:\\shoot', to: 's3://team-files/shoot', phase: 'transfer', fileIndex: 2, currentSent: 23068672, currentTotal: 78643200,
+          itemRows: [
+            { name: 'intro.mp4', state: 'done', files: 1, done: 1, sent: 47185920, total: 47185920 },
+            { name: 'video-final.mp4', state: 'active', files: 1, done: 0, sent: 0, total: 78643200 },
+            { name: 'bts/', state: 'pending', files: 2, done: 0, sent: 0, total: 98784271 }] },
+        { id: 't2', op: 'transfer', status: 'done', currentFile: '', totalFiles: 12, doneFiles: 9, failedFiles: 1, skippedFiles: 2, totalBytes: 52428800, sentBytes: 52428800, speedBps: 0,
+          name: 'backups', items: 4, from: 's3://team-files', to: 'lab:/backup', elapsedMs: 43000 },
+      ];
+      document.getElementById('toasts')?.replaceChildren();
+    });
+    await evalPage(() => {
+      // rebind-local before hiding: the paste gesture binds the roots
+      // view (This PC) and a hidden pane remembers its binding — without
+      // this a fresh open seats at the drives, starving the home law
+      window.__s3bSidePane.goHome();
+      window.__s3bSidePane.hide();
+      localStorage.removeItem('s3b-side-src');
+      localStorage.removeItem('s3b-side-loc');
+      localStorage.setItem('s3b-conflict', 'overwrite'); // the battery default
+    });
+    await closePopout('transfers');
+  };
+  // the copy half of the gesture — always with the mirror inert (the
+  // staging law above). Trusted click: a synthetic click would leave the
+  // selection empty and make the copy a silent no-op.
+  const doCopy = async () => {
+    await evalPage(() => {
+      const w = window.__shim.world;
+      w.xferLive = false;
+      w.transfers = []; // a quiet queue — the staging poll must see no running job
+      // the auto-open law rides the RISING edge (no running job →
+      // some running job) and the transfers step's t1 seed runs forever,
+      // so the latch must be dropped before the paste can raise it: one
+      // settled update over the emptied world, nothing running
+      window.__shim.emit('transfer:update', { id: 't2', op: 'transfer', status: 'done' });
+    });
+    await closePopout('transfers');
+    const h = await page.evaluateHandle(() => Array.from(document.querySelectorAll('#grid-body .grid-row'))
+      .find((r) => r._model && r._model.key === 'readme.md') || null);
+    const rowEl = h.asElement();
+    if (!rowEl) throw new Error('no readme.md row');
+    // fail-loud hittability: name whatever stands over the row instead
+    // of starving a trusted click into a silent timeout
+    const probe = await page.evaluate((r) => {
+      const b = r.getBoundingClientRect();
+      const hit = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+      return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height),
+        hit: hit ? hit.tagName + '.' + String(hit.className).split(' ').filter(Boolean).join('.') : null,
+        mine: hit === r || r.contains(hit) };
+    }, rowEl);
+    if (!probe.mine) throw new Error('readme.md row not hittable: ' + JSON.stringify(probe));
+    await rowEl.click();
+    await page.keyboard.press('Control+c');
+    await waitFor(async () => evalPage(() => (window.__shim.calls || []).some((x) => x.m === 'OsClipboardSetFiles')), 6000, 'copy mirror');
+  };
+  // the paste half: seat the pane at its directory-less local view (the
+  // home-fallback grammar — TransferCross with a local dest) and paste
+  // through the empty-area menu
+  const doPasteTail = async () => {
+    await evalPage(() => {
+      const p = window.__s3bSidePane;
+      p.show({ drive: false });
+      p.bindTo(null);
+      return p.refresh(); // !dir → LocalRoots + the This PC view
+    });
+    await waitFor(async () => evalPage(() => document.querySelectorAll('#local-grid-body .grid-row').length > 0), 4000, 'pane roots view');
+    await evalPage(() => {
+      window.__shim.calls.length = 0;
+      document.getElementById('toasts')?.replaceChildren();
+      document.getElementById('local-grid-body')
+        .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: innerWidth - 120, clientY: 260 }));
+    });
+    await ctxItem(/^paste/i);
+  };
+  try {
+    // leg 1: the walk parked — the row registers instantly, the window
+    // opens, the counting chip seats, Cancel answers from the first
+    // millisecond and the job settles canceled with nothing transferred
+    await doCopy();
+    await evalPage(() => {
+      const w = window.__shim.world;
+      w.transfers = [];
+      w.xferLive = true;
+      w.xferPlanHold = true;
+    });
+    await doPasteTail();
+    await waitFor(async () => (await findCall('TransferCross')) !== null, 6000, 'paste fired');
+    const trSel = '#popout-root .popout[data-pop="transfers"]';
+    await ok('the window opens the moment the job registers', waitFor(() => popoutVisible('transfers'), 4000, 'auto open'));
+    await ok('mid-walk the row is already seated: counting, totals unknown', waitFor(async () => evalPage((s) => {
+      const row = document.querySelector(`${s} .tr-job.running`);
+      if (!row) return false;
+      const j = window.__shim.world.transfers.find((x) => x.status === 'running');
+      return !!j && j.phase === 'count' && j.totalFiles === 0
+        && /counting/i.test(row.querySelector('.tr-chip.st-phase')?.textContent || '');
+    }, trSel), 4000, 'counting row'));
+    // cancel from the first millisecond of the walk
+    await resetCalls();
+    await evalPage((s) => {
+      Array.from(document.querySelectorAll(`${s} .tr-job.running .tr-top .btn`)).find((b) => /cancel/i.test(b.textContent))?.click();
+    }, trSel);
+    await ok('Cancel during planning reaches the wire', waitFor(async () => {
+      const cc = await findCall('CancelTransfer');
+      return !!cc && typeof cc.args[0] === 'string' && cc.args[0].startsWith('xg-');
+    }, 4000, 'cancel during count'));
+    await ok('the planning row settles canceled', waitFor(async () => evalPage((s) => {
+      const j = window.__shim.world.transfers.find((x) => x.id.startsWith('xg-'));
+      const row = document.querySelector(`${s} .tr-job[data-id="${j.id}"]`);
+      return j.status === 'canceled' && !!row && !!row.querySelector('.tr-chip.st-canceled');
+    }, trSel), 4000, 'canceled settle'));
+
+    // leg 2: the walk lands — the count chip leaves, totals seat, the
+    // row settles done on its own
+    await doCopy();
+    await evalPage(() => {
+      const w = window.__shim.world;
+      w.transfers = [];
+      w.xferLive = true;
+      w.xferPlanHold = false;
+      w.xferPlanMs = 150;
+    });
+    await doPasteTail();
+    await ok('an unheld walk lands: totals seat and the row settles done', waitFor(async () => evalPage(() => {
+      const j = window.__shim.world.transfers.find((x) => x.id.startsWith('xg-') && x.status === 'done');
+      return !!j && j.totalFiles > 0 && j.doneFiles === j.totalFiles;
+    }), 6000, 'walk lands'));
+
+    // leg 3: the preparing toast — a pre-check that outlives its 250ms
+    // grace says so aloud, and the toast leaves the moment the check
+    // settles — the gesture is never a silent void
+    await doCopy();
+    await evalPage(() => {
+      const w = window.__shim.world;
+      w.transfers = [];
+      w.conflicts = []; // the check must come back clean — no dialog
+      localStorage.setItem('s3b-conflict', 'ask'); // the pre-check must run
+      let release;
+      w.checkHold = new Promise((r) => { release = r; });
+      w.releaseCheck = release;
+    });
+    await doPasteTail();
+    await ok('a long pre-check says Preparing transfer aloud', waitFor(async () => evalPage(() =>
+      /preparing transfer/i.test(document.querySelector('#toasts .toast')?.textContent || '')), 4000, 'preparing toast'));
+    await evalPage(() => { window.__shim.world.releaseCheck(); });
+    await ok('the toast leaves when the check settles', waitFor(async () => evalPage(() =>
+      !/preparing/i.test(document.getElementById('toasts')?.textContent || '')), 4000, 'toast gone'));
+    await waitFor(async () => (await findCall('TransferCross')) !== null, 6000, 'held paste fired');
+  } finally {
+    await leaveClean();
+  }
+});
 await step('running-tasks', async () => {
   // the everything-monitor: a tracked deep search and finished chores
   // ride beside the transfer jobs in one merged, cancelable list — now

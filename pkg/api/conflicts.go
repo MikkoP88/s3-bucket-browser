@@ -7,10 +7,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/remotefs"
@@ -38,7 +40,87 @@ type ConflictInfo struct {
 const (
 	conflictMaxFiles = 500 // planned files worth stat-ing
 	conflictMaxRows  = 200 // rows returned to the dialog
+
+	// conflictProbeWidth bounds the destination probes where the wire
+	// is concurrency-safe: the aws client serves parallel HEADs, plain
+	// filesystem stats parallelize for free. A remote engine stays at
+	// width 1 — the ServerConn has zero synchronization, so its lock
+	// law keeps one probe in flight.
+	conflictProbeWidth = 8
 )
+
+// The plan memo: the pre-check's walk is exactly the walk the transfer
+// performs again before its first byte. For the paste that immediately
+// follows a clean pre-check — the common gesture — the second walk is
+// pure latency, so CheckConflicts hands its finished plan to the
+// follow-up start. Single-use (the first taker consumes it), bounded in
+// time, count and size, and keyed on the exact argument tuple: policy,
+// throttle, decisions and move ride the plan's files, not its identity.
+const (
+	planMemoTTL      = 2 * time.Minute
+	planMemoEntries  = 6
+	planMemoMaxFiles = 20000 // a monster walk parks tens of MB for a window the provider's pace already dominates
+)
+
+type xferPlanMemo struct {
+	mu      sync.Mutex
+	entries []xferPlanMemoEntry
+}
+
+type xferPlanMemoEntry struct {
+	key  string
+	plan *xferPlan
+	at   time.Time
+}
+
+// xferPlanKey is the canonical identity of one planning request: the
+// same items, local paths and destination plan the same bytes.
+func xferPlanKey(items []XferItem, localPaths []string, dest XferDest) string {
+	b, _ := json.Marshal(struct {
+		Items      []XferItem `json:"i"`
+		LocalPaths []string   `json:"l"`
+		Dest       XferDest   `json:"d"`
+	}{items, localPaths, dest})
+	return string(b)
+}
+
+func (m *xferPlanMemo) store(key string, plan *xferPlan) {
+	if plan == nil || len(plan.files) > planMemoMaxFiles {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.entries[:0]
+	for _, e := range m.entries {
+		if time.Since(e.at) < planMemoTTL && e.key != key {
+			kept = append(kept, e)
+		}
+	}
+	m.entries = append(kept, xferPlanMemoEntry{key: key, plan: plan, at: time.Now()})
+	if len(m.entries) > planMemoEntries {
+		m.entries = m.entries[len(m.entries)-planMemoEntries:]
+	}
+}
+
+// take consumes the memo entry for key when one is live. Expired
+// entries are dropped as they pass by.
+func (m *xferPlanMemo) take(key string) (*xferPlan, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.entries[:0]
+	var found *xferPlan
+	for _, e := range m.entries {
+		if e.key == key && time.Since(e.at) < planMemoTTL {
+			found = e.plan
+			continue // single-use: consumed by its taker
+		}
+		if time.Since(e.at) < planMemoTTL {
+			kept = append(kept, e)
+		}
+	}
+	m.entries = kept
+	return found, found != nil
+}
 
 // CheckConflicts plans the transfer described by (items, localPaths, dest)
 // and reports the planned files that already exist at the destination.
@@ -56,6 +138,12 @@ func (a *App) CheckConflicts(items []XferItem, localPaths []string, dest XferDes
 	if err != nil {
 		return nil, err
 	}
+	// Hand the finished walk to the follow-up start: a clean pre-check
+	// is almost always followed by TransferCross over the same
+	// arguments, and its fresh walk would be pure latency before the
+	// first byte. Store before the caps refuse — a transfer too big to
+	// pre-check still starts, and its plan is exactly what it needs.
+	a.planMemo.store(xferPlanKey(items, localPaths, dest), plan)
 	// Success must serialize as [], not null: the frontend treats a null
 	// probe result as "pre-check failed" and falls back to the classic
 	// whole-transfer dialog — a clean destination must stay silent.
@@ -71,16 +159,41 @@ func (a *App) CheckConflicts(items []XferItem, localPaths []string, dest XferDes
 	// The destination probes ride the same per-source law the planner
 	// holds: a remote destination's Stat is an engine command like any
 	// other, serialized on the source's lock (S3 and local probes carry
-	// no lock id and lock nothing).
+	// no lock id and lock nothing). Where the wire is concurrency-safe
+	// the probes fan out — one HEAD per file, N×RTT folded to N/width —
+	// while results keep the plan's walk order for the dialog.
 	probeUnlock := a.lockSrcs(dst.lockID)
 	defer probeUnlock()
+
+	workers := 1
+	if dst.kind == "s3" || dst.kind == "local" {
+		workers = conflictProbeWidth
+	}
+	type probeRes struct {
+		size   int64
+		mtime  time.Time
+		exists bool
+	}
+	probes := make([]probeRes, len(plan.files))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, workers)
+	for i := range plan.files {
+		f := &plan.files[i]
+		wg.Add(1)
+		go func(slot int, f *xferFile) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			size, mtime, exists := xferDestStat(sctx, dst, f.dstPath)
+			probes[slot] = probeRes{size: size, mtime: mtime, exists: exists}
+		}(i, f)
+	}
+	wg.Wait()
 
 	var out = []ConflictInfo{}
 	var truncated bool
 	for i := range plan.files {
-		f := &plan.files[i]
-		size, mtime, exists := xferDestStat(sctx, dst, f.dstPath)
-		if !exists {
+		if !probes[i].exists {
 			continue
 		}
 		if len(out) == conflictMaxRows {
@@ -88,12 +201,12 @@ func (a *App) CheckConflicts(items []XferItem, localPaths []string, dest XferDes
 			break
 		}
 		out = append(out, ConflictInfo{
-			Key:         conflictDisplayKey(dst, f.dstPath),
-			DecisionKey: f.dstPath,
-			SrcSize:     f.size,
-			SrcTime:     rfc3339(f.mtime),
-			DstSize:     size,
-			DstTime:     rfc3339(mtime),
+			Key:         conflictDisplayKey(dst, plan.files[i].dstPath),
+			DecisionKey: plan.files[i].dstPath,
+			SrcSize:     plan.files[i].size,
+			SrcTime:     rfc3339(plan.files[i].mtime),
+			DstSize:     probes[i].size,
+			DstTime:     rfc3339(probes[i].mtime),
 		})
 	}
 	// A truncated list cannot carry per-file decisions — the dialog then

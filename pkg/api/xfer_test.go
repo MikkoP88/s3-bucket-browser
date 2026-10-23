@@ -254,7 +254,10 @@ func TestTransferCrossLocalPane(t *testing.T) {
 	mustNotExist(t, filepath.Join(srcDir, "a.txt"))
 }
 
-// Guards: everything invalid fails synchronously with a clear error.
+// Guards: registry-bound refusals fail synchronously with a clear error;
+// wire-bound refusals (everything the planner discovers) settle on the
+// registered job's row — the reactivity law: the verb returns the moment
+// its cheap checks pass.
 func TestTransferCrossGuards(t *testing.T) {
 	a := newTestApp(t)
 	a.Startup(context.Background())
@@ -264,9 +267,13 @@ func TestTransferCrossGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := a.TransferCross([]XferItem{{Source: "nope", Key: "/x"}}, nil,
-		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil, false); err == nil {
-		t.Error("unknown item source must error")
+	id, err := a.TransferCross([]XferItem{{Source: "nope", Key: "/x"}}, nil,
+		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil, false)
+	if err != nil || id == "" {
+		t.Fatalf("unknown item source: want a started job, got id=%q err=%v", id, err)
+	}
+	if ji := waitJobSettled(t, a, id); ji.Status != JobError {
+		t.Errorf("unknown item source must settle as an error, got %+v", ji)
 	}
 	if _, err := a.TransferCross([]XferItem{{Source: "lab", Key: "/x"}}, nil,
 		XferDest{Kind: "remote", Source: "nope", Dir: "/"}, "", 0, false, nil, false); err == nil {
@@ -291,7 +298,8 @@ func TestTransferCrossGuards(t *testing.T) {
 		XferDest{Kind: "s3", Bucket: ""}, "", 0, false, nil, false); err == nil {
 		t.Error("s3 dest without bucket must error")
 	}
-	// The source root is never transferable as one item.
+	// The source root is never transferable as one item — it is itself a
+	// cycle shape (the destination sits inside it), refused synchronously.
 	if _, err := a.TransferCross([]XferItem{{Source: "lab", Key: "/", IsDir: true}}, nil,
 		XferDest{Kind: "remote", Source: "lab", Dir: "/"}, "", 0, false, nil, false); err == nil {
 		t.Error("source root must error")
