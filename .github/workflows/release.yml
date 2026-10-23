@@ -50,6 +50,19 @@ jobs:
           GOOS: linux
           GOARCH: arm64
 
+      # amd64 CLI twin of the GUI tarball above: the headless build is
+      # pure Go, so the same runner ships it without the GUI deps.
+      - name: Build linux-amd64 (headless CLI) tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/pkg-cli
+          CGO_ENABLED=0 go build -tags s3b_headless -ldflags "-s -w -X main.version=${VERSION}" -o dist/pkg-cli/s3b ./cmd/s3b
+          cp LICENSE README.md dist/pkg-cli/
+          tar -C dist/pkg-cli -czf "dist/s3b-${VERSION}-linux-amd64-cli.tar.gz" s3b LICENSE README.md
+        env:
+          GOOS: linux
+          GOARCH: amd64
+
       # Portable editions: the s3b-portable marker has
       # redirected config beside the binary since M5 — the release job just
       # bundles binary + LICENSE + NOTICE + marker + README-portable.md.
@@ -65,6 +78,10 @@ jobs:
           cp dist/pkg-arm/s3b LICENSE NOTICE README-portable.md dist/port-arm/
           touch dist/port-arm/s3b-portable
           tar -C dist/port-arm -czf "dist/s3b-${VERSION}-linux-arm64-cli-portable.tar.gz" s3b LICENSE NOTICE README-portable.md s3b-portable
+          mkdir -p dist/port-cli
+          cp dist/pkg-cli/s3b LICENSE NOTICE README-portable.md dist/port-cli/
+          touch dist/port-cli/s3b-portable
+          tar -C dist/port-cli -czf "dist/s3b-${VERSION}-linux-amd64-cli-portable.tar.gz" s3b LICENSE NOTICE README-portable.md s3b-portable
 
       - uses: actions/upload-artifact@v7
         with:
@@ -179,6 +196,25 @@ jobs:
           touch dist/port-arm/s3b-portable
           (cd dist/port-arm && zip -q "../s3b-${VERSION}-windows-arm64-portable.zip" -- *)
           cp dist/pkg/s3b.exe dist/  # staging for the NSIS installer
+
+      # CLI twins: every OS that ships a GUI ships a headless CLI build
+      # beside it (release matrix; macOS stays CLI-only).
+      - name: Build windows CLI zips
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/cli dist/cli-arm dist/cli-port dist/cli-port-arm
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags s3b_headless -ldflags "-s -w -X main.version=${VERSION}" -o dist/cli/s3b.exe ./cmd/s3b
+          CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags s3b_headless -ldflags "-s -w -X main.version=${VERSION}" -o dist/cli-arm/s3b.exe ./cmd/s3b
+          cp LICENSE README.md dist/cli/ && cp LICENSE README.md dist/cli-arm/
+          (cd dist/cli && zip -q "../s3b-${VERSION}-windows-amd64-cli.zip" -- *)
+          (cd dist/cli-arm && zip -q "../s3b-${VERSION}-windows-arm64-cli.zip" -- *)
+          bash scripts/gen-notice.sh "${VERSION}" > NOTICE
+          cp dist/cli/s3b.exe LICENSE NOTICE README-portable.md dist/cli-port/
+          touch dist/cli-port/s3b-portable
+          (cd dist/cli-port && zip -q "../s3b-${VERSION}-windows-amd64-cli-portable.zip" -- *)
+          cp dist/cli-arm/s3b.exe LICENSE NOTICE README-portable.md dist/cli-port-arm/
+          touch dist/cli-port-arm/s3b-portable
+          (cd dist/cli-port-arm && zip -q "../s3b-${VERSION}-windows-arm64-cli-portable.zip" -- *)
 
       - name: Build NSIS installer
         run: |
