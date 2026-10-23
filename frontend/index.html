@@ -29,10 +29,15 @@
 
     <!-- ============ Global bar: app-scope controls ============ -->
     <!-- The buttons that act on the whole app — both panes at once — sit
-         here, full width under the menubar: the Dual-pane toggle, Compare,
-         the theme and the shortcut sheet. Each content pane's toolbar
-         below keeps only what acts on that pane alone. -->
+         here, full width under the menubar: the Inspector toggle, the
+         Dual-pane toggle, Compare, the theme and the shortcut sheet.
+         Each content pane's toolbar below keeps only what acts on that
+         pane alone. -->
     <header class="toolbar gbar" id="gbar">
+      <!-- Inspector: the global details band's own toggle (F8) — one
+           panel for the whole app, whichever grid spoke last owning it -->
+      <button class="tb-btn" id="btn-inspector" title="Inspector (F8)" aria-pressed="false">&#8505;&#65038;<span class="tb-word"> Inspector</span></button>
+      <span class="tb-sep"></span>
       <button class="tb-btn" id="btn-panes" title="Dual-pane: open or close the secondary pane — a remembered non-default view offers a Home / last-view picker (F9 plain-toggles)" aria-haspopup="menu">&#128193;&#8644;&#128193;<span class="tb-word"> Dual-pane</span></button>
       <button class="tb-btn" id="btn-compare" title="Compare the main view with the secondary pane" disabled>&#8644;<span class="tb-word"> Compare</span></button>
       <button class="tb-btn" id="btn-sync" title="Synchronize the two dual-pane sides with each other" disabled>&#10227;<span class="tb-word"> Synchronize</span></button>
@@ -40,6 +45,23 @@
       <button class="tb-btn" id="btn-theme" title="Light / dark theme">&#9681;</button>
       <button class="tb-btn" id="btn-help" title="Keyboard shortcuts (F1)">?</button>
     </header>
+
+    <!-- ============ Global inspector: the second top bar ============ -->
+    <!-- One inspector for the whole app — a full-width band under the
+         global bar, above the split. Whichever grid spoke last owns the
+         seat: the selection's own facts seat the instant the selection
+         changes, the storage facts (ETag, content type, SSE, folder
+         usage) enrich from the wire behind a visible loading pulse,
+         the verbs follow the seat, and a view summary shows when
+         nothing is selected. Hidden until asked for (the global bar,
+         F8, the View menu); the preference survives Clear All like
+         every face preference. -->
+    <section class="inspector hidden" id="inspector" aria-label="Inspector">
+      <div class="insp-head"><span id="insp-seat">Details</span>
+        <button class="insp-x" id="insp-close" title="Close (F8)">&#10005;</button>
+      </div>
+      <div class="insp-body" id="inspector-body"></div>
+    </section>
 
     <!-- ============ Main split: tree | main pane | optional secondary pane ============ -->
     <main class="main">
@@ -90,12 +112,6 @@
                bounded preview sliver, never a download), sharing the
                row selection and verbs. The secondary pane carries its own -->
           <button class="tb-btn" id="btn-gallery" title="Gallery view (tiles with image thumbnails)" aria-pressed="false">&#128444;</button>
-          <span class="tb-sep"></span>
-          <!-- Inspector: the docked details panel — the selection's
-               own facts and quick verbs (F8). The pane toolbar mirrors
-               the button; both toggle the SAME panel, whichever grid
-               spoke last owning it -->
-          <button class="tb-btn" id="btn-inspector" title="Inspector (F8)" aria-pressed="false">&#8505;&#65038;</button>
         </header>
 
         <!-- ============ Nav bar: breadcrumb + filter ============ -->
@@ -207,11 +223,6 @@
                — the same glyphs, thumbnails and verbs (the toolbar
                family parity the panes owe the main view) -->
           <button class="tb-btn" id="local-btn-gallery" title="Gallery view (tiles with image thumbnails)" aria-pressed="false">&#128444;</button>
-          <span class="tb-sep"></span>
-          <!-- the pane mirror of the inspector toggle — the same panel,
-               the same preference (the toolbar family parity the panes
-               owe the main view) -->
-          <button class="tb-btn" id="local-btn-inspector" title="Inspector (F8)" aria-pressed="false">&#8505;&#65038;</button>
           <span class="tb-spacer"></span>
           <button class="tb-btn" id="local-btn-close" title="Close the secondary pane (F9)">&#215;</button>
         </header>
@@ -262,20 +273,6 @@
         </div>
       </section>
 
-      <!-- ============ Inspector: the docked details panel ============ -->
-      <!-- One panel for whichever grid spoke last — the main view or the
-           secondary pane. It shows the selection's own facts the instant
-           the selection changes (no round trips; the deep facts — ETag,
-           SSE, retention — stay a Properties click away), quick verbs
-           that follow the seat, and a view summary when nothing is
-           selected. Hidden until asked for; the preference survives
-           Clear All like every face preference. -->
-      <section class="inspector hidden" id="inspector" aria-label="Inspector">
-        <div class="insp-head"><span id="insp-seat">Details</span>
-          <button class="insp-x" id="insp-close" title="Close (F8)">&#10005;</button>
-        </div>
-        <div class="insp-body" id="inspector-body"></div>
-      </section>
     </main>
 
     <!-- ============ Log drawer (optional, hidden by default) ============ -->

@@ -6597,7 +6597,7 @@ async function guiBattery() {
     return 'the 86400s validity rides the signature, the URL downloads byte-exact from both the dialog and the Shares window, Share flips to Stop share, Stop empties the registry, and a reopen is honest';
   });
 
-  await verify({ id: 'GUI-115', area: 'ui', action: 'Inspector v2 and the tabbed Properties card, live', ds: 'S3 (MinIO)', scenario: 'the inspector renders its two arranged verb groups with selectable facts and a drag-resizable edge (real mouse drag, persisted width, double-click reset), the object Properties card carries the Windows grammar (bytes in parentheses) across General/Details/Security tabs with the live ETag, a multi-selection collapses to one summary card, and the bucket Properties card walks all four tabs against the real admin state', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-115', area: 'ui', action: 'Inspector v2 and the tabbed Properties card, live', ds: 'S3 (MinIO)', scenario: 'the global inspector band renders under the global bar with its two arranged verb groups, selectable facts and the wire\u2019s storage facts enriching behind their pulse (full width, no pane mirrors, the dock width law retired), the object Properties card carries the Windows grammar (bytes in parentheses) across General/Details/Security tabs with the live ETag, a multi-selection collapses to one summary card, and the bucket Properties card walks all four tabs against the real admin state', face: 'GUI' }, async () => {
     const KA = 'p115-a-' + RUNID + '.txt';
     const KB = 'p115-b-' + RUNID + '.txt';
     const PAYA = 'inspector v2 payload ' + RUNID + ' alpha\n';
@@ -6631,30 +6631,31 @@ async function guiBattery() {
     need((ins115.name || '').endsWith(KA), 'the inspector name reads ' + ins115.name);
     need(ins115.ddSel === 'text', 'the inspector facts are not selectable: ' + ins115.ddSel);
     await shot('115-inspector');
-    // the resizer: a real drag widens the panel and persists the width
-    const bb = await page.locator('#inspector .insp-resizer').boundingBox();
-    need(!!bb, 'the resize handle is missing');
-    await page.mouse.move(bb.x + 3, bb.y + 60);
-    await page.mouse.down();
-    await page.mouse.move(bb.x - 90, bb.y + 60, { steps: 8 });
-    const midDrag = await evalPage(() => document.body.classList.contains('insp-dragging'));
-    need(midDrag === true, 'the drag did not take the panel');
-    await page.mouse.up();
-    await sleep(200);
-    const wState = await evalPage(() => ({
-      w: Math.round(document.getElementById('inspector').getBoundingClientRect().width),
-      saved: localStorage.getItem('s3b-inspector-w'),
-    }));
-    need(wState.w >= 360 && wState.w <= 560, 'the dragged width reads ' + wState.w);
-    need(wState.saved !== null && parseInt(wState.saved, 10) >= 360, 'the width did not persist: ' + wState.saved);
-    // double-click resets
-    await page.locator('#inspector .insp-resizer').dispatchEvent('dblclick');
-    await sleep(200);
-    const rst = await evalPage(() => ({
-      w: Math.round(document.getElementById('inspector').getBoundingClientRect().width),
-      saved: localStorage.getItem('s3b-inspector-w'),
-    }));
-    need(rst.w === 300 && rst.saved === null, 'the reset reads ' + rst.w + ' / ' + rst.saved);
+    // the global band: the second top bar under the global bar, the dock
+    // and its width law retired, no pane mirror, and the live wire
+    // enriching the deep facts behind its pulse
+    const band = await evalPage(() => {
+      const p = document.getElementById('inspector');
+      const g = document.getElementById('gbar');
+      return {
+        underGbar: !!p && !!g && p.previousElementSibling === g,
+        full: p ? Math.abs(p.getBoundingClientRect().width - window.innerWidth) <= 2 : false,
+        rz: p ? !!p.querySelector('.insp-resizer') : true,
+        saved: localStorage.getItem('s3b-inspector-w'),
+        paneMirror: !!document.getElementById('local-btn-inspector'),
+      };
+    });
+    need(band.underGbar && band.full, 'the band is not the full-width second top bar: ' + JSON.stringify(band));
+    need(!band.rz && band.saved === null, 'the dock width law did not retire: ' + JSON.stringify(band));
+    need(!band.paneMirror, 'a pane inspector mirror still exists');
+    await waitFor(async () => {
+      const v = await evalPage(() => {
+        const dt = Array.from(document.querySelectorAll('#inspector-body dt')).find((x) => (x.textContent || '').trim() === 'ETag');
+        return dt ? ((dt.nextElementSibling?.textContent || '').trim()) : '';
+      });
+      return v.length > 0 && v !== '\u2014';
+    }, 8000, 'the live ETag enrichment in the band');
+    await shot('115-band');
     if (!inspWas) await page.locator('#btn-inspector').click();
     // the object Properties card: three tabs, Windows grammar, live ETag
     await rightClickRow(KA);

@@ -368,7 +368,7 @@ async function boot() {
   gallery.apply(); // seat each tile face when its preference is on
   paneGallery.apply();
   if (localStorage.getItem('s3b-inspector') === '1') toggleInspector(true);
-  inspResize(); // the drag handle + the persisted width, whatever the panel's visibility
+  try { localStorage.removeItem('s3b-inspector-w'); } catch { /* the width law retired with the dock */ }
 
   // Log drawer: mount (subscription is wired in wireEvents) and restore
   // visibility from the last session.
@@ -2532,7 +2532,6 @@ function wireLocalPane() {
   $('local-btn-download').onclick = () => paneDownload();
   $('local-btn-find').onclick = paneSearch;
   wireGalleryToggle('local-btn-gallery', paneGallery, 's3b-gallery-pane', 'local-gallery');
-  $('local-btn-inspector').onclick = () => toggleInspector(); // the pane mirror toggles the same panel
   $('local-btn-newfolder').onclick = () => paneNewFolder();
   $('local-btn-newfile').onclick = () => paneNewFile();
 }
@@ -4475,62 +4474,28 @@ function galleryOwnsView() {
   return gallery.owns();
 }
 
-// ===== the inspector: the docked details panel =====
-// One panel, one law: whichever grid spoke last owns it. It renders the
-// selection's own facts the instant the selection changes — never a
-// round trip (the deep facts — ETag, SSE, retention, usage — stay a
-// Properties click away, exactly the modal Alt+Enter always opened) —
-// quick verbs that follow the seat, and a view summary when nothing is
-// selected. Hidden until asked for (F8, the toolbars, the View menu);
-// the preference survives Clear All like every face preference.
+// ===== the inspector: the global details band =====
+// One panel for the whole app — the second top bar under the global
+// bar, above the split — and one law: whichever grid spoke last owns
+// it. The row's own facts seat the instant the selection changes
+// (never a round trip), then the storage facts the wire owns (ETag,
+// content type, SSE, folder usage) enrich asynchronously behind a
+// visible pulse — the panel never waits on the wire, and a stale
+// answer never lands (every render retires the one before it).
+// Quick verbs follow the seat, a view summary shows when nothing is
+// selected. Hidden until asked for (the global bar, F8, the View
+// menu); the preference survives Clear All like every face preference.
 
 let inspSeat = 'main'; // 'main' | 'pane' — the grid that spoke last
+let inspStatBusy = ''; // the enrichment whose wire call is out
+let inspStatSeat = null; // the freshest render’s loader seat — the landing paints into it
 
 function inspectorOpen() { return !$('inspector').classList.contains('hidden'); }
-
-// inspResize seats the drag handle on the panel's left edge: drag to
-// widen or shrink the inspector (clamped 220-560px, persisted in
-// s3b-inspector-w so the width survives restarts), double-click to reset
-// to the default. The grid re-renders live through the drag — its own
-// ResizeObserver answers the body-box change.
-function inspApplyWidth(w) {
-  const panel = $('inspector');
-  if (panel) panel.style.width = `${w}px`;
-}
-
-function inspResize() {
-  const panel = $('inspector');
-  if (!panel || panel.querySelector('.insp-resizer')) return;
-  try {
-    const w = parseInt(localStorage.getItem('s3b-inspector-w'), 10);
-    if (w >= 220 && w <= 560) panel.style.width = `${w}px`;
-  } catch { /* quota: a preference, not a session */ }
-  const handle = el('div', { class: 'insp-resizer', title: 'Drag to resize \u2014 double-click resets' });
-  panel.appendChild(handle);
-  const move = (ev) => inspApplyWidth(Math.min(560, Math.max(220, window.innerWidth - ev.clientX)));
-  const up = () => {
-    document.removeEventListener('mousemove', move);
-    document.removeEventListener('mouseup', up);
-    document.body.classList.remove('insp-dragging');
-    try { localStorage.setItem('s3b-inspector-w', String(Math.round(panel.getBoundingClientRect().width))); } catch { /* quota */ }
-  };
-  handle.addEventListener('mousedown', (ev) => {
-    if (ev.button !== 0) return;
-    ev.preventDefault();
-    document.body.classList.add('insp-dragging');
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-  });
-  handle.addEventListener('dblclick', () => {
-    try { localStorage.removeItem('s3b-inspector-w'); } catch { /* quota */ }
-    inspApplyWidth(300);
-  });
-}
 
 function toggleInspector(force) {
   const on = force === undefined ? !inspectorOpen() : !!force;
   $('inspector').classList.toggle('hidden', !on);
-  for (const id of ['btn-inspector', 'local-btn-inspector']) $(id)?.setAttribute('aria-pressed', on ? 'true' : 'false');
+  $('btn-inspector')?.setAttribute('aria-pressed', on ? 'true' : 'false');
   try { localStorage.setItem('s3b-inspector', on ? '1' : '0'); } catch { /* quota: a preference, not a session */ }
   if (on) inspectorRender();
 }
@@ -4585,8 +4550,11 @@ function inspSummary(g, loc, pane) {
     props.push(['Source', `${srcName}${s ? ` (${s.type})` : ''}`]);
   }
   return el('div', { class: 'insp-sec' },
-    el('div', { class: 'insp-glyph', text: '\uD83D\uDD0E' }),
-    el('div', { class: 'insp-sub', text: pane ? 'Nothing selected in the pane' : 'Nothing selected' }),
+    el('div', { class: 'insp-head-row' },
+      el('span', { class: 'insp-glyph', text: '\uD83D\uDD0E' }),
+      el('div', { class: 'insp-names' },
+        el('div', { class: 'insp-name', text: pane ? 'Nothing selected in the pane' : 'Nothing selected' }),
+        el('div', { class: 'insp-sub', text: inspSeatLabel(loc) || (pane ? 'the secondary pane' : 'this view') }))),
     inspProps(props));
 }
 
@@ -4633,8 +4601,22 @@ function inspMany(rows) {
   const ms = (v) => (typeof v === 'string' ? Date.parse(v) : v);
   const times = rows.map((r) => ms(r.lastModified || r.modTime)).filter((v) => Number.isFinite(v) && v > 0);
   if (times.length) props.push(['Modified range', `${fmtDate(Math.min(...times))} \u2014 ${fmtDate(Math.max(...times))}`]);
+  const common = (cut) => rows.reduce((p, r) => {
+    const k = r.key || r.path || '';
+    let i = 0;
+    while (i < p.length && i < k.length && p[i] === k[i]) i++;
+    const at = p.slice(0, i).lastIndexOf(cut);
+    return at < 0 ? '' : p.slice(0, at + 1);
+  }, rows[0].key || rows[0].path || '');
+  const slash = rows[0].path ? '\\' : '/';
+  const spine = common(slash);
+  if (spine) props.push([rows[0].path ? 'Common path' : 'Common prefix', spine]);
   return el('div', { class: 'insp-sec' },
-    el('div', { class: 'insp-name', text: `${rows.length} item(s)` }),
+    el('div', { class: 'insp-head-row' },
+      el('span', { class: 'insp-glyph', text: '\uD83D\uDCCB' }),
+      el('div', { class: 'insp-names' },
+        el('div', { class: 'insp-name', text: `${rows.length} item(s)` }),
+        el('div', { class: 'insp-sub', text: parts.join(', ') || 'selection' }))),
     inspProps(props));
 }
 
@@ -4717,6 +4699,7 @@ function inspVerbs(rows, loc, pane) {
 function inspectorRender() {
   const box = $('inspector-body');
   if (!box || !inspectorOpen()) return;
+
   const pane = inspSeat === 'pane' && localPane.visible;
   const g = pane ? localPane.grid : grid;
   const loc = pane ? paneSeatLoc() : nav.current;
@@ -4728,6 +4711,52 @@ function inspectorRender() {
       ? [inspOne(rows[0], loc, pane), inspVerbs(rows, loc, pane)]
       : [inspMany(rows), inspVerbs(rows, loc, pane)];
   box.replaceChildren(...faces.filter(Boolean));
+  inspEnrich(box, rows, loc, pane);
+}
+
+// inspEnrich seats the storage facts the wire owns — the S3 object's
+// ETag, content type and SSE, a folder's usage — after the instant
+// face: a pulse shows while the stat is out, the pairs seat when it
+// lands, an error degrades to nothing (the row facts never depended
+// on it). One wire call per (seat, key): a render that re-fires for
+// the same selection ADOPTS the call already out — its loader seats
+// afresh and the landing paints into the freshest seat — while a
+// render for anything else retires the answer by changing the busy
+// key, so a stale landing never paints.
+function inspEnrich(box, rows, loc, pane) {
+  const one = rows.length === 1 ? rows[0] : null;
+  if (!one || one.isBucket || one.bucketCreated) { inspStatBusy = ''; inspStatSeat = null; return; }
+  const b = pane ? (localPane.binding || {}) : {};
+  let dial = null;
+  if (pane && b.kind === 's3') dial = () => api.SourceStatObject(b.source, localPane.bucket, one.key);
+  else if (!pane && loc?.kind === 'objects') dial = () => api.StatObject(loc.bucket, one.key);
+  if (!dial) { inspStatBusy = ''; inspStatSeat = null; return; } // remote engines carry nothing the row lacks; a local seat owns no stat wire
+  const key = `${pane ? 'p' : 'm'}|${loc?.bucket || ''}|${one.key}`;
+  const seat = el('div', { class: 'insp-deep' }, el('span', { class: 'insp-loading' }));
+  const host = box.querySelector('.insp-sec');
+  if (host) host.appendChild(seat);
+  inspStatSeat = seat; // the landing paints into the freshest seat, whatever render seated it
+  if (key === inspStatBusy) return; // adopt the call already out — the loader alone re-seats
+  inspStatBusy = key;
+  dial().then((st) => {
+    if (key !== inspStatBusy) return; // a different selection took the wire
+    const pairs = [];
+    if (st.isDir || String(one.key || '').endsWith('/')) {
+      if (st.usage) {
+        if (st.usage.objectCount !== undefined) pairs.push(['Objects', Number(st.usage.objectCount).toLocaleString('en-US')]);
+        if (st.usage.totalBytes) pairs.push(['Total size', `${fmtBytes(st.usage.totalBytes)} (${Number(st.usage.totalBytes).toLocaleString('en-US')} bytes)`]);
+      }
+    } else {
+      if (st.etag) pairs.push(['ETag', st.etag]);
+      if (st.contentType) pairs.push(['Content type', st.contentType]);
+      if (st.sse) pairs.push(['SSE', st.sse]);
+    }
+    (inspStatSeat || seat).replaceChildren(...(pairs.length ? [inspProps(pairs)] : []));
+  }).catch(() => {
+    if (key === inspStatBusy && inspStatSeat) inspStatSeat.remove();
+  }).finally(() => {
+    if (inspStatBusy === key) { inspStatBusy = ''; inspStatSeat = null; }
+  });
 }
 function viewerWalk(step) {
   if (!viewer.open) return;
@@ -5477,6 +5506,10 @@ async function selectionProperties() {
     // Details the storage facts (every metadata key its own selectable
     // row), Security the encryption and lock state
     const meta = Object.entries(st.metadata || {});
+    const dot = String(st.name || '').lastIndexOf('.');
+    const parent = String(row.key || '').includes('/')
+      ? String(row.key).replace(/\/[^\/]*$/, '') + '/'
+      : '';
     const tabs = [{
       id: 'general', label: 'General', rows: [
         ['Name', st.name],
@@ -5486,7 +5519,11 @@ async function selectionProperties() {
           : [
             ['Size', `${fmtBytes(st.size)} (${Number(st.size || 0).toLocaleString('en-US')} bytes)`],
             ['Last modified', fmtDate(st.lastModified)],
+            ...(dot > 0 && dot < String(st.name || '').length - 1 ? [['Extension', String(st.name).slice(dot).toUpperCase()]] : []),
           ]),
+        ['Source', loc.source || currentViewSourceName(loc) || '—'],
+        ['Bucket', loc.bucket],
+        ['Folder', parent || '(bucket root)'],
         ['Path', s3TreePath(loc.source, loc.bucket, row.key)],
       ],
     }];
@@ -5511,7 +5548,7 @@ async function selectionProperties() {
     propertiesTabs(`Properties — ${st.name}`, {
       icon: fileIcon(st.name || row.name || '', st.isDir),
       name: st.name || row.name,
-      subtitle: st.isDir ? 'Folder' : 'Object',
+      subtitle: st.isDir ? `Folder · ${Number(st.usage?.objectCount || 0).toLocaleString('en-US')} object(s)` : `Object · ${fmtBytes(st.size || 0)}`,
       tabs,
     });
   } catch (err) {
@@ -6233,7 +6270,7 @@ async function sideS3Properties(row) {
     propertiesTabs(`Properties — ${row.name}`, {
       icon: fileIcon(row.name, row.isDir),
       name: row.name,
-      subtitle: row.isDir ? 'Folder' : 'Object',
+      subtitle: row.isDir ? `Folder · ${Number(st.usage?.objectCount || 0).toLocaleString('en-US')} object(s)` : `Object · ${fmtBytes(st.size || 0)}`,
       tabs: [
         {
           id: 'general', label: 'General', rows: [
@@ -6244,8 +6281,11 @@ async function sideS3Properties(row) {
               : [
                 ['Size', `${fmtBytes(st.size || 0)} (${Number(st.size || 0).toLocaleString('en-US')} bytes)`],
                 ['Last modified', fmtDate(st.lastModified)],
+                ...(String(row.name).lastIndexOf('.') > 0 ? [['Extension', String(row.name).slice(String(row.name).lastIndexOf('.')).toUpperCase()]] : []),
               ]),
             ['Source', b.source],
+            ['Bucket', localPane.bucket],
+            ['Folder', String(row.key || '').includes('/') ? String(row.key).replace(/\/[^\/]*$/, '') + '/' : '(bucket root)'],
             ['Path', s3TreePath(b.source, localPane.bucket, row.key)],
           ],
         },

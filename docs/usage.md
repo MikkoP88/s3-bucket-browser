@@ -618,27 +618,30 @@ sources carry the
   grows the window, the scroll itself growing it as the end comes
   near, and the keyboard walk growing the seat it names (selection
   still speaks the whole model, exactly as the row pool does).
-- **Inspector** — F8, the ℹ toolbar button (the pane’s toolbar
-  carries its own, both toggling the same panel) or the View menu
-  seats a docked details panel on the right edge: whatever you
-  select shows its facts the instant the selection changes —
-  kind, size, modified, key — read from the row itself with no
-  round trip, and every fact on the panel is real selectable text —
-  select it, copy it, paste it anywhere. The verbs sit in two
-  professional groups: the primary row carries the seat’s main
-  actions in the dialog-primary idiom (Preview or Open, Edit,
+- **Inspector** — F8, the ℹ button on the global bar or the View
+  menu seats the global inspector: a full-width details band — the
+  second top bar — running under the global bar, above the split,
+  one panel for the whole app (the panes carry no inspector of
+  their own; the one toggle owns every seat). Whatever you select
+  shows its facts the instant the selection changes — kind, size,
+  modified, key — read from the row itself with no round trip, and
+  every fact on the band is real selectable text — select it, copy
+  it, paste it anywhere. The verbs sit in two professional groups
+  at the band’s right edge: the primary group carries the seat’s
+  main actions in the dialog-primary idiom (Preview or Open, Edit,
   Download… — Edit resting disabled when the source is read-only),
-  the quiet secondary row the utilities (Copy path, Copy name,
-  Properties…). A multi-selection aggregates (items, total size,
-  modified range), and with nothing selected the panel summarizes
-  the view — the location, item and size counts, the source. The
-  panel’s width is yours: drag the handle on its left edge to
-  resize it (clamped between 220 and 560 pixels, remembered across
-  sessions; double-click the handle resets it). The deep facts
-  (ETag, encryption, retention, usage) stay one Properties… click
-  away. Whichever
-  grid spoke last owns the panel — the main view or the dual
-  pane — and the choice persists across sessions.
+  the quiet secondary group the utilities (Copy path, Copy name,
+  Properties…). Behind the instant facts, the storage facts the
+  wire owns enrich asynchronously — an object’s ETag, content type
+  and encryption, a folder’s object count and total size — behind a
+  visible loading pulse, never blocking the band. A multi-selection
+  aggregates (items, total size, common prefix, modified range),
+  and with nothing selected the band summarizes the view — the
+  location, item and size counts, the source. Whichever grid spoke
+  last owns the band — the main view or the dual pane — and the
+  choice persists across sessions. The deep facts (retention,
+  versioning, the full admin state) stay one Properties… click
+  away.
 - **New file** — the WinSCP flow: Shift+F4, the 📄+ toolbar button or
   *New file…* in the context menu opens a small dialog for a file name
   and type (a dozen common extensions, or none). The empty file is

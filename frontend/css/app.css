@@ -94,7 +94,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   }
   .empty-state.is-loading::before, .load-skel div,
   .conn-banner.cmp.busy .cmp-dot, .tr-bar.tr-indet::after,
-  #viewer-loading .viewer-spin {
+  #viewer-loading .viewer-spin, .insp-loading {
     animation: load-pulse 1.5s ease-in-out infinite !important;
   }
 }
@@ -141,16 +141,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 @container (max-width: 579px) {
   #btn-theme, #btn-help { display: none; }
 }
-/* dual-pane + the docked inspector: both pane toolbars lose the
-   panel's width to their column, and at the default 50/50 split a
-   1440px window leaves each column ~450px - narrow enough that the
-   tail buttons overflow the column and slide under the inspector,
-   unreachable by mouse. The chrome tightens here instead of folding
-   verbs: leaner button padding and closer separators keep every
-   control inside its column (a container query cannot restyle its
-   own establishing element, so the toolbar's own gap and padding
-   stay put - the descendants carry the reclaim); the deeper tiers
-   below keep folding. */
+/* a genuinely narrow pane column (the dual-pane split at a small
+   window) can still overflow its own toolbar - the tail buttons
+   would slide out of the column, unreachable by mouse. The chrome
+   tightens here instead of folding verbs: leaner button padding
+   and closer separators keep every control inside its column (a
+   container query cannot restyle its own establishing element, so
+   the toolbar's own gap and padding stay put - the descendants
+   carry the reclaim); the deeper tiers below keep folding. */
 @container (max-width: 479px) {
   #toolbar .tb-btn, #local-toolbar .tb-btn { padding: 4px 5px; }
   #toolbar .tb-sep, #local-toolbar .tb-sep { margin: 0 2px; }
@@ -2044,19 +2042,22 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .t-window .btn { flex: none; padding: 2px 10px; font-size: 12px; }
 
-/* ============ inspector: the docked details panel ============ */
-/* The right edge owns it: a column beside the panes that speaks the
-   selection — the row's own facts (never a round trip), quick verbs
-   that follow the seat, a view summary when nothing is selected. */
+/* ============ inspector: the global details band ============ */
+/* The second top bar owns it: a full-width band under the global
+   bar, above the split — one inspector for the whole app, whichever
+   grid spoke last owning the seat. The facts read horizontally: the
+   identity at the left, the row's own facts (never a round trip)
+   beside it, the wire's storage facts enriching behind a visible
+   pulse, the verbs pinned to the right edge, a view summary when
+   nothing is selected. */
 .inspector {
-  position: relative; /* the resize handle seats on the left edge */
-  flex: none; width: 300px; min-height: 0;
-  display: flex; flex-direction: column;
-  background: var(--panel); border-left: 1px solid var(--border);
+  flex: none; min-height: 0;
+  display: flex; flex-direction: row; align-items: stretch;
+  background: var(--panel); border-bottom: 1px solid var(--border);
 }
 .insp-head {
-  flex: none; display: flex; align-items: center; justify-content: space-between;
-  padding: 5px 6px 5px 12px; border-bottom: 1px solid var(--border);
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 0 6px 0 12px; border-right: 1px solid var(--border);
   font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em;
 }
 /* the closer follows the modal-head .X idiom: quiet until hovered */
@@ -2066,23 +2067,38 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   color: var(--text-dim); font-size: 14px; line-height: 1.1;
 }
 .insp-x:hover { color: var(--danger); background: var(--border-soft); }
-.insp-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
-.insp-sec { display: flex; flex-direction: column; }
-.insp-glyph { flex: none; text-align: center; font-size: 30px; line-height: 1.2; }
-.insp-head-row { display: flex; align-items: center; gap: 10px; }
-.insp-head-row .insp-glyph { font-size: 26px; }
+.insp-body {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 20px;
+  padding: 8px 14px; overflow-x: auto; overflow-y: hidden;
+}
+.insp-sec { display: flex; flex-direction: row; align-items: center; gap: 18px; min-width: 0; }
+.insp-glyph { flex: none; text-align: center; font-size: 24px; line-height: 1.2; }
+.insp-head-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.insp-names { display: flex; flex-direction: column; min-width: 0; }
 .insp-name {
   font-weight: 600; font-size: 13.5px; color: var(--text);
   overflow-wrap: anywhere; min-width: 0;
 }
-.insp-sub { text-align: center; color: var(--text-dim); font-size: 12px; margin: 6px 0 2px; }
+.insp-sub { text-align: left; color: var(--text-dim); font-size: 12px; margin: 2px 0 0; }
 .insp-props {
-  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px;
-  font-size: 12px; margin-top: 10px;
+  display: grid; grid-auto-flow: column; grid-template-rows: auto auto;
+  gap: 3px 28px; align-content: center;
+  font-size: 12px;
 }
 .insp-props dt { color: var(--text-dim); white-space: nowrap; }
-.insp-props dd { margin: 0; overflow-wrap: anywhere; }
-.insp-verbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.insp-props dd { margin: 0; overflow-wrap: anywhere; white-space: nowrap; }
+.insp-verbs { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+/* the wire's own facts seat behind a divider: a pulse while the
+   stat is out, the storage pairs when it lands (an error degrades
+   to nothing — the row facts never depended on it) */
+.insp-deep {
+  flex: none; display: flex; align-items: center; min-height: 34px;
+  border-left: 1px solid var(--border); padding-left: 18px;
+}
+.insp-loading {
+  width: 64px; height: 8px; border-radius: 4px;
+  background: var(--border-soft); animation: load-pulse 1.5s ease-in-out infinite;
+}
 .insp-btn {
   padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer;
   border: 1px solid var(--border); border-radius: 4px;
@@ -2091,29 +2107,21 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .insp-btn:hover { background: var(--hover); border-color: var(--accent); }
 .insp-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-/* ============ inspector v2: verb groups, resize handle ============ */
-/* The verbs sit in two professional groups: the primary row carries the
-   seat's main actions in the dialog-primary idiom (solid accent), the
-   secondary row the quiet utilities. The resizer owns the panel's left
-   edge — drag to resize (220–560px, persisted in s3b-inspector-w),
-   double-click resets to 300px; a body class freezes the page mid-drag
-   so no text paints selected under the moving edge. */
-.insp-verb-groups { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
-.insp-verb-groups .insp-verbs { margin-top: 0; }
+/* ============ inspector v2: the verb groups ============ */
+/* The verbs sit in two professional groups pinned to the band's right
+   edge: the primary group carries the seat's main actions in the
+   dialog-primary idiom (solid accent), the secondary group the quiet
+   utilities beside it. */
+.insp-verb-groups {
+  display: flex; flex-direction: row; align-items: center; gap: 10px;
+  margin-left: auto; flex: none;
+}
 .insp-verbs.primary .insp-btn {
   background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
 }
 .insp-verbs.primary .insp-btn:hover:not(:disabled) { filter: brightness(1.08); box-shadow: 0 1px 4px rgba(11, 99, 206, .45); }
 .insp-verbs.secondary .insp-btn { font-size: 11.5px; padding: 3px 9px; }
 .insp-btn:disabled { opacity: .5; cursor: default; }
-.insp-resizer {
-  position: absolute; top: 0; bottom: 0; left: 0; width: 7px;
-  cursor: ew-resize; z-index: 5;
-}
-.insp-resizer:hover, body.insp-dragging .insp-resizer {
-  background: var(--hover); box-shadow: inset 3px 0 0 var(--accent);
-}
-body.insp-dragging, body.insp-dragging * { cursor: ew-resize !important; user-select: none !important; }
 
 /* ============ tree: the read-only source glyph ============ */
 .t-ro {
@@ -2200,6 +2208,5 @@ body.insp-dragging, body.insp-dragging * { cursor: ew-resize !important; user-se
     outline-offset: -2px;
   }
   .mb-item.disabled, .ctxmenu .item.disabled { color: GrayText; }
-  .insp-resizer { background: GrayText; }
   .tab.active, .admin .tab.active { box-shadow: none; background: Highlight; color: HighlightText; }
 }

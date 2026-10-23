@@ -1369,7 +1369,7 @@ function shim() {
     },
     StatObject: (bucket, key) => (key.endsWith('/')
       ? { key, name: String(key).replace(/\/+$/, '').split('/').pop(), isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
-      : { key, name: String(key).split('/').pop(), size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD', contentType: 'text/plain', sse: '' }),
+      : { key, name: String(key).split('/').pop(), size: 1234, lastModified: daysAgo(1), etag: 'v3', storageClass: 'STANDARD', contentType: 'text/plain', sse: '' }),
     StatBucket: (bucket) => ({ name: bucket, region: 'eu-central', objects: 7, bytes: 224975891, createdAt: daysAgo(220) }),
     RemoteStat: (source, key) => ({ key, isDir: false, size: 4096, lastModified: daysAgo(3) }),
     CopySelection: (src, keys, dst, prefix, move) => ({ copied: keys.length, errors: [] }),
@@ -1554,7 +1554,7 @@ function shim() {
       || { versioning: 'Off', lockEnabled: false, lockMode: '', lockDays: 0 })),
     SourceStatObject: (_src, _bucket, key) => (key.endsWith('/')
       ? { key, name: String(key).replace(/\/+$/, '').split('/').pop(), isDir: true, usage: { objectCount: 7, totalBytes: 456789 } }
-      : { key, name: String(key).split('/').pop(), size: 1234, lastModified: daysAgo(1), etag: '"v3"', storageClass: 'STANDARD', contentType: 'text/plain', sse: '' }),
+      : { key, name: String(key).split('/').pop(), size: 1234, lastModified: daysAgo(1), etag: 'v3', storageClass: 'STANDARD', contentType: 'text/plain', sse: '' }),
     SourcePreviewDelete: (_src, _bucket, keys) => ({ requiresL2: false, count: keys.length, objects: keys.length, bytes: 1234, folders: 0 }),
     SourceDeleteSelection: (_src, _bucket, keys) => ({ deleted: keys.length, errors: [] }),
     SourceDeleteSelectionPermanent: (_src, _bucket, keys, _force) => ({ deleted: keys.length * 2, errors: [] }),
@@ -8110,22 +8110,25 @@ await step('dual-pane', async () => {
   await ok('the pane canvas matches the primary pane (background and bottom strip)', evalPage(() =>
     getComputedStyle(document.getElementById('local-pane')).backgroundColor
     === getComputedStyle(document.body).backgroundColor));
-  // the app-scope quintet now lives on the global bar between the menubar
-  // and the content — Dual-pane, Compare, Synchronize, theme, help — and
+  // the app-scope sextet now lives on the global bar between the menubar
+  // and the content — Inspector, Dual-pane, Compare, Synchronize, theme,
+  // help — the inspector band seats between the bar and the content, and
   // neither content toolbar carries them anymore (each pane keeps only
   // its own)
-  await ok('the global bar carries the app-scope quintet between menubar and content', evalPage(() => {
+  await ok('the global bar carries the app-scope sextet with the inspector band under it', evalPage(() => {
     const g = document.getElementById('gbar');
     if (!g) return false;
     const ids = Array.from(g.querySelectorAll('button[id]')).map((b) => b.id);
     return g.classList.contains('gbar')
-      && ids.join(',') === 'btn-panes,btn-compare,btn-sync,btn-theme,btn-help'
+      && ids.join(',') === 'btn-inspector,btn-panes,btn-compare,btn-sync,btn-theme,btn-help'
       && document.getElementById('menubar').nextElementSibling === g
-      && !!g.nextElementSibling && g.nextElementSibling.tagName === 'MAIN';
+      && !!g.nextElementSibling && g.nextElementSibling.id === 'inspector'
+      && !!g.nextElementSibling.nextElementSibling && g.nextElementSibling.nextElementSibling.tagName === 'MAIN';
   }));
   await ok('neither content toolbar carries the app-scope controls anymore', evalPage(() =>
     ['btn-panes', 'btn-compare', 'btn-sync', 'btn-theme', 'btn-help',
-      'local-btn-panes', 'local-compare', 'local-btn-sync', 'local-btn-theme', 'local-btn-help']
+      'local-btn-panes', 'local-compare', 'local-btn-sync', 'local-btn-theme', 'local-btn-help',
+      'btn-inspector', 'local-btn-inspector']
       .every((id) => !document.querySelector('#toolbar #' + id)
         && !document.querySelector('#local-toolbar #' + id))));
   // the onboarding picker is one way in — the workstation first (a
@@ -14198,12 +14201,13 @@ await step('menubar-keys', async () => {
 
 // ---------- the inspector: the docked details panel ----------
 await step('inspector', async () => {
-  // The selection's own facts the instant the selection changes — no
-  // round trips (the deep facts stay a Properties click away; the lazy
-  // folder-usage walk may still dial, a file stat never does), the
-  // aggregate grammar on multi-select, quick verbs that follow the
-  // seat, and whichever grid spoke last owning the panel — the pane
-  // toolbar mirror toggles the SAME panel. The preference survives a
+  // The global details band — the second top bar under the global bar.
+  // The selection's own facts seat the instant the selection changes
+  // (never a round trip), then the storage facts the wire owns enrich
+  // asynchronously behind a visible pulse; the aggregate grammar on
+  // multi-select, quick verbs that follow the seat, and whichever grid
+  // spoke last owning the band. One toggle, on the global bar — the
+  // pane carries no mirror anymore. The preference survives a
   // keep-staged reload (settle t1 after the re-seeded boot). Leaves
   // the world canonical: panel closed, preference gone, rows face at
   // the team-files root, pane closed.
@@ -14244,12 +14248,18 @@ await step('inspector', async () => {
     && (await inspVal('Kind')) === 'Object'
     && (await inspVal('Size')) === '1.2 KB (1,234 bytes)'
     && (await inspVal('Key')) === 'readme.md', 3000, 'row facts'));
-  await ok('selection changes never dial a file stat', evalPage(() =>
-    !window.__shim.calls.some((c) => ['StatObject', 'SourceStatObject', 'RemoteStat'].includes(c.m)
-      && !String(c.args[1] || '').endsWith('/'))));
+  await ok('the storage facts enrich from the wire without ever blocking the panel', waitFor(async () =>
+    (await inspVal('ETag')) === 'v3' && (await inspVal('Content type')) === 'text/plain', 4000, 'deep facts land'));
+  await ok('the enrichment dialed exactly the one object stat', evalPage(() => {
+    const st = window.__shim.calls.filter((c) => c.m === 'StatObject');
+    return st.length === 1 && st[0].args[0] === 'team-files' && st[0].args[1] === 'readme.md'
+      && !window.__shim.calls.some((c) => c.m === 'RemoteStat');
+  }));
   await (await rowBy('budget-2026.xlsx')).asElement().click();
   await ok('the panel follows the walk', waitFor(async () =>
     (await inspName()) === 'budget-2026.xlsx', 3000, 'walk follows'));
+  await ok('a superseded enrichment never stacks a second seat', evalPage(() =>
+    document.querySelectorAll('#inspector-body .insp-deep').length <= 1));
   // multi: the aggregate grammar
   await (await rowBy('scan.png')).asElement().click({ modifiers: ['Control'] });
   await ok('a multi-selection aggregates', waitFor(async () =>
@@ -14300,11 +14310,17 @@ await step('inspector', async () => {
   await ok('a pane selection takes the panel with the pane seat', waitFor(async () =>
     (await txt('#insp-seat')) === 'Pane details'
     && (await inspName()) === 'scan.png', 4000, 'pane seat'));
-  // both toolbars own the same panel — the mirror law
-  await page.click('#local-btn-inspector');
-  await ok('the pane mirror closes the same panel', waitFor(() => evalPage(() =>
+  // the inspector is global now: one toggle on the global bar, no pane
+  // mirror, and that one toggle closes the panel the pane seated
+  await ok('the inspector toggle lives on the global bar alone', evalPage(() => {
+    const b = document.getElementById('btn-inspector');
+    return !!b && !!b.closest('#gbar') && !document.getElementById('local-btn-inspector')
+      && !document.querySelector('#toolbar #btn-inspector');
+  }));
+  await page.click('#btn-inspector');
+  await ok('the global toggle closes the panel the pane seated', waitFor(() => evalPage(() =>
     document.getElementById('inspector').classList.contains('hidden')
-    && document.getElementById('local-btn-inspector').getAttribute('aria-pressed') === 'false'), 3000, 'mirror closes'));
+      && document.getElementById('btn-inspector').getAttribute('aria-pressed') === 'false'), 3000, 'global closes'));
   await page.click('#btn-inspector');
   await waitFor(() => evalPage(() => !document.getElementById('inspector').classList.contains('hidden')), 3000, 'panel back');
   // F8 toggles both ways
@@ -14594,8 +14610,9 @@ await step('presign-share', async () => {
 });
 
 await step('inspector-v2', async () => {
-  // the professional inspector: verb groups, selectable facts, and the
-  // drag-resize handle with persistence + double-click reset
+  // the professional inspector: the global band's grammar — verb
+  // groups, selectable facts, the full-width second top bar, and the
+  // wire's storage facts enriching behind their pulse
   await navObjects('team-files');
   await waitFor(async () => (await rowKeys()).includes('readme.md'), 8000, 'v2 objects');
   await evalPage(() => { if (!document.getElementById('local-pane').classList.contains('hidden')) document.getElementById('local-btn-close').click(); });
@@ -14625,27 +14642,23 @@ await step('inspector-v2', async () => {
       && sel(document.querySelector('#inspector-body dt'))
       && sel(document.querySelector('#inspector-body dd'));
   }));
-  // the resize handle: drag widens the panel, the width persists,
-  // double-click resets to the canonical 300
-  const rz = await page.$('#inspector .insp-resizer');
-  await ok('the resize handle seats the left edge', !!rz);
-  if (rz) {
-    const bb = await rz.boundingBox();
-    await page.mouse.move(bb.x + 2, bb.y + 60);
-    await page.mouse.down();
-    await page.mouse.move(bb.x - 82, bb.y + 60, { steps: 10 });
-    await ok('the drag freezes the page under the moving edge', evalPage(() => document.body.classList.contains('insp-dragging')));
-    await page.mouse.up();
-    await ok('the drag widens the inspector', waitFor(async () => {
-      const w = await evalPage(() => document.getElementById('inspector').offsetWidth);
-      return w >= 360 && w <= 400;
-    }, 3000, 'width applied'));
-    await ok('the width persists', evalPage(() => Number(localStorage.getItem('s3b-inspector-w') || 0) >= 360));
-    await evalPage(() => { const h = document.querySelector('#inspector .insp-resizer'); if (h) h.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); });
-    await ok('double-click resets to 300', waitFor(async () =>
-      (await evalPage(() => document.getElementById('inspector').offsetWidth)) === 300, 3000, 'reset'));
-    await ok('the reset clears the stored width', evalPage(() => localStorage.getItem('s3b-inspector-w') === null));
-  }
+  // the second top bar: full width under the global bar, the dock and
+  // its width law retired with it, the storage facts enriching in
+  await ok('the inspector is the second top bar — full width under the global bar', evalPage(() => {
+    const p = document.getElementById('inspector');
+    const g = document.getElementById('gbar');
+    return !!p && !!g && p.previousElementSibling === g
+      && Math.abs(p.getBoundingClientRect().width - window.innerWidth) <= 2
+      && !p.querySelector('.insp-resizer');
+  }));
+  await ok('the dock\u2019s width law retired with the band', evalPage(() =>
+    localStorage.getItem('s3b-inspector-w') === null
+    && document.getElementById('inspector').style.width === ''));
+  await ok('the storage facts enrich from the wire into the band', waitFor(async () =>
+    (await evalPage(() => {
+      const dt = Array.from(document.querySelectorAll('#inspector-body dt')).find((x) => x.textContent === 'ETag');
+      return dt ? (dt.nextElementSibling?.textContent || '') : null;
+    })) === 'v3', 4000, 'band etag'));
   // leave canonical: panel closed
   await page.click('#btn-inspector');
   await waitFor(() => evalPage(() => document.getElementById('inspector').classList.contains('hidden')), 4000, 'panel closed');
