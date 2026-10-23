@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
@@ -101,7 +102,11 @@ func TestTransferCrossCycleS3(t *testing.T) {
 	if err != nil || id == "" {
 		t.Fatalf("different bucket: want a started job, got id=%q err=%v", id, err)
 	}
-	ji := waitJobSettled(t, a, id)
+	// The fake 500s on the unknown bucket, so the SDK retries with
+	// backoff before the walk settles its error on the row — the
+	// fault-probe law: pay the backoff with a patience arg, not the
+	// 5s default a slow runner starves against.
+	ji := waitJobSettled(t, a, id, 30*time.Second)
 	if ji.Status != JobError || strings.Contains(ji.Error, "into itself") || strings.Contains(ji.Error, "are the same") {
 		t.Fatalf("different bucket: want a non-cycle planning error on the row, got %+v", ji)
 	}
