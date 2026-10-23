@@ -3522,6 +3522,13 @@ await step('exit-guard', async () => {
   const cancel2 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
     .find((b) => /^cancel$/i.test(b.textContent.trim())) || null);
   if (cancel2) { await cancel2.asElement().click(); await sleep(80); }
+  // active shares join the ladder: the exit names them like unsaved sources
+  await evalPage(() => window.__emit('exit:confirm', { reason: '1 active share(s) still working (e.g. team/docs/notes.md)' }));
+  await waitFor(modalVisible, 4000, 'exit confirm dialog (shares)');
+  await ok('exit dialog states the active-shares reason', (await evalPage(() => document.getElementById('modal-root').textContent)).includes('active share(s) still working'));
+  const cancel3 = await elOrNull(() => Array.from(document.querySelectorAll('#modal-root button'))
+    .find((b) => /^cancel$/i.test(b.textContent.trim())) || null);
+  if (cancel3) { await cancel3.asElement().click(); await sleep(80); }
 });
 
 await step('help-guide', async () => {

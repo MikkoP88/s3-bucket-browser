@@ -1064,7 +1064,10 @@ the job's own source.
   valid until, Copy URL, Stop — and a presign dialog reopened on an
   already-shared object says so honestly. Stopping removes the share
   from the registry; the signed URL itself stays valid until it
-  expires, because S3 pre-signs cannot be revoked server-side.
+  expires, because S3 pre-signs cannot be revoked server-side. The
+  exit guard carries the same registry: quitting with a share still
+  live asks first, the reason naming the active share(s) exactly the
+  way it names unsaved data sources.
   The same menu converts objects between storage classes via
   server-side self-copy.
 - **Properties** — the Windows file-properties shape: a top card

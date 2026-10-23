@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"path"
+	"time"
 )
 
 // EventExitConfirm asks the frontend to confirm an exit that would lose
@@ -12,8 +13,8 @@ const EventExitConfirm = "exit:confirm"
 // exitBusyReason returns why the app should not exit right now, or "" for
 // a clean exit: any running transfer job, any running registry task, an
 // edited file whose changes were not uploaded yet, a dirty open profile
-// file, or unsaved session sources (the same states the profile bar
-// badges).
+// file, unsaved session sources (the same states the profile bar
+// badges), or any share whose pre-signed URL is still working.
 func (a *App) exitBusyReason() string {
 	running := 0
 	var first JobInfo
@@ -74,6 +75,27 @@ func (a *App) exitBusyReason() string {
 	}
 	if !st.Open && st.SourceCount > 0 {
 		return fmt.Sprintf("%d session source(s) are unsaved", st.SourceCount)
+	}
+
+	// Active pre-signed shares: not lost work, but outstanding exposure —
+	// the URLs keep serving whoever holds them until they expire, and
+	// closing the app closes the Shares window that tracks them, so the
+	// exit names them the same way it names unsaved sources. Expired
+	// shares are dead and never count.
+	n, firstKey := 0, ""
+	now := time.Now()
+	a.shareMu.Lock()
+	for _, e := range a.shares {
+		if now.Before(e.expires) {
+			n++
+			if n == 1 {
+				firstKey = e.info.Bucket + "/" + e.info.Key
+			}
+		}
+	}
+	a.shareMu.Unlock()
+	if n > 0 {
+		return fmt.Sprintf("%d active share(s) still working (e.g. %s)", n, firstKey)
 	}
 	return ""
 }

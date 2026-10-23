@@ -7078,7 +7078,7 @@ async function guiBattery() {
     }
   });
 
-  await verify({ id: 'GUI-43', area: 'gates', action: 'Exit gates: busy work survives ExitApp and the close request', ds: 'S3 (MinIO)', scenario: 'with a throttled transfer CONFIRMED running: the close request is vetoed with the transfer named as the reason, ExitApp only asks — the app stays fully alive (/health, GetVersion and the running job all still answer) — and the confirmation is dismissed, never force-confirmed; the transfer is then canceled normally and the throttle restored', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-43', area: 'gates', action: 'Exit gates: busy work survives ExitApp and the close request', ds: 'S3 (MinIO)', scenario: 'with a throttled transfer CONFIRMED running: the close request is vetoed with the transfer named as the reason, ExitApp only asks — the app stays fully alive (/health, GetVersion and the running job all still answer) — and the confirmation is dismissed, never force-confirmed; the transfer is then canceled normally and the throttle restored; the ladder\u2019s shares leg follows live: an active pre-signed share vetoes the close with the share named and stopping it clears the naming', face: 'GUI' }, async () => {
     const P = `s3://${BUCKET}/verify-gui/exitgate`;
     await s3(['mkdir', `${P}/`]);
     // a dedicated source dir: ART itself holds far too many entries for
@@ -7128,7 +7128,28 @@ async function guiBattery() {
     await evalPage(() => { localStorage.removeItem('s3b-throttle'); localStorage.removeItem('s3b-show-throttle'); return true; });
     const st = await s3(['stat', `${P}/exit-8m.bin`]);
     need(st.code !== 0, 'a partial object survived the canceled exit-gate transfer');
-    return 'close vetoed with a reason; guarded ExitApp did not kill the app; transfer canceled clean';
+    // the ladder\u2019s shares leg, live: an active share vetoes the close
+    // with itself named; stopping it clears the naming (the rest of the
+    // ladder keeps its own state — the reason oracle is the honest one)
+    await evalPage(() => { window.__exitReason = null; return true; });
+    const sh = await call('CreateShare', '', BUCKET, 'verify-gui/exitgate/exit-8m.bin', 3600);
+    need(!!sh?.id, `CreateShare did not answer a share: ${JSON.stringify(sh)}`);
+    const veto2 = await call('ShouldClose');
+    need(veto2 === true, `ShouldClose did not veto with an active share (${JSON.stringify(veto2)})`);
+    await waitFor(async () => /active share/i.test(String(await evalPage(() => window.__exitReason))), 5000, 'the exit:confirm reason naming the share');
+    await evalPage(() => {
+      const b = Array.from(document.querySelectorAll('#modal-root button'))
+        .find((x) => /cancel|keep/i.test((x.textContent || '').trim()) && !/exit|quit|anyway/i.test(x.textContent || ''));
+      if (b) b.click();
+      return true;
+    });
+    await closeModal();
+    await call('StopShare', sh.id);
+    await evalPage(() => { window.__exitReason = null; return true; });
+    await call('ShouldClose');
+    const r3 = String(await evalPage(() => window.__exitReason));
+    need(!/active share/i.test(r3), `the share still named after stop: ${r3}`);
+    return 'close vetoed with a reason; guarded ExitApp did not kill the app; transfer canceled clean; the active share vetoed the close by name and stopping it cleared the naming';
   });
 
   await verify({ id: 'GUI-44', area: 'sources', action: 'Local filesystem bindings: list / preview / remove', ds: 'local disk', scenario: 'ListLocal reports entries with correct dir flags; LocalDeletePreview counts what a delete would take; LocalRemove actually deletes — and the deletion is proven from OUTSIDE the app (Node fs), never from the app’s own view', face: 'GUI' }, async () => {

@@ -3,6 +3,7 @@ package api
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExitBusyReasonCoversRunningTasks(t *testing.T) {
@@ -50,5 +51,40 @@ func TestExitBusyReasonCoversDirtyEditors(t *testing.T) {
 	clean.mu.Unlock()
 	if got := a.exitBusyReason(); got != "" {
 		t.Fatalf("reason after uploads = %q, want empty", got)
+	}
+}
+
+// An active pre-signed share refuses the exit like any outstanding item:
+// the URL keeps serving whoever holds it until it expires, and closing
+// the app closes the Shares window that tracks it. An expired share is
+// dead and never counts; stopping the share clears the reason.
+func TestExitBusyReasonCoversActiveShares(t *testing.T) {
+	a := newTestApp(t)
+	// seat the registry's own shape directly: one live, one expired
+	a.shareMu.Lock()
+	a.shares["sh-1"] = &shareEntry{info: ShareInfo{
+		ID: "sh-1", Kind: "presign", Bucket: "team", Key: "docs/notes.md",
+	}, expires: time.Now().Add(time.Hour)}
+	expired := time.Now().Add(-time.Minute)
+	a.shares["sh-old"] = &shareEntry{info: ShareInfo{
+		ID: "sh-old", Kind: "presign", Bucket: "team", Key: "gone.txt",
+	}, expires: expired}
+	a.shareMu.Unlock()
+
+	got := a.exitBusyReason()
+	if !strings.Contains(got, "1 active share(s) still working") || !strings.Contains(got, "team/docs/notes.md") {
+		t.Fatalf("share reason = %q", got)
+	}
+	if strings.Contains(got, "gone.txt") {
+		t.Fatalf("expired share named in reason = %q", got)
+	}
+
+	// stopped: nothing outstanding anymore
+	a.shareMu.Lock()
+	delete(a.shares, "sh-1")
+	delete(a.shares, "sh-old")
+	a.shareMu.Unlock()
+	if got := a.exitBusyReason(); got != "" {
+		t.Fatalf("reason after stop = %q, want empty", got)
 	}
 }
