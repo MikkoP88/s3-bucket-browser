@@ -17,8 +17,8 @@ import (
 	"strconv"
 
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/eventlog"
-	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 	"github.com/MikkoP88/s3-bucket-browser/pkg/core/procprobe"
+	"github.com/MikkoP88/s3-bucket-browser/pkg/core/profile"
 )
 
 // SecureStatus is what the Settings → Security panel shows.

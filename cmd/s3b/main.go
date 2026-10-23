@@ -3,7 +3,7 @@
 // Design contract:
 //   - invoked with no arguments  -> launch the desktop GUI
 //   - --new-instance only        -> launch the GUI opted out of the
-//                                   single-instance guard (a new window)
+//     single-instance guard (a new window)
 //   - invoked with arguments     -> run as the CLI (cobra command tree)
 package main
 
