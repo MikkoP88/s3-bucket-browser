@@ -2239,8 +2239,24 @@ async function cliResilience() {
       cwd: ROOT, windowsHide: true, stdio: 'ignore',
       env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' },
     });
-    await sleep(2500); // 24 MiB through a 600ms/chunk link is nowhere near done
+    // wait for the wire truth, never a fixed clock: the orphan exists from
+    // the moment CreateMultipartUpload answers, but a slow run's dial and
+    // bucket preflight can still be short of that moment at any fixed sleep
+    // (the faultproxy's 600ms/chunk latency delays every request) and the
+    // FS-mode MinIO can serve a stale ListMultipartUploads seconds after the
+    // creation — poll the DIRECT endpoint until the seeded upload seats,
+    // then kill (24 MiB at this latency needs minutes, so the poll can never
+    // wait past a finished cp)
+    let seated = null;
+    for (let i = 0; i < 80 && !seated && child.exitCode === null; i++) {
+      await sleep(250);
+      try {
+        const probe = await cli(['bucket', 'uploads', `s3://${BUCKET}`, '--profile', 'verifys3', '--json'], { timeout: 30000 });
+        if (probe.code === 0) seated = (JSON.parse(probe.out) || []).find((u) => u.key === seedKey) || null;
+      } catch { /* a probe hiccup never kills the wait */ }
+    }
     need(child.exitCode === null, 'cp finished before the kill — not a mid-flight probe');
+    need(seated && seated.uploadId, `the seeded upload never seated on the wire: ${seedKey}`);
     child.kill();
     await new Promise((res) => { child.once('exit', res); if (child.exitCode !== null) res(); });
     // the orphan is invisible to object listings by definition — stat must miss
@@ -2495,12 +2511,27 @@ async function cliResilience() {
     await mkdir(d, { recursive: true });
     for (let i = 0; i < KEYS; i++) await writeFile(path.join(d, `k-${String(i).padStart(2, '0')}.txt`), `pgkill ${i}\n`);
     for (let round = 0; round < ROUNDS; round++) {
-      const r = await cli(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json', '--profile', 'verifys3'], { timeout: 120000 });
-      need(r.code === 0, `round ${round}: ${r.out}${r.err}`);
+      // the seed is fixture-writing, not an oracle: the FS-mode MinIO can
+      // answer a seconds-wide InvalidAccessKeyId window mid-write (its IAM
+      // view of the root user flips — one round died between two sibling
+      // puts with identical credentials, the same profile authenticating
+      // cleanly minutes later), so a failed round settles and retries
+      // bounded; a standing failure still fails loud with the same message
+      let r = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        r = await cli(['cp', '-r', d, `s3://${BUCKET}/${PFX}`, '--json', '--profile', 'verifys3'], { timeout: 120000 });
+        if (r.code === 0) break;
+        await sleep(2000);
+      }
+      need(r.code === 0, `round ${round} (3 attempts): ${r.out}${r.err}`);
     }
     const statVersions = async () => +((/"versions":\s*(\d+)/.exec((await cli(['versions', 'stat', `s3://${BUCKET}/${PFX}`, '--json', '--profile', 'verifys3'], { timeout: 60000 })).out) || [0, -1])[1]);
+    // >= not ===: a retried round re-versions whatever the failed attempt
+    // already landed, and the fixture's adequacy law is ENOUGH versions to
+    // span three destroy batches — every later computation rides the
+    // measured count, so the product orcles below stay strict
     const seeded = await statVersions();
-    need(seeded === KEYS * ROUNDS, `seed expected ${KEYS * ROUNDS} versions, stat says ${seeded}`);
+    need(seeded >= KEYS * ROUNDS, `seed expected at least ${KEYS * ROUNDS} versions, stat says ${seeded}`);
     await fmode({ mode: 'latency', delayMs: 800 });
     const child = spawn(CLI_EXE, ['versions', 'purge', `s3://${BUCKET}/${PFX}`, '--mode', 'all', '--force', '--profile', 'verifyfault'], { cwd: ROOT, windowsHide: true, stdio: 'ignore', env: { ...process.env, S3B_CONFIG: CFG, NO_COLOR: '1', TERM: 'dumb' } });
     let seen = 0;
@@ -7078,7 +7109,7 @@ async function guiBattery() {
     }
   });
 
-  await verify({ id: 'GUI-43', area: 'gates', action: 'Exit gates: busy work survives ExitApp and the close request', ds: 'S3 (MinIO)', scenario: 'with a throttled transfer CONFIRMED running: the close request is vetoed with the transfer named as the reason, ExitApp only asks — the app stays fully alive (/health, GetVersion and the running job all still answer) — and the confirmation is dismissed, never force-confirmed; the transfer is then canceled normally and the throttle restored; the ladder\u2019s shares leg follows live: an active pre-signed share vetoes the close with the share named and stopping it clears the naming', face: 'GUI' }, async () => {
+  await verify({ id: 'GUI-43', area: 'gates', action: 'Exit gates: busy work survives ExitApp and the close request', ds: 'S3 (MinIO)', scenario: 'with a throttled transfer CONFIRMED running: the close request is vetoed with the transfer named as the reason, ExitApp only asks — the app stays fully alive (/health, GetVersion and the running job all still answer) — and the confirmation is dismissed, never force-confirmed; the transfer is then canceled normally and the throttle restored; the ladder\u2019s shares leg follows live: an active pre-signed share vetoes the close with the share named and stopping it clears the naming; the ladder is normalized quiet first (the open profile saved, an unprofiled world\u2019s sources adopted, the registry waited quiet of running jobs) so the share is the reason that speaks', face: 'GUI' }, async () => {
     const P = `s3://${BUCKET}/verify-gui/exitgate`;
     await s3(['mkdir', `${P}/`]);
     // a dedicated source dir: ART itself holds far too many entries for
@@ -7124,14 +7155,54 @@ async function guiBattery() {
     });
     await closeModal();
     await call('CancelTransfer', job.id);
-    await waitFor(async () => JSON.stringify(await call('ActiveTransfers')).includes('canceled'), 30000, 'the job to be canceled');
+    // wait for THIS job by id: the registry keeps old canceled rows for
+    // the transfers window (GUI-21 leaves one behind in the full world),
+    // so a string-match on any 'canceled' returns instantly while this
+    // row's own cancel is still settling — and the unsettled running job
+    // outranks the share on the ladder below
+    await waitFor(async () => (((await call('ActiveTransfers')) || []).find((x) => x.id === job.id)?.status === 'canceled'), 30000, 'the job to be canceled');
     await evalPage(() => { localStorage.removeItem('s3b-throttle'); localStorage.removeItem('s3b-show-throttle'); return true; });
     const st = await s3(['stat', `${P}/exit-8m.bin`]);
     need(st.code !== 0, 'a partial object survived the canceled exit-gate transfer');
     // the ladder\u2019s shares leg, live: an active share vetoes the close
-    // with itself named; stopping it clears the naming (the rest of the
-    // ladder keeps its own state — the reason oracle is the honest one)
+    // with itself named; stopping it clears the naming. Normalize the
+    // ladder first: the full-battery world leaves the open profile file
+    // dirty (GUI-41's credential import + its RemoveSource both mark
+    // it) and the dirty-profile leg outranks shares, so the reason
+    // would name the profile instead — GUI-83 calls the same residue
+    // benign. The transfer leg settles first (it outranks everything):
+    // the by-id wait above settles this row's job, but any earlier row's
+    // live residue would speak instead of the share — wait the registry
+    // quiet of running jobs, naming whatever refuses to settle. Save the
+    // open profile, prove the ladder quiet, and the quiet close doubles
+    // as the stronger stop-oracle after StopShare
+    let runWhy = '';
+    try {
+      await waitFor(async () => {
+        const rs = ((await call('ActiveTransfers')) || []).filter((x) => x.status === 'running');
+        runWhy = JSON.stringify(rs).slice(0, 400);
+        return rs.length === 0;
+      }, 20000, 'jobs still running ahead of the share probe');
+    } catch { need(false, `jobs still running ahead of the share probe: ${runWhy || 'the registry never answered'}`); }
+    const pfq = await call('GetProfileFileState');
+    if (pfq?.open && pfq?.dirty) await call('SaveProfileFile');
+    if (!pfq?.open) {
+      // a world with no open profile leaves leg 5 speaking instead (the
+      // session sources earlier rows seated are unsaved by design —
+      // GUI-83 calls the same residue benign); Save As adopts them into
+      // a fresh profile of the row's own, the profile left open and
+      // clean so legs 4 and 5 both rest. The full world opens GUI-17's
+      // profile long before this row, so this branch is the slice
+      // world's alone
+      await call('SaveProfileFileAs', path.join(ART, 'exitgate-profile.s3bprofile'), 'verify-pass-123');
+    }
     await evalPage(() => { window.__exitReason = null; return true; });
+    const vetoQ = await call('ShouldClose');
+    need(vetoQ === false, await (async () => {
+      let why = String(await evalPage(() => window.__exitReason) || '');
+      for (let i = 0; i < 15 && !why; i++) { await sleep(100); why = String(await evalPage(() => window.__exitReason) || ''); }
+      return `the ladder was not quiet before the share probe: ${why || JSON.stringify(vetoQ)}`;
+    })());
     const sh = await call('CreateShare', '', BUCKET, 'verify-gui/exitgate/exit-8m.bin', 3600);
     need(!!sh?.id, `CreateShare did not answer a share: ${JSON.stringify(sh)}`);
     const veto2 = await call('ShouldClose');
@@ -7146,10 +7217,11 @@ async function guiBattery() {
     await closeModal();
     await call('StopShare', sh.id);
     await evalPage(() => { window.__exitReason = null; return true; });
-    await call('ShouldClose');
-    const r3 = String(await evalPage(() => window.__exitReason));
+    const veto3 = await call('ShouldClose');
+    need(veto3 === false, `ShouldClose still vetoes after the share stopped (${JSON.stringify(veto3)})`);
+    const r3 = String(await evalPage(() => window.__exitReason) || '');
     need(!/active share/i.test(r3), `the share still named after stop: ${r3}`);
-    return 'close vetoed with a reason; guarded ExitApp did not kill the app; transfer canceled clean; the active share vetoed the close by name and stopping it cleared the naming';
+    return 'close vetoed with a reason; guarded ExitApp did not kill the app; transfer canceled clean; the active share vetoed the close by name and stopping it cleared the naming from a ladder proven quiet before and after';
   });
 
   await verify({ id: 'GUI-44', area: 'sources', action: 'Local filesystem bindings: list / preview / remove', ds: 'local disk', scenario: 'ListLocal reports entries with correct dir flags; LocalDeletePreview counts what a delete would take; LocalRemove actually deletes — and the deletion is proven from OUTSIDE the app (Node fs), never from the app’s own view', face: 'GUI' }, async () => {
